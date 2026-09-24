@@ -380,3 +380,200 @@ pub(crate) fn compress_physical_centerline(points: Vec<(f64, f64)>) -> Vec<(f64,
     }
     out
 }
+
+/// Unit tests for the pure geometry helpers, Milestone 6 Slice 3 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
+/// Every number below is hand-computed on a right-angle or axis-aligned
+/// configuration, so the expectations can be read without running the code.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tolerance for the exact-arithmetic cases below (all of them land on
+    /// halves or integers).
+    const EPS: f64 = 1e-12;
+
+    #[test]
+    fn segment_intersection_with_params_returns_the_crossing_point_and_both_parameters() {
+        // a: (0,0) -> (4,0), b: (2,-2) -> (2,2). They meet at (2,0), which
+        // is halfway along both, so t = u = 0.5.
+        let hit = segment_intersection_with_params((0, 0), (4, 0), (2, -2), (2, 2))
+            .expect("the segments cross");
+        let (x, y, t, u) = hit;
+        assert!((x - 2.0).abs() < EPS, "x was {x}");
+        assert!(y.abs() < EPS, "y was {y}");
+        assert!((t - 0.5).abs() < EPS, "t was {t}");
+        assert!((u - 0.5).abs() < EPS, "u was {u}");
+    }
+
+    #[test]
+    fn segment_intersection_with_params_rejects_parallel_segments() {
+        // Both horizontal: the determinant 4*0 - 0*4 is zero.
+        assert!(segment_intersection_with_params((0, 0), (4, 0), (0, 1), (4, 1)).is_none());
+        // Collinear is the same zero determinant, not an infinity of hits.
+        assert!(segment_intersection_with_params((0, 0), (4, 0), (1, 0), (2, 0)).is_none());
+    }
+
+    #[test]
+    fn segment_intersection_with_params_accepts_a_touch_at_an_endpoint() {
+        // b starts exactly at a's end point (4,0): t = 1 at the end of a,
+        // u = 0 at the start of b. Both are inside the inclusive [0,1]
+        // parameter window, so the touch counts as an intersection.
+        let (x, y, t, u) = segment_intersection_with_params((0, 0), (4, 0), (4, 0), (4, 4))
+            .expect("an endpoint touch is an intersection");
+        assert!(
+            (x - 4.0).abs() < EPS && y.abs() < EPS,
+            "point was ({x},{y})"
+        );
+        assert!((t - 1.0).abs() < EPS, "t was {t}");
+        assert!(u.abs() < EPS, "u was {u}");
+    }
+
+    #[test]
+    fn segment_intersection_with_params_rejects_an_intersection_past_the_segment_ends() {
+        // The infinite lines meet at (4,0), but that is four times a's
+        // length away, so t = 4 falls outside [0,1].
+        assert!(segment_intersection_with_params((0, 0), (1, 0), (4, -2), (4, 2)).is_none());
+    }
+
+    #[test]
+    fn point_to_segment_distance_projects_inside_the_segment() {
+        // (2,3) projects onto the middle of (0,0)->(4,0): distance 3.
+        let d = point_to_segment_distance((2.0, 3.0), (0.0, 0.0), (4.0, 0.0));
+        assert!((d - 3.0).abs() < EPS, "distance was {d}");
+    }
+
+    #[test]
+    fn point_to_segment_distance_clamps_to_the_nearer_endpoint() {
+        // (-2,0) projects to t = -0.5, clamped to the start point (0,0):
+        // distance 2. (6,0) clamps to the end point (4,0): distance 2.
+        let before = point_to_segment_distance((-2.0, 0.0), (0.0, 0.0), (4.0, 0.0));
+        let after = point_to_segment_distance((6.0, 0.0), (0.0, 0.0), (4.0, 0.0));
+        assert!((before - 2.0).abs() < EPS, "before was {before}");
+        assert!((after - 2.0).abs() < EPS, "after was {after}");
+    }
+
+    #[test]
+    fn point_to_segment_distance_on_a_degenerate_segment_is_the_point_distance() {
+        let d = point_to_segment_distance((1.0, 4.0), (1.0, 1.0), (1.0, 1.0));
+        assert!((d - 3.0).abs() < EPS, "distance was {d}");
+    }
+
+    #[test]
+    fn segment_to_segment_distance_is_zero_for_crossing_segments() {
+        let d = segment_to_segment_distance((0.0, 0.0), (4.0, 0.0), (2.0, -2.0), (2.0, 2.0));
+        assert_eq!(d, 0.0);
+    }
+
+    #[test]
+    fn segment_to_segment_distance_of_parallel_segments_is_their_offset() {
+        let d = segment_to_segment_distance((0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (4.0, 3.0));
+        assert!((d - 3.0).abs() < EPS, "distance was {d}");
+    }
+
+    #[test]
+    fn segment_to_segment_distance_of_collinear_disjoint_segments_is_the_gap() {
+        // (0,0)->(1,0) and (4,0)->(5,0): the gap between (1,0) and (4,0)
+        // is 3, which is the smallest of the four endpoint-to-segment
+        // distances (4, 3, 3, 4).
+        let d = segment_to_segment_distance((0.0, 0.0), (1.0, 0.0), (4.0, 0.0), (5.0, 0.0));
+        assert!((d - 3.0).abs() < EPS, "distance was {d}");
+    }
+
+    #[test]
+    fn polylines_parallel_overlap_point_reports_the_midpoint_of_the_offending_segment() {
+        // Two horizontal centerlines 0.5 um apart, threshold 1.0: the
+        // first (and only) segment pair is parallel (cross_sin = 0) and
+        // 0.5 apart, so the midpoint of a's segment, (5,0), is reported.
+        let a = [(0.0, 0.0), (10.0, 0.0)];
+        let b = [(0.0, 0.5), (10.0, 0.5)];
+        let point = polylines_parallel_overlap_point(&a, &b, 1.0).expect("an overlap");
+        assert!(
+            (point.0 - 5.0).abs() < EPS && point.1.abs() < EPS,
+            "point was {point:?}"
+        );
+    }
+
+    #[test]
+    fn polylines_parallel_overlap_point_skips_perpendicular_pairs() {
+        // A legal crossing: the pair is perpendicular (cross_sin = 1.0,
+        // above the 0.5 gate), so it is exempt even though the segments
+        // touch.
+        let a = [(0.0, 0.0), (10.0, 0.0)];
+        let b = [(5.0, -5.0), (5.0, 5.0)];
+        assert!(polylines_parallel_overlap_point(&a, &b, 1.0).is_none());
+    }
+
+    #[test]
+    fn polylines_parallel_overlap_point_ignores_parallel_pairs_beyond_the_threshold() {
+        let a = [(0.0, 0.0), (10.0, 0.0)];
+        let b = [(0.0, 5.0), (10.0, 5.0)];
+        assert!(polylines_parallel_overlap_point(&a, &b, 1.0).is_none());
+    }
+
+    #[test]
+    fn physical_points_are_collinear_accepts_a_straight_run() {
+        assert!(physical_points_are_collinear(
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0)
+        ));
+        assert!(physical_points_are_collinear(
+            (0.0, 0.0),
+            (1.0, 1.0),
+            (3.0, 3.0)
+        ));
+    }
+
+    #[test]
+    fn physical_points_are_collinear_rejects_a_bend() {
+        // cross = 1*1 - 0*1 = 1, well above the 1e-9 tolerance.
+        assert!(!physical_points_are_collinear(
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0)
+        ));
+    }
+
+    #[test]
+    fn physical_points_are_collinear_rejects_a_reversal() {
+        // Collinear (cross = 0) but doubling back: the dot product is
+        // -1, so the non-negative-dot guard rejects it.
+        assert!(!physical_points_are_collinear(
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 0.0)
+        ));
+    }
+
+    #[test]
+    fn compress_physical_centerline_removes_collinear_middle_points() {
+        assert_eq!(
+            compress_physical_centerline(vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]),
+            vec![(0.0, 0.0), (3.0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn compress_physical_centerline_keeps_a_bend() {
+        // The straight run collapses to (0,0)->(2,0); (2,1) turns, so it
+        // is kept and the corner survives.
+        assert_eq!(
+            compress_physical_centerline(vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 1.0)]),
+            vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0)]
+        );
+    }
+
+    #[test]
+    fn compress_physical_centerline_drops_repeated_points_and_passes_short_inputs_through() {
+        assert_eq!(
+            compress_physical_centerline(vec![(0.0, 0.0), (0.0, 0.0), (1.0, 1.0)]),
+            vec![(0.0, 0.0), (1.0, 1.0)]
+        );
+        // Fewer than three points is returned untouched, duplicates included.
+        assert_eq!(
+            compress_physical_centerline(vec![(0.0, 0.0), (0.0, 0.0)]),
+            vec![(0.0, 0.0), (0.0, 0.0)]
+        );
+    }
+}

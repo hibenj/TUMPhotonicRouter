@@ -6,6 +6,7 @@
 //! `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`,
 //! 2026-09-23): same searches, same order, same trace text.
 
+use std::io::Write;
 use std::time::Instant;
 
 use pyo3::prelude::*;
@@ -44,15 +45,23 @@ pub(crate) struct AttemptRecord {
     pub(crate) error: Option<String>,
 }
 
-/// The `native_negotiated_search` line, unchanged since 2026-09-15.
-pub(crate) fn trace_attempt(batch_start: Option<Instant>, net_id: u64, record: &AttemptRecord) {
+/// The `native_negotiated_search` line, unchanged since 2026-09-15. `out` is
+/// `std::io::stderr()` at both production call sites; the tests pass a
+/// `Vec<u8>` to read the line back.
+pub(crate) fn trace_attempt(
+    out: &mut dyn std::io::Write,
+    batch_start: Option<Instant>,
+    net_id: u64,
+    record: &AttemptRecord,
+) {
     // `error=` has only ever been printed by a net's first plain attempt;
     // every other attempt's line ends at `budget=`.
     let error_field = match &record.error {
         Some(error) if record.kind == AttemptKind::First => format!(" error={error:?}"),
         _ => String::new(),
     };
-    eprintln!(
+    let _ = writeln!(
+        out,
         "{}native_negotiated_search net={} kind={} elapsed_s={:.3} expanded={} outcome={} budget={}{}",
         trace_t(batch_start),
         net_id,
@@ -191,6 +200,7 @@ impl PyPhotonicRouter {
                 }
             };
             trace_attempt(
+                &mut std::io::stderr(),
                 self.negotiated_batch_start,
                 net_id,
                 &AttemptRecord {
@@ -242,7 +252,8 @@ impl PyPhotonicRouter {
                 ),
                 Err(()) => ("failed", "?".to_string()),
             };
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr(),
                 "{}native_negotiated_search net={} kind=probe elapsed_s={:.3} expanded={} outcome={}",
                 trace_t(self.negotiated_batch_start),
                 job.net_id,
@@ -289,6 +300,7 @@ impl PyPhotonicRouter {
                 Err(_) => ("failed", "?".to_string()),
             };
             trace_attempt(
+                &mut std::io::stderr(),
                 self.negotiated_batch_start,
                 net_id,
                 &AttemptRecord {
@@ -313,5 +325,145 @@ impl PyPhotonicRouter {
             .get(&net_id)
             .map(|route| route.stats.expanded_states.to_string())
             .unwrap_or_else(|| "?".to_string())
+    }
+}
+
+/// Unit tests for the `native_negotiated_search` trace line, Milestone 6
+/// Slice 3 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
+/// [`trace_attempt`] gained a `&mut dyn Write` first parameter so the line
+/// can be read back here; production passes `std::io::stderr()`, so the
+/// text is unchanged.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One trace line for `net=42` with no batch start (so no `t=` prefix).
+    fn trace_line(record: &AttemptRecord) -> String {
+        let mut out: Vec<u8> = Vec::new();
+        trace_attempt(&mut out, None, 42, record);
+        String::from_utf8(out).expect("the trace line is UTF-8")
+    }
+
+    fn record(kind: AttemptKind, trace_kind: &'static str, budget: Option<u64>) -> AttemptRecord {
+        AttemptRecord {
+            kind,
+            trace_kind,
+            budget,
+            elapsed_s: 0.5,
+            expanded: "123".to_string(),
+            outcome: "routed",
+            error: None,
+        }
+    }
+
+    #[test]
+    fn the_first_plain_attempt_prints_its_error_field_last() {
+        let mut first = record(AttemptKind::First, "plain", Some(2_000_000));
+        first.error = Some("No legal route".to_string());
+        assert_eq!(
+            trace_line(&first),
+            "native_negotiated_search net=42 kind=plain elapsed_s=0.500 expanded=123 \
+             outcome=routed budget=2000000 error=\"No legal route\"\n"
+        );
+    }
+
+    #[test]
+    fn a_first_attempt_without_an_error_ends_at_the_budget_field() {
+        assert_eq!(
+            trace_line(&record(AttemptKind::First, "plain", Some(2_000_000))),
+            "native_negotiated_search net=42 kind=plain elapsed_s=0.500 expanded=123 \
+             outcome=routed budget=2000000\n"
+        );
+    }
+
+    #[test]
+    fn a_none_budget_prints_as_full() {
+        assert_eq!(
+            trace_line(&record(AttemptKind::ProbeGuided, "probe_guided", None)),
+            "native_negotiated_search net=42 kind=probe_guided elapsed_s=0.500 expanded=123 \
+             outcome=routed budget=full\n"
+        );
+    }
+
+    #[test]
+    fn no_attempt_kind_but_the_first_prints_an_error_field() {
+        // `Braid` has no `AttemptRecord` constructor of its own yet (the
+        // braid passes set their budget directly), so this is the only
+        // place its kind-dependent behaviour is pinned.
+        for kind in [
+            AttemptKind::FirstRetry,
+            AttemptKind::PostRipUp,
+            AttemptKind::ProbeGuided,
+            AttemptKind::DirectCrossing,
+            AttemptKind::Braid,
+        ] {
+            let mut attempt = record(kind, "plain_retry", Some(10_000_000));
+            attempt.error = Some("suppressed".to_string());
+            let line = trace_line(&attempt);
+            assert!(
+                !line.contains("error="),
+                "{kind:?} must not print an error field, got {line:?}"
+            );
+            assert!(
+                line.ends_with("budget=10000000\n"),
+                "{kind:?}'s line must end at budget=, got {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_start_prefixes_the_line_with_the_elapsed_batch_time() {
+        let mut out: Vec<u8> = Vec::new();
+        let start = Instant::now() - std::time::Duration::from_millis(12_300);
+        trace_attempt(
+            &mut out,
+            Some(start),
+            42,
+            &record(AttemptKind::First, "plain", None),
+        );
+        let line = String::from_utf8(out).expect("the trace line is UTF-8");
+        assert!(
+            line.starts_with("t=12.") && line.contains(" native_negotiated_search net=42 "),
+            "expected a leading batch-time field, got {line:?}"
+        );
+    }
+
+    #[test]
+    fn each_plain_attempt_constructor_carries_its_own_trace_kind() {
+        assert_eq!(PlainAttempt::first(None, false).trace_kind, "plain");
+        assert_eq!(PlainAttempt::first(None, false).kind, AttemptKind::First);
+        assert_eq!(
+            PlainAttempt::first_retry(None, false).trace_kind,
+            "plain_retry"
+        );
+        assert_eq!(
+            PlainAttempt::first_retry(None, false).kind,
+            AttemptKind::FirstRetry
+        );
+        assert_eq!(
+            PlainAttempt::probe_guided(None, &[7]).trace_kind,
+            "probe_guided"
+        );
+        // Never crossing-free: a crossing-free net has no legal partners.
+        assert!(!PlainAttempt::probe_guided(None, &[7]).crossing_free);
+        // The post-rip-up search reports which of its three flavours ran.
+        assert_eq!(
+            PlainAttempt::post_ripup(None, true, &[]).trace_kind,
+            "post_ripup_crossing_free"
+        );
+        assert_eq!(
+            PlainAttempt::post_ripup(None, false, &[]).trace_kind,
+            "post_ripup_plain"
+        );
+        assert_eq!(
+            PlainAttempt::post_ripup(None, false, &[7]).trace_kind,
+            "post_ripup_guided"
+        );
+        // Crossing-free wins over guidance in the flavour name.
+        assert_eq!(
+            PlainAttempt::post_ripup(None, true, &[7]).trace_kind,
+            "post_ripup_crossing_free"
+        );
     }
 }

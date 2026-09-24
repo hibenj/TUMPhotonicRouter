@@ -647,6 +647,7 @@ pub(crate) fn run<H: CrossingLegalityHook>(
             }
             if failure_diag {
                 print_search_failure_report(
+                    &mut std::io::stderr(),
                     &failure_env,
                     "iteration_cap",
                     &SearchFailureState {
@@ -681,6 +682,7 @@ pub(crate) fn run<H: CrossingLegalityHook>(
             );
             if failure_diag {
                 print_search_failure_report(
+                    &mut std::io::stderr(),
                     &failure_env,
                     "timeout",
                     &SearchFailureState {
@@ -766,7 +768,7 @@ pub(crate) fn run<H: CrossingLegalityHook>(
             }
             // Harness: probe cells report on SUCCESS too (where did the
             // search go / not go), not only on failure.
-            print_probe_success_report(&failure_env, state, &probe_ring);
+            print_probe_success_report(&mut std::io::stderr(), &failure_env, state, &probe_ring);
             if config.collect_detailed_timing {
                 let reconstruction_start = Instant::now();
                 let mut route = reconstruct_route_unified(
@@ -1023,6 +1025,7 @@ pub(crate) fn run<H: CrossingLegalityHook>(
     }
     if failure_diag {
         print_search_failure_report(
+            &mut std::io::stderr(),
             &failure_env,
             "open_set_exhausted",
             &SearchFailureState {

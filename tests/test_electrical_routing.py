@@ -14,12 +14,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from benchmarks.mmi_heater import build_schematic as build_single_heater_schematic
-from benchmarks.mmi_heater_8x4 import build_schematic as build_multi_heater_schematic
-from benchmarks.mmi_heater_8x4_ripup_reroute import (
-    build_schematic as build_ripup_reroute_schematic,
+from tests.fixtures.synthetic_layouts import (
+    multi_heater_schematic as build_multi_heater_schematic,
+    path_length_schematic as build_heaterless_schematic,
+    ripup_reroute_heater_schematic as build_ripup_reroute_schematic,
+    single_heater_schematic as build_single_heater_schematic,
 )
-from benchmarks.TOY import build_schematic as build_toy_schematic
 from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
 from translation.electrical.bundle_detail_router import (
     _offset_path_by_local_normals,
@@ -746,7 +746,7 @@ def test_common_bus_rail_and_pad_escape_use_bus_width_only():
 
 
 def test_electrical_routing_is_noop_without_heater_terminals(tmp_path):
-    schematic = build_toy_schematic()
+    schematic = build_heaterless_schematic()
     component = layout_from_schematic(schematic)
     config = ElectricalRoutingConfig()
     before_metal = _polygon_bboxes_by_layer(component, config.metal_layer)

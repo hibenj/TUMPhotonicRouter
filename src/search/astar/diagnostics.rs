@@ -15,6 +15,7 @@ use crate::search::astar::kernel::{UnifiedExtendedNode, UnifiedParentRef};
 use crate::search::astar::window::RoutingBounds;
 use crate::search::state::{RouteSearchStats, State};
 use rustc_hash::FxHashSet;
+use std::io::Write;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::time::Instant;
 
@@ -108,6 +109,7 @@ pub(crate) fn trace_crossing_pending(
 /// around the target, occupancy plus what happened to every successor
 /// attempt landing there (see the slot legend at the counter array).
 pub(crate) fn print_target_ring_report(
+    out: &mut dyn Write,
     target: State,
     target_ring: &[[u32; 7]; 25],
     goal_miss_angle: u32,
@@ -115,7 +117,8 @@ pub(crate) fn print_target_ring_report(
     obstacle_map: &ObstacleMap,
     port_open_cells: Option<&FxHashSet<CellKey>>,
 ) {
-    eprintln!(
+    let _ = writeln!(
+        out,
         "search-failure-goalmiss angle={} hook={}",
         goal_miss_angle, goal_miss_hook
     );
@@ -128,7 +131,8 @@ pub(crate) fn print_target_ring_report(
             let static_blocked = obstacle_map.is_static_blocked(x, y);
             let opened = port_open_cells.is_some_and(|open| open.contains(&pack_xy(x, y)));
             if c.iter().any(|&v| v > 0) || static_blocked || opened || (dx == 0 && dy == 0) {
-                eprintln!(
+                let _ = writeln!(
+                    out,
                         "search-failure-ring cell=({},{}) off=({},{}) static={} opened={} gen={} acc={} foot={} hook={} closed={} pruned={} resv={}",
                         x, y, dx, dy, static_blocked, opened,
                         c[0], c[1], c[2], c[3], c[4], c[5], c[6]
@@ -147,6 +151,7 @@ pub(crate) fn print_target_ring_report(
 /// this search, and which dynamic owners occupy it -- the direct answer to
 /// "what is the wall made of" at any coordinate, not just the target ring.
 pub(crate) fn print_probe_cells_report(
+    out: &mut dyn Write,
     search_seq: u64,
     obstacle_map: &ObstacleMap,
     port_open_cells: Option<&FxHashSet<CellKey>>,
@@ -155,14 +160,16 @@ pub(crate) fn print_probe_cells_report(
 ) {
     for &(x, y) in probe_cells {
         if !obstacle_map.in_bounds(x, y) {
-            eprintln!(
+            let _ = writeln!(
+                out,
                 "probe-cell seq={} cell=({},{}) out_of_bounds",
                 search_seq, x, y
             );
             continue;
         }
         let owners: Vec<NetId> = obstacle_map.dynamic_owners_at(x, y).into_iter().collect();
-        eprintln!(
+        let _ = writeln!(
+            out,
                 "probe-cell seq={} cell=({},{}) static={} opened={} dynamic_owners={:?} core={} dense_blocked={}",
                 search_seq,
                 x,
@@ -185,6 +192,7 @@ pub(crate) fn print_probe_cells_report(
 /// only, `.` free, `S`/`T` source/target block. Rows top (max y) to
 /// bottom.
 pub(crate) fn print_failure_map_window(
+    out: &mut dyn Write,
     search_seq: u64,
     obstacle_map: &ObstacleMap,
     source: State,
@@ -212,7 +220,8 @@ pub(crate) fn print_failure_map_window(
         let step = (((max_x - min_x) as f64) / 150.0).ceil().max(1.0) as i32;
         (min_x, max_x, min_y, max_y, step)
     };
-    eprintln!(
+    let _ = writeln!(
+        out,
             "search-failure-map seq={} window=[{}..{}]x[{}..{}] step={} legend=D:dynamic #:static .:free S:source T:target",
             search_seq, min_x, max_x, min_y, max_y, step
         );
@@ -259,19 +268,23 @@ pub(crate) fn print_failure_map_window(
             row.push(ch);
             x += step;
         }
-        eprintln!("map y={:>6} {}", y, row);
+        let _ = writeln!(out, "map y={:>6} {}", y, row);
         y -= step;
     }
 }
 
 pub(crate) fn print_best_crossing_path(
+    out: &mut dyn Write,
     best_crossings: u16,
     best_ref: Option<usize>,
     storage: &DenseSearchStorage,
     extended_nodes: &[UnifiedExtendedNode],
 ) {
     let Some(ext_idx) = best_ref else {
-        eprintln!("search-failure-bestpath crossings=0 (no crossing state ever accepted)");
+        let _ = writeln!(
+            out,
+            "search-failure-bestpath crossings=0 (no crossing state ever accepted)"
+        );
         return;
     };
     let endpoint = extended_nodes[ext_idx].state;
@@ -314,7 +327,8 @@ pub(crate) fn print_best_crossing_path(
             waypoints.push(point);
         }
     }
-    eprintln!(
+    let _ = writeln!(
+        out,
         "search-failure-bestpath crossings={} endpoint=({},{},{}) waypoints={:?}",
         best_crossings, endpoint.x, endpoint.y, endpoint.angle, waypoints
     );
@@ -481,11 +495,16 @@ pub(crate) struct SearchFailureState<'a> {
 }
 
 /// One `probe-landing` line per probe cell that saw any successor attempt.
-fn print_probe_landing_lines(search_seq: u64, probe_cells: &[(i32, i32)], probe_ring: &[[u32; 7]]) {
+fn print_probe_landing_lines(
+    out: &mut dyn Write,
+    search_seq: u64,
+    probe_cells: &[(i32, i32)],
+    probe_ring: &[[u32; 7]],
+) {
     for (i, cell) in probe_cells.iter().enumerate() {
         let c = probe_ring[i];
         if c.iter().any(|v| *v > 0) {
-            eprintln!("probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
+            let _ = writeln!(out, "probe-landing seq={} cell=({},{}) gen={} acc={} foot={} hook={} closed={} pruned={} resv={}", search_seq, cell.0, cell.1, c[0], c[1], c[2], c[3], c[4], c[5], c[6]);
         }
     }
 }
@@ -496,6 +515,7 @@ fn print_probe_landing_lines(search_seq: u64, probe_cells: &[(i32, i32)], probe_
 /// target-ring, best-crossing-path, probe-cell, failure-map and
 /// probe-landing reports, in that order.
 pub(crate) fn print_search_failure_report(
+    out: &mut dyn Write,
     env: &SearchFailureEnv<'_>,
     kind: &str,
     state: &SearchFailureState<'_>,
@@ -503,7 +523,8 @@ pub(crate) fn print_search_failure_report(
 ) {
     let (search_seq, source, target, bounds) = (env.search_seq, env.source, env.target, env.bounds);
     let explored = state.explored;
-    eprintln!(
+    let _ = writeln!(
+        out,
             "search-failure seq={} kind={} iterations={} expanded={} generated={} source=({},{},{}) target=({},{},{}) window=[{}..{},{}..{}] explored_bbox=[{}..{},{}..{}]",
             search_seq, kind, state.iterations, stats.expanded_states, stats.generated_neighbors,
             source.x, source.y, source.angle, target.x, target.y, target.angle,
@@ -511,6 +532,7 @@ pub(crate) fn print_search_failure_report(
             explored.min_x, explored.max_x, explored.min_y, explored.max_y,
         );
     print_target_ring_report(
+        out,
         target,
         state.target_ring,
         state.goal_miss_angle,
@@ -519,12 +541,14 @@ pub(crate) fn print_search_failure_report(
         env.port_open_cells,
     );
     print_best_crossing_path(
+        out,
         state.best_crossings,
         state.best_crossing_ref,
         state.storage,
         state.extended_nodes,
     );
     print_probe_cells_report(
+        out,
         search_seq,
         env.obstacle_map,
         env.port_open_cells,
@@ -532,18 +556,20 @@ pub(crate) fn print_search_failure_report(
         env.probe_cells,
     );
     print_failure_map_window(
+        out,
         search_seq,
         env.obstacle_map,
         source,
         target,
         env.failure_map,
     );
-    print_probe_landing_lines(search_seq, env.probe_cells, state.probe_ring);
+    print_probe_landing_lines(out, search_seq, env.probe_cells, state.probe_ring);
 }
 
 /// The probe-cell report on a SUCCESSFUL search (where did the search go /
 /// not go), not only on failure. A no-op unless probe cells are named.
 pub(crate) fn print_probe_success_report(
+    out: &mut dyn Write,
     env: &SearchFailureEnv<'_>,
     goal: State,
     probe_ring: &[[u32; 7]],
@@ -551,11 +577,13 @@ pub(crate) fn print_probe_success_report(
     if env.probe_cells.is_empty() {
         return;
     }
-    eprintln!(
+    let _ = writeln!(
+        out,
         "probe-success seq={} goal=({},{},{})",
         env.search_seq, goal.x, goal.y, goal.angle
     );
     print_probe_cells_report(
+        out,
         env.search_seq,
         env.obstacle_map,
         env.port_open_cells,
@@ -563,11 +591,243 @@ pub(crate) fn print_probe_success_report(
         env.probe_cells,
     );
     print_failure_map_window(
+        out,
         env.search_seq,
         env.obstacle_map,
         env.source,
         env.target,
         env.failure_map,
     );
-    print_probe_landing_lines(env.search_seq, env.probe_cells, probe_ring);
+    print_probe_landing_lines(out, env.search_seq, env.probe_cells, probe_ring);
+}
+
+/// Unit tests for the two report entry points, Milestone 6 Slice 3 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
+/// Both (and the five helpers they call) gained a `&mut dyn Write` first
+/// parameter so the report can be read back here; production passes
+/// `std::io::stderr()`, so every line is byte-for-byte what the kernel
+/// printed before.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::astar::kernel::UnifiedExtendedNode;
+
+    /// The smallest map the reports can run on: 3x3 cells with one static
+    /// obstacle at (1, 2), the cell directly left of the target.
+    fn tiny_map() -> ObstacleMap {
+        let mut map = ObstacleMap::new(3, 3);
+        assert!(map.add_static_cell(1, 2));
+        map
+    }
+
+    fn tiny_bounds() -> RoutingBounds {
+        RoutingBounds {
+            min_x: 0,
+            max_x: 2,
+            min_y: 0,
+            max_y: 2,
+        }
+    }
+
+    fn tiny_dense_grid(map: &ObstacleMap) -> DenseRoutingGrid {
+        DenseRoutingGrid::from_obstacle_map(
+            map,
+            tiny_bounds(),
+            None,
+            1_000_000,
+            false,
+            false,
+            false,
+        )
+        .expect("a 3x3 dense grid fits every budget")
+    }
+
+    fn tiny_storage() -> DenseSearchStorage {
+        DenseSearchStorage::new(tiny_bounds(), 1_000_000)
+            .expect("3 * 3 * 8 = 72 dense states fit every budget")
+    }
+
+    const SOURCE: State = State {
+        x: 0,
+        y: 0,
+        angle: 0,
+    };
+    const TARGET: State = State {
+        x: 2,
+        y: 2,
+        angle: 0,
+    };
+
+    fn env<'a>(
+        map: &'a ObstacleMap,
+        dense_grid: &'a DenseRoutingGrid,
+        probe_cells: &'a [(i32, i32)],
+    ) -> SearchFailureEnv<'a> {
+        SearchFailureEnv {
+            search_seq: 7,
+            obstacle_map: map,
+            port_open_cells: None,
+            dense_grid,
+            source: SOURCE,
+            target: TARGET,
+            bounds: tiny_bounds(),
+            probe_cells,
+            // The ASCII map dump stays off, so the report is the five
+            // lines the other helpers print.
+            failure_map: None,
+        }
+    }
+
+    fn explored_source_to_target() -> ExploredBox {
+        let mut explored = ExploredBox::new();
+        explored.note(SOURCE);
+        explored.note(TARGET);
+        explored
+    }
+
+    #[test]
+    fn print_search_failure_report_prints_the_header_ring_and_bestpath_lines() {
+        let map = tiny_map();
+        let dense_grid = tiny_dense_grid(&map);
+        let storage = tiny_storage();
+        let extended_nodes: Vec<UnifiedExtendedNode> = Vec::new();
+        let target_ring = [[0u32; 7]; 25];
+        let probe_ring: Vec<[u32; 7]> = Vec::new();
+        let stats = RouteSearchStats {
+            expanded_states: 11,
+            generated_neighbors: 22,
+            ..RouteSearchStats::default()
+        };
+        let mut out: Vec<u8> = Vec::new();
+        print_search_failure_report(
+            &mut out,
+            &env(&map, &dense_grid, &[]),
+            "open_set_exhausted",
+            &SearchFailureState {
+                iterations: 5,
+                explored: explored_source_to_target(),
+                target_ring: &target_ring,
+                probe_ring: &probe_ring,
+                goal_miss_angle: 3,
+                goal_miss_hook: 4,
+                best_crossings: 0,
+                best_crossing_ref: None,
+                storage: &storage,
+                extended_nodes: &extended_nodes,
+            },
+            &stats,
+        );
+        // Two ring lines only: the static cell one step left of the target
+        // and the target itself (the center always prints). Every other
+        // cell of the 5x5 ring is free, unopened and has zero counters.
+        assert_eq!(
+            String::from_utf8(out).expect("the report is UTF-8"),
+            concat!(
+                "search-failure seq=7 kind=open_set_exhausted iterations=5 expanded=11 ",
+                "generated=22 source=(0,0,0) target=(2,2,0) window=[0..2,0..2] ",
+                "explored_bbox=[0..2,0..2]\n",
+                "search-failure-goalmiss angle=3 hook=4\n",
+                "search-failure-ring cell=(1,2) off=(-1,0) static=true opened=false ",
+                "gen=0 acc=0 foot=0 hook=0 closed=0 pruned=0 resv=0\n",
+                "search-failure-ring cell=(2,2) off=(0,0) static=false opened=false ",
+                "gen=0 acc=0 foot=0 hook=0 closed=0 pruned=0 resv=0\n",
+                "search-failure-bestpath crossings=0 (no crossing state ever accepted)\n",
+            )
+        );
+    }
+
+    #[test]
+    fn print_search_failure_report_names_the_kind_it_was_called_with() {
+        let map = tiny_map();
+        let dense_grid = tiny_dense_grid(&map);
+        let storage = tiny_storage();
+        let extended_nodes: Vec<UnifiedExtendedNode> = Vec::new();
+        let target_ring = [[0u32; 7]; 25];
+        let probe_ring: Vec<[u32; 7]> = Vec::new();
+        for kind in ["iteration_cap", "timeout", "open_set_exhausted"] {
+            let mut out: Vec<u8> = Vec::new();
+            print_search_failure_report(
+                &mut out,
+                &env(&map, &dense_grid, &[]),
+                kind,
+                &SearchFailureState {
+                    iterations: 5,
+                    explored: explored_source_to_target(),
+                    target_ring: &target_ring,
+                    probe_ring: &probe_ring,
+                    goal_miss_angle: 0,
+                    goal_miss_hook: 0,
+                    best_crossings: 0,
+                    best_crossing_ref: None,
+                    storage: &storage,
+                    extended_nodes: &extended_nodes,
+                },
+                &RouteSearchStats::default(),
+            );
+            let report = String::from_utf8(out).expect("the report is UTF-8");
+            assert!(
+                report.starts_with(&format!("search-failure seq=7 kind={kind} ")),
+                "expected kind={kind} in the header, got {report:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn print_probe_success_report_prints_the_goal_and_one_line_per_probe_cell() {
+        let map = tiny_map();
+        let dense_grid = tiny_dense_grid(&map);
+        let probe_cells = [(1, 1)];
+        // One generated successor landed on the probe cell (slot 0).
+        let probe_ring = [[1u32, 0, 0, 0, 0, 0, 0]];
+        let mut out: Vec<u8> = Vec::new();
+        print_probe_success_report(
+            &mut out,
+            &env(&map, &dense_grid, &probe_cells),
+            TARGET,
+            &probe_ring,
+        );
+        assert_eq!(
+            String::from_utf8(out).expect("the report is UTF-8"),
+            concat!(
+                "probe-success seq=7 goal=(2,2,0)\n",
+                "probe-cell seq=7 cell=(1,1) static=false opened=false dynamic_owners=[] ",
+                "core=false dense_blocked=false\n",
+                "probe-landing seq=7 cell=(1,1) gen=1 acc=0 foot=0 hook=0 closed=0 ",
+                "pruned=0 resv=0\n",
+            )
+        );
+    }
+
+    #[test]
+    fn print_probe_success_report_is_a_no_op_without_probe_cells() {
+        let map = tiny_map();
+        let dense_grid = tiny_dense_grid(&map);
+        let probe_ring: Vec<[u32; 7]> = Vec::new();
+        let mut out: Vec<u8> = Vec::new();
+        print_probe_success_report(&mut out, &env(&map, &dense_grid, &[]), TARGET, &probe_ring);
+        assert!(out.is_empty(), "expected no output, got {out:?}");
+    }
+
+    #[test]
+    fn a_probe_cell_outside_the_map_reports_out_of_bounds_and_no_landing_line() {
+        let map = tiny_map();
+        let dense_grid = tiny_dense_grid(&map);
+        let probe_cells = [(9, 9)];
+        // All-zero counters: nothing ever tried to land there.
+        let probe_ring = [[0u32; 7]];
+        let mut out: Vec<u8> = Vec::new();
+        print_probe_success_report(
+            &mut out,
+            &env(&map, &dense_grid, &probe_cells),
+            TARGET,
+            &probe_ring,
+        );
+        assert_eq!(
+            String::from_utf8(out).expect("the report is UTF-8"),
+            concat!(
+                "probe-success seq=7 goal=(2,2,0)\n",
+                "probe-cell seq=7 cell=(9,9) out_of_bounds\n",
+            )
+        );
+    }
 }

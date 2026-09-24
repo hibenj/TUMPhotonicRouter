@@ -1,10 +1,13 @@
-from benchmark_metadata import load_benchmark_metadata
-from benchmarks.TOY import build_schematic
 import pytest
 from dataclasses import replace
 from typing import Any, Protocol, cast
 from gdsfactory.component import Component
 from photonic_router.static_obstacle_builder import _load_rust_backend
+from tests.fixtures.synthetic_layouts import (
+    PATH_LENGTH_INTERNAL_DELAYS_UM,
+    PATH_LENGTH_NODE_TYPES,
+    path_length_schematic,
+)
 from photonic_router.path_length_graph import (
     DelayInsertionCandidate,
     MissingLengthRequirement,
@@ -307,9 +310,8 @@ def test_split_request_calls_rust_split_planner():
 
 
 def test_build_graph_from_schematic_tracks_port_directions_and_fanout_shape():
-    schematic = build_schematic()
-    metadata = load_benchmark_metadata("TOY")
-    graph = build_graph_from_schematic(schematic, node_types=metadata["node_types"])
+    schematic = path_length_schematic()
+    graph = build_graph_from_schematic(schematic, node_types=PATH_LENGTH_NODE_TYPES)
 
     assert graph.nodes["gc_0"].node_type.value == "input"
     assert graph.nodes["mmi_0"].node_type.value == "gate"
@@ -326,8 +328,7 @@ def test_build_graph_from_schematic_tracks_port_directions_and_fanout_shape():
 
 
 def test_missing_length_analysis_balances_multi_input_node():
-    schematic = build_schematic()
-    metadata = load_benchmark_metadata("TOY")
+    schematic = path_length_schematic()
     records = [
         RoutedNetRecord(
             net_name="gc0_to_mmi_in1",
@@ -361,8 +362,8 @@ def test_missing_length_analysis_balances_multi_input_node():
     result, _ = analyze_path_length_matching(
         schematic,
         routed_net_records=records,
-        node_types=metadata["node_types"],
-        internal_delays_um=metadata["internal_delays_um"],
+        node_types=PATH_LENGTH_NODE_TYPES,
+        internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
     )
 
     edge_short = RoutedEdgeKey(
@@ -382,8 +383,7 @@ def test_missing_length_analysis_balances_multi_input_node():
 
 
 def test_path_length_analysis_reports_matching_groups():
-    schematic = build_schematic()
-    metadata = load_benchmark_metadata("TOY")
+    schematic = path_length_schematic()
     records = [
         RoutedNetRecord(
             net_name="gc0_to_mmi_in1",
@@ -417,8 +417,8 @@ def test_path_length_analysis_reports_matching_groups():
     result, _ = analyze_path_length_matching(
         schematic,
         routed_net_records=records,
-        node_types=metadata["node_types"],
-        internal_delays_um=metadata["internal_delays_um"],
+        node_types=PATH_LENGTH_NODE_TYPES,
+        internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
     )
 
     info = analysis_to_info_dict(result)
@@ -432,8 +432,7 @@ def test_path_length_analysis_reports_matching_groups():
 
 
 def test_group_lifted_requirements_raise_sub_bump_deficit_to_reachable_target():
-    schematic = build_schematic()
-    metadata = load_benchmark_metadata("TOY")
+    schematic = path_length_schematic()
     short_edge = RoutedEdgeKey(
         net_name="gc0_to_mmi_in1",
         source=PortRef(instance="gc_0", port="o1"),
@@ -477,8 +476,8 @@ def test_group_lifted_requirements_raise_sub_bump_deficit_to_reachable_target():
     result, _ = analyze_path_length_matching(
         schematic,
         routed_net_records=records,
-        node_types=metadata["node_types"],
-        internal_delays_um=metadata["internal_delays_um"],
+        node_types=PATH_LENGTH_NODE_TYPES,
+        internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
     )
 
     requirements, groups = compute_group_lifted_requirements(
@@ -494,8 +493,7 @@ def test_group_lifted_requirements_raise_sub_bump_deficit_to_reachable_target():
 
 
 def test_group_lifted_requirements_do_not_raise_already_reachable_deficits():
-    schematic = build_schematic()
-    metadata = load_benchmark_metadata("TOY")
+    schematic = path_length_schematic()
     short_edge = RoutedEdgeKey(
         net_name="gc0_to_mmi_in1",
         source=PortRef(instance="gc_0", port="o1"),
@@ -539,8 +537,8 @@ def test_group_lifted_requirements_do_not_raise_already_reachable_deficits():
     result, _ = analyze_path_length_matching(
         schematic,
         routed_net_records=records,
-        node_types=metadata["node_types"],
-        internal_delays_um=metadata["internal_delays_um"],
+        node_types=PATH_LENGTH_NODE_TYPES,
+        internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
     )
 
     requirements, groups = compute_group_lifted_requirements(
@@ -554,7 +552,7 @@ def test_group_lifted_requirements_do_not_raise_already_reachable_deficits():
 
 
 def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
-    schematic = build_schematic()
+    schematic = path_length_schematic()
     short_edge = RoutedEdgeKey(
         net_name="gc0_to_mmi_in1",
         source=PortRef(instance="gc_0", port="o1"),
@@ -771,7 +769,7 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
 
 
 def test_route_match_and_realize_rejects_unrealized_lifted_plm(monkeypatch):
-    schematic = build_schematic()
+    schematic = path_length_schematic()
     short_edge = RoutedEdgeKey(
         net_name="gc0_to_mmi_in1",
         source=PortRef(instance="gc_0", port="o1"),
@@ -911,8 +909,7 @@ def test_route_match_and_realize_rejects_unrealized_lifted_plm(monkeypatch):
 
 
 def test_matching_group_diagnostics_reports_post_meander_residuals():
-    schematic = build_schematic()
-    metadata = load_benchmark_metadata("TOY")
+    schematic = path_length_schematic()
     edge_short = RoutedEdgeKey(
         net_name="gc0_to_mmi_in1",
         source=PortRef(instance="gc_0", port="o1"),
@@ -951,8 +948,8 @@ def test_matching_group_diagnostics_reports_post_meander_residuals():
     result, _ = analyze_path_length_matching(
         schematic,
         routed_net_records=records,
-        node_types=metadata["node_types"],
-        internal_delays_um=metadata["internal_delays_um"],
+        node_types=PATH_LENGTH_NODE_TYPES,
+        internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
     )
     report = {
         "results": [
@@ -984,8 +981,7 @@ def test_matching_group_diagnostics_reports_post_meander_residuals():
 
 
 def test_matching_group_diagnostics_tracks_disregarded_small_residual():
-    schematic = build_schematic()
-    metadata = load_benchmark_metadata("TOY")
+    schematic = path_length_schematic()
     edge_short = RoutedEdgeKey(
         net_name="gc0_to_mmi_in1",
         source=PortRef(instance="gc_0", port="o1"),
@@ -1024,8 +1020,8 @@ def test_matching_group_diagnostics_tracks_disregarded_small_residual():
     result, _ = analyze_path_length_matching(
         schematic,
         routed_net_records=records,
-        node_types=metadata["node_types"],
-        internal_delays_um=metadata["internal_delays_um"],
+        node_types=PATH_LENGTH_NODE_TYPES,
+        internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
     )
     report = {
         "results": [

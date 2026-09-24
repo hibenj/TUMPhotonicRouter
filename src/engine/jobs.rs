@@ -313,3 +313,131 @@ pub(crate) const NEGOTIATED_BUDGET_BRAID: u64 = 10_000_000;
 pub(crate) const NEGOTIATED_BRAID_MAX_PASSES: u32 = 4;
 
 pub(crate) const NEGOTIATED_PROBE_GUIDANCE_LOSS: f64 = 0.0;
+
+/// Unit tests for the job and batch-state constructors, Milestone 6
+/// Slice 3 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::test_support::fresh_repair_batch_state;
+    use crate::obstacle_map::pack_xy;
+
+    #[test]
+    fn native_route_job_new_maps_every_argument_to_its_field() {
+        let job = NativeRouteJob::new(
+            7,
+            PyState::new(1, 2, 0),
+            PyState::new(3, 4, 4),
+            vec![(1, 2), (2, 2)],
+            vec![(5, 5)],
+            vec![(6, 6), (6, 6)],
+            Some((1.5, 2.5)),
+            None,
+        );
+        assert_eq!(job.net_id, 7);
+        assert_eq!((job.source.x, job.source.y, job.source.angle), (1, 2, 0));
+        assert_eq!((job.target.x, job.target.y, job.target.angle), (3, 4, 4));
+        assert_eq!(job.opened_cells, vec![(1, 2), (2, 2)]);
+        assert_eq!(job.clearance_exempt_cells, vec![(5, 5)]);
+        assert_eq!(job.source_port_um, Some((1.5, 2.5)));
+        assert_eq!(job.target_port_um, None);
+    }
+
+    #[test]
+    fn native_route_job_new_packs_each_cell_list_into_its_key_set() {
+        let job = NativeRouteJob::new(
+            7,
+            PyState::new(1, 2, 0),
+            PyState::new(3, 4, 4),
+            vec![(1, 2), (2, 2)],
+            vec![(5, 5)],
+            // The static-cleanup cells are kept only as keys, and the
+            // duplicate collapses there.
+            vec![(6, 6), (6, 6)],
+            None,
+            None,
+        );
+        assert_eq!(job.opened_cell_keys.len(), 2);
+        assert!(job.opened_cell_keys.contains(&pack_xy(1, 2)));
+        assert!(job.opened_cell_keys.contains(&pack_xy(2, 2)));
+        assert_eq!(job.clearance_exempt_cell_keys.len(), 1);
+        assert!(job.clearance_exempt_cell_keys.contains(&pack_xy(5, 5)));
+        assert_eq!(job.static_cleanup_cell_keys.len(), 1);
+        assert!(job.static_cleanup_cell_keys.contains(&pack_xy(6, 6)));
+    }
+
+    #[test]
+    fn native_batch_timings_default_is_all_zeros() {
+        let timings = NativeBatchTimings::default();
+        for (name, value) in [
+            ("route_job_unpack_us", timings.route_job_unpack_us),
+            ("obstacle_map_prepare_us", timings.obstacle_map_prepare_us),
+            ("route_search_total_us", timings.route_search_total_us),
+            (
+                "simple_route_candidate_us",
+                timings.simple_route_candidate_us,
+            ),
+            ("dense_astar_us", timings.dense_astar_us),
+            ("commit_cell_build_us", timings.commit_cell_build_us),
+            (
+                "commit_update_dynamic_map_us",
+                timings.commit_update_dynamic_map_us,
+            ),
+            ("normal_route_wall_us", timings.normal_route_wall_us),
+            ("probe_route_wall_us", timings.probe_route_wall_us),
+            (
+                "repair_failed_net_wall_us",
+                timings.repair_failed_net_wall_us,
+            ),
+            ("reroute_victims_wall_us", timings.reroute_victims_wall_us),
+            (
+                "normal_route_failed_wall_us",
+                timings.normal_route_failed_wall_us,
+            ),
+            (
+                "probe_route_failed_wall_us",
+                timings.probe_route_failed_wall_us,
+            ),
+            (
+                "repair_failed_net_failed_wall_us",
+                timings.repair_failed_net_failed_wall_us,
+            ),
+            (
+                "reroute_victims_failed_wall_us",
+                timings.reroute_victims_failed_wall_us,
+            ),
+            (
+                "repair_probe_victim_selection_us",
+                timings.repair_probe_victim_selection_us,
+            ),
+            ("repair_state_reset_us", timings.repair_state_reset_us),
+            ("ripup_us", timings.ripup_us),
+            ("history_update_us", timings.history_update_us),
+            (
+                "route_result_construction_us",
+                timings.route_result_construction_us,
+            ),
+            ("python_return_dict_us", timings.python_return_dict_us),
+        ] {
+            assert_eq!(value, 0, "{name} must default to zero");
+        }
+    }
+
+    #[test]
+    fn a_fresh_repair_batch_state_starts_empty_with_no_failure_recorded() {
+        let batch = fresh_repair_batch_state();
+        assert!(batch.final_routes.is_empty());
+        assert!(batch.attempts.is_empty());
+        assert!(batch.repair_trace.is_empty());
+        assert_eq!(batch.repair_count, 0);
+        assert_eq!(batch.failed_net_id, None);
+        assert_eq!(batch.failed_error, None);
+        assert!(batch.retried_source_layers.is_empty());
+        assert!(batch.trace_last_route_start.is_none());
+        assert!(batch.deferred_job_indices.is_empty());
+        assert_eq!(batch.deferred_count, 0);
+        assert!(batch.last_rejected_commit_partners.is_empty());
+        assert_eq!(batch.timings.route_search_total_us, 0);
+    }
+}

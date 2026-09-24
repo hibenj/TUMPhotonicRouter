@@ -159,17 +159,17 @@ def test_endpoint_correction_failure_prints_net_and_endpoints(capsys):
     assert "target_route_center_um=(15.25, 20.25)" in message
 
 
-def test_mmi_heater_pass0_characterizes_current_port_alignment():
+def test_heater_s_mod_pass0_characterizes_current_port_alignment():
     pytest.importorskip("gdsfactory")
     if _load_rust_backend() is None:
-        pytest.skip("Rust backend unavailable for mmi_heater alignment diagnostics.")
+        pytest.skip("Rust backend unavailable for heater_s_mod alignment diagnostics.")
 
-    from benchmarks.mmi_heater import build_schematic
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+    from routing_flow import load_benchmark
     from translation.layout_from_schematic import layout_from_schematic
     from translation.route_rust import route_nets_rust
 
-    schematic = build_schematic()
+    schematic = load_benchmark("heater_s_mod")
     layout = layout_from_schematic(schematic)
 
     _, artifacts = route_nets_rust(
@@ -183,15 +183,18 @@ def test_mmi_heater_pass0_characterizes_current_port_alignment():
         enable_checked_endpoint_correction=False,
     )
 
+    # gc_in_0/gc_in_1 both feed lane 0's first MMI (mmi_a_0), analogous to the
+    # former mmi_heater test's two-nets-into-one-MMI pair.
     records_by_name = {record.net_name: record for record in artifacts.routed_net_records}
-    first = records_by_name["gc0_to_mmi0_in1"]
-    second = records_by_name["gc1_to_mmi0_in2"]
-    assert first.base_total_length_um == pytest.approx(149.0)
-    assert second.base_total_length_um == pytest.approx(149.5)
+    first = records_by_name["gc_in_0_to_mmi_a_0_upper_in"]
+    second = records_by_name["gc_in_1_to_mmi_a_0_lower_in"]
+    # heater_s_mod pass-0 values recomputed in Milestone 6 Slice 3.
+    assert first.base_total_length_um == pytest.approx(212.5)
+    assert second.base_total_length_um == pytest.approx(213.0)
     # Realized (arc-sampled) centerline lengths; they move by a few nm when
     # the arc sampling density changes (see `MAX_ARC_SAGITTA_UM`).
-    assert first.total_length_um == pytest.approx(140.41489662877973, abs=1e-6)
-    assert second.total_length_um == pytest.approx(140.91489662877973, abs=1e-6)
+    assert first.total_length_um == pytest.approx(203.91489662877976, abs=1e-6)
+    assert second.total_length_um == pytest.approx(204.41489662877981, abs=1e-6)
     assert (second.total_length_um - first.total_length_um) == pytest.approx(0.5)
     assert len(first.corrected_centerline_um) >= 2
     assert len(second.corrected_centerline_um) >= 2
@@ -214,18 +217,19 @@ def test_mmi_heater_pass0_characterizes_current_port_alignment():
             assert endpoint["mu_y_um"] is not None
 
 
-def test_mmi_heater_route_match_uses_corrected_records_for_realization():
+def test_heater_s_mod_route_match_uses_corrected_records_for_realization():
     pytest.importorskip("gdsfactory")
     if _load_rust_backend() is None:
-        pytest.skip("Rust backend unavailable for mmi_heater endpoint correction.")
+        pytest.skip("Rust backend unavailable for heater_s_mod endpoint correction.")
 
     from benchmark_metadata import resolve_internal_delays_for_instances
-    from benchmarks.mmi_heater import INTERNAL_DELAYS_UM, NODE_TYPES, build_schematic
+    from benchmarks.heater_s_mod import INTERNAL_DELAYS_UM, NODE_TYPES
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+    from routing_flow import load_benchmark
     from translation.layout_from_schematic import layout_from_schematic
     from translation.route_rust import route_match_and_realize
 
-    schematic = build_schematic()
+    schematic = load_benchmark("heater_s_mod")
     layout = layout_from_schematic(schematic)
     result = route_match_and_realize(
         layout,
@@ -254,10 +258,10 @@ def test_mmi_heater_route_match_uses_corrected_records_for_realization():
         for record in records
     )
     for net_name in (
-        "gc0_to_mmi0_in1",
-        "gc1_to_mmi0_in2",
-        "mmi1_out1_to_gc2",
-        "mmi1_out2_to_gc3",
+        "gc_in_0_to_mmi_a_0_upper_in",
+        "gc_in_1_to_mmi_a_0_lower_in",
+        "mmi_a_0_upper_to_heater_0",
+        "heater_0_to_mmi_b_0_upper_in",
     ):
         record = records_by_name[net_name]
         assert len(record.corrected_centerline_um) >= 2

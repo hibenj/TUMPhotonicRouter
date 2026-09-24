@@ -32,10 +32,24 @@ from tests.fixtures.synthetic_layouts import (
     three_net_schematic,
 )
 
-# Mixed files: tests that route or import an unroutable toy benchmark
-# (`benchmarks.mmi_heater*`, `benchmarks.TOY`) or spawn a subprocess, named
-# by node id because the rest of their file is ordinary unit-level testing.
+# Mixed files: tests that load a benchmark and route it, or spawn a
+# subprocess, named by node id because the rest of their file is ordinary
+# unit-level testing.
 _E2E_NODE_IDS = {
+    "tests/test_electrical_routing.py::test_show_realized_electrical_metal_in_klayout",
+    "tests/test_port_alignment_diagnostics.py::test_heater_s_mod_pass0_characterizes_current_port_alignment",
+    "tests/test_port_alignment_diagnostics.py::test_heater_s_mod_route_match_uses_corrected_records_for_realization",
+    "tests/test_route_rust_geometry.py::test_rust_routed_layout_uses_waveguide_geometry",
+}
+
+# Integration tests named by node id, the same mechanism as `_E2E_NODE_IDS`
+# above: `tests/test_electrical_routing.py` ran the whole electrical
+# pipeline on the mmi_heater toy benchmarks until Milestone 6 Slice 3 moved
+# it onto the synthetic heater layouts in `tests/fixtures/`. It no longer
+# loads a benchmark, so these are integration, not end-to-end; the one test
+# that spawns KLayout stays in `_E2E_NODE_IDS`. Its file also holds pure
+# unit tests, so the classification stays per test.
+_INTEGRATION_NODE_IDS = {
     "tests/test_electrical_routing.py::test_extracts_two_logical_terminals_from_multi_port_heater",
     "tests/test_electrical_routing.py::test_obstacle_map_uses_role_specific_terminal_openings",
     "tests/test_electrical_routing.py::test_common_bus_rail_extends_toward_common_bus_pad_side",
@@ -55,12 +69,8 @@ _E2E_NODE_IDS = {
     "tests/test_electrical_routing.py::test_detailed_bundle_router_assigns_spaced_offsets_from_topology",
     "tests/test_electrical_routing.py::test_metal_realization_creates_assigned_pads_but_not_empty_slots",
     "tests/test_electrical_routing.py::test_metal_realization_adds_wire_polygons_for_bus_and_individual_routes",
-    "tests/test_electrical_routing.py::test_show_realized_electrical_metal_in_klayout",
     "tests/test_electrical_routing.py::test_common_bus_escape_reaches_assigned_common_bus_pad_slot",
     "tests/test_electrical_routing.py::test_common_bus_escape_uses_opposite_bus_for_bottom_pad_side",
-    "tests/test_port_alignment_diagnostics.py::test_mmi_heater_pass0_characterizes_current_port_alignment",
-    "tests/test_port_alignment_diagnostics.py::test_mmi_heater_route_match_uses_corrected_records_for_realization",
-    "tests/test_route_rust_geometry.py::test_rust_routed_layout_uses_waveguide_geometry",
 }
 
 # Integration files: several stages or the Rust router on a synthetic
@@ -95,7 +105,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(pytest.mark.e2e)
             continue
 
-        if rel_path.stem in _INTEGRATION_FILE_STEMS:
+        if node_id in _INTEGRATION_NODE_IDS or rel_path.stem in _INTEGRATION_FILE_STEMS:
             item.add_marker(pytest.mark.integration)
 
 

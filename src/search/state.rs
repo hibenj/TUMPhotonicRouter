@@ -168,3 +168,102 @@ pub(crate) fn find_primitive(
         .iter()
         .find(|p| p.id == primitive_id)
 }
+
+/// Unit tests for `State` and the search-statistics defaults, Milestone 6
+/// Slice 3 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_new_keeps_the_position_and_normalises_the_heading_modulo_eight() {
+        let state = State::new(3, -4, 2);
+        assert_eq!((state.x, state.y, state.angle), (3, -4, 2));
+        // 8 is one full turn: it normalises to 0, and 9 to 1.
+        assert_eq!(State::new(0, 0, 8).angle, 0);
+        assert_eq!(State::new(0, 0, 9).angle, 1);
+        assert_eq!(State::new(0, 0, 15).angle, 7);
+        assert_eq!(State::new(0, 0, 16).angle, 0);
+    }
+
+    #[test]
+    fn state_new_normalises_a_negative_heading_as_its_unsigned_byte() {
+        // `angle` is a `u8`, so a negative heading can only reach
+        // `State::new` as its two's-complement byte, and `% 8` is taken of
+        // that: -1 arrives as 255 and normalises to 7, -3 as 253 and
+        // normalises to 5, -8 as 248 and normalises to 0. Those are the
+        // same values as `(-1).rem_euclid(8)` and friends, because 256 is
+        // a multiple of 8 -- the type, not a normalisation step, is what
+        // makes a negative heading well-defined here.
+        assert_eq!(State::new(0, 0, (-1i32) as u8).angle, 7);
+        assert_eq!(State::new(0, 0, (-3i32) as u8).angle, 5);
+        assert_eq!(State::new(0, 0, (-8i32) as u8).angle, 0);
+    }
+
+    #[test]
+    fn state_is_compared_and_hashed_on_all_three_fields() {
+        assert_eq!(State::new(1, 2, 3), State::new(1, 2, 11));
+        assert_ne!(State::new(1, 2, 3), State::new(1, 2, 4));
+        assert_ne!(State::new(1, 2, 3), State::new(2, 1, 3));
+    }
+
+    #[test]
+    fn route_search_stats_default_is_all_zeros_and_empty() {
+        let stats = RouteSearchStats::default();
+        assert_eq!(stats.window_attempts, 0);
+        assert!(!stats.used_full_grid_fallback);
+        assert_eq!(stats.expanded_states, 0);
+        assert_eq!(stats.generated_neighbors, 0);
+        assert_eq!(stats.heap_pushes, 0);
+        assert_eq!(stats.heap_pops, 0);
+        assert_eq!(stats.max_heap_size, 0);
+        assert_eq!(stats.last_window_area_cells, 0);
+        assert_eq!(stats.diagonal_halo_contacts, 0);
+        assert_eq!(stats.crossing_candidate_checks, 0);
+        assert_eq!(stats.crossing_accepted, 0);
+        assert_eq!(stats.route_search_total_time_us, 0);
+        assert_eq!(stats.crossing_hotpath_total_time_us, 0);
+        assert!(!stats.jps4_requested);
+        assert!(!stats.jps4_eligible);
+        assert!(!stats.jps4_used);
+        assert_eq!(stats.jps4_fallbacks, 0);
+        assert_eq!(stats.jps4_fallback_reason, "");
+        assert!(stats.crossing_perpendicular_reject_by_partner.is_empty());
+        assert!(stats.crossing_after_margin_by_partner.is_empty());
+        assert!(stats.crossing_pending_straight_by_partner.is_empty());
+    }
+
+    #[test]
+    fn route_search_stats_default_zeros_every_per_primitive_class_array() {
+        let stats = RouteSearchStats::default();
+        for (name, counters) in [
+            ("generated", stats.primitive_generated_by_class),
+            ("bounds_rejects", stats.primitive_bounds_rejects_by_class),
+            ("closed_rejects", stats.primitive_closed_rejects_by_class),
+            ("cost_pruned", stats.primitive_cost_pruned_by_class),
+            (
+                "footprint_checks",
+                stats.primitive_footprint_checks_by_class,
+            ),
+            (
+                "footprint_rejects",
+                stats.primitive_footprint_rejects_by_class,
+            ),
+            ("accepted", stats.primitive_accepted_by_class),
+        ] {
+            assert_eq!(counters.len(), PRIMITIVE_TRANSITION_CLASS_COUNT);
+            assert!(
+                counters.iter().all(|value| *value == 0),
+                "primitive_{name}_by_class must default to all zeros, got {counters:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_request_defaults_to_zero() {
+        // Only an engine's own tests read this field; it is 1 exactly when
+        // the engine cannot serve that kind of request at all.
+        assert_eq!(RouteSearchStats::default().unsupported_request, 0);
+    }
+}

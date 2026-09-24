@@ -418,3 +418,236 @@ pub(crate) fn cells_with_other_dynamic_owner(
         })
         .collect()
 }
+
+/// Unit tests for the cell-set helpers, Milestone 6 Slice 3 of
+/// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
+/// Every expectation is a literal cell set hand-computed on a 5x5 grid of
+/// 1 um cells whose origin is (0, 0), so a change in any of these
+/// functions' geometry shows up as a changed list, not a changed count.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 5x5 grid, 1 um cells, origin at (0, 0): cell (x, y) covers
+    /// [x, x+1) x [y, y+1) um.
+    fn grid_5x5() -> StaticGridSpec {
+        StaticGridSpec {
+            width: 5,
+            height: 5,
+            grid_size_um: 1.0,
+            origin: (0.0, 0.0),
+            die_bbox: (0.0, 0.0, 5.0, 5.0),
+        }
+    }
+
+    /// The three-cell horizontal route used by the inflation tests.
+    fn three_cell_route() -> Vec<(i32, i32)> {
+        vec![(1, 1), (2, 1), (3, 1)]
+    }
+
+    /// Every cell with `x` in `xs` and `y` in `ys`, sorted.
+    fn band(
+        xs: std::ops::RangeInclusive<i32>,
+        ys: std::ops::RangeInclusive<i32>,
+    ) -> Vec<(i32, i32)> {
+        let mut out: Vec<(i32, i32)> = Vec::new();
+        for x in xs {
+            for y in ys.clone() {
+                out.push((x, y));
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    fn sorted(mut cells: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
+        cells.sort_unstable();
+        cells
+    }
+
+    #[test]
+    fn inflate_route_cells_at_radius_one_is_the_three_by_five_band_around_the_route() {
+        // (1,1), (2,1) and (3,1) each contribute their 3x3 box; the union
+        // is x in 0..=4 (1-1 to 3+1) by y in 0..=2 (1-1 to 1+1) -- 15
+        // cells, none of them clipped by the 5x5 bounds.
+        let inflated = inflate_route_cells(&three_cell_route(), 1, 5, 5);
+        assert_eq!(inflated.len(), 15);
+        assert_eq!(sorted(inflated), band(0..=4, 0..=2));
+    }
+
+    #[test]
+    fn inflate_route_cells_clips_to_the_grid_and_dedupes() {
+        // A route in the bottom-left corner: the radius-1 box around (0,0)
+        // reaches x=-1 and y=-1, which are dropped.
+        let inflated = inflate_route_cells(&[(0, 0), (0, 0), (1, 0)], 1, 5, 5);
+        assert_eq!(
+            sorted(inflated),
+            vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]
+        );
+    }
+
+    #[test]
+    fn inflate_route_cells_at_radius_zero_only_filters_out_of_bounds_cells() {
+        let inflated = inflate_route_cells(&[(-1, 2), (2, 2), (5, 2)], 0, 5, 5);
+        assert_eq!(inflated, vec![(2, 2)]);
+    }
+
+    #[test]
+    fn route_core_cells_is_inflate_route_cells_at_the_core_radius() {
+        let route = three_cell_route();
+        assert_eq!(
+            sorted(route_core_cells(&route, 1, 5, 5)),
+            band(0..=4, 0..=2)
+        );
+        assert_eq!(sorted(route_core_cells(&route, 0, 5, 5)), sorted(route));
+    }
+
+    #[test]
+    fn route_commit_cells_without_exempt_cells_is_the_clearance_inflation() {
+        // core radius 0, clearance radius 1: the blocked set is the
+        // radius-1 band, the same 15 cells `inflate_route_cells` gives.
+        let commit = route_commit_cells(&three_cell_route(), 0, 1, None, 5, 5);
+        assert_eq!(sorted(commit), band(0..=4, 0..=2));
+    }
+
+    #[test]
+    fn route_commit_cells_uses_the_larger_of_the_core_and_clearance_radii() {
+        // clearance radius 0 < core radius 1: the clearance inflation is
+        // taken at radius 1, so the core is never left unblocked.
+        let commit = route_commit_cells(&three_cell_route(), 1, 0, None, 5, 5);
+        assert_eq!(sorted(commit), band(0..=4, 0..=2));
+    }
+
+    #[test]
+    fn route_commit_cells_drops_exempt_cells_that_are_not_core_cells() {
+        // core radius 0 => the core is the route itself, {(1,1),(2,1),(3,1)}.
+        // (0,0) is exempt and not core, so it goes; (1,1) is exempt but
+        // core, so it stays. 15 - 1 = 14 cells.
+        let commit = route_commit_cells(&three_cell_route(), 0, 1, Some(&[(0, 0), (1, 1)]), 5, 5);
+        assert_eq!(commit.len(), 14);
+        let mut expected = band(0..=4, 0..=2);
+        expected.retain(|cell| *cell != (0, 0));
+        assert_eq!(sorted(commit), expected);
+    }
+
+    #[test]
+    fn route_commit_cells_with_an_empty_exempt_slice_keeps_every_blocked_cell() {
+        let commit = route_commit_cells(&three_cell_route(), 0, 1, Some(&[]), 5, 5);
+        assert_eq!(sorted(commit), band(0..=4, 0..=2));
+    }
+
+    #[test]
+    fn route_port_footprint_cells_starts_one_cell_ahead_of_the_port_and_runs_forward_only() {
+        // Port at (1.5, 1.5) um facing +x (orientation 0): the state cell
+        // is one grid step ahead, floor(2.5) = (2, 1). With length 2 and
+        // half width 1 the footprint is the forward half-boxes of (2,1)
+        // and (3,1): x in 2..=4 by y in 0..=2, nine cells. The cells at
+        // x=1 are behind the port and are dropped by the forward
+        // projection test.
+        let grid = grid_5x5();
+        let cells = route_port_footprint_cells(&grid, 1.5, 1.5, Some(0.0), 2, 1);
+        assert_eq!(sorted_cells(cells), band(2..=4, 0..=2));
+    }
+
+    #[test]
+    fn route_port_footprint_cells_at_zero_length_is_just_the_state_cell() {
+        let grid = grid_5x5();
+        let cells = route_port_footprint_cells(&grid, 1.5, 1.5, Some(0.0), 0, 1);
+        assert_eq!(sorted_cells(cells), vec![(2, 1)]);
+    }
+
+    #[test]
+    fn route_port_state_cell_steps_one_grid_cell_along_the_port_orientation() {
+        let grid = grid_5x5();
+        assert_eq!(route_port_state_cell(&grid, 1.5, 1.5, Some(0.0)), (2, 1));
+        assert_eq!(route_port_state_cell(&grid, 1.5, 1.5, Some(90.0)), (1, 2));
+        assert_eq!(route_port_state_cell(&grid, 1.5, 1.5, Some(180.0)), (0, 1));
+        assert_eq!(route_port_state_cell(&grid, 1.5, 1.5, Some(270.0)), (1, 0));
+        // No orientation is treated as 0 degrees.
+        assert_eq!(route_port_state_cell(&grid, 1.5, 1.5, None), (2, 1));
+    }
+
+    #[test]
+    fn route_dynamic_clearance_exempt_cells_at_radius_zero_is_exactly_the_opened_run_in() {
+        // Source (1,2) heading +x, target (3,2) with arrival heading +x
+        // (so its run-in walks back along -x). The opened cells are the
+        // straight line (1,2), (2,2), (3,2); with commit radius 0 the
+        // endpoint boxes collapse to the anchors and each corridor walks
+        // while the opened cells continue, stopping at (4,2) resp. (0,2).
+        let grid = grid_5x5();
+        let opened = pack_cells(&[(1, 2), (2, 2), (3, 2)]);
+        let cells = route_dynamic_clearance_exempt_cells(
+            &grid,
+            &opened,
+            PyState::new(1, 2, 0),
+            PyState::new(3, 2, 0),
+            0,
+            0,
+        );
+        assert_eq!(sorted_cells(cells), vec![(1, 2), (2, 2), (3, 2)]);
+    }
+
+    #[test]
+    fn route_dynamic_clearance_exempt_cells_at_radius_one_is_the_inflated_run_in_band() {
+        // Same geometry at commit radius 1 and minimum run-in 1: each
+        // anchor contributes its 3x3 box plus the radius-1 inflation of
+        // its three-cell corridor. Source gives x 0..=4 by y 1..=3 and so
+        // does the target; the union is that 15-cell band.
+        let grid = grid_5x5();
+        let opened = pack_cells(&[(1, 2), (2, 2), (3, 2)]);
+        let cells = route_dynamic_clearance_exempt_cells(
+            &grid,
+            &opened,
+            PyState::new(1, 2, 0),
+            PyState::new(3, 2, 0),
+            1,
+            1,
+        );
+        assert_eq!(sorted_cells(cells), band(0..=4, 1..=3));
+    }
+
+    #[test]
+    fn route_dynamic_clearance_exempt_cells_honours_the_minimum_run_in_without_opened_cells() {
+        // No opened cells at all: the corridor still runs
+        // `min_run_in_length_cells` cells (the port lane). Source (1,2)
+        // heading +x with radius 0 and minimum run-in 2 gives (1,2) and
+        // (2,2); the target at (3,2) heading +x gives (3,2) and (2,2).
+        let grid = grid_5x5();
+        let opened: FxHashSet<CellKey> = FxHashSet::default();
+        let cells = route_dynamic_clearance_exempt_cells(
+            &grid,
+            &opened,
+            PyState::new(1, 2, 0),
+            PyState::new(3, 2, 0),
+            0,
+            2,
+        );
+        assert_eq!(sorted_cells(cells), vec![(1, 2), (2, 2), (3, 2)]);
+    }
+
+    #[test]
+    fn pack_cells_packs_and_dedupes() {
+        let keys = pack_cells(&[(1, 2), (3, 4), (1, 2)]);
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&pack_xy(1, 2)));
+        assert!(keys.contains(&pack_xy(3, 4)));
+        // The packing itself: x in the high 32 bits, y in the low 32.
+        assert_eq!(pack_xy(1, 2), (1u64 << 32) | 2);
+    }
+
+    #[test]
+    fn unique_cells_keeps_the_first_occurrence_order() {
+        assert_eq!(
+            unique_cells(vec![(1, 1), (2, 2), (1, 1), (3, 3), (2, 2)]),
+            vec![(1, 1), (2, 2), (3, 3)]
+        );
+    }
+
+    #[test]
+    fn sorted_cells_sorts_by_x_then_y() {
+        assert_eq!(
+            sorted_cells(pack_cells(&[(2, 1), (0, 3), (2, 0)])),
+            vec![(0, 3), (2, 0), (2, 1)]
+        );
+    }
+}

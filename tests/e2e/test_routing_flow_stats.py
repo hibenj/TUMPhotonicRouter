@@ -24,6 +24,7 @@ import pytest
 from pathlib import Path
 from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+from tests.fixtures.synthetic_layouts import path_length_schematic
 from translation.electrical import (
     DEFAULT_BONDPAD_WIDTH_UM,
     DEFAULT_BUS_WIDTH_UM,
@@ -249,7 +250,10 @@ def test_routing_flow_populates_stats():
 
 
 def test_route_match_uses_rust_batch_path_when_repair_disabled():
-    schematic = load_benchmark("TOY")
+    # Four nets on the two-inputs-into-one-MMI synthetic schematic, which has
+    # the topology and placement this test used to take from the TOY toy
+    # benchmark (Milestone 6 Slice 3: no test depends on a toy benchmark now).
+    schematic = path_length_schematic()
     unrouted_layout = layout_from_schematic(schematic)
 
     result = route_match_and_realize(
