@@ -43,19 +43,35 @@ artifacts unless the current user request explicitly resumes them.
 
 ## Critical Architecture Patterns
 
-### Architecture: 3-Stage Orchestration Pipeline
+### Architecture: the flow and the two engines
+
+**Read `docs/ARCHITECTURE.md` first.** It is the current module map (Rust and
+Python, one paragraph per module), the literal stage sequence with the input and
+output type of each phase, the search interface and the negotiation loop with
+their policies, the configuration precedence, the build/test commands, and the
+Milestone 8 removal candidates. `docs/CONFIGURATION.md` is the generated
+reference for every configuration field. The summary:
 
 ```
-[routing_flow.py] - Main entry point, orchestrates:
-1. Load → load_benchmark(name) loads Python schematic from benchmarks/
-2. Translate → layout_from_schematic() converts Schematic → Component  
-3. Route → route_nets_rust() uses Rust backend to route each net via A*
+python -m photonic_router route <benchmark> --configuration {baseline,contribution1,contribution2}
+  photonic_router/cli.py      parse the command line, build RoutingConfig + FlowOptions
+  photonic_router/flow.py     route_benchmark -> route_schematic: load, layout,
+                              optional pre-placed crossing grids, optical routing,
+                              verification, path-length matching, electrical, write
+  translation/routing/        the routing session: nine phases behind the Protocols
+                              of stages.py, driven by session.py::run
+  src/search/                 one net: the NetSearch interface, AStarSearch, GridDijkstraSearch
+  src/engine/                 many nets: commitment, repair, and negotiation/ (the loop
+                              plus its budget / crossing-free / rip-up / queue policies)
+  src/bindings/               the PyO3 surface: convert and delegate, never decide
 ```
 
 **Key Files:**
-- `routing_flow.py` (155 lines) - **Start here**: Full 3-stage pipeline with debug support
-- `Agent_implementation_files/ROUTING_FLOW_ARCHITECTURE.md` - Design rationale
-- `translation/route_rust.py` (242 lines) - Bridge between Python layout and Rust router
+- `docs/ARCHITECTURE.md` - **Start here**: the module map, the flow, the interfaces
+- `python/photonic_router/flow.py` - `route_benchmark(config, options)` and `route_schematic`
+- `python/photonic_router/cli.py` - the command line; `routing_flow.py` is a shim over it
+- `translation/routing/session.py` - the nine-phase routing session
+- `src/search/mod.rs`, `src/engine/negotiation/loop_.rs` - the two interfaces to read first
 
 ### Hybrid Language Boundary
 
@@ -69,6 +85,9 @@ The Python-Rust boundary is critical:
 maturin develop  # Builds Rust → python/photonic_router/_rust.so
 cargo build      # Alternative: build only Rust
 ```
+
+On this Linux host the toolchain and `PYO3_PYTHON` have to be overridden; the
+exact build and test commands are in `docs/ARCHITECTURE.md` section 8.
 
 On this Windows workspace, the repo pins Rust to
 `stable-x86_64-pc-windows-gnullvm` via `rust-toolchain.toml` because MSVC
@@ -101,7 +120,7 @@ rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
 **Port Representation:**
 - `gdsfactory.Port` has `.center` (physical) and `.orientation` (degrees, 0-360)
-- Conversion: `_orientation_to_angle()` in `route_rust.py` normalizes orientation → 0-7
+- Conversion: `_orientation_to_angle()` in `translation/routing/route_jobs.py` normalizes orientation → 0-7
 
 ### Primitive Library: 1:1 Mapping
 
@@ -129,19 +148,23 @@ Built from placed instances in layout:
 
 ```bash
 # From the repository root
-python routing_flow.py  # Runs TOY benchmark with debug enabled
+.venv/bin/python -m photonic_router route benes_8x8_flat --configuration baseline
 ```
 
-On Windows, use the project virtualenv executable when present:
+`--configuration {baseline,contribution1,contribution2}` selects one of the
+three paper configurations (exactly one runs at a time); see
+`docs/ARCHITECTURE.md`. The older script form still works and is what the
+reproduction scripts use, because `routing_flow.py` is a shim over the same
+command line:
 
-```powershell
-.\.venv\Scripts\python.exe routing_flow.py
+```bash
+.venv/bin/python routing_flow.py benes_8x8_flat --crossing-mode lidar-pure
 ```
 
-Produces:
-- `build/static_obstacles/toy_obstacles.svg` - Grid obstacles
-- `build/routes/toy_*.svg` - Per-net routing paths
-- Opens SVG in browser automatically
+Produces (with `--debug-svgs <selector>`):
+- `build/static_obstacles/<benchmark>_obstacles.svg` - Grid obstacles
+- `build/routes/<benchmark>_*.svg` - Per-net routing paths
+- `build/routed_<benchmark>.gds` - The routed layout
 
 ### Add New Benchmark
 
@@ -158,7 +181,11 @@ def build_schematic() -> Schematic:
     return schematic
 ```
 
-2. Run: `python -c "from routing_flow import run_routing_flow; run_routing_flow('MY_DESIGN', debug_svgs=True, show_klayout=True)"`
+2. Run: `.venv/bin/python -m photonic_router route MY_DESIGN --debug-svgs 1-5 --show-klayout`
+   (`--debug-svgs` takes a 1-based route selector; `all` writes one SVG per net),
+   or from a notebook
+   `from photonic_router.flow import route_benchmark; route_benchmark(config, options)`
+   with the two objects of `docs/CONFIGURATION.md`
 
 3. Inspect in `build/` directory
 
@@ -181,10 +208,12 @@ Common issues:
 
 ### Adding Tests
 
-Tests live in `tests/`:
-- `test_rust_backend_import.py` - Verify Rust bindings
-- `test_routing_flow_stats.py` - Full pipeline testing
-- Pattern: Use `pytest` with temp directories for artifacts
+Tests live in `tests/` (end-to-end ones in `tests/e2e/`):
+- `tests/test_rust_backend_import.py` - Verify Rust bindings
+- `tests/test_routing_stages.py` - One test per routing phase on a synthetic layout
+- `tests/e2e/test_routing_flow_stats.py` - Full pipeline on a benchmark
+- Pattern: take a fixture from `tests/fixtures/` (via `tests/conftest.py`) and use
+  `pytest` with temp directories for artifacts
 
 ---
 
@@ -210,11 +239,16 @@ schematic = benchmark_module.build_schematic()
 `translation/` directory = interchangeable routing implementations:
 - `layout_from_schematic.py` - Fixed (Schematic → unrouted Component)
 - `route_gds.py` - Baseline gdsfactory router (reference implementation)
-- `route_rust.py` - Production Rust A* router
+- `translation/routing/` - Production Rust router as nine phases; `session.py::run`
+  is the sequence, `stages.py` declares one `Protocol` per phase, `api.py` is the
+  boundary the flow calls (`translation/route_rust.py` only re-exports it)
 
-**Interface contract**: `route_nets_*(unrouted_layout, schematic, ...) -> Component`
+**Interface contract**: `route_nets_rust(unrouted_layout, schematic, ...) -> (Component,
+RustRouteDebugArtifacts)`, and per phase the Protocols of
+`translation/routing/stages.py`.
 
-Allows swapping routers in `routing_flow.py` without touching other pipeline stages.
+Allows swapping a router, or one phase of it, without touching the other stages;
+`docs/ARCHITECTURE.md` section 3 lists the phases with their types.
 
 ### 3. Grid Discretization & Clearance
 
@@ -248,16 +282,27 @@ SVGs show:
 
 ## Critical Files Reference
 
+Line counts are `wc -l` at 2026-09-24; `docs/ARCHITECTURE.md` has the full map.
+
 | File | Lines | Purpose | When to Edit |
 |------|-------|---------|--------------|
-| `routing_flow.py` | 155 | Pipeline orchestrator | Adding stages, debug options |
-| `translation/route_rust.py` | 242 | Python↔Rust bridge | Port conversion, primitive placement |
+| `docs/ARCHITECTURE.md` | - | The module map and the interfaces | Orienting; after any structural change |
+| `python/photonic_router/flow.py` | 809 | The flow (`route_benchmark`, `route_schematic`) | Adding or reordering a flow stage |
+| `python/photonic_router/cli.py` | 811 | The command line and `--configuration` | Adding a flag |
+| `python/photonic_router/config.py` | 412 | `RoutingConfig` / `RouterConfig` | Adding a configuration field |
+| `translation/routing/session.py` | 372 | The nine-phase routing session | Changing the phase sequence |
+| `translation/routing/stages.py` | 207 | One `Protocol` per phase | Changing a phase's contract |
+| `translation/routing/state.py` | 339 | `SessionState`, documented per field | Adding per-run state |
 | `python/photonic_router/primitive_library.py` | 179 | Component library | Adding primitives, bend config |
-| `src/astar.rs` | 490+ | A* pathfinding | Algorithm tuning, heuristics |
-| `src/obstacle_map.rs` | ? | Grid discretization | Cell packing, clearance metrics |
-| `src/primitives.rs` | ? | Primitive definitions | Routing moves, state transitions |
-| `Agent_implementation_files/ROUTING_FLOW_ARCHITECTURE.md` | 161 | Design docs | Understanding design intent |
-| `benchmarks/TOY.py` | ? | Example benchmark | Template for new benchmarks |
+| `src/search/mod.rs` | 128 | The `NetSearch` interface | Adding a search engine |
+| `src/search/astar/kernel.rs` | 1,479 | The A* loop | Algorithm tuning |
+| `src/search/astar/cost.rs` | 546 | Every g-cost term | Cost/heuristic tuning |
+| `src/engine/negotiation/loop_.rs` | 1,506 | The negotiated rip-up loop | Loop behaviour |
+| `src/engine/negotiation/{budget,ripup,crossing_free,queue}.rs` | 960 | The loop's policies | Changing one rule |
+| `src/bindings/mod.rs` | 3,441 | The PyO3 method surface | Exposing something to Python |
+| `src/obstacle_map.rs` | 1,725 | Grid discretization | Cell packing, clearance metrics |
+| `src/primitives.rs` | 427 | Primitive definitions | Routing moves, state transitions |
+| `src/config.rs` | 307 | The kernel's typed configuration | Adding a kernel parameter |
 
 ---
 
@@ -284,10 +329,17 @@ SVGs show:
 
 ## Key Configuration Parameters
 
-**From `route_rust.py`:**
-- `GridSpec`: width/height (cells), grid_size_um (0.5), origin
+**Every configuration field, with its default, its `PHOTONIC_ROUTER_*` overlay
+name and its command-line flag: `docs/CONFIGURATION.md`** (generated from the
+dataclasses; regenerate with
+`.venv/bin/python scripts/generate_config_reference.py`). Precedence: defaults <
+benchmark stable block < environment < command line.
+
+**Built by `translation/routing/router_setup.py` (phase 2) for the kernel:**
+- `GridSpec`: width/height (cells), grid_size_um, origin
 - `PrimitiveLibraryConfig`: grid_size_um (must match GridSpec)
-- `AStarConfig`: max_iterations (100k), bend_weight (1.0), target_tolerance_cells (0)
+- `AStarConfig` (`src/search/astar/config.rs`): iteration caps, bend weight,
+  target tolerance, window scale
 
 **From `static_obstacle_builder.py`:**
 - `grid_size_um`: 0.5µm (cell size)
@@ -319,10 +371,17 @@ Tuning these affects routing density, speed, and success rate.
 
 ## Testing Philosophy
 
-Tests are integration-focused:
-- `test_rust_backend_import.py`: Verifies bindings exist (smoke test)
-- `test_routing_flow_stats.py`: Full end-to-end pipeline
-- Tests use `TOY` benchmark as standard fixture
+Unit tests per module, with the end-to-end tests marked and separated
+(Milestone 6):
+- `tests/` holds the unit and integration tests; `tests/e2e/` the tests that
+  load a benchmark or a script and run it
+- Markers `e2e` and `integration` are registered in `pyproject.toml` and applied
+  by `tests/conftest.py`, so `pytest -m "not e2e" tests` is the fast suite
+  (under 60 s, enforced by `scripts/test_baseline.sh`)
+- Synthetic layouts and sessions are built only in `tests/fixtures/`, exposed as
+  conftest fixtures; no test imports a toy benchmark module
+- Rust tests live next to their module, with `engine::test_support` and
+  `search::test_support` as the shared fixtures
 
 **Pattern**: Create temp `build/` directory for debug artifacts, then validate outputs (SVGs, routing stats).
 
@@ -341,9 +400,23 @@ Known Issue: `bend_euler_all_angle()` may not exist in older gdsfactory; `primit
 ## Quick Reference: Adding Features
 
 ### Add a new routing option
-1. Extend `AStarConfig` in `src/astar.rs`
-2. Pass through `PyPhotonicRouter` binding in `src/py_router.rs`
-3. Surface in Python `route_rust.py` line ~191
+1. Add the field to the typed configuration on both sides: `src/config.rs`
+   (`RouterConfig`'s group) and `python/photonic_router/config.py` (its mirror,
+   same default), and pass it in `RouterConfig.to_rust` / `src/bindings/types.rs`
+2. Read it where the algorithm needs it (never from the environment: `grep -rn
+   "env::var\|var_os" src/` must stay empty)
+3. Add one `ENV_OVERLAY` entry in `python/photonic_router/env_overlay.py` if it
+   should be settable ad hoc, and a `FlowOptions` field plus a flag in
+   `flow_options.py` / `cli.py` if it is a flow-level choice
+4. Regenerate `docs/CONFIGURATION.md`
+   (`.venv/bin/python scripts/generate_config_reference.py`)
+
+### Add a search engine, or a negotiation policy
+Both recipes are in `docs/ARCHITECTURE.md` (sections 4 and 5): implement
+`NetSearch` in its own module under `src/search/` and name it in
+`search_engine_for`; or declare the decision as a trait under
+`src/engine/negotiation/`, construct it once before the round loop, and let the
+loop ask it.
 
 ### Add debug output
 1. Write SVG export in Rust (see `export_route_svg()`)
@@ -358,4 +431,4 @@ Known Issue: `bend_euler_all_angle()` may not exist in older gdsfactory; `primit
 
 ---
 
-**Last Updated**: May 2026 | **Codebase Version**: 0.1.0 (Rust+Python hybrid)
+**Last Updated**: 2026-09-24 (Milestone 7: `docs/ARCHITECTURE.md` and `docs/CONFIGURATION.md`) | **Codebase Version**: 0.1.0 (Rust+Python hybrid)

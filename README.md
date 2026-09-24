@@ -83,17 +83,26 @@ hardware-independent guarantees.
 
 ## Important Files
 
+The full module map, with one paragraph per module and the interfaces between
+them, is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); every configuration
+field is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
 | File | Role |
 | --- | --- |
-| `routing_flow.py` | End-to-end benchmark, layout, optical, PLM, crossing, and electrical flow |
-| `translation/route_rust.py` | Python bridge into the Rust optical router and crossing context builder |
+| `docs/ARCHITECTURE.md` | The module map, the stage sequence, the search and negotiation interfaces |
+| `python/photonic_router/flow.py` | The flow: `route_benchmark(config, options)` and `route_schematic` |
+| `python/photonic_router/cli.py` | The command line, including `--configuration` (`routing_flow.py` is a shim over it) |
+| `python/photonic_router/config.py` | `RoutingConfig` / `RouterConfig`, the typed configuration trees |
+| `translation/routing/` | The routing session as nine phases (`session.py::run`) behind the Protocols of `stages.py` |
 | `python/photonic_router/static_obstacle_builder.py` | Static obstacle extraction, Rust fallback handling, compact bbox payloads |
 | `python/photonic_router/topology_analysis.py` | Depth/rank analysis used for crossing-aware routing |
 | `python/photonic_router/crossing_plan.py` | Converts topology rank inversions into ordered crossing events |
-| `src/astar.rs` | Dense primitive A*, routing windows, prefix occupancy, and search counters |
+| `src/search/` | One net: the `NetSearch` interface, the A* engine (`astar/`), the Dijkstra oracle |
+| `src/engine/` | Many nets: jobs, commitment, crossing reservations, endpoint correction |
+| `src/engine/negotiation/` | The rip-up-and-repair loop and its budget / crossing-free / rip-up / queue policies |
+| `src/bindings/` | The PyO3 surface: the `#[pymethods]` block, the config/result types, the converters |
 | `src/obstacle_map.rs` | Static/dynamic route database, packed cells, rip-up, history costs |
 | `src/crossings.rs` | Crossing constraints and expected-pair context |
-| `src/py_router.rs` | PyO3 router API, route batch/repair logic, crossing repair, meander helpers |
 | `src/simple_routes.rs` | Deterministic straight/L/Z/turnaround route candidates |
 | `src/primitives.rs` | Photonic movement primitives and footprint metadata |
 | `src/geometry_realization.rs` | Route polygons, port access, and meander geometry |
@@ -121,33 +130,29 @@ cargo build
 
 ## Run
 
-Default flow:
+The entry point is `python -m photonic_router route <benchmark> [flags]`.
+`--configuration` names one of the three configurations the paper compares;
+exactly one of them runs at a time.
 
 ```bash
-python3 routing_flow.py
+.venv/bin/python -m photonic_router route benes_8x8_flat --configuration baseline
+.venv/bin/python -m photonic_router route benes_8x8_flat --configuration contribution1
+.venv/bin/python -m photonic_router route benes_8x8_flat --configuration contribution2
 ```
 
-Run a benchmark with crossings and timing:
+A flag after `--configuration` overrides it, so the configurations are
+starting points, not modes:
 
 ```bash
-python3 routing_flow.py benes_16x16 \
-  --crossings \
-  --debug-timing
-```
-
-Run a heater-obstacle rip-up benchmark:
-
-```bash
-python3 routing_flow.py mmi_heater_8x4_ripup_reroute \
-  --include-heater-obstacles \
-  --ripup-reroute \
+.venv/bin/python -m photonic_router route benes_16x16_flat \
+  --configuration contribution1 \
   --debug-timing
 ```
 
 Enable path-length matching:
 
 ```bash
-python3 routing_flow.py mmi_heater_8x4 \
+.venv/bin/python -m photonic_router route heater_s_mod \
   --path-length-matching \
   --path-length-match-outputs \
   --include-heater-obstacles
@@ -156,10 +161,21 @@ python3 routing_flow.py mmi_heater_8x4 \
 Enable heater electrical routing:
 
 ```bash
-python3 routing_flow.py heater_s_mod \
+.venv/bin/python -m photonic_router route heater_s_mod \
   --electrical-routing \
   --include-heater-obstacles
 ```
+
+The older script form still works and is what the reproduction scripts and the
+benchmark stable blocks use, because `routing_flow.py` is a shim over the same
+command line:
+
+```bash
+.venv/bin/python routing_flow.py benes_8x8_flat --crossing-mode lidar-pure
+```
+
+Every flag, with its default and the `RoutingConfig` / `FlowOptions` field it
+sets, is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 ## Debug Output
 
@@ -202,22 +218,33 @@ Current checked-in baseline: `docs/photonic_baseline.md`.
 ## Tests
 
 ```bash
-python3 -m pytest
-cargo test
+.venv/bin/python -m pytest -q tests                 # everything
+.venv/bin/python -m pytest -q -m "not e2e" tests    # without the benchmark-loading tests
+cargo test --release --lib
 ```
+
+The exact toolchain overrides this host needs (`RUSTUP_TOOLCHAIN`,
+`PYO3_PYTHON`), the pinned baseline script and the reproduction gate are in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) section 8.
 
 Useful targeted checks:
 
 ```bash
-python3 -m pytest tests/test_rust_backend_import.py -v
-python3 -m pytest tests/test_routing_flow_stats.py -v
-python3 -m pytest tests/test_route_rust_records.py -v
-python3 -m pytest tests/test_electrical_routing.py -v
+.venv/bin/python -m pytest tests/test_rust_backend_import.py -v
+.venv/bin/python -m pytest tests/test_routing_stages.py -v
+.venv/bin/python -m pytest tests/test_route_rust_records.py -v
+.venv/bin/python -m pytest tests/test_electrical_routing.py -v
+.venv/bin/python -m pytest tests/e2e/test_routing_flow_stats.py -v
 cargo test crossing
 ```
 
 ## Related Notes
 
+- `docs/ARCHITECTURE.md` - the module map, the flow, and the interfaces.
+- `docs/CONFIGURATION.md` - every configuration field, generated from the
+  dataclasses by `scripts/generate_config_reference.py`.
+- `docs/DATE2027_REPRODUCTION.md` - the paper's rows, their provenance, and how
+  to reproduce them.
 - `docs/repository_finished_state.md` - focused finished-state target for
   crossings and PLM.
 - `docs/tumphotonicrouter_vs_lidar.md` - code-based comparison with LiDAR.
