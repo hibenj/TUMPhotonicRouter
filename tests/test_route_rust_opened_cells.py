@@ -19,6 +19,9 @@ from photonic_router.routing_layers import ComponentPortAccessRule
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
 
 from translation import route_rust
+from translation.routing import obstacle_context as routing_obstacle_context
+from translation.routing import route_jobs as routing_route_jobs
+from translation.routing import session as routing_session
 
 get_generic_pdk().activate()
 
@@ -171,9 +174,11 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: fake_backend)
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(routing_session, "_load_rust_backend", lambda: fake_backend)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -381,8 +386,10 @@ def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
     def fake_get_port_from_instance(_layout, inst, port):
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -516,8 +523,10 @@ def test_route_nets_rust_applies_heater_opening_without_heater_obstacle_layers(
     def fake_get_port_from_instance(_layout, inst, port):
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -586,8 +595,10 @@ def test_route_nets_rust_does_not_apply_heater_rule_to_electrical_port(
     def fake_get_port_from_instance(_layout, inst, port):
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -635,8 +646,10 @@ def test_route_nets_rust_defaults_to_strict_bounding_box_mode(monkeypatch, tmp_p
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -678,8 +691,10 @@ def test_route_nets_rust_does_not_open_dynamic_geometry(monkeypatch, tmp_path):
     def fake_get_port_from_instance(_layout, inst, port):
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -727,7 +742,7 @@ def test_route_nets_rust_opened_port_cell_in_bounding_box_mode(monkeypatch, tmp_
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     layout = gf.Component("bounding_box_opened_cells")
     layout.add_polygon([(1.0, 10.0), (2.0, 10.0), (2.0, 11.0), (1.0, 11.0)], layer=(1, 0))
@@ -782,8 +797,10 @@ def test_route_nets_rust_route_to_blocked_port_with_opened_cells(monkeypatch, tm
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -846,8 +863,10 @@ def test_route_nets_rust_foreign_port_keepout_blocks_unrelated_net(monkeypatch, 
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -906,8 +925,10 @@ def test_route_nets_rust_foreign_port_keepout_does_not_open_sibling_port(
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -970,8 +991,10 @@ def test_route_nets_rust_dense_same_instance_keepout_does_not_open_raw_static_si
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -1038,8 +1061,10 @@ def test_route_nets_rust_foreign_port_keepout_uses_unified_self_opening_for_same
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -1105,8 +1130,10 @@ def test_route_nets_rust_removes_foreign_keepout_after_port_is_routed(
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -1171,8 +1198,10 @@ def test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor(
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -1441,8 +1470,10 @@ def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -1511,8 +1542,10 @@ def test_route_nets_rust_clear_port_opening_flag_controls_global_crossing_blocki
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "build_static_obstacle_map", fake_build_static_obstacle_map)
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(
+        routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
+    )
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     schematic = _DummySchematic(
         netlist=_DummyNetlist(
@@ -1574,7 +1607,7 @@ def test_route_nets_rust_multi_net_with_bounding_box_mode(monkeypatch, tmp_path)
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(route_rust, "get_port_from_instance", fake_get_port_from_instance)
+    monkeypatch.setattr(routing_route_jobs, "get_port_from_instance", fake_get_port_from_instance)
 
     layout = gf.Component("bounding_box_multi_net_routing")
     layout.add_polygon(
@@ -1643,7 +1676,7 @@ def test_only_rules_flagged_for_instance_geometry_open_the_heater_pad(monkeypatc
         "heater": "straight_heater_metal_undercut",
     }
     monkeypatch.setattr(
-        route_rust_module,
+        routing_route_jobs,
         "_schematic_instance_component_name",
         lambda _schematic, name: component_by_instance[name],
     )

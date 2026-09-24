@@ -434,10 +434,10 @@ def test_heater_s_mod_realized_meanders_leave_no_residual_mismatch(monkeypatch):
     edge to still be missing length. Guards the fill-box length model: until
     2026-08-28 it booked (amplitude - r) too little per meander, so every
     matched group was 58-240 um off in the GDS while the report said 0."""
-    import translation.route_rust as route_rust_module
+    from translation.routing import api as routing_api
 
     captured: dict[str, list[RoutedNetRecord]] = {}
-    original = route_rust_module.realize_routed_net_records
+    original = routing_api.realize_routed_net_records
 
     def capture_records(*args: object, **kwargs: object) -> object:
         for value in (*args, *kwargs.values()):
@@ -449,7 +449,7 @@ def test_heater_s_mod_realized_meanders_leave_no_residual_mismatch(monkeypatch):
                 captured["records"] = list(value)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(route_rust_module, "realize_routed_net_records", capture_records)
+    monkeypatch.setattr(routing_api, "realize_routed_net_records", capture_records)
     schematic, _unrouted, _result = _route_heater_s_mod_for_regression(0.0)
     records = captured["records"]
     assert any(record.meander_auto_plan for record in records)

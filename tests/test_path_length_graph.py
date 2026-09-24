@@ -41,6 +41,7 @@ from translation.route_rust_meanders import (
     _normalize_minimum_insertable_request,
 )
 import translation.route_rust as route_rust
+from translation.routing import api as routing_api
 import routing_flow
 import routing_flow_optical
 
@@ -598,7 +599,7 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "route_nets_rust",
         lambda *args, **kwargs: (
             routed_layout,
@@ -617,7 +618,7 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
         blocked_cells: tuple[tuple[int, int], ...] = ()
 
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "build_static_obstacle_map",
         lambda *args, **kwargs: _ObstacleMap(),
     )
@@ -702,17 +703,17 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
         }
 
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "minimum_four_bend_extra_length_um",
         lambda **_kwargs: 25.0,
     )
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "analyze_meander_insertion_for_requirements",
         _fake_meander_planner,
     )
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "realize_routed_net_records",
         lambda _layout, routed_net_records, **_kwargs: captured.update(
             realized_records=routed_net_records
@@ -814,7 +815,7 @@ def test_route_match_and_realize_rejects_unrealized_lifted_plm(monkeypatch):
     captured: dict[str, object] = {"realized": False}
 
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "route_nets_rust",
         lambda *args, **kwargs: (
             Component(name="failed_lifted_pipeline"),
@@ -833,7 +834,7 @@ def test_route_match_and_realize_rejects_unrealized_lifted_plm(monkeypatch):
         blocked_cells: tuple[tuple[int, int], ...] = ()
 
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "build_static_obstacle_map",
         lambda *args, **kwargs: _ObstacleMap(),
     )
@@ -874,17 +875,17 @@ def test_route_match_and_realize_rejects_unrealized_lifted_plm(monkeypatch):
         }
 
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "minimum_four_bend_extra_length_um",
         lambda **_kwargs: 25.0,
     )
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "analyze_meander_insertion_for_requirements",
         _fake_failed_planner,
     )
     monkeypatch.setattr(
-        route_rust,
+        routing_api,
         "realize_routed_net_records",
         lambda *args, **kwargs: captured.update(realized=True),
     )
@@ -2016,7 +2017,7 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 
-    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: _FakeBackend)
+    monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: _FakeBackend)
 
     requirement_edge = RoutedEdgeKey(
         net_name="mmi_to_out",
@@ -2231,7 +2232,7 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 
-    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: _FakeBackend)
+    monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: _FakeBackend)
 
     physical_edge = RoutedEdgeKey(
         net_name="src_to_gate",
@@ -2363,7 +2364,7 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 
-    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: _FakeBackend)
+    monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: _FakeBackend)
 
     requirement_edge = RoutedEdgeKey(
         net_name="mmi_to_out",
@@ -2778,7 +2779,7 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
 
-    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: _FakeBackend)
+    monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: _FakeBackend)
 
     class _RouteObj:
         cells = [(1, 1), (2, 2), (3, 3)]

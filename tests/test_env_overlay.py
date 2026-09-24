@@ -675,6 +675,7 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
     from gdsfactory.gpdk import get_generic_pdk
 
     from translation import route_rust
+    from translation.routing import session as routing_session
 
     get_generic_pdk().activate()
 
@@ -691,7 +692,7 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
     class _DummySchematic:
         netlist: _DummyNetlist = field(default_factory=_DummyNetlist)
 
-    monkeypatch.setattr(route_rust, "_load_rust_backend", lambda: SimpleNamespace())
+    monkeypatch.setattr(routing_session, "_load_rust_backend", lambda: SimpleNamespace())
 
     from uuid import uuid4
 
