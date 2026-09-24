@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. This document must be maintained in accordance with `.agent/PLANS.md`.
 
-Status: **2026-09-24 -- plan written; starts after Milestone 8 Slice D of the restructure plan merges.**
+Status: **2026-09-25 00:50 -- Milestone 1 done: the hotspot is the obstacle check's per-route loop against the residue, not the pair check; Milestone 2 (residue index) in progress.**
 
 
 ## Purpose / Big Picture
@@ -15,14 +15,16 @@ After this plan the same call takes minutes instead of an hour on that layout, t
 ## Progress
 
 - [x] (2026-09-24 23:20) Evidence gathered (structure of the verifier, the 2026-09-07 prefilter plan, phase timings from the Milestone 8 reproduction logs); plan written.
-- [ ] Milestone 1: attribution (per-step timing inside the verifier on the three large contribution 2 cells).
-- [ ] Milestone 2: regions without a component per record.
+- [x] (2026-09-25 00:45) Milestone 1: attribution by cProfile (Benes 64x64 contribution 2, 5,824 records, verification 551 s under the profiler) and by an instrumented copy of the verifier in a scratch working directory (Benes 32x32 contribution 2, 1,728 records, 64 s). Both scratch runs produced reports byte-identical to the `results_m8_check` archives, so the harness is sound. Benes 64x64: `_verify_route_obstacle_overlaps` 510 s, `_realized_record_region` 26 s (5,824 calls), `_verify_cross_net_route_overlaps` 12 s, everything else under 1 s. Benes 32x32 inside the obstacle check, per obstacle layer: the union of routes 0.01 s, the union-vs-obstacle boolean 0.15 s, the residue minus the global legal region 0.00 s, then the per-route loop 9 to 14 s on each of five crossing-tile layers (residue of 576 or 2,880 polygons, every one a legal per-key overlap, 576 touching routes, zero issues). The loop does one boolean of each route against the whole residue: 1,728 routes x 5 layers on 32x32, 5,824 x 6 on 64x64, and the residue grows with the layout, so the cost is quadratic. cProfile cannot see it because klayout's operators are not attributed to a Python frame (508 s of "own time" in the loop's frame).
+- [ ] Milestone 2: the residue index (candidate residue polygons per route from a grid over their bounding boxes; the same booleans on a subset that cannot change the result).
 - [ ] Milestone 3: candidate pairs from a spatial index, issues in the original order.
-- [ ] Milestone 4: acceptance on the archived reports and the full reproduction.
+- [ ] Milestone 4: regions without a component per record (optional; 26 s on 64x64, about 100 s expected on 128x128).
+- [ ] Milestone 5: acceptance on the archived reports and the full reproduction.
 
 
 ## Surprises & Discoveries
 
+- 2026-09-25: the 2026-09-24 survey (and this plan's first version) blamed the pair check's quadratic Python loop. Measured, the pair check is 12 s of 551 s on Benes 64x64; the obstacle check's per-route loop against the residue is 510 s. The 2026-09-07 pass made the residue small "while the obstacle layer is the whole chip", but under contribution 2 the residue is the whole set of legal crossing-tile overlaps (2,880 polygons on 32x32) and every route is intersected with all of it on every crossing layer. Lesson: profile before planning; a survey of the code's shape found the wrong quadratic loop.
 - 2026-09-24: `translation/photonic_verification.py::_polyline_self_intersects_um` carries an unreachable duplicate of its own loop after a `return` (lines about 928-959). Dead code; removed in Milestone 2 with a note.
 
 
@@ -56,7 +58,18 @@ Work: add timing inside `verify_photonic_routing` (a small `dict[str, float]` of
 Acceptance: a table step by step for the two cells in this plan's Progress, and the extrapolation.
 
 
-## Milestone 2: regions without a component per record
+## Milestone 2: the residue index
+
+Goal: the obstacle check intersects each route only with the residue polygons whose bounding boxes overlap or touch the route's bounding box, found through a grid index, so the cost is linear in routes plus residue; the results of every boolean are the same point sets as today, so the issues are identical.
+
+Why it is exact: `route & residue` equals `route & subset` when `subset` holds every residue polygon whose bounding box meets the route's bounding box, because a polygon whose bounding box is disjoint from the route's contributes nothing to the intersection. The issue is built from the emptiness, the area and the bounding box of that intersection minus the per-key legal region, all properties of the point set. (Both a route and a residue polygon are merged, non-overlapping polygons from klayout's boolean output.)
+
+Work: a small index class in `translation/photonic_verification.py` (a dict from grid cell to polygon indices, cell size derived once from the residue's polygons' median bounding-box extent with a floor, registration by each polygon's bounding box; a query by a bounding box returns the polygon indices in sorted order), used only in `_verify_route_obstacle_overlaps`: `touching = route_region & candidates_region` where `candidates_region` holds the polygons the query returned, and the `continue` when the query is empty. Everything from `touching` on is unchanged. A test in `tests/test_photonic_verification.py` builds a layout on which several routes have real illegal overlaps with obstacles on two layers (and some legal per-key ones) and compares the issue list with an oracle written in the test that runs the pre-change per-route boolean against the full residue; a second test does the same on randomly placed rectangles with a fixed seed.
+
+Acceptance: both tests; `pytest -q tests`, `scripts/test_baseline.sh` and `scripts/results/gate_short.sh` green; the report of Benes 64x64 contribution 2 byte-identical to `results_m8_check/benes_64x64_flat/contribution2/*/benes_64x64_flat_photonic_verification.json` (run in the scratch harness of Milestone 1); the obstacle check's time on that cell reported (expected: under 10 s from 510 s).
+
+
+## Milestone 4: regions without a component per record
 
 Goal: build every record's region from its realized polygons without constructing a gdsfactory component per record, producing bit-identical regions.
 
@@ -74,10 +87,10 @@ Work: in `_verify_cross_net_route_overlaps`, register each record's bounding box
 Acceptance: the equivalence test; the JSONs of Benes 64x64 contribution 2 and ADEPT 128x128 contribution 2 byte-identical to their `results_m8_check` archives; the gate; the step time of the pair check reported.
 
 
-## Milestone 4: acceptance on the archived reports and the full reproduction
+## Milestone 5: acceptance on the archived reports and the full reproduction
 
 Goal: every cell's verification report is byte-identical to its archive, and the full run is measurably shorter.
 
-Work: decide on the instrumentation key (drop it, or keep it and regenerate the reference reports of `results_m8_check` in a documented step; default drop, since byte identity with the archives is the cleanest evidence); run the full 27-cell reproduction into a fresh root; compare with `scripts/results/compare_date2027.py` (crossings, GDS length, error counts) and, in addition, `cmp` every `<bench>_photonic_verification.json` and `<bench>_crossing_verification.json` against `results_m8_check`; record the verification time per cell and the run's total.
+Work: no instrumentation key was added (Milestone 1 measured through cProfile and a scratch copy, so the report format is untouched); run the full 27-cell reproduction into a fresh root; compare with `scripts/results/compare_date2027.py` (crossings, GDS length, error counts) and, in addition, `cmp` every `<bench>_photonic_verification.json` and `<bench>_crossing_verification.json` against `results_m8_check`; record the verification time per cell and the run's total.
 
 Acceptance: 27/27 exact in the comparator, every verification JSON byte-identical, the Benes 128x128 contribution 2 verification under five minutes, the full run under 3.5 hours; the plan's Outcomes written; `docs/ARCHITECTURE.md` section 8 updated with the new run time and `docs/DATE2027_REPRODUCTION.md` with the new entry.
