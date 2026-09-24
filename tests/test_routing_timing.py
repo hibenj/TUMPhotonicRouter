@@ -1,10 +1,11 @@
 """Unit tests for `translation/routing/timing.py`.
 
-The three functions are the routing session's only timers: two feed the
-per-phase pipeline breakdown the flow reports (`route_nets_timings_s`) and one
-feeds the per-net `route_timing_buckets`. Each is gated by its own flag, so the
-tests below cover both the on and the off state of every gate -- when the gate
-is off the function must not read the clock or touch the state at all.
+The two functions are the routing session's only timers: both feed the
+per-phase pipeline breakdown the flow reports (`route_nets_timings_s`). Each is
+gated by `collect_pipeline_timing`, so the tests below cover both the on and the
+off state of the gate -- when the gate is off the function must not read the
+clock or touch the state at all. (Milestone 8 Slice C removed the third timer,
+`record_elapsed`, which no phase reached, and its tests with it.)
 
 Added by Milestone 6, Slice 3 of
 `.agent/execplans/2026-09-22-modular-readable-router-restructure.md` (the
@@ -15,23 +16,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from translation.route_rust_types import RouteTimingBucket
-from translation.routing.timing import (
-    pipeline_timer_start,
-    record_elapsed,
-    record_pipeline_timing,
-)
+from translation.routing.timing import pipeline_timer_start, record_pipeline_timing
 
 
 def _pipeline_state() -> SimpleNamespace:
     return SimpleNamespace(route_nets_timings_s={})
-
-
-def _bucket_state(*, collect_timing: bool, bucket_names: tuple[str, ...]) -> SimpleNamespace:
-    return SimpleNamespace(
-        collect_timing=collect_timing,
-        route_timing_buckets={name: RouteTimingBucket() for name in bucket_names},
-    )
 
 
 def test_pipeline_timer_start_returns_a_perf_counter_reading_when_timing_is_on():
@@ -76,38 +65,3 @@ def test_record_pipeline_timing_writes_nothing_when_timing_is_off():
     state = _pipeline_state()
     record_pipeline_timing(settings, state, "router_setup", 0.0)
     assert state.route_nets_timings_s == {}
-
-
-def test_record_elapsed_counts_one_successful_call_on_the_named_bucket():
-    state = _bucket_state(collect_timing=True, bucket_names=("normal_route",))
-    record_elapsed(None, state, "normal_route", 0.0)
-    bucket = state.route_timing_buckets["normal_route"]
-    assert bucket.calls == 1
-    assert bucket.failures == 0
-    assert bucket.successes == 1
-    assert bucket.elapsed_s > 0.0
-
-
-def test_record_elapsed_counts_a_failed_call_as_both_a_call_and_a_failure():
-    state = _bucket_state(collect_timing=True, bucket_names=("normal_route",))
-    record_elapsed(None, state, "normal_route", 0.0, failed=True)
-    bucket = state.route_timing_buckets["normal_route"]
-    assert bucket.calls == 1
-    assert bucket.failures == 1
-    assert bucket.successes == 0
-
-
-def test_record_elapsed_accumulates_over_calls_and_leaves_other_buckets_alone():
-    state = _bucket_state(collect_timing=True, bucket_names=("normal_route", "probe_route"))
-    record_elapsed(None, state, "normal_route", 0.0)
-    record_elapsed(None, state, "normal_route", 0.0, failed=True)
-    assert state.route_timing_buckets["normal_route"].calls == 2
-    assert state.route_timing_buckets["normal_route"].failures == 1
-    assert state.route_timing_buckets["probe_route"].calls == 0
-
-
-def test_record_elapsed_writes_nothing_when_per_net_timing_is_off():
-    state = _bucket_state(collect_timing=False, bucket_names=("normal_route",))
-    record_elapsed(None, state, "normal_route", 0.0)
-    assert state.route_timing_buckets["normal_route"].calls == 0
-    assert state.route_timing_buckets["normal_route"].elapsed_s == 0.0

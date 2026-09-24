@@ -125,7 +125,6 @@ def _edge_key_to_info(edge_key: object) -> dict[str, object]:
 def _effective_crossing_search_loss(
     *,
     enable_crossings: bool,
-    crossing_mode: str,
     crossing_loss: float,
     config: CrossingPlanConfig | None = None,
 ) -> float:
@@ -134,9 +133,11 @@ def _effective_crossing_search_loss(
     ``crossing_loss`` is the physical insertion-loss term reported to users.
     The crossings are discovered by collision during the search, so they also
     need a non-physical search cost, so that A* tries a clean same-net route
-    before probing route-route collisions. ``crossing_mode`` no longer changes
-    the result (every remaining mode discovers crossings by collision) and is
-    kept only so the call sites read as the mode-dependent price they report.
+    before probing route-route collisions. The price does not depend on the
+    crossing mode -- both remaining modes discover crossings by collision --
+    so the mode is not a parameter (the unused keyword was dropped in
+    Milestone 8 Slice C of
+    `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`).
     """
     config = config if config is not None else CrossingPlanConfig()
     physical_loss = float(crossing_loss)

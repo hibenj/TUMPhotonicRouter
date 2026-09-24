@@ -265,7 +265,7 @@ Contribution 2: the pre-placed crossing grid stage (stage 2b).
 | `heap_tie_breaker` | `str` | `'smaller_g'` | `--heap-tie-breaker` | -- |
 | `max_iterations` | `int` | `500000` | `--max-iterations` | -- |
 | `routing_window_scale` | `float \| None` | `None` | `--routing-window-scale` | -- |
-| `ripup_reroute_config` | `RipupRerouteConfig \| None` | `None` | `--ripup-reroute`, `--ripup-max-rounds`, `--ripup-max-victims`, `--ripup-history-weight`, `--ripup-history-increment` | -- |
+| `ripup_reroute_config` | `RipupRerouteConfig \| None` | `None` | `--ripup-reroute`, `--ripup-history-weight`, `--ripup-history-increment` | -- |
 
 ### `verification` -- `VerificationOptions`
 

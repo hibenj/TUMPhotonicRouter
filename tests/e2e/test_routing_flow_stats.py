@@ -100,12 +100,10 @@ def test_electrical_width_defaults_are_centralized():
 def test_lidar_pure_uses_search_only_crossing_penalty_by_default():
     assert _effective_crossing_search_loss(
         enable_crossings=True,
-        crossing_mode="lidar-pure",
         crossing_loss=0.0,
     ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
     assert _effective_crossing_search_loss(
         enable_crossings=True,
-        crossing_mode="lidar-pure",
         crossing_loss=0.07,
     ) == pytest.approx(0.07)
 
@@ -118,13 +116,11 @@ def test_collision_crossing_search_penalty_can_be_overridden(monkeypatch):
 
     assert _effective_crossing_search_loss(
         enable_crossings=True,
-        crossing_mode="lidar-pure",
         crossing_loss=0.0,
         config=crossing_plan_config,
     ) == pytest.approx(30.0)
     assert _effective_crossing_search_loss(
         enable_crossings=True,
-        crossing_mode="lidar-pure",
         crossing_loss=0.07,
         config=crossing_plan_config,
     ) == pytest.approx(0.07)
@@ -713,7 +709,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
         routing_flow_optical, "route_match_and_realize", fake_route_match_and_realize
     )
 
-    ripup_config = RipupRerouteConfig(enabled=True, max_rounds=2)
+    ripup_config = RipupRerouteConfig(enabled=True)
     run_routing_flow(
         "MMI8x4",
         debug_timing=False,
@@ -1686,9 +1682,11 @@ def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
 
 
 def test_lidar_guided_shares_the_lidar_pure_search_penalty():
+    # "Shares" is now structural rather than asserted per mode: since
+    # Milestone 8 Slice C the price takes no crossing-mode argument at all,
+    # so lidar-guided cannot get a different one.
     assert _effective_crossing_search_loss(
         enable_crossings=True,
-        crossing_mode="lidar-guided",
         crossing_loss=0.0,
     ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
 

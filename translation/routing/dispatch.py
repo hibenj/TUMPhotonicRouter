@@ -41,15 +41,15 @@ from translation.routing.state import SessionState
 
 # `route_many_with_negotiated_repair_and_commit`'s own round budget --
 # LiDAR's `runNRR` default (`.agent/execplans/2026-09-14-lidar-style-
-# negotiated-ripup-endgame.md`, Milestone 3). Kept separate from
-# `RipupRerouteConfig.max_rounds` (default 4, `--ripup-max-rounds`), which
-# was a different knob for the older repair chain: the negotiated engine's
-# "round" is a whole-queue pass with a global rip-up at the end (LiDAR's
-# `ripupfailedNets`), not a per-net repair-set retry count, so the chain's
-# smaller default never carried over. Since Milestone 8 of
+# negotiated-ripup-endgame.md`, Milestone 3). This is the only round budget
+# left: the older repair chain's own two budgets (a per-net repair-round cap
+# on `RipupRerouteConfig`, default 4, and a per-round victim cap) counted a
+# per-net repair-set retry, a different thing from the negotiated engine's
+# "round" (a whole-queue pass
+# with a global rip-up at the end, LiDAR's `ripupfailedNets`), which is why
+# the chain's smaller default never carried over; Milestone 8 of
 # .agent/execplans/2026-09-22-modular-readable-router-restructure.md deleted
-# that chain, `max_rounds` and `max_victims_per_failure` are set by the CLI
-# but read by nothing -- flagged for the owner, not removed here.
+# that chain in Slice A and both knobs with it in Slice C.
 NEGOTIATED_MAX_ROUNDS = 10
 
 

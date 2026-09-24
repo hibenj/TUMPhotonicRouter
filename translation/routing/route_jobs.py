@@ -293,24 +293,6 @@ def _fanout_stub_bend_steps(settings, state) -> int:
     return aliases[normalized]
 
 
-def _append_grid_step(
-    settings,
-    state,
-    path: list[tuple[int, int]],
-    step_x: int,
-    step_y: int,
-    count: int,
-) -> None:
-    if count <= 0:
-        return
-    cell_x, cell_y = path[-1]
-    for _ in range(count):
-        cell_x += step_x
-        cell_y += step_y
-        if _in_bounds(settings, state, cell_x, cell_y):
-            path.append((cell_x, cell_y))
-
-
 def _inflated_cells(
     settings,
     state,
@@ -342,15 +324,6 @@ def _rotate_right_vector(settings, state, vector: tuple[float, float]) -> tuple[
     return (vector[1], -vector[0])
 
 
-def _cross2(
-    settings,
-    state,
-    a: tuple[float, float],
-    b: tuple[float, float],
-) -> float:
-    return float(a[0]) * float(b[1]) - float(a[1]) * float(b[0])
-
-
 def _append_stub_point(
     settings,
     state,
@@ -363,104 +336,6 @@ def _append_stub_point(
         if math.hypot(point[0] - last_x, point[1] - last_y) <= 1.0e-9:
             return
     out.append(point)
-
-
-def _append_circular_stub_bend(
-    settings,
-    state,
-    out: list[tuple[float, float]],
-    *,
-    start_point: tuple[float, float],
-    start_angle: int,
-    end_point: tuple[float, float],
-    end_angle: int,
-    angle_delta: int,
-) -> None:
-    radius_um = float(state.bend_radius_cells) * float(state.grid.grid_size_um)
-    if radius_um <= 0.0 or not math.isfinite(radius_um):
-        _append_stub_point(settings, state, out, end_point)
-        return
-    start_dir = _angle_to_unit_vector(settings, state, start_angle)
-    end_dir = _angle_to_unit_vector(settings, state, end_angle)
-    chord = (
-        float(end_point[0]) - float(start_point[0]),
-        float(end_point[1]) - float(start_point[1]),
-    )
-    denom = _cross2(settings, state, start_dir, end_dir)
-    if abs(denom) <= 1.0e-9:
-        _append_stub_point(settings, state, out, end_point)
-        return
-    in_len = _cross2(settings, state, chord, end_dir) / denom
-    out_len = _cross2(settings, state, start_dir, chord) / denom
-    if (
-        not math.isfinite(in_len)
-        or not math.isfinite(out_len)
-        or in_len <= 1.0e-9
-        or out_len <= 1.0e-9
-    ):
-        _append_stub_point(settings, state, out, end_point)
-        return
-    corner = (
-        float(start_point[0]) + start_dir[0] * in_len,
-        float(start_point[1]) + start_dir[1] * in_len,
-    )
-    turn_abs = abs(int(angle_delta)) * (math.pi / 4.0)
-    trim = radius_um * math.tan(turn_abs / 2.0)
-    trim_eff = min(trim, in_len, out_len)
-    if not math.isfinite(trim_eff) or trim_eff <= 1.0e-9:
-        _append_stub_point(settings, state, out, end_point)
-        return
-    t_in = (
-        corner[0] - start_dir[0] * trim_eff,
-        corner[1] - start_dir[1] * trim_eff,
-    )
-    t_out = (
-        corner[0] + end_dir[0] * trim_eff,
-        corner[1] + end_dir[1] * trim_eff,
-    )
-    _append_stub_point(settings, state, out, t_in)
-    left_turn = int(angle_delta) > 0
-    n_start = (
-        _rotate_left_vector(settings, state, start_dir)
-        if left_turn
-        else _rotate_right_vector(settings, state, start_dir)
-    )
-    n_end = (
-        _rotate_left_vector(settings, state, end_dir)
-        if left_turn
-        else _rotate_right_vector(settings, state, end_dir)
-    )
-    c0 = (
-        t_in[0] + n_start[0] * radius_um,
-        t_in[1] + n_start[1] * radius_um,
-    )
-    c1 = (
-        t_out[0] + n_end[0] * radius_um,
-        t_out[1] + n_end[1] * radius_um,
-    )
-    center = ((c0[0] + c1[0]) * 0.5, (c0[1] + c1[1]) * 0.5)
-    a0 = math.atan2(t_in[1] - center[1], t_in[0] - center[0])
-    a1 = math.atan2(t_out[1] - center[1], t_out[0] - center[0])
-    if left_turn:
-        while a1 <= a0:
-            a1 += math.tau
-    else:
-        while a1 >= a0:
-            a1 -= math.tau
-    arc_span = abs(a1 - a0)
-    steps = max(2, int(math.ceil((arc_span / (math.pi / 2.0)) * 16.0)))
-    for index in range(1, steps):
-        t = float(index) / float(steps)
-        angle = a0 + (a1 - a0) * t
-        _append_stub_point(settings, state,
-            out,
-            (
-                center[0] + radius_um * math.cos(angle),
-                center[1] + radius_um * math.sin(angle),
-            ),
-        )
-    _append_stub_point(settings, state, out, t_out)
-    _append_stub_point(settings, state, out, end_point)
 
 
 def _append_arc_from_tangencies(
@@ -775,9 +650,9 @@ def _straight_static_stub_centerline_um(
     forward_cells: int,
 ) -> tuple[tuple[tuple[float, float], ...], tuple[int, int]] | None:
     """Build a straight stub extending `forward_cells` grid cells forward
-    from a port along its own physical orientation, absorbing any
-    sub-cell port-to-grid misalignment with a small real-bend-radius
-    curve rather than a lateral offset.
+    from a port along its own physical orientation, leaving any sub-cell
+    port-to-grid misalignment for endpoint correction rather than
+    absorbing it with a lateral offset.
 
     Used for dense TARGET port stubs. Unlike source stubs (which need
     to laterally redistribute a tight component pitch out to a wider
@@ -799,14 +674,17 @@ def _straight_static_stub_centerline_um(
     straight, unbent line) and deferring the resulting sub-cell offset
     to the ordinary checked-endpoint-correction pass did not work --
     that pass left the route's raw grid endpoint essentially untouched
-    rather than reconciling it, for reasons not yet root-caused. This
-    version absorbs the offset locally instead, using
-    `_fanout_stub_centerline_um`, which is a plain straight line when
-    the port and the grid-snapped anchor are already aligned, and a
-    small circular arc (built by `_append_circular_stub_bend`, using
-    `self.bend_radius_cells` -- the exact same physical bend radius
-    every other primitive in this router uses, not an approximation)
-    only when they are not.
+    rather than reconciling it, for reasons not yet root-caused. What
+    this version does is below: the returned centerline is the plain
+    straight two-point line from the port to a NOT grid-snapped anchor
+    that keeps the port's exact cross-axis coordinate, and that exact
+    point is what `record_route`'s `target_port_center_um_override`
+    hands to checked endpoint correction. (An earlier version instead
+    absorbed the offset locally with a small real-bend-radius arc; the
+    helpers that built it, `_fanout_stub_centerline_um` and
+    `_append_circular_stub_bend`, were unreachable and were removed in
+    Milestone 8 Slice C of
+    `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.)
     """
     step_x, step_y = _angle_to_step(settings, state, int(physical_angle) % 8)
     if abs(step_x) + abs(step_y) != 1:
@@ -844,71 +722,6 @@ def _straight_static_stub_centerline_um(
     if len(centerline) < 2:
         return None
     return centerline, (anchor_x, anchor_y)
-
-
-def _fanout_stub_centerline_um(
-    settings,
-    state,
-    port_center_um: tuple[float, float] | None,
-    anchor_center_um: tuple[float, float],
-    physical_angle: int,
-) -> tuple[tuple[float, float], ...]:
-    if port_center_um is None:
-        return (anchor_center_um,)
-    forward_x, forward_y = _angle_to_step(settings, state, int(physical_angle) % 8)
-    lateral_x, lateral_y = -forward_y, forward_x
-    port_x, port_y = (float(port_center_um[0]), float(port_center_um[1]))
-    anchor_x, anchor_y = (float(anchor_center_um[0]), float(anchor_center_um[1]))
-    delta_x = anchor_x - port_x
-    delta_y = anchor_y - port_y
-    forward_delta = delta_x * forward_x + delta_y * forward_y
-    lateral_delta = delta_x * lateral_x + delta_y * lateral_y
-    if forward_delta <= 1.0e-9:
-        return _compress_centerline((port_center_um, anchor_center_um))
-    lateral_abs = abs(lateral_delta)
-    available_straight = forward_delta - lateral_abs
-    if available_straight <= 1.0e-9:
-        return _compress_centerline((port_center_um, anchor_center_um))
-
-    preferred_first_straight_um = max(
-        float(state.grid.grid_size_um),
-        float(state.bend_radius_cells) * float(state.grid.grid_size_um),
-    )
-    first_straight_um = min(preferred_first_straight_um, available_straight)
-    points: list[tuple[float, float]] = [
-        (port_x, port_y),
-        (
-            port_x + forward_x * first_straight_um,
-            port_y + forward_y * first_straight_um,
-        ),
-    ]
-    if lateral_abs > 1.0e-9:
-        lateral_sign = 1 if lateral_delta > 0.0 else -1
-        diagonal_angle = (int(physical_angle) + lateral_sign) % 8
-        diagonal_end = (
-            points[-1][0] + forward_x * lateral_abs + lateral_x * lateral_delta,
-            points[-1][1] + forward_y * lateral_abs + lateral_y * lateral_delta,
-        )
-        smoothed: list[tuple[float, float]] = [points[0]]
-        _append_circular_stub_bend(settings, state,
-            smoothed,
-            start_point=points[0],
-            start_angle=physical_angle,
-            end_point=diagonal_end,
-            end_angle=diagonal_angle,
-            angle_delta=lateral_sign,
-        )
-        _append_circular_stub_bend(settings, state,
-            smoothed,
-            start_point=diagonal_end,
-            start_angle=diagonal_angle,
-            end_point=(anchor_x, anchor_y),
-            end_angle=physical_angle,
-            angle_delta=-lateral_sign,
-        )
-        return _compress_centerline(tuple(smoothed))
-    points.append((anchor_x, anchor_y))
-    return _compress_centerline(tuple(points))
 
 
 def _build_static_fanout_anchors(settings, state) -> dict[str, _FanoutAnchor]:

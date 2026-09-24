@@ -82,8 +82,6 @@ from routing_flow_config import (
     SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
     SCRIPT_RIPUP_HISTORY_INCREMENT,
     SCRIPT_RIPUP_HISTORY_WEIGHT,
-    SCRIPT_RIPUP_MAX_ROUNDS,
-    SCRIPT_RIPUP_MAX_VICTIMS,
     SCRIPT_ROUTING_WINDOW_SCALE,
     SCRIPT_SHOW_KLAYOUT,
     SCRIPT_VERBOSE_ROUTES,
@@ -456,23 +454,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--ripup-max-rounds",
-        type=int,
-        default=SCRIPT_RIPUP_MAX_ROUNDS,
-        metavar="N",
-        help=f"Maximum repair rounds per failed net (default: {SCRIPT_RIPUP_MAX_ROUNDS}).",
-    )
-    parser.add_argument(
-        "--ripup-max-victims",
-        type=int,
-        default=SCRIPT_RIPUP_MAX_VICTIMS,
-        metavar="N",
-        help=(
-            "Maximum blocker routes to rip up per repair round "
-            f"(default: {SCRIPT_RIPUP_MAX_VICTIMS})."
-        ),
-    )
-    parser.add_argument(
         "--ripup-history-weight",
         type=float,
         default=SCRIPT_RIPUP_HISTORY_WEIGHT,
@@ -771,8 +752,6 @@ def _flow_options(args: argparse.Namespace) -> FlowOptions:
             routing_window_scale=args.routing_window_scale,
             ripup_reroute_config=RipupRerouteConfig(
                 enabled=args.ripup_reroute,
-                max_rounds=args.ripup_max_rounds,
-                max_victims_per_failure=args.ripup_max_victims,
                 history_weight=args.ripup_history_weight,
                 history_increment=args.ripup_history_increment,
             ),

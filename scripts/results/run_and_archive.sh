@@ -21,7 +21,7 @@ out="$root/$bench/$config/$stamp"; mkdir -p "$out"
 wd="$(mktemp -d "${TMPDIR:-/tmp}/run_${bench}_${config}_XXXX")"
 mkdir -p "$wd/build"
 for e in "$R"/* "$R"/.venv; do b="$(basename "$e")"; [ "$b" = build ] && continue; [ "$b" = results ] && continue; ln -s "$e" "$wd/$b"; done
-echo "config=$config benchmark=$bench args=$* start=$(date -Is) commit=$(git -C "$R" rev-parse --short HEAD) env_negotiated=${PHOTONIC_ROUTER_NEGOTIATED_REPAIR:-unset}" > "$out/run.txt"
+echo "config=$config benchmark=$bench args=$* start=$(date -Is) commit=$(git -C "$R" rev-parse --short HEAD)" > "$out/run.txt"
 start=$(date +%s)
 (cd "$wd" && PYTHONUNBUFFERED=1 "$R/.venv/bin/python" routing_flow.py "$bench" "$@" > "$out/run.log" 2>&1 < /dev/null)
 rc=$?; wall=$(( $(date +%s) - start ))

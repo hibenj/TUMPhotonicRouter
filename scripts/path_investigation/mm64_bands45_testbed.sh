@@ -8,7 +8,8 @@
 # Acceptance of the testbed: the stderr trace contains
 #   native_repair_source_layer_center_out_start ... trigger_net=313 victim=231
 # i.e. the same trigger as the full 4 h run. 2 h cap. Logs go to $OUT (default: the invocation dir).
-# Optional: PHOTONIC_ROUTER_NEGOTIATED_REPAIR=1 in the environment selects the negotiated engine.
+# PHOTONIC_ROUTER_NEGOTIATED_REPAIR=1 used to select the negotiated engine -- gone, it is the
+# only engine since Milestone 8.
 OUT="${OUT:-$PWD}"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 export PYTHONUNBUFFERED=1

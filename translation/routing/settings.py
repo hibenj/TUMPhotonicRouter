@@ -179,7 +179,6 @@ class SessionSettings:
             effective_allow_only_expected_crossings = False
         crossing_search_loss = _effective_crossing_search_loss(
             enable_crossings=bool(enable_crossings),
-            crossing_mode=crossing_mode,
             crossing_loss=float(crossing_loss),
             config=resolved_config.crossing_plan,
         )

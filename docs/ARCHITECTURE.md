@@ -205,8 +205,7 @@ gdsfactory components; `topology_analysis.py` (322) and `crossing_plan.py`
 (242) own depth/rank analysis and the crossing events derived from it;
 `path_length_graph.py` (323), `graph_analysis.py` (85),
 `benchmark_extractor.py` (177) and `routing_layers.py` (133) own their named
-analyses. `rust_router.py` (22 lines) is a demo wrapper and a removal candidate
-(section 9). Nothing in this package may import `translation.routing`'s stage
+analyses. Nothing in this package may import `translation.routing`'s stage
 internals; it goes through the routing API (`translation/routing/api.py`).
 
 ### `translation/routing/` -- the routing session as stages
@@ -510,11 +509,10 @@ which commit last reproduced all 27 cells.
 
 The repository owner decided every candidate on 2026-09-24 (all removals as
 recommended, under the constraint that the working benchmarks stay exact), and
-Milestone 8 carries them out one slice at a time. The label is the string
-`candidate for removal, see Milestone 8` -- `grep -rn "candidate for removal"
-src/ translation/` is the authoritative list of what is still labelled; the
-items below are that grep plus the candidates named in the ExecPlan's
-Milestone 8 section.
+Milestone 8 carries them out one slice at a time. The label was the string
+`candidate for removal, see Milestone 8`; after Slice C
+`grep -rn "candidate for removal" src/ translation/ python/` is empty, so what
+is left below is the one item still named in the ExecPlan's Milestone 8 section.
 
 Already removed, Slice A, the legacy engine (2026-09-24): the legacy repair
 loop with its ~25-helper chain (the whole `src/engine/legacy_repair.rs`, 3,739
@@ -543,25 +541,31 @@ iteration cap. `CrossingConfig::allow_only_expected_pairs` stays: it is what
 `CrossingContext::allows_pair` reads, and Python passes `False` for both
 remaining modes.
 
-Still labelled in the source:
+Already removed, Slice C, the small leftovers (2026-09-24): the five Python
+helpers no stage reached (`record_elapsed` in `translation/routing/timing.py`
+and `_append_grid_step`, `_fanout_stub_centerline_um`,
+`_append_circular_stub_bend`, `_cross2` in `translation/routing/route_jobs.py`),
+the 22-line demo wrapper module of `python/photonic_router/`, the two
+`RipupRerouteConfig` budgets the deleted repair chain owned with their two
+command-line flags and the two unused `routing_flow_config.py` constants
+behind them, the dead negotiated-engine environment field `run.txt` recorded
+(`scripts/results/run_and_archive.sh`), and the unused crossing-mode keyword
+of `_effective_crossing_search_loss`. Two things came
+with the slice: D7's doc comment now describes the code (the epoch reset fires
+once per batch, when the global rip-up counter reaches 2 -- the behaviour the
+paper's runs used -- pinned by a new
+`third_global_ripup_does_not_clear_history_again` test), and the Weighted-A*
+iteration cap Slice B removed with the window mode is back in
+`translation/routing/router_setup.py`, its condition folded to
+`not settings.enable_crossings`.
 
-| item | module | size |
-| --- | --- | --- |
-| `record_elapsed` and the four other helpers no phase reaches | `translation/routing/timing.py` (1), `translation/routing/route_jobs.py` (4: `_append_grid_step`, `_fanout_stub_centerline_um`, `_append_circular_stub_bend`, `_cross2`) | 5 functions |
+Still open:
 
-Named in the plan, not labelled in the source:
-
-* **D7**: the global rip-up's epoch reset fires when its call counter is
-  exactly 2, while its doc comment says "the second call and every second call
-  after that" (`src/engine/negotiation/loop_.rs`). Decided 2026-09-24: the
-  paper ran the code, so the code stands and the comment is corrected to
-  describe it (a later slice of this milestone).
 * **The four toy benchmark modules** kept only as historical fixtures (`TOY`,
   `mmi_heater`, `mmi_heater_8x4`, `mmi_heater_8x4_ripup_reroute`). No test
   imports them any more (Milestone 6 Slice 3), but
   `scripts/benchmark_electrical.py` and `tests/baselines/electrical_suite_metrics.json`
   still name three of them as strings -- open question D10.
-* **`python/photonic_router/rust_router.py`** (22 lines), a demo wrapper.
 
 Each removal is one slice and one commit with the short gate after it, so any
 single one can be reverted; the full 27-cell reproduction runs at the end.

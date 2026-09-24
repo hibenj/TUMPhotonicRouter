@@ -295,27 +295,31 @@ class NetEndpointCorrectionClassification:
 
 @dataclass(frozen=True)
 class RipupRerouteConfig:
-    """Resolved 2026-08-25 (`.agent/execplans/2026-08-25-negotiated-repair-engine.md`
+    """Whether route repair runs at all, and the A* history prices it uses.
+
+    Resolved 2026-08-25 (`.agent/execplans/2026-08-25-negotiated-repair-engine.md`
     Milestone 6): `enabled` is not really a general-purpose user choice --
     every benchmark needs repair to run (even `benes_4x4`/`benes_8x8` fail
     immediately without it), confirmed unchanged by that plan's Milestone 5/6
     work. Its one legitimate use is isolating repair *out* for a diagnostic/
     test baseline (e.g. `test_benchmarks_route_with_astar_only`, which
-    deliberately wants to see what plain A* alone can do). Kept as a real
-    config field rather than replaced with an explicit test-only bypass
-    because that plan's negotiated-congestion loop
-    (`route_many_with_negotiated_repair_and_commit`) did not become the
-    integral, always-on replacement for this dispatch-chain-based repair --
-    it stays opt-in (`PHOTONIC_ROUTER_NEGOTIATED_REPAIR=1`) because it does
-    not yet handle crossing-legality-driven conflicts (as opposed to plain
-    cell-contention conflicts), which the old chain's crossing-specific
-    strategies still need to cover. Revisit this field's shape only if a
-    future plan makes the negotiated loop the sole repair mechanism.
+    deliberately wants to see what plain A* alone can do). It is kept as a
+    real config field rather than replaced with an explicit test-only bypass.
+
+    Since Milestone 8 of
+    `.agent/execplans/2026-09-22-modular-readable-router-restructure.md` the
+    negotiated-congestion loop
+    (`route_many_with_negotiated_repair_and_commit`) IS the sole repair
+    mechanism -- the dispatch-chain repair this config was written for is
+    gone, and with it the two round/victim budgets it owned (a per-net
+    repair-round cap and a per-round victim cap, removed in Slice C
+    together with their two command-line flags). The negotiated loop's
+    own round budget is `NEGOTIATED_MAX_ROUNDS`
+    (`translation/routing/dispatch.py`); `enabled=False` selects the
+    no-repair mode (that loop with one round and `NoRipUp`).
     """
 
     enabled: bool = True
-    max_rounds: int = 4
-    max_victims_per_failure: int = 8
     history_weight: float = 2.0
     history_increment: int = 1
 

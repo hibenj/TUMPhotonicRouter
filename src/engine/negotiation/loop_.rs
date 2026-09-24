@@ -20,11 +20,17 @@ impl PyPhotonicRouter {
     /// failed nets and their ripped blockers are then requeued at the front
     /// of `queue`, failed nets first in `round_failed` order and the ripped
     /// blockers after, so both are tried again first thing next round. A
-    /// no-op when `round_failed` is empty (nothing failed this round). On
-    /// the second call and every second call after that, the history map
-    /// and the local rip-up rule's once-per-epoch set are cleared -- this
-    /// is this milestone's own epoch boundary, independent of (and able to
-    /// coincide with) the existing "two rounds without progress" reset.
+    /// no-op when `round_failed` is empty (nothing failed this round).
+    /// Exactly once per batch -- on the call where the global rip-up
+    /// counter reaches 2, and never again, however many further global
+    /// rip-ups follow -- the history map and the local rip-up rule's
+    /// once-per-epoch set are cleared: this is this milestone's own epoch
+    /// boundary, independent of (and able to coincide with) the existing
+    /// "two rounds without progress" reset.
+    ///
+    /// This once-per-batch reset is the behaviour the paper's runs used
+    /// (D7 of `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`,
+    /// decided 2026-09-24: the code stands, the comment is corrected).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn global_ripup_round(
         &mut self,
@@ -340,6 +346,106 @@ mod tests {
                 .any(|event| event.event_name == "history_clear"),
             "expected a history_clear trace event: {:?}",
             batch.repair_trace
+        );
+    }
+
+    /// D7 (decided 2026-09-24): the epoch reset is once per batch, not
+    /// every second global rip-up. The second call clears; a third call
+    /// must leave the history it just bumped alone, and must leave
+    /// `ripped_once` alone, so pressure keeps building after the single
+    /// epoch boundary the paper's runs had.
+    #[test]
+    fn third_global_ripup_does_not_clear_history_again() {
+        let (mut router, _jobs) = crossing_conflict_fixture();
+        router.commit_history_increment = 1;
+
+        let mut batch = fresh_repair_batch_state();
+        for net_id in [1u64, 2, 3] {
+            let route = route_with_real_cells_for_net(&router, net_id);
+            batch.final_routes.insert(net_id, route);
+        }
+
+        let mut queue: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
+        let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
+        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
+        let mut global_ripups: u32 = 0;
+
+        // Calls one and two: rip nets 1 and 2, so the epoch boundary has
+        // already fired (`global_ripups == 2`) before the third call.
+        let mut last_blockers: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
+        last_blockers.insert(4, vec![1]);
+        router.global_ripup_round(
+            &mut batch,
+            &[4],
+            &last_blockers,
+            &mut queue,
+            &mut failed_counts,
+            &mut ripped_once,
+            &mut global_ripups,
+            1,
+            false,
+        );
+        last_blockers.insert(5, vec![2]);
+        router.global_ripup_round(
+            &mut batch,
+            &[5],
+            &last_blockers,
+            &mut queue,
+            &mut failed_counts,
+            &mut ripped_once,
+            &mut global_ripups,
+            2,
+            false,
+        );
+        assert_eq!(global_ripups, 2);
+        let clears_after_two = batch
+            .repair_trace
+            .iter()
+            .filter(|event| event.event_name == "history_clear")
+            .count();
+        assert_eq!(
+            clears_after_two, 1,
+            "the epoch boundary must fire exactly once, on the second global rip-up"
+        );
+
+        // Third call: net 6 blames net 3, which is still committed. Its
+        // history is bumped before it is ripped, and nothing may clear it.
+        let net3_cells = router.get_net_cells(3);
+        ripped_once.insert(99); // an epoch marker that must now survive
+        last_blockers.insert(6, vec![3]);
+        router.global_ripup_round(
+            &mut batch,
+            &[6],
+            &last_blockers,
+            &mut queue,
+            &mut failed_counts,
+            &mut ripped_once,
+            &mut global_ripups,
+            3,
+            false,
+        );
+
+        assert_eq!(global_ripups, 3);
+        assert!(
+            net3_cells
+                .iter()
+                .any(|&(x, y)| router.obstacle_map.get_history_cost(x, y) > 0),
+            "a third global rip-up must not clear the history it just bumped on \
+             net 3's former cells: {:?}",
+            net3_cells
+        );
+        assert!(
+            ripped_once.contains(&99),
+            "the once-per-epoch set must survive a third global rip-up"
+        );
+        assert_eq!(
+            batch
+                .repair_trace
+                .iter()
+                .filter(|event| event.event_name == "history_clear")
+                .count(),
+            1,
+            "no second history_clear event on the third global rip-up"
         );
     }
 

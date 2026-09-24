@@ -4,8 +4,9 @@
 # it and the negotiated engine aborted instead of running its global round). Routes only net ids
 # 448-575 (band 8: mmi0_ps -> mmi0_multiport, band 9: mmi0_multiport -> mol_array) in the stable
 # lidar-pure order, hoisted to the front, stops after 128 routes. Same conventions as
-# mm64_bands45_testbed.sh (OUT, 2 h cap, trace + progress on, PHOTONIC_ROUTER_NEGOTIATED_REPAIR=1
-# selects the new engine). Verify the subset against a full --verbose-routes run before trusting it.
+# mm64_bands45_testbed.sh (OUT, 2 h cap, trace + progress on; PHOTONIC_ROUTER_NEGOTIATED_REPAIR=1
+# used to select the new engine -- gone, the negotiated engine is the only one since Milestone 8).
+# Verify the subset against a full --verbose-routes run before trusting it.
 OUT="${OUT:-$PWD}"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 export PYTHONUNBUFFERED=1

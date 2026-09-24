@@ -92,7 +92,10 @@ class Pipeline:
             route_width_um=0.5,
             allow_45_degree_turns=True,
             bend_radius_um=1.0,
-            max_iterations=20_000,
+            # `pop`ped rather than fixed, so a test about the A* iteration
+            # budget itself can raise it above the Weighted-A* cap; every
+            # other caller still gets 20,000.
+            max_iterations=overrides.pop("max_iterations", 20_000),
             # Turns the pipeline timers on, so the phases that carry a clock
             # (5's search start, 7's elapsed search time) carry a real one.
             collect_route_stats=True,

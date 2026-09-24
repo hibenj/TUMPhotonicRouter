@@ -1,5 +1,10 @@
 # Crossing Baselines
 
+> Historical: this file describes the 2026-08 state, including the `window` and
+> `collision` crossing modes it calls the existing and the current baseline.
+> Both were removed on 2026-09-24 (Milestone 8 Slice B); the modes that exist
+> now are `lidar-pure` (the default) and `lidar-guided`.
+
 This file tracks the crossing-routing baselines and experiment branches so the
 LiDAR-style variants do not get conflated.
 

@@ -28,8 +28,6 @@ from routing_flow import (
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     SCRIPT_RIPUP_HISTORY_INCREMENT,
     SCRIPT_RIPUP_HISTORY_WEIGHT,
-    SCRIPT_RIPUP_MAX_ROUNDS,
-    SCRIPT_RIPUP_MAX_VICTIMS,
     RipupRerouteConfig,
     RoutingFlowStats,
     load_benchmark,
@@ -591,8 +589,6 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
             path_length_meander_height_um=args.path_length_meander_height_um,
             ripup_reroute_config=RipupRerouteConfig(
                 enabled=args.ripup_reroute,
-                max_rounds=args.ripup_max_rounds,
-                max_victims_per_failure=args.ripup_max_victims,
                 history_weight=args.ripup_history_weight,
                 history_increment=args.ripup_history_increment,
             ),
@@ -843,10 +839,6 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         str(args.chip_add_y_um),
         "--path-length-meander-height-um",
         str(args.path_length_meander_height_um),
-        "--ripup-max-rounds",
-        str(args.ripup_max_rounds),
-        "--ripup-max-victims",
-        str(args.ripup_max_victims),
         "--ripup-history-weight",
         str(args.ripup_history_weight),
         "--ripup-history-increment",
@@ -1930,8 +1922,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--crossing-half-size-cells", type=int, default=0)
     parser.add_argument("--min-straight-cells-per-crossing", type=int, default=2)
     parser.add_argument("--ripup-reroute", action="store_true")
-    parser.add_argument("--ripup-max-rounds", type=int, default=SCRIPT_RIPUP_MAX_ROUNDS)
-    parser.add_argument("--ripup-max-victims", type=int, default=SCRIPT_RIPUP_MAX_VICTIMS)
     parser.add_argument("--ripup-history-weight", type=float, default=SCRIPT_RIPUP_HISTORY_WEIGHT)
     parser.add_argument(
         "--ripup-history-increment", type=int, default=SCRIPT_RIPUP_HISTORY_INCREMENT

@@ -21,6 +21,7 @@ annotated assignments next to it are the same check for a type checker.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import sys
 from pathlib import Path
@@ -42,7 +43,7 @@ from translation.routing import stages
 from translation.routing import verify_repair as verify_repair_module
 from translation.routing.crossing_plan_info import CrossingPlanInfo
 
-from tests.fixtures.sessions import Pipeline
+from tests.fixtures.sessions import Pipeline, pipeline_for_test
 from tests.fixtures.synthetic_layouts import GRID_HEIGHT, GRID_WIDTH, LINKS, ObstacleMapStandIn
 
 
@@ -245,6 +246,57 @@ _KERNEL_DISPATCHER: stages.KernelDispatcher = dispatch_module.dispatch_native_ro
 _RESULT_FINALIZER: stages.ResultFinalizer = finalize_module.finalize_routing_results
 _GEOMETRY_VERIFIER: stages.GeometryVerifier = verify_repair_module.repair_and_verify_final_geometry
 _REALIZER: stages.Realizer = realize_module.realize_and_assemble_debug_artifacts
+
+
+def _weighted_astar_pipeline(
+    monkeypatch: pytest.MonkeyPatch, *, enable_crossings: bool
+) -> Pipeline:
+    """A phase-2 pipeline on Weighted A* (`min_heuristic_weight > 1.0`).
+
+    `max_iterations` is deliberately above the cap, so the assertion is about
+    the cap and not about `min()` picking the caller's smaller budget.
+    """
+
+    from photonic_router.config import RoutingConfig
+
+    base = RoutingConfig.from_environment()
+    config = dataclasses.replace(
+        base, search=dataclasses.replace(base.search, min_heuristic_weight=2.0)
+    )
+    return pipeline_for_test(
+        monkeypatch,
+        config=config,
+        max_iterations=200_000,
+        enable_crossings=enable_crossings,
+    )
+
+
+def test_router_setup_caps_weighted_astar_iterations_when_crossings_are_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restored in Milestone 8 Slice C: the Weighted-A* iteration cap.
+
+    Slice B removed it with the collision crossing mode, but its condition was
+    `not (enable_crossings and is_collision_mode(...))`, which with the modes
+    gone is exactly `not enable_crossings` -- not "always false". 45-degree
+    turns on, crossings off, Weighted A*: the cap applies.
+    """
+
+    pipeline = _weighted_astar_pipeline(monkeypatch, enable_crossings=False)
+    assert pipeline.through(2) is None
+    assert pipeline.settings.allow_45_degree_turns is True
+    assert pipeline.settings.config.search.min_heuristic_weight == 2.0
+    assert pipeline.state.astar_cfg.max_iterations == 50_000
+
+
+def test_router_setup_leaves_weighted_astar_iterations_alone_when_crossings_are_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the folded condition: crossings on, no cap."""
+
+    pipeline = _weighted_astar_pipeline(monkeypatch, enable_crossings=True)
+    assert pipeline.through(2) is None
+    assert pipeline.state.astar_cfg.max_iterations == 200_000
 
 
 @pytest.mark.parametrize(
