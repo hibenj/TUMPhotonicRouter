@@ -1,27 +1,27 @@
-"""The routing session shell: construction, the nine-phase `run`, the pipeline
-timers and the module-level `route_nets_rust` entry point.
+"""The routing session shell: construction, the nine-phase `run` and the
+module-level `route_nets_rust` entry point.
 
 Milestone 5 Slice 1 moved every phase body and its stage-private helpers into
 the sibling stage modules of this package, as module-level functions taking the
-session as their first argument. The class keeps a one-line forwarder per moved
-method, so `session.<helper>(...)` inside a stage body, the unbound lookups in
-the tests and the fake sessions built with `object.__new__` all keep working.
-The forwarders go away in Slice 2b, when the stages take typed inputs and
-outputs and `run` passes one stage's output to the next.
+session as their first argument, with a one-line forwarder per moved method on
+this class. Slice 2b removed those 123 forwarders: a stage calls a helper of its
+own module by name and a helper of another stage through an import from that
+stage's module, so the only entry points left on the class are `__init__` and
+`run`. The pipeline timers moved to `timing.py` for the same reason.
 
-Slice 2a made the session's inputs one frozen record: `__init__` validates and
-normalises its keywords into `self.settings` (`settings.SessionSettings`) and
-then owns only the routed layout copy, the loaded kernel module and the pipeline
-timing dict. Everything a stage reads as a session attribute is therefore either
-a setting (`session.settings.<name>`) or per-run state a phase wrote."""
+Slice 2b also split what the session carried into the two records a stage now
+takes: `self.settings` (frozen `settings.SessionSettings`, Slice 2a) is the run's
+inputs, `self.state` (mutable `state.SessionState`) is everything the run
+computes -- one documented field per per-run attribute, with the writing and
+reading phases named. The class itself owns nothing else: it validates the
+keywords, builds the two records and calls the nine phases of `stages.py`, whose
+Protocols declare each phase's inputs and its product."""
 
 from __future__ import annotations
 
 import importlib
-import time
 
 from pathlib import Path
-from typing import Any
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
@@ -34,6 +34,7 @@ from translation.routing.settings import (
     DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     SessionSettings,
 )
+from translation.routing.state import SessionState
 
 from translation.routing import (
     obstacle_context,
@@ -55,11 +56,6 @@ _load_rust_backend = _sob._load_rust_backend
 
 
 class _RouteNetsRustSession:
-    # `_FanoutAnchor` lives in `route_jobs` since Milestone 5 Slice 1; the
-    # attribute keeps `session._FanoutAnchor(...)` working.
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    _FanoutAnchor = route_jobs_stage._FanoutAnchor
-
     def __init__(
         self,
         unrouted_layout: Component,
@@ -226,606 +222,56 @@ class _RouteNetsRustSession:
             config=config,
         )
 
-        self.rust_backend = _load_rust_backend()
-        if self.rust_backend is None:
+        rust_backend = _load_rust_backend()
+        if rust_backend is None:
             raise RuntimeError(
                 "Rust router backend is not available. Build it with `cargo build` "
                 "or `maturin develop` so photonic_router._rust can be imported."
             )
 
-        self.routed_layout = self.settings.unrouted_layout.copy()
-        self.routed_layout.name = "routed_layout_rust"
+        routed_layout = self.settings.unrouted_layout.copy()
+        routed_layout.name = "routed_layout_rust"
 
-        self.route_nets_timings_s: dict[str, float] = {}
+        # Slice 2b: everything the run computes lives in one typed record, so a
+        # stage takes `(settings, state)` instead of the session itself. The
+        # remaining two fields are what the constructor produces.
+        self.state = SessionState(rust_backend=rust_backend, routed_layout=routed_layout)
 
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
-        obstacle_map, crossing_device_info, obstacle_svg = obstacle_context.build_static_obstacle_context(self)
-        nets = self.settings.schematic.netlist.routes
-        router_setup.configure_router_and_grid(self, obstacle_map)
-        route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec = (
-            route_jobs_stage.build_route_jobs_and_fanout_clustering(self, nets)
-        )
-        if self.settings.config.search.long_straight_exempt_dense_fanout is True:
-            # 2026-09-17 (multiportmmi_128x128): the fan-in / fan-out bands of
-            # dense multi-port instances route without the long-straight
-            # penalty, so their lanes may pack in parallel; every other net
-            # keeps the configured weight. See PyPhotonicRouter's
-            # `long_straight_exempt_net_ids`.
-            exempt_ids = sorted(
-                set(self.fanout_anchor_source_net_ids) | set(self.fanout_anchor_target_net_ids)
-            )
-            if hasattr(self.router, "set_long_straight_exempt_net_ids"):
-                self.router.set_long_straight_exempt_net_ids(exempt_ids)
-                print(f"      - long-straight penalty exempt for {len(exempt_ids)} dense fan-out net(s)")
-        route_jobs, foreign_port_keepout_cells_by_instance = (
-            crossing_plan_stage.build_crossing_plan_and_port_footprints(
-                self,
-                route_jobs,
-                endpoint_port_specs_by_instance,
-                dense_port_runway_length_by_spec,
-                obstacle_map,
-                crossing_device_info,
-            )
-        )
-        route_jobs, t_astar_start = handoff.finalize_route_jobs_and_static_handoff(
-            self,
-            route_jobs,
-            foreign_port_keepout_cells_by_instance,
-            obstacle_map,
-        )
+        """The nine routing phases of `stages.py`, in order.
 
-        dispatch.dispatch_native_routing(self, route_jobs)
-
-        routed_net_records, astar_elapsed_s = finalize.finalize_routing_results(
-            self,
-            route_jobs, t_astar_start
+        Each takes the run's frozen inputs and its mutable state; the value a
+        phase returns is the input of a later one (`stages.py` names the types).
+        """
+        settings, state = self.settings, self.state
+        context = obstacle_context.build_static_obstacle_context(settings, state)
+        router_setup.configure_router_and_grid(settings, state, context.obstacle_map)
+        jobs = route_jobs_stage.build_route_jobs_and_fanout_clustering(
+            settings, state, settings.schematic.netlist.routes
         )
-
-        routed_net_records, illegal_realized_crossings = verify_repair.repair_and_verify_final_geometry(
-            self,
-            routed_net_records
+        route_jobs_stage.apply_long_straight_fanout_exemption(settings, state)
+        planned = crossing_plan_stage.build_crossing_plan_and_port_footprints(
+            settings, state, jobs.route_jobs, jobs.endpoint_port_specs_by_instance,
+            jobs.dense_port_runway_length_by_spec, context.obstacle_map,
+            context.crossing_device_info,
         )
-
+        final = handoff.finalize_route_jobs_and_static_handoff(
+            settings, state, planned.route_jobs,
+            planned.foreign_port_keepout_cells_by_instance, context.obstacle_map,
+        )
+        dispatch.dispatch_native_routing(settings, state, final.route_jobs)
+        routed = finalize.finalize_routing_results(
+            settings, state, final.route_jobs, final.astar_start_s
+        )
+        verified = verify_repair.repair_and_verify_final_geometry(
+            settings, state, routed.routed_net_records
+        )
         debug_artifacts = realize.realize_and_assemble_debug_artifacts(
-            self,
-            route_jobs,
-            routed_net_records,
-            illegal_realized_crossings,
-            obstacle_map,
-            obstacle_svg,
-            astar_elapsed_s,
+            settings, state, final.route_jobs, verified.routed_net_records,
+            verified.illegal_realized_crossings, context.obstacle_map,
+            context.obstacle_svg, routed.astar_elapsed_s,
         )
-        return self.routed_layout, debug_artifacts
-
-    def _pipeline_timer_start(self) -> float:
-        return time.perf_counter() if self.settings.collect_pipeline_timing else 0.0
-
-    def _record_pipeline_timing(self, name: str, start_s: float) -> None:
-        if self.settings.collect_pipeline_timing:
-            self.route_nets_timings_s[name] = self.route_nets_timings_s.get(name, 0.0) + (
-                time.perf_counter() - start_s
-            )
-
-    def _record_elapsed(self, bucket_name: str, start_s: float, *, failed: bool = False) -> None:
-        if not self.collect_timing:
-            return
-        self.route_timing_buckets[bucket_name].record_elapsed(
-            time.perf_counter() - start_s,
-            failed=failed,
-        )
-
-    # ---- obstacle_context forwarders ------------------------------------------
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _build_static_obstacle_context(self, *args: Any, **kwargs: Any):
-        return obstacle_context.build_static_obstacle_context(self, *args, **kwargs)
-
-    # ---- router_setup forwarders ----------------------------------------------
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _configure_router_and_grid(self, *args: Any, **kwargs: Any):
-        return router_setup.configure_router_and_grid(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    @staticmethod
-    def _fanout_int_or_default(*args: Any, **kwargs: Any):
-        return router_setup._fanout_int_or_default(*args, **kwargs)
-
-    # ---- route_jobs forwarders ------------------------------------------------
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _angle_to_step(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._angle_to_step(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _angle_to_unit_vector(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._angle_to_unit_vector(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _append_arc_from_tangencies(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._append_arc_from_tangencies(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _append_circular_stub_bend(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._append_circular_stub_bend(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _append_grid_step(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._append_grid_step(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _append_realized_stub_bend(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._append_realized_stub_bend(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _append_stub_point(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._append_stub_point(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _build_route_jobs_and_fanout_clustering(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage.build_route_jobs_and_fanout_clustering(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _build_static_fanout_anchors(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._build_static_fanout_anchors(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _build_static_fanout_target_anchors(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._build_static_fanout_target_anchors(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _centerline_grid_cells(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._centerline_grid_cells(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _cross2(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._cross2(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _dense_fanout_group_size(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._dense_fanout_group_size(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _dense_fanout_min_ports(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._dense_fanout_min_ports(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _dense_fanout_min_ports_for(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._dense_fanout_min_ports_for(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _dense_source_port_runway_lengths(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._dense_source_port_runway_lengths(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _dense_target_port_runway_lengths(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._dense_target_port_runway_lengths(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _equalize_dense_runway_reach(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._equalize_dense_runway_reach(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _fanout_stub_bend_steps(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._fanout_stub_bend_steps(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _fanout_stub_centerline_um(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._fanout_stub_centerline_um(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _grid_cell_center_um(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._grid_cell_center_um(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _in_bounds(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._in_bounds(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _inflated_cells(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._inflated_cells(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _is_dense_source_fanout_group(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._is_dense_source_fanout_group(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _is_dense_source_fanout_instance(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._is_dense_source_fanout_instance(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _is_dense_target_fanout_group(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._is_dense_target_fanout_group(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _is_dense_target_fanout_instance(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._is_dense_target_fanout_instance(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _orientation_to_angle(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._orientation_to_angle(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _port_access_rule_for(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._port_access_rule_for(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _rotate_left_vector(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._rotate_left_vector(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _rotate_right_vector(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._rotate_right_vector(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _straight_static_stub_centerline_um(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._straight_static_stub_centerline_um(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _two_bend_static_stub_centerline_um(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage._two_bend_static_stub_centerline_um(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def port_to_grid_state(self, *args: Any, **kwargs: Any):
-        return route_jobs_stage.port_to_grid_state(self, *args, **kwargs)
-
-    # ---- crossing_plan_stage forwarders ---------------------------------------
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _build_crossing_plan_and_port_footprints(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage.build_crossing_plan_and_port_footprints(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _cell_in_raw_static(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._cell_in_raw_static(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _cells_in_raw_static_geometry(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._cells_in_raw_static_geometry(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _endpoint_state_for_lane_assignment(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._endpoint_state_for_lane_assignment(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _heater_opening_rect_ranges_by_y(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._heater_opening_rect_ranges_by_y(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _instance_ref_by_name(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._instance_ref_by_name(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _instance_static_geometry_open_cells(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._instance_static_geometry_open_cells(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _raw_static_cells_by_y(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._raw_static_cells_by_y(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _raw_static_rect_ranges_by_y(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._raw_static_rect_ranges_by_y(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _rect_ranges_by_y(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._rect_ranges_by_y(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _resolve_port_footprint_cells(self, *args: Any, **kwargs: Any):
-        return crossing_plan_stage._resolve_port_footprint_cells(self, *args, **kwargs)
-
-    # ---- handoff forwarders ---------------------------------------------------
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _debug_hoist_instance_first(self, *args: Any, **kwargs: Any):
-        return handoff._debug_hoist_instance_first(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _endpoint_bump_candidate_open_cells_for_state(self, *args: Any, **kwargs: Any):
-        return handoff._endpoint_bump_candidate_open_cells_for_state(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _filter_dense_port_opening(self, *args: Any, **kwargs: Any):
-        return handoff._filter_dense_port_opening(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _finalize_route_jobs_and_static_handoff(self, *args: Any, **kwargs: Any):
-        return handoff.finalize_route_jobs_and_static_handoff(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _foreign_keepout_open_cells_for_spec(self, *args: Any, **kwargs: Any):
-        return handoff._foreign_keepout_open_cells_for_spec(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _opened_cells_for_spec(self, *args: Any, **kwargs: Any):
-        return handoff._opened_cells_for_spec(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _route_job_grid_span(self, *args: Any, **kwargs: Any):
-        return handoff._route_job_grid_span(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _snap_nearly_collinear_states(self, *args: Any, **kwargs: Any):
-        return handoff._snap_nearly_collinear_states(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _snap_same_heading_minimum_bend_offset(self, *args: Any, **kwargs: Any):
-        return handoff._snap_same_heading_minimum_bend_offset(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _states_and_openings(self, *args: Any, **kwargs: Any):
-        return handoff._states_and_openings(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _topological_net_route_order(self, *args: Any, **kwargs: Any):
-        return handoff._topological_net_route_order(self, *args, **kwargs)
-
-    # ---- dispatch forwarders --------------------------------------------------
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _append_centerline_points(self, *args: Any, **kwargs: Any):
-        return dispatch._append_centerline_points(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _cells_in_rect(self, *args: Any, **kwargs: Any):
-        return dispatch._cells_in_rect(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _clearance_exempt_cell_set_for_job(self, *args: Any, **kwargs: Any):
-        return dispatch._clearance_exempt_cell_set_for_job(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _clearance_exempt_cells_for_job(self, *args: Any, **kwargs: Any):
-        return dispatch._clearance_exempt_cells_for_job(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _committed_dynamic_cells(self, *args: Any, **kwargs: Any):
-        return dispatch._committed_dynamic_cells(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _committed_dynamic_cells_for_attempt(self, *args: Any, **kwargs: Any):
-        return dispatch._committed_dynamic_cells_for_attempt(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _corridor_clearance_diagnostic(self, *args: Any, **kwargs: Any):
-        return dispatch._corridor_clearance_diagnostic(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _direction_reaches_target_ray(self, *args: Any, **kwargs: Any):
-        return dispatch._direction_reaches_target_ray(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _dispatch_native_routing(self, *args: Any, **kwargs: Any):
-        return dispatch.dispatch_native_routing(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _export_route_svg(self, *args: Any, **kwargs: Any):
-        return dispatch._export_route_svg(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _fanout_stubbed_centerline(self, *args: Any, **kwargs: Any):
-        return dispatch._fanout_stubbed_centerline(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _finalize_committed_route(self, *args: Any, **kwargs: Any):
-        return dispatch._finalize_committed_route(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _foreign_keepout_cleanup_cells_for_job(self, *args: Any, **kwargs: Any):
-        return dispatch._foreign_keepout_cleanup_cells_for_job(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _foreign_keepout_cleanup_cells_for_spec(self, *args: Any, **kwargs: Any):
-        return dispatch._foreign_keepout_cleanup_cells_for_spec(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _record_native_batch_timings(self, *args: Any, **kwargs: Any):
-        return dispatch._record_native_batch_timings(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _record_route(self, *args: Any, **kwargs: Any):
-        return dispatch._record_route(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _report_long_straight_congestion(self, *args: Any, **kwargs: Any):
-        return dispatch._report_long_straight_congestion(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _route_attempt_diagnostics(self, *args: Any, **kwargs: Any):
-        return dispatch._route_attempt_diagnostics(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _route_cells_from_router(self, *args: Any, **kwargs: Any):
-        return dispatch._route_cells_from_router(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _route_engine_summary(self, *args: Any, **kwargs: Any):
-        return dispatch._route_engine_summary(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _routing_endpoint_center_um(self, *args: Any, **kwargs: Any):
-        return dispatch._routing_endpoint_center_um(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _source_lower_bounds(self, *args: Any, **kwargs: Any):
-        return dispatch._source_lower_bounds(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _state_openings_for_job(self, *args: Any, **kwargs: Any):
-        return dispatch._state_openings_for_job(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _static_cells_in_rect(self, *args: Any, **kwargs: Any):
-        return dispatch._static_cells_in_rect(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _timing_start(self, *args: Any, **kwargs: Any):
-        return dispatch._timing_start(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _write_failed_log(self, *args: Any, **kwargs: Any):
-        return dispatch._write_failed_log(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _write_route_diagnostics(self, *args: Any, **kwargs: Any):
-        return dispatch._write_route_diagnostics(self, *args, **kwargs)
-
-    # ---- finalize forwarders --------------------------------------------------
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _append_target_fanout_stubs_after_correction(self, *args: Any, **kwargs: Any):
-        return finalize._append_target_fanout_stubs_after_correction(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _apply_all_endpoint_corrections_for_net_ids(self, *args: Any, **kwargs: Any):
-        return finalize._apply_all_endpoint_corrections_for_net_ids(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _apply_checked_endpoint_corrections_for_net_ids(self, *args: Any, **kwargs: Any):
-        return finalize._apply_checked_endpoint_corrections_for_net_ids(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
-        self, *args: Any, **kwargs: Any
-    ):
-        return finalize._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
-            self, *args, **kwargs
-        )
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _apply_crossing_aware_endpoint_corrections_for_net_ids(self, *args: Any, **kwargs: Any):
-        return finalize._apply_crossing_aware_endpoint_corrections_for_net_ids(
-            self, *args, **kwargs
-        )
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
-        self, *args: Any, **kwargs: Any
-    ):
-        return finalize._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
-            self, *args, **kwargs
-        )
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _classify_net_for_endpoint_correction(self, *args: Any, **kwargs: Any):
-        return finalize._classify_net_for_endpoint_correction(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _current_crossing_points_by_net_id(self, *args: Any, **kwargs: Any):
-        return finalize._current_crossing_points_by_net_id(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _endpoint_correction_crossing_net_ids(self, *args: Any, **kwargs: Any):
-        return finalize._endpoint_correction_crossing_net_ids(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _finalize_routing_results(self, *args: Any, **kwargs: Any):
-        return finalize.finalize_routing_results(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _record_terminal_bump_distance_check_candidates(self, *args: Any, **kwargs: Any):
-        return finalize._record_terminal_bump_distance_check_candidates(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _route_target_angle(self, *args: Any, **kwargs: Any):
-        return finalize._route_target_angle(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _route_target_grid_center_um(self, *args: Any, **kwargs: Any):
-        return finalize._route_target_grid_center_um(self, *args, **kwargs)
-
-    # ---- verify_repair forwarders ---------------------------------------------
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _add_keepout_rect(self, *args: Any, **kwargs: Any):
-        return verify_repair._add_keepout_rect(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _add_keepout_square(self, *args: Any, **kwargs: Any):
-        return verify_repair._add_keepout_square(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _add_segment_keepout_cells(self, *args: Any, **kwargs: Any):
-        return verify_repair._add_segment_keepout_cells(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _cells_from_um_bbox(self, *args: Any, **kwargs: Any):
-        return verify_repair._cells_from_um_bbox(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _final_crossing_repair_batches(self, *args: Any, **kwargs: Any):
-        return verify_repair._final_crossing_repair_batches(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _final_crossing_repair_keepout_cells(self, *args: Any, **kwargs: Any):
-        return verify_repair._final_crossing_repair_keepout_cells(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _final_crossing_repair_net_ids(self, *args: Any, **kwargs: Any):
-        return verify_repair._final_crossing_repair_net_ids(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _grid_cell_from_raw_point(self, *args: Any, **kwargs: Any):
-        return verify_repair._grid_cell_from_raw_point(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _grid_rect_from_grid_bbox_text(self, *args: Any, **kwargs: Any):
-        return verify_repair._grid_rect_from_grid_bbox_text(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _grid_rect_from_um_bbox(self, *args: Any, **kwargs: Any):
-        return verify_repair._grid_rect_from_um_bbox(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _illegal_crossing_grid_cell(self, *args: Any, **kwargs: Any):
-        return verify_repair._illegal_crossing_grid_cell(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _illegal_crossing_keepout_radius(self, *args: Any, **kwargs: Any):
-        return verify_repair._illegal_crossing_keepout_radius(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _make_photonic_verification_probe_layout(self, *args: Any, **kwargs: Any):
-        return verify_repair._make_photonic_verification_probe_layout(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _net_id_by_name(self, *args: Any, **kwargs: Any):
-        return verify_repair._net_id_by_name(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _photonic_issue_keepout_cells(self, *args: Any, **kwargs: Any):
-        return verify_repair._photonic_issue_keepout_cells(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _photonic_issue_net_ids(self, *args: Any, **kwargs: Any):
-        return verify_repair._photonic_issue_net_ids(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _photonic_repair_failure_preview(self, *args: Any, **kwargs: Any):
-        return verify_repair._photonic_repair_failure_preview(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _polygon_bbox_um(self, *args: Any, **kwargs: Any):
-        return verify_repair._polygon_bbox_um(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _refresh_photonic_verification(self, *args: Any, **kwargs: Any):
-        return verify_repair._refresh_photonic_verification(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _refresh_realized_crossing_verification(self, *args: Any, **kwargs: Any):
-        return verify_repair._refresh_realized_crossing_verification(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _repair_and_verify_final_geometry(self, *args: Any, **kwargs: Any):
-        return verify_repair.repair_and_verify_final_geometry(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _repair_final_illegal_crossings(self, *args: Any, **kwargs: Any):
-        return verify_repair._repair_final_illegal_crossings(self, *args, **kwargs)
-
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _repair_final_photonic_issues(self, *args: Any, **kwargs: Any):
-        return verify_repair._repair_final_photonic_issues(self, *args, **kwargs)
-
-    # ---- realize forwarders ---------------------------------------------------
-    # compatibility forwarder, removed in Milestone 5 Slice 2
-    def _realize_and_assemble_debug_artifacts(self, *args: Any, **kwargs: Any):
-        return realize.realize_and_assemble_debug_artifacts(self, *args, **kwargs)
-
+        return state.routed_layout, debug_artifacts
 
 def route_nets_rust(
     unrouted_layout: Component,

@@ -2,7 +2,10 @@
 
 `session` holds the session shell, one module per `run` phase holds that phase and
 its stage-private helpers, and `api` holds the module-level entry points. The
-`translation.route_rust` module is a compatibility shim re-exporting this package.
+phases answer to the Protocols in `stages`; they take the run's frozen inputs
+(`settings.SessionSettings`) and its mutable record (`state.SessionState`), and
+`timing` holds the pipeline timers they all use. The `translation.route_rust`
+module is a compatibility shim re-exporting this package.
 """
 
 from __future__ import annotations

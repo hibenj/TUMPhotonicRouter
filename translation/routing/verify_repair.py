@@ -44,7 +44,22 @@ from translation.route_rust_obstacle_config import _default_obstacle_layers
 from translation.route_rust_realization import realize_routed_net_records
 from translation.route_rust_types import RoutedNetRecord
 
-def _grid_cell_from_raw_point(session, raw_point: object) -> tuple[int, int] | None:
+from translation.routing.dispatch import (
+    _clearance_exempt_cells_for_job,
+    _foreign_keepout_cleanup_cells_for_job,
+    _record_route,
+    _routing_endpoint_center_um,
+    _state_openings_for_job,
+)
+from translation.routing.finalize import (
+    _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids,
+)
+from translation.routing import timing
+from translation.routing.settings import SessionSettings
+from translation.routing.stages import VerifiedRecords
+from translation.routing.state import SessionState
+
+def _grid_cell_from_raw_point(settings, state, raw_point: object) -> tuple[int, int] | None:
     if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
         return None
     try:
@@ -54,23 +69,25 @@ def _grid_cell_from_raw_point(session, raw_point: object) -> tuple[int, int] | N
         return None
     if not math.isfinite(point_x) or not math.isfinite(point_y):
         return None
-    return physical_to_grid(point_x, point_y, session.grid)
+    return physical_to_grid(point_x, point_y, state.grid)
 
 
-def _illegal_crossing_grid_cell(session, item: Mapping[str, object]) -> tuple[int, int] | None:
+def _illegal_crossing_grid_cell(
+    settings, state, item: Mapping[str, object]
+) -> tuple[int, int] | None:
     raw_cell = item.get("grid_cell")
     if isinstance(raw_cell, (tuple, list)) and len(raw_cell) == 2:
         try:
             return (int(raw_cell[0]), int(raw_cell[1]))
         except (TypeError, ValueError):
             return None
-    return session._grid_cell_from_raw_point(item.get("point_um"))
+    return _grid_cell_from_raw_point(settings, state, item.get("point_um"))
 
 
-def _illegal_crossing_keepout_radius(session, item: Mapping[str, object]) -> int:
+def _illegal_crossing_keepout_radius(settings, state, item: Mapping[str, object]) -> int:
     reason = str(item.get("reason", "") or "")
     if reason == "not_perpendicular":
-        return max(1, int(session.resolved_crossing_half_size_cells) + 1)
+        return max(1, int(state.resolved_crossing_half_size_cells) + 1)
     if reason == "collinear_route_overlap":
         return 1
     blockers = item.get("crossing_footprint_blockers")
@@ -79,17 +96,18 @@ def _illegal_crossing_keepout_radius(session, item: Mapping[str, object]) -> int
         (str, bytes, bytearray),
     ):
         if any(isinstance(blocker, Mapping) for blocker in blockers):
-            return max(1, int(session.resolved_crossing_half_size_cells) + 1)
+            return max(1, int(state.resolved_crossing_half_size_cells) + 1)
     if reason in {
         "crossing_footprint_contains_route_geometry",
         "crossing_footprint_overlap",
     }:
-        return max(1, int(session.resolved_crossing_half_size_cells) + 1)
-    return max(1, min(4, int(session.resolved_crossing_half_size_cells) + 1))
+        return max(1, int(state.resolved_crossing_half_size_cells) + 1)
+    return max(1, min(4, int(state.resolved_crossing_half_size_cells) + 1))
 
 
 def _add_keepout_square(
-    session,
+    settings,
+    state,
     keepout_cells: set[tuple[int, int]],
     *,
     center: tuple[int, int],
@@ -97,12 +115,13 @@ def _add_keepout_square(
 ) -> None:
     for y in range(center[1] - radius, center[1] + radius + 1):
         for x in range(center[0] - radius, center[0] + radius + 1):
-            if 0 <= x < int(session.grid.width) and 0 <= y < int(session.grid.height):
+            if 0 <= x < int(state.grid.width) and 0 <= y < int(state.grid.height):
                 keepout_cells.add((x, y))
 
 
 def _add_segment_keepout_cells(
-    session,
+    settings,
+    state,
     keepout_cells: set[tuple[int, int]],
     *,
     start_cell: tuple[int, int],
@@ -118,37 +137,38 @@ def _add_segment_keepout_cells(
             int(round(float(start_cell[0]) + float(dx) * t)),
             int(round(float(start_cell[1]) + float(dy) * t)),
         )
-        session._add_keepout_square(keepout_cells, center=cell, radius=radius)
+        _add_keepout_square(settings, state, keepout_cells, center=cell, radius=radius)
 
 
 def _final_crossing_repair_keepout_cells(
-    session,
+    settings,
+    state,
     illegal_crossings: Iterable[Mapping[str, object]],
 ) -> set[tuple[int, int]]:
     keepout_cells: set[tuple[int, int]] = set()
     for item in illegal_crossings:
-        radius = session._illegal_crossing_keepout_radius(item)
+        radius = _illegal_crossing_keepout_radius(settings, state, item)
         reason = str(item.get("reason", "") or "")
         if reason == "collinear_route_overlap":
-            start_cell = session._grid_cell_from_raw_point(item.get("overlap_start_um"))
-            end_cell = session._grid_cell_from_raw_point(item.get("overlap_end_um"))
+            start_cell = _grid_cell_from_raw_point(settings, state, item.get("overlap_start_um"))
+            end_cell = _grid_cell_from_raw_point(settings, state, item.get("overlap_end_um"))
             if start_cell is not None and end_cell is not None:
-                session._add_segment_keepout_cells(
+                _add_segment_keepout_cells(settings, state,
                     keepout_cells,
                     start_cell=start_cell,
                     end_cell=end_cell,
                     radius=radius,
                 )
                 continue
-        center = session._illegal_crossing_grid_cell(item)
+        center = _illegal_crossing_grid_cell(settings, state, item)
         if center is not None:
-            session._add_keepout_square(keepout_cells, center=center, radius=radius)
+            _add_keepout_square(settings, state, keepout_cells, center=center, radius=radius)
         if reason == "crossing_footprint_overlap":
             peer = item.get("overlapping_crossing")
             if isinstance(peer, Mapping):
-                peer_center = session._grid_cell_from_raw_point(peer.get("point_um"))
+                peer_center = _grid_cell_from_raw_point(settings, state, peer.get("point_um"))
                 if peer_center is not None:
-                    session._add_keepout_square(
+                    _add_keepout_square(settings, state,
                         keepout_cells,
                         center=peer_center,
                         radius=radius,
@@ -157,7 +177,8 @@ def _final_crossing_repair_keepout_cells(
 
 
 def _final_crossing_repair_net_ids(
-    session,
+    settings,
+    state,
     illegal_crossings: Iterable[Mapping[str, object]],
 ) -> list[int]:
     net_ids: set[int] = set()
@@ -176,7 +197,7 @@ def _final_crossing_repair_net_ids(
                 blocker_net_id = int(cast(object, blocker.get("net_id")))
             except (TypeError, ValueError):
                 continue
-            if blocker_net_id in session.route_jobs_by_id:
+            if blocker_net_id in state.route_jobs_by_id:
                 net_ids.add(blocker_net_id)
 
     for item in illegal_crossings:
@@ -186,7 +207,7 @@ def _final_crossing_repair_net_ids(
                 net_id = int(cast(object, item.get(key)))
             except (TypeError, ValueError):
                 continue
-            if net_id in session.route_jobs_by_id:
+            if net_id in state.route_jobs_by_id:
                 item_pair_ids.append(net_id)
         reason = str(item.get("reason", "") or "")
         if reason == "not_perpendicular":
@@ -213,7 +234,7 @@ def _final_crossing_repair_net_ids(
                         peer_net_id = int(cast(object, peer.get(key)))
                     except (TypeError, ValueError):
                         continue
-                    if peer_net_id in session.route_jobs_by_id:
+                    if peer_net_id in state.route_jobs_by_id:
                         peer_pair_ids.add(peer_net_id)
             net_ids.update(item_pair_ids)
             net_ids.update(peer_pair_ids)
@@ -225,11 +246,12 @@ def _final_crossing_repair_net_ids(
                 net_ids.update(item_pair_ids)
             continue
         net_ids.update(item_pair_ids)
-    return [net_id for net_id in session.route_order if net_id in net_ids]
+    return [net_id for net_id in state.route_order if net_id in net_ids]
 
 
 def _final_crossing_repair_batches(
-    session,
+    settings,
+    state,
     illegal_crossings: list[dict[str, object]],
     *,
     max_net_ids: int,
@@ -238,7 +260,7 @@ def _final_crossing_repair_batches(
         return []
     components: list[tuple[list[dict[str, object]], set[int]]] = []
     for item in illegal_crossings:
-        item_net_ids = set(session._final_crossing_repair_net_ids([item]))
+        item_net_ids = set(_final_crossing_repair_net_ids(settings, state, [item]))
         if not item_net_ids:
             components.append(([item], set()))
             continue
@@ -262,7 +284,7 @@ def _final_crossing_repair_batches(
     capped_batches: list[list[dict[str, object]]] = []
     oversized: list[dict[str, object]] = []
     for component_items, _component_net_ids in components:
-        component_repair_ids = session._final_crossing_repair_net_ids(component_items)
+        component_repair_ids = _final_crossing_repair_net_ids(settings, state, component_items)
         if component_repair_ids and len(component_repair_ids) <= max_net_ids:
             capped_batches.append(component_items)
         else:
@@ -272,7 +294,7 @@ def _final_crossing_repair_batches(
         current_batch: list[dict[str, object]] = []
         current_net_ids: set[int] = set()
         for item in oversized:
-            item_net_ids = set(session._final_crossing_repair_net_ids([item]))
+            item_net_ids = set(_final_crossing_repair_net_ids(settings, state, [item]))
             if (
                 current_batch
                 and item_net_ids
@@ -286,10 +308,10 @@ def _final_crossing_repair_batches(
         if current_batch:
             capped_batches.append(current_batch)
 
-    route_index = {int(net_id): index for index, net_id in enumerate(session.route_order)}
+    route_index = {int(net_id): index for index, net_id in enumerate(state.route_order)}
 
     def _batch_sort_key(batch: list[dict[str, object]]) -> tuple[int, int, int]:
-        repair_ids = session._final_crossing_repair_net_ids(batch)
+        repair_ids = _final_crossing_repair_net_ids(settings, state, batch)
         first_route_index = min(
             (route_index.get(int(net_id), len(route_index)) for net_id in repair_ids),
             default=len(route_index),
@@ -301,13 +323,14 @@ def _final_crossing_repair_batches(
 
 
 def _repair_final_illegal_crossings(
-    session,
+    settings,
+    state,
     illegal_crossings: list[dict[str, object]],
 ) -> bool:
     max_repair_net_ids = 12
     attempts = cast(
         list[dict[str, object]],
-        session.crossing_plan_info.setdefault("final_crossing_repair_attempts", []),
+        state.crossing_plan_info.setdefault("final_crossing_repair_attempts", []),
     )
     priority_order = (
         "collinear_route_overlap",
@@ -336,7 +359,7 @@ def _repair_final_illegal_crossings(
         "insufficient_straight_margin",
         "not_perpendicular",
     }:
-        repair_batches = session._final_crossing_repair_batches(
+        repair_batches = _final_crossing_repair_batches(settings, state,
             selected_illegal_crossings,
             max_net_ids=min(4, max_repair_net_ids),
         )
@@ -344,14 +367,14 @@ def _repair_final_illegal_crossings(
             selected_illegal_crossings = repair_batches[0]
     if (
         not selected_illegal_crossings
-        or not session.crossing_plan_info.get("enabled")
-        or not session.repair_config.enabled
-        or not hasattr(session.router, "add_static_cells")
-        or not hasattr(session.router, "ripup_route")
-        or not hasattr(session.router, "route_many_with_repair_and_commit")
+        or not state.crossing_plan_info.get("enabled")
+        or not state.repair_config.enabled
+        or not hasattr(state.router, "add_static_cells")
+        or not hasattr(state.router, "ripup_route")
+        or not hasattr(state.router, "route_many_with_repair_and_commit")
     ):
         return False
-    repair_net_ids = session._final_crossing_repair_net_ids(selected_illegal_crossings)
+    repair_net_ids = _final_crossing_repair_net_ids(settings, state, selected_illegal_crossings)
     if selected_reason == "not_perpendicular" and repair_net_ids:
         priority: list[int] = []
         for item in selected_illegal_crossings:
@@ -360,7 +383,7 @@ def _repair_final_illegal_crossings(
                     net_id = int(cast(object, item.get(key)))
                 except (TypeError, ValueError):
                     continue
-                if net_id in session.route_jobs_by_id and net_id not in priority:
+                if net_id in state.route_jobs_by_id and net_id not in priority:
                     priority.append(net_id)
             blockers = item.get("crossing_footprint_blockers")
             if not isinstance(blockers, IterableABC) or isinstance(
@@ -375,7 +398,7 @@ def _repair_final_illegal_crossings(
                     blocker_net_id = int(cast(object, blocker.get("net_id")))
                 except (TypeError, ValueError):
                     continue
-                if blocker_net_id in session.route_jobs_by_id and blocker_net_id not in priority:
+                if blocker_net_id in state.route_jobs_by_id and blocker_net_id not in priority:
                     priority.append(blocker_net_id)
         repair_net_ids = [net_id for net_id in priority if net_id in repair_net_ids] + [
             net_id for net_id in repair_net_ids if net_id not in priority
@@ -400,7 +423,9 @@ def _repair_final_illegal_crossings(
         attempt["reason"] = "no_repairable_nets_or_too_many"
         attempts.append(attempt)
         return False
-    keepout_cells = session._final_crossing_repair_keepout_cells(selected_illegal_crossings)
+    keepout_cells = _final_crossing_repair_keepout_cells(
+        settings, state, selected_illegal_crossings
+    )
     attempt["keepout_cell_count"] = len(keepout_cells)
     if not keepout_cells:
         attempt["status"] = "skipped"
@@ -408,10 +433,10 @@ def _repair_final_illegal_crossings(
         attempts.append(attempt)
         return False
 
-    session.router.add_static_cells(sorted(keepout_cells))
+    state.router.add_static_cells(sorted(keepout_cells))
     for net_id in repair_net_ids:
-        session.router.ripup_route(int(net_id))
-        session.route_bookkeeping.clear_route(int(net_id))
+        state.router.ripup_route(int(net_id))
+        state.route_bookkeeping.clear_route(int(net_id))
 
     repair_jobs: list[
         tuple[
@@ -426,9 +451,11 @@ def _repair_final_illegal_crossings(
     ] = []
     opened_by_id: dict[int, list[tuple[int, int]]] = {}
     for net_id in repair_net_ids:
-        job = session.route_jobs_by_id[net_id]
-        source_state, target_state, _, _, opened_cells = session._state_openings_for_job(job)
-        clearance_exempt_cells = session._clearance_exempt_cells_for_job(job)
+        job = state.route_jobs_by_id[net_id]
+        source_state, target_state, _, _, opened_cells = _state_openings_for_job(
+            settings, state, job
+        )
+        clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
         repair_jobs.append(
             (
                 int(job.net_id),
@@ -436,22 +463,22 @@ def _repair_final_illegal_crossings(
                 target_state,
                 opened_cells,
                 clearance_exempt_cells,
-                session._foreign_keepout_cleanup_cells_for_job(job),
-                session._routing_endpoint_center_um(job, source=True),
-                session._routing_endpoint_center_um(job, source=False),
+                _foreign_keepout_cleanup_cells_for_job(settings, state, job),
+                _routing_endpoint_center_um(settings, state, job, source=True),
+                _routing_endpoint_center_um(settings, state, job, source=False),
             )
         )
         opened_by_id[int(job.net_id)] = opened_cells
 
-    raw_repair_result = session.router.route_many_with_repair_and_commit(
+    raw_repair_result = state.router.route_many_with_repair_and_commit(
         repair_jobs,
-        session.block_radius_cells,
-        session.commit_radius_cells,
-        session.core_commit_radius_cells,
-        int(session.repair_config.max_rounds),
-        int(session.repair_config.max_victims_per_failure),
-        float(session.repair_config.history_weight),
-        int(session.repair_config.history_increment),
+        state.block_radius_cells,
+        state.commit_radius_cells,
+        state.core_commit_radius_cells,
+        int(state.repair_config.max_rounds),
+        int(state.repair_config.max_victims_per_failure),
+        float(state.repair_config.history_weight),
+        int(state.repair_config.history_increment),
     )
     repair_result = dict(raw_repair_result)
     attempt["router_status"] = str(repair_result.get("status", ""))
@@ -468,16 +495,16 @@ def _repair_final_illegal_crossings(
     for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
         entry = dict(raw_entry)
         net_id = int(entry["net_id"])
-        job = session.route_jobs_by_id[net_id]
+        job = state.route_jobs_by_id[net_id]
         route_obj = entry["route"]
-        session._record_route(job, route_obj, opened_by_id[net_id])
-        repaired_records.append(session.route_bookkeeping.records_by_id[net_id])
+        _record_route(settings, state, job, route_obj, opened_by_id[net_id])
+        repaired_records.append(state.route_bookkeeping.records_by_id[net_id])
 
-    if session.settings.enable_checked_endpoint_correction and repaired_records:
+    if settings.enable_checked_endpoint_correction and repaired_records:
         repaired_net_ids = [
             int(record.net_id) for record in repaired_records if record.net_id is not None
         ]
-        session._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+        _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(settings, state,
             repaired_net_ids,
             record_pipeline_timing=False,
         )
@@ -486,15 +513,16 @@ def _repair_final_illegal_crossings(
     return True
 
 
-def _net_id_by_name(session) -> dict[str, int]:
+def _net_id_by_name(settings, state) -> dict[str, int]:
     return {
         record.net_name: int(net_id)
-        for net_id, record in session.route_bookkeeping.records_by_id.items()
+        for net_id, record in state.route_bookkeeping.records_by_id.items()
     }
 
 
 def _grid_rect_from_um_bbox(
-    session,
+    settings,
+    state,
     raw_bbox: object,
 ) -> tuple[int, int, int, int] | None:
     if not isinstance(raw_bbox, (tuple, list)) or len(raw_bbox) != 4:
@@ -512,18 +540,19 @@ def _grid_rect_from_um_bbox(
         min_x_um, max_x_um = max_x_um, min_x_um
     if max_y_um < min_y_um:
         min_y_um, max_y_um = max_y_um, min_y_um
-    grid_size = float(session.grid.grid_size_um)
-    min_cell = physical_to_grid(min_x_um, min_y_um, session.grid)
+    grid_size = float(state.grid.grid_size_um)
+    min_cell = physical_to_grid(min_x_um, min_y_um, state.grid)
     return (
         min_cell[0],
-        int(math.ceil((max_x_um - float(session.origin_x_um)) / grid_size)),
+        int(math.ceil((max_x_um - float(state.origin_x_um)) / grid_size)),
         min_cell[1],
-        int(math.ceil((max_y_um - float(session.origin_y_um)) / grid_size)),
+        int(math.ceil((max_y_um - float(state.origin_y_um)) / grid_size)),
     )
 
 
 def _add_keepout_rect(
-    session,
+    settings,
+    state,
     keepout_cells: set[tuple[int, int]],
     *,
     rect: tuple[int, int, int, int],
@@ -535,29 +564,30 @@ def _add_keepout_rect(
     if min_y > max_y:
         min_y, max_y = max_y, min_y
     for y in range(min_y - radius, max_y + radius + 1):
-        if y < 0 or y >= int(session.grid.height):
+        if y < 0 or y >= int(state.grid.height):
             continue
         for x in range(min_x - radius, max_x + radius + 1):
-            if 0 <= x < int(session.grid.width):
+            if 0 <= x < int(state.grid.width):
                 keepout_cells.add((x, y))
 
 
 def _cells_from_um_bbox(
-    session,
+    settings,
+    state,
     raw_bbox: object,
     *,
     radius: int,
 ) -> set[tuple[int, int]]:
-    rect = session._grid_rect_from_um_bbox(raw_bbox)
+    rect = _grid_rect_from_um_bbox(settings, state, raw_bbox)
     if rect is None:
         return set()
     cells: set[tuple[int, int]] = set()
-    session._add_keepout_rect(cells, rect=rect, radius=radius)
+    _add_keepout_rect(settings, state, cells, rect=rect, radius=radius)
     return cells
 
 
 def _grid_rect_from_grid_bbox_text(
-    session, text: str, name: str
+    settings, state, text: str, name: str
 ) -> tuple[int, int, int, int] | None:
     match = re.search(rf"{re.escape(name)}=\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)", text)
     if match is None:
@@ -572,7 +602,9 @@ def _grid_rect_from_grid_bbox_text(
     return min_x, max_x, min_y, max_y
 
 
-def _polygon_bbox_um(session, raw_polygon: object) -> tuple[float, float, float, float] | None:
+def _polygon_bbox_um(
+    settings, state, raw_polygon: object
+) -> tuple[float, float, float, float] | None:
     if not isinstance(raw_polygon, IterableABC) or isinstance(
         raw_polygon,
         (str, bytes, bytearray),
@@ -597,38 +629,41 @@ def _polygon_bbox_um(session, raw_polygon: object) -> tuple[float, float, float,
 
 
 def _photonic_issue_keepout_cells(
-    session,
+    settings,
+    state,
     issue: PhotonicVerificationIssue,
 ) -> set[tuple[int, int]]:
-    radius = max(1, int(session.core_commit_radius_cells) + 1)
+    radius = max(1, int(state.core_commit_radius_cells) + 1)
     if issue.code == "endpoint_correction_error":
         cells: set[tuple[int, int]] = set()
         for bbox_name in ("static_bbox", "core_bbox"):
-            rect = session._grid_rect_from_grid_bbox_text(issue.message, bbox_name)
+            rect = _grid_rect_from_grid_bbox_text(settings, state, issue.message, bbox_name)
             if rect is None:
                 continue
-            session._add_keepout_rect(cells, rect=rect, radius=radius)
+            _add_keepout_rect(settings, state, cells, rect=rect, radius=radius)
             if cells:
                 return cells
         return cells
     details = issue.details or {}
     if issue.code == "cross_net_waveguide_overlap":
-        return session._cells_from_um_bbox(
+        return _cells_from_um_bbox(settings, state,
             details.get("overlap_bbox_um"),
             radius=radius,
         )
     if issue.code == "waveguide_obstacle_overlap":
-        return session._cells_from_um_bbox(
+        return _cells_from_um_bbox(settings, state,
             details.get("overlap_bbox_um"),
             radius=radius,
         )
     if issue.code == "crossing_component_route_overlap":
         crossing = details.get("crossing")
         if isinstance(crossing, Mapping):
-            polygon_bbox = session._polygon_bbox_um(crossing.get("crossing_footprint_polygon_um"))
+            polygon_bbox = _polygon_bbox_um(
+                settings, state, crossing.get("crossing_footprint_polygon_um")
+            )
             if polygon_bbox is not None:
-                return session._cells_from_um_bbox(polygon_bbox, radius=radius)
-        return session._cells_from_um_bbox(
+                return _cells_from_um_bbox(settings, state, polygon_bbox, radius=radius)
+        return _cells_from_um_bbox(settings, state,
             details.get("overlap_bbox_um"),
             radius=radius,
         )
@@ -636,10 +671,11 @@ def _photonic_issue_keepout_cells(
 
 
 def _photonic_issue_net_ids(
-    session,
+    settings,
+    state,
     issue: PhotonicVerificationIssue,
 ) -> set[int]:
-    by_name = session._net_id_by_name()
+    by_name = _net_id_by_name(settings, state)
     net_ids: set[int] = set()
     if issue.net_name and issue.net_name in by_name:
         net_ids.add(by_name[issue.net_name])
@@ -651,43 +687,44 @@ def _photonic_issue_net_ids(
 
 
 def _make_photonic_verification_probe_layout(
-    session,
+    settings,
+    state,
     records: Iterable[RoutedNetRecord],
 ) -> Component:
-    t_probe_layout_total_start = session._pipeline_timer_start()
-    session.photonic_probe_index += 1
-    t_probe_copy_start = session._pipeline_timer_start()
-    probe_layout = session.settings.unrouted_layout.copy()
-    probe_layout.name = f"photonic_repair_probe_{time.time_ns()}_{session.photonic_probe_index}"
-    session._record_pipeline_timing("photonic_probe_copy", t_probe_copy_start)
-    t_probe_realize_start = session._pipeline_timer_start()
+    t_probe_layout_total_start = timing.pipeline_timer_start(settings, state)
+    state.photonic_probe_index += 1
+    t_probe_copy_start = timing.pipeline_timer_start(settings, state)
+    probe_layout = settings.unrouted_layout.copy()
+    probe_layout.name = f"photonic_repair_probe_{time.time_ns()}_{state.photonic_probe_index}"
+    timing.record_pipeline_timing(settings, state, "photonic_probe_copy", t_probe_copy_start)
+    t_probe_realize_start = timing.pipeline_timer_start(settings, state)
     realize_routed_net_records(
         probe_layout,
         list(records),
-        route_width_um=session.settings.route_width_um,
-        route_layer=session.settings.route_layer,
-        realization_grid_spec=session.realization_grid_spec,
-        allow_45_degree_turns=session.settings.allow_45_degree_turns,
-        bend_radius_cells=session.bend_radius_cells,
-        crossing_plan_info=session.crossing_plan_info,
-        enable_endpoint_correction=session.settings.enable_checked_endpoint_correction,
+        route_width_um=settings.route_width_um,
+        route_layer=settings.route_layer,
+        realization_grid_spec=state.realization_grid_spec,
+        allow_45_degree_turns=settings.allow_45_degree_turns,
+        bend_radius_cells=state.bend_radius_cells,
+        crossing_plan_info=state.crossing_plan_info,
+        enable_endpoint_correction=settings.enable_checked_endpoint_correction,
     )
-    session._record_pipeline_timing("photonic_probe_realize", t_probe_realize_start)
-    if session.crossing_plan_info.get("enabled"):
-        t_probe_crossings_start = session._pipeline_timer_start()
-        _place_realized_crossing_components(probe_layout, session.crossing_plan_info)
-        session._record_pipeline_timing(
+    timing.record_pipeline_timing(settings, state, "photonic_probe_realize", t_probe_realize_start)
+    if state.crossing_plan_info.get("enabled"):
+        t_probe_crossings_start = timing.pipeline_timer_start(settings, state)
+        _place_realized_crossing_components(probe_layout, state.crossing_plan_info)
+        timing.record_pipeline_timing(settings, state,
             "photonic_probe_crossing_place",
             t_probe_crossings_start,
         )
-    session._record_pipeline_timing(
+    timing.record_pipeline_timing(settings, state,
         "photonic_probe_layout_total",
         t_probe_layout_total_start,
     )
     return probe_layout
 
 
-def _refresh_photonic_verification(session) -> PhotonicVerificationResult:
+def _refresh_photonic_verification(settings, state) -> PhotonicVerificationResult:
     # This is an internal diagnostic verifier, not the intended default
     # source of truth for production routing success. A* and the grid-level
     # crossing checks must reject illegal moves locally; the final geometry
@@ -695,47 +732,48 @@ def _refresh_photonic_verification(session) -> PhotonicVerificationResult:
     # layout. Keep this probe available for debugging model mismatches
     # between grid decisions and realized geometry, but do not treat it as
     # a mandatory always-on second full verification pass.
-    t_refresh_start = session._pipeline_timer_start()
-    records = session.route_bookkeeping.ordered_records()
-    probe_layout = session._make_photonic_verification_probe_layout(records)
-    session.last_photonic_probe_layout = probe_layout
-    session.last_photonic_probe_records = list(records)
-    t_verify_start = session._pipeline_timer_start()
+    t_refresh_start = timing.pipeline_timer_start(settings, state)
+    records = state.route_bookkeeping.ordered_records()
+    probe_layout = _make_photonic_verification_probe_layout(settings, state, records)
+    state.last_photonic_probe_layout = probe_layout
+    state.last_photonic_probe_records = list(records)
+    t_verify_start = timing.pipeline_timer_start(settings, state)
     result = verify_photonic_routing(
         probe_layout,
-        session.settings.schematic,
+        settings.schematic,
         routed_net_records=records,
-        unrouted_layout=session.settings.unrouted_layout,
-        route_width_um=session.settings.route_width_um,
-        route_layer=session.settings.route_layer,
+        unrouted_layout=settings.unrouted_layout,
+        route_width_um=settings.route_width_um,
+        route_layer=settings.route_layer,
         obstacle_layers=_default_obstacle_layers(
-            session.settings.route_layer,
-            include_heater_obstacles=session.settings.include_heater_obstacles,
+            settings.route_layer,
+            include_heater_obstacles=settings.include_heater_obstacles,
         ),
-        realization_grid_spec=session.realization_grid_spec,
-        allow_45_degree_turns=session.settings.allow_45_degree_turns,
-        bend_radius_cells=session.bend_radius_cells,
+        realization_grid_spec=state.realization_grid_spec,
+        allow_45_degree_turns=settings.allow_45_degree_turns,
+        bend_radius_cells=state.bend_radius_cells,
         legal_overlap_polygons_by_net_id_pair_um=(
-            _legal_crossing_overlap_polygons_for_verification(session.crossing_plan_info)
+            _legal_crossing_overlap_polygons_for_verification(state.crossing_plan_info)
         ),
         crossing_component_footprints_um=(
-            _legal_crossing_component_footprints_for_verification(session.crossing_plan_info)
+            _legal_crossing_component_footprints_for_verification(state.crossing_plan_info)
         ),
-        check_route_coverage=session.settings.debug_stop_after_route_index is None,
-        check_endpoint_connectivity=session.settings.enable_checked_endpoint_correction,
+        check_route_coverage=settings.debug_stop_after_route_index is None,
+        check_endpoint_connectivity=settings.enable_checked_endpoint_correction,
     )
-    session._record_pipeline_timing("photonic_probe_verify", t_verify_start)
-    session._record_pipeline_timing("photonic_refresh_total", t_refresh_start)
+    timing.record_pipeline_timing(settings, state, "photonic_probe_verify", t_verify_start)
+    timing.record_pipeline_timing(settings, state, "photonic_refresh_total", t_refresh_start)
     return result
 
 
 def _repair_final_photonic_issues(
-    session,
+    settings,
+    state,
     issues: tuple[PhotonicVerificationIssue, ...],
 ) -> bool:
     attempts = cast(
         list[dict[str, object]],
-        session.crossing_plan_info.setdefault("final_photonic_repair_attempts", []),
+        state.crossing_plan_info.setdefault("final_photonic_repair_attempts", []),
     )
     priority_groups: tuple[tuple[str, set[str]], ...] = (
         (
@@ -769,19 +807,19 @@ def _repair_final_photonic_issues(
         selected_issues = selected_issues[:1]
     if (
         not selected_issues
-        or not session.repair_config.enabled
-        or not hasattr(session.router, "add_static_cells")
-        or not hasattr(session.router, "ripup_route")
-        or not hasattr(session.router, "route_many_with_repair_and_commit")
+        or not state.repair_config.enabled
+        or not hasattr(state.router, "add_static_cells")
+        or not hasattr(state.router, "ripup_route")
+        or not hasattr(state.router, "route_many_with_repair_and_commit")
     ):
         return False
 
     repair_net_ids_set: set[int] = set()
     keepout_cells: set[tuple[int, int]] = set()
     for issue in selected_issues:
-        repair_net_ids_set.update(session._photonic_issue_net_ids(issue))
-        keepout_cells.update(session._photonic_issue_keepout_cells(issue))
-    repair_net_ids = [net_id for net_id in session.route_order if net_id in repair_net_ids_set]
+        repair_net_ids_set.update(_photonic_issue_net_ids(settings, state, issue))
+        keepout_cells.update(_photonic_issue_keepout_cells(settings, state, issue))
+    repair_net_ids = [net_id for net_id in state.route_order if net_id in repair_net_ids_set]
     attempt: dict[str, object] = {
         "selected_group": selected_group,
         "issue_counts": dict(Counter(issue.code for issue in issues)),
@@ -800,10 +838,10 @@ def _repair_final_photonic_issues(
         attempts.append(attempt)
         return False
 
-    session.router.add_static_cells(sorted(keepout_cells))
+    state.router.add_static_cells(sorted(keepout_cells))
     for net_id in repair_net_ids:
-        session.router.ripup_route(int(net_id))
-        session.route_bookkeeping.clear_route(int(net_id))
+        state.router.ripup_route(int(net_id))
+        state.route_bookkeeping.clear_route(int(net_id))
 
     repair_jobs: list[
         tuple[
@@ -819,9 +857,11 @@ def _repair_final_photonic_issues(
     ] = []
     opened_by_id: dict[int, list[tuple[int, int]]] = {}
     for net_id in repair_net_ids:
-        job = session.route_jobs_by_id[net_id]
-        source_state, target_state, _, _, opened_cells = session._state_openings_for_job(job)
-        clearance_exempt_cells = session._clearance_exempt_cells_for_job(job)
+        job = state.route_jobs_by_id[net_id]
+        source_state, target_state, _, _, opened_cells = _state_openings_for_job(
+            settings, state, job
+        )
+        clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
         repair_jobs.append(
             (
                 int(job.net_id),
@@ -829,22 +869,22 @@ def _repair_final_photonic_issues(
                 target_state,
                 opened_cells,
                 clearance_exempt_cells,
-                session._foreign_keepout_cleanup_cells_for_job(job),
-                session._routing_endpoint_center_um(job, source=True),
-                session._routing_endpoint_center_um(job, source=False),
+                _foreign_keepout_cleanup_cells_for_job(settings, state, job),
+                _routing_endpoint_center_um(settings, state, job, source=True),
+                _routing_endpoint_center_um(settings, state, job, source=False),
             )
         )
         opened_by_id[int(job.net_id)] = opened_cells
 
-    raw_repair_result = session.router.route_many_with_repair_and_commit(
+    raw_repair_result = state.router.route_many_with_repair_and_commit(
         repair_jobs,
-        session.block_radius_cells,
-        session.commit_radius_cells,
-        session.core_commit_radius_cells,
-        int(session.repair_config.max_rounds),
-        int(session.repair_config.max_victims_per_failure),
-        float(session.repair_config.history_weight),
-        int(session.repair_config.history_increment),
+        state.block_radius_cells,
+        state.commit_radius_cells,
+        state.core_commit_radius_cells,
+        int(state.repair_config.max_rounds),
+        int(state.repair_config.max_victims_per_failure),
+        float(state.repair_config.history_weight),
+        int(state.repair_config.history_increment),
     )
     repair_result = dict(raw_repair_result)
     attempt["router_status"] = str(repair_result.get("status", ""))
@@ -861,13 +901,13 @@ def _repair_final_photonic_issues(
     for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
         entry = dict(raw_entry)
         net_id = int(entry["net_id"])
-        job = session.route_jobs_by_id[net_id]
+        job = state.route_jobs_by_id[net_id]
         route_obj = entry["route"]
-        session._record_route(job, route_obj, opened_by_id[net_id])
+        _record_route(settings, state, job, route_obj, opened_by_id[net_id])
         repaired_net_ids.append(net_id)
-    if session.settings.enable_checked_endpoint_correction and repaired_net_ids:
+    if settings.enable_checked_endpoint_correction and repaired_net_ids:
         failed_corrections = (
-            session._apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+            _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(settings, state,
                 repaired_net_ids,
                 record_pipeline_timing=False,
             )
@@ -881,7 +921,8 @@ def _repair_final_photonic_issues(
 
 
 def _photonic_repair_failure_preview(
-    session,
+    settings,
+    state,
     verification: PhotonicVerificationResult,
 ) -> str:
     lines: list[str] = []
@@ -899,67 +940,69 @@ def _photonic_repair_failure_preview(
     return "; ".join(lines)
 
 
-def _refresh_realized_crossing_verification(session) -> list[dict[str, object]]:
-    t_refresh_crossings_start = session._pipeline_timer_start()
-    t_overlap_start = session._pipeline_timer_start()
-    if session.settings.enable_internal_photonic_probe_verification:
+def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, object]]:
+    t_refresh_crossings_start = timing.pipeline_timer_start(settings, state)
+    t_overlap_start = timing.pipeline_timer_start(settings, state)
+    if settings.enable_internal_photonic_probe_verification:
         _augment_crossing_plan_with_realized_overlaps(
-            router=session.router,
-            crossing_plan_info=session.crossing_plan_info,
-            routed_records_by_net_id=session.route_bookkeeping.records_by_id,
+            router=state.router,
+            crossing_plan_info=state.crossing_plan_info,
+            routed_records_by_net_id=state.route_bookkeeping.records_by_id,
         )
-    session._record_pipeline_timing("realized_crossing_overlap_augment", t_overlap_start)
+    timing.record_pipeline_timing(
+        settings, state, "realized_crossing_overlap_augment", t_overlap_start
+    )
     native_crossing_events: list[Any] = []
-    if hasattr(session.router, "crossing_events"):
-        t_native_events_start = session._pipeline_timer_start()
+    if hasattr(state.router, "crossing_events"):
+        t_native_events_start = timing.pipeline_timer_start(settings, state)
         try:
-            native_crossing_events = list(cast(Iterable[Any], session.router.crossing_events()))
+            native_crossing_events = list(cast(Iterable[Any], state.router.crossing_events()))
         except Exception:
             native_crossing_events = []
-        session.crossing_plan_info["native_crossing_events"] = native_crossing_events
-        session.crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
-        session._record_pipeline_timing(
+        state.crossing_plan_info["native_crossing_events"] = native_crossing_events
+        state.crossing_plan_info["native_crossing_event_count"] = len(native_crossing_events)
+        timing.record_pipeline_timing(settings, state,
             "realized_crossing_native_events",
             t_native_events_start,
         )
-        t_insertion_loss_start = session._pipeline_timer_start()
+        t_insertion_loss_start = timing.pipeline_timer_start(settings, state)
         _augment_insertion_loss_report(
-            crossing_plan_info=session.crossing_plan_info,
-            routed_records_by_net_id=session.route_bookkeeping.records_by_id,
+            crossing_plan_info=state.crossing_plan_info,
+            routed_records_by_net_id=state.route_bookkeeping.records_by_id,
             native_crossing_events=native_crossing_events,
         )
-        session._record_pipeline_timing(
+        timing.record_pipeline_timing(settings, state,
             "realized_crossing_insertion_loss",
             t_insertion_loss_start,
         )
-    t_illegal_crossing_verify_start = session._pipeline_timer_start()
-    if session.settings.enable_internal_photonic_probe_verification:
+    t_illegal_crossing_verify_start = timing.pipeline_timer_start(settings, state)
+    if settings.enable_internal_photonic_probe_verification:
         illegal = _verify_realized_route_intersections(
-            crossing_plan_info=session.crossing_plan_info,
-            routed_records_by_net_id=session.route_bookkeeping.records_by_id,
-            realization_grid_spec=session.realization_grid_spec,
+            crossing_plan_info=state.crossing_plan_info,
+            routed_records_by_net_id=state.route_bookkeeping.records_by_id,
+            realization_grid_spec=state.realization_grid_spec,
         )
     else:
         illegal = _populate_realized_intersections_from_native_crossing_events(
-            crossing_plan_info=session.crossing_plan_info,
-            routed_records_by_net_id=session.route_bookkeeping.records_by_id,
+            crossing_plan_info=state.crossing_plan_info,
+            routed_records_by_net_id=state.route_bookkeeping.records_by_id,
             native_crossing_events=native_crossing_events,
-            realization_grid_spec=session.realization_grid_spec,
+            realization_grid_spec=state.realization_grid_spec,
         )
-    session._record_pipeline_timing(
+    timing.record_pipeline_timing(settings, state,
         "realized_crossing_verify_intersections",
         t_illegal_crossing_verify_start,
     )
-    t_realized_insertion_loss_start = session._pipeline_timer_start()
+    t_realized_insertion_loss_start = timing.pipeline_timer_start(settings, state)
     _augment_insertion_loss_report_from_realized_intersections(
-        crossing_plan_info=session.crossing_plan_info,
-        routed_records_by_net_id=session.route_bookkeeping.records_by_id,
+        crossing_plan_info=state.crossing_plan_info,
+        routed_records_by_net_id=state.route_bookkeeping.records_by_id,
     )
-    session._record_pipeline_timing(
+    timing.record_pipeline_timing(settings, state,
         "realized_crossing_realized_loss",
         t_realized_insertion_loss_start,
     )
-    session._record_pipeline_timing(
+    timing.record_pipeline_timing(settings, state,
         "realized_crossing_refresh_total",
         t_refresh_crossings_start,
     )
@@ -967,8 +1010,8 @@ def _refresh_realized_crossing_verification(session) -> list[dict[str, object]]:
 
 
 def repair_and_verify_final_geometry(
-    session, routed_net_records: list[RoutedNetRecord]
-) -> tuple[list[RoutedNetRecord], list[dict[str, object]]]:
+    settings: SessionSettings, state: SessionState, routed_net_records: list[RoutedNetRecord]
+) -> VerifiedRecords:
     """Run the final crossing-legality and photonic-verification repair loops before geometry realization.
 
     Crossing legality is still checked internally because the router owns the
@@ -986,12 +1029,12 @@ def repair_and_verify_final_geometry(
     `illegal_realized_crossings` list (empty if geometry is clean) for the realization
     phase that follows.
     """
-    session.photonic_probe_index = 0
-    session.last_photonic_probe_layout: Component | None = None
-    session.last_photonic_probe_records: list[RoutedNetRecord] = []
+    state.photonic_probe_index = 0
+    state.last_photonic_probe_layout: Component | None = None
+    state.last_photonic_probe_records: list[RoutedNetRecord] = []
 
     final_crossing_repair_round_limit = 12
-    t_final_verification_block_start = session._pipeline_timer_start()
+    t_final_verification_block_start = timing.pipeline_timer_start(settings, state)
     # Crossing legality is still checked internally because the router owns the
     # crossing event model and can repair/reroute before final realization.
     #
@@ -1000,66 +1043,70 @@ def repair_and_verify_final_geometry(
     # but the normal flow skips this expensive pass unless debug/failure
     # analysis asks for it. The external Python verifier in `routing_flow.py`
     # remains the final GDS/layout-level gate.
-    illegal_realized_crossings = session._refresh_realized_crossing_verification()
+    illegal_realized_crossings = _refresh_realized_crossing_verification(settings, state)
     for _final_repair_round in range(final_crossing_repair_round_limit):
         if not illegal_realized_crossings:
             break
-        if not session._repair_final_illegal_crossings(illegal_realized_crossings):
+        if not _repair_final_illegal_crossings(settings, state, illegal_realized_crossings):
             break
-        routed_net_records = session.route_bookkeeping.ordered_records()
-        illegal_realized_crossings = session._refresh_realized_crossing_verification()
+        routed_net_records = state.route_bookkeeping.ordered_records()
+        illegal_realized_crossings = _refresh_realized_crossing_verification(settings, state)
     if (
         not illegal_realized_crossings
-        and session.settings.enable_internal_photonic_probe_verification
+        and settings.enable_internal_photonic_probe_verification
     ):
-        final_photonic_verification = session._refresh_photonic_verification()
+        final_photonic_verification = _refresh_photonic_verification(settings, state)
         for _final_photonic_repair_round in range(8):
             if final_photonic_verification.success:
                 break
-            if not session._repair_final_photonic_issues(final_photonic_verification.issues):
+            if not _repair_final_photonic_issues(
+                settings, state, final_photonic_verification.issues
+            ):
                 break
-            illegal_realized_crossings = session._refresh_realized_crossing_verification()
+            illegal_realized_crossings = _refresh_realized_crossing_verification(settings, state)
             for _nested_crossing_repair_round in range(final_crossing_repair_round_limit):
                 if not illegal_realized_crossings:
                     break
-                if not session._repair_final_illegal_crossings(illegal_realized_crossings):
+                if not _repair_final_illegal_crossings(settings, state, illegal_realized_crossings):
                     break
-                illegal_realized_crossings = session._refresh_realized_crossing_verification()
-            routed_net_records = session.route_bookkeeping.ordered_records()
+                illegal_realized_crossings = _refresh_realized_crossing_verification(
+                    settings, state
+                )
+            routed_net_records = state.route_bookkeeping.ordered_records()
             if illegal_realized_crossings:
                 break
-            final_photonic_verification = session._refresh_photonic_verification()
+            final_photonic_verification = _refresh_photonic_verification(settings, state)
         if not illegal_realized_crossings and not final_photonic_verification.success:
             _write_crossing_debug_artifacts(
-                debug_path=session.debug_path if session.debug_path is not None else Path("build"),
-                debug_prefix=session.settings.debug_prefix,
-                crossing_plan_info=session.crossing_plan_info,
+                debug_path=state.debug_path if state.debug_path is not None else Path("build"),
+                debug_prefix=settings.debug_prefix,
+                crossing_plan_info=state.crossing_plan_info,
             )
             probe_failure_artifacts = _dump_photonic_probe_failure_artifacts(
-                debug_path=session.debug_path if session.debug_path is not None else Path("build"),
-                debug_prefix=session.settings.debug_prefix,
-                probe_layout=session.last_photonic_probe_layout,
+                debug_path=state.debug_path if state.debug_path is not None else Path("build"),
+                debug_prefix=settings.debug_prefix,
+                probe_layout=state.last_photonic_probe_layout,
                 verification=final_photonic_verification,
-                records=session.last_photonic_probe_records
-                or session.route_bookkeeping.ordered_records(),
-                router=session.router,
-                realization_grid_spec=session.realization_grid_spec,
+                records=state.last_photonic_probe_records
+                or state.route_bookkeeping.ordered_records(),
+                router=state.router,
+                realization_grid_spec=state.realization_grid_spec,
                 allow_unchecked_bumps=True,
             )
-            session.crossing_plan_info["photonic_probe_failure_artifacts"] = (
+            state.crossing_plan_info["photonic_probe_failure_artifacts"] = (
                 probe_failure_artifacts
             )
-            session._record_pipeline_timing(
+            timing.record_pipeline_timing(settings, state,
                 "final_verification_block",
                 t_final_verification_block_start,
             )
             raise RuntimeError(
                 "Final photonic geometry repair failed before realization: "
                 f"{final_photonic_verification.error_count} error(s). "
-                f"{session._photonic_repair_failure_preview(final_photonic_verification)}"
+                f"{_photonic_repair_failure_preview(settings, state, final_photonic_verification)}"
             )
-    session._record_pipeline_timing(
+    timing.record_pipeline_timing(settings, state,
         "final_verification_block",
         t_final_verification_block_start,
     )
-    return routed_net_records, illegal_realized_crossings
+    return VerifiedRecords(routed_net_records, illegal_realized_crossings)

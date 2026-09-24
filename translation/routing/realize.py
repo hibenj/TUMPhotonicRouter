@@ -17,8 +17,13 @@ from translation.route_rust_types import (
     summarize_route_search,
 )
 
+from translation.routing import timing
+from translation.routing.settings import SessionSettings
+from translation.routing.state import SessionState
+
 def realize_and_assemble_debug_artifacts(
-    session,
+    settings: SessionSettings,
+    state: SessionState,
     route_jobs: list[RouteJob],
     routed_net_records: list[RoutedNetRecord],
     illegal_realized_crossings: list[dict[str, object]],
@@ -37,28 +42,30 @@ def realize_and_assemble_debug_artifacts(
     with the same list unexpectedly still populated), then assembles and returns the
     debug artifacts bundle.
     """
-    if not illegal_realized_crossings and not session.settings.defer_realization:
-        t_direct_realization_start = session._pipeline_timer_start()
+    if not illegal_realized_crossings and not settings.defer_realization:
+        t_direct_realization_start = timing.pipeline_timer_start(settings, state)
         realize_routed_net_records(
-            session.routed_layout,
+            state.routed_layout,
             routed_net_records,
-            route_width_um=session.settings.route_width_um,
-            route_layer=session.settings.route_layer,
-            realization_grid_spec=session.realization_grid_spec,
-            allow_45_degree_turns=session.settings.allow_45_degree_turns,
-            bend_radius_cells=session.bend_radius_cells,
-            crossing_plan_info=session.crossing_plan_info,
-            enable_endpoint_correction=session.settings.enable_checked_endpoint_correction,
+            route_width_um=settings.route_width_um,
+            route_layer=settings.route_layer,
+            realization_grid_spec=state.realization_grid_spec,
+            allow_45_degree_turns=settings.allow_45_degree_turns,
+            bend_radius_cells=state.bend_radius_cells,
+            crossing_plan_info=state.crossing_plan_info,
+            enable_endpoint_correction=settings.enable_checked_endpoint_correction,
         )
-        session._record_pipeline_timing("direct_realization", t_direct_realization_start)
-        _place_realized_crossing_components(session.routed_layout, session.crossing_plan_info)
-    elif session.crossing_plan_info.get("enabled"):
-        session.crossing_plan_info.setdefault("realized_crossing_components", [])
-        session.crossing_plan_info.setdefault("realized_crossing_component_count", 0)
+        timing.record_pipeline_timing(
+            settings, state, "direct_realization", t_direct_realization_start
+        )
+        _place_realized_crossing_components(state.routed_layout, state.crossing_plan_info)
+    elif state.crossing_plan_info.get("enabled"):
+        state.crossing_plan_info.setdefault("realized_crossing_components", [])
+        state.crossing_plan_info.setdefault("realized_crossing_component_count", 0)
     _write_crossing_debug_artifacts(
-        debug_path=session.debug_path if session.debug_path is not None else Path("build"),
-        debug_prefix=session.settings.debug_prefix,
-        crossing_plan_info=session.crossing_plan_info,
+        debug_path=state.debug_path if state.debug_path is not None else Path("build"),
+        debug_prefix=settings.debug_prefix,
+        crossing_plan_info=state.crossing_plan_info,
     )
     if illegal_realized_crossings:
         preview = "; ".join(
@@ -79,34 +86,36 @@ def realize_and_assemble_debug_artifacts(
             f"{len(illegal_realized_crossings)} found. {preview}"
         )
 
-    t_debug_artifact_start = session._pipeline_timer_start()
+    t_debug_artifact_start = timing.pipeline_timer_start(settings, state)
     debug_artifacts = build_route_debug_artifacts(
         obstacle_svg=obstacle_svg,
-        route_svgs=session.route_svgs,
+        route_svgs=state.route_svgs,
         obstacle_map=obstacle_map,
         routed_net_records=routed_net_records,
-        realization_grid_spec=session.realization_grid_spec,
-        allow_45_degree_turns=session.settings.allow_45_degree_turns,
-        bend_radius_cells=session.bend_radius_cells,
+        realization_grid_spec=state.realization_grid_spec,
+        allow_45_degree_turns=settings.allow_45_degree_turns,
+        bend_radius_cells=state.bend_radius_cells,
         route_search_summary=summarize_route_search(
-            session.route_timing_buckets,
+            state.route_timing_buckets,
             route_count=len(route_jobs),
-            simple_route_count=session.simple_route_count,
-            repair_count=session.repair_count,
-            deferred_count=session.deferred_count,
+            simple_route_count=state.simple_route_count,
+            repair_count=state.repair_count,
+            deferred_count=state.deferred_count,
             astar_elapsed_s=astar_elapsed_s,
         ),
-        route_attempt_records=session.route_attempt_records,
-        route_nets_timings_s=session.route_nets_timings_s,
+        route_attempt_records=state.route_attempt_records,
+        route_nets_timings_s=state.route_nets_timings_s,
     )
     debug_artifacts = replace(
         debug_artifacts,
-        crossing_plan_info=session.crossing_plan_info,
+        crossing_plan_info=state.crossing_plan_info,
     )
-    session._record_pipeline_timing("debug_artifact_assembly", t_debug_artifact_start)
-    if session.settings.collect_pipeline_timing:
+    timing.record_pipeline_timing(
+        settings, state, "debug_artifact_assembly", t_debug_artifact_start
+    )
+    if settings.collect_pipeline_timing:
         debug_artifacts = replace(
             debug_artifacts,
-            route_nets_timings_s=dict(session.route_nets_timings_s),
+            route_nets_timings_s=dict(state.route_nets_timings_s),
         )
     return debug_artifacts

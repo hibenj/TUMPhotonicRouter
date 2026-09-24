@@ -69,6 +69,10 @@ from translation.routing.router_setup import (  # noqa: F401
     dense_obstacle_cell_cap,
 )
 
+from translation.routing.obstacle_context import build_static_obstacle_context
+from translation.routing.route_jobs import build_route_jobs_and_fanout_clustering
+from translation.routing.router_setup import configure_router_and_grid
+
 def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
     _meander_impl._load_rust_backend = _load_rust_backend
     return _meander_impl.analyze_meander_insertion_for_requirements(*args, **kwargs)
@@ -490,10 +494,11 @@ def static_fanout_anchors_um(
     session = _RouteNetsRustSession(
         unrouted_layout=unrouted_layout, schematic=schematic, **session_kwargs
     )
-    obstacle_map, _crossing_device_info, _svg = session._build_static_obstacle_context()
-    session._configure_router_and_grid(obstacle_map)
-    session._build_route_jobs_and_fanout_clustering(schematic.netlist.routes)
+    settings, state = session.settings, session.state
+    context = build_static_obstacle_context(settings, state)
+    configure_router_and_grid(settings, state, context.obstacle_map)
+    build_route_jobs_and_fanout_clustering(settings, state, schematic.netlist.routes)
     return {
         spec: (float(anchor.center_um[0]), float(anchor.center_um[1]))
-        for spec, anchor in session.fanout_anchor_by_port_spec.items()
+        for spec, anchor in state.fanout_anchor_by_port_spec.items()
     }

@@ -33,6 +33,13 @@ from translation.route_rust_types import (
     route_attempt_record_from_route,
 )
 
+from translation.routing.crossing_plan_stage import _cells_in_raw_static_geometry
+from translation.routing.handoff import _foreign_keepout_open_cells_for_spec, _states_and_openings
+from translation.routing.route_jobs import _angle_to_step, _fanout_stub_bend_steps
+from translation.routing import timing
+from translation.routing.settings import SessionSettings
+from translation.routing.state import SessionState
+
 # `route_many_with_negotiated_repair_and_commit`'s own round budget --
 # LiDAR's `runNRR` default (`.agent/execplans/2026-09-14-lidar-style-
 # negotiated-ripup-endgame.md`, Milestone 3). Kept separate from
@@ -45,7 +52,8 @@ NEGOTIATED_MAX_ROUNDS = 10
 
 
 def _direction_reaches_target_ray(
-    session,
+    settings,
+    state,
     *,
     source_x: int,
     source_y: int,
@@ -58,7 +66,7 @@ def _direction_reaches_target_ray(
     dy = target_y - source_y
     if abs(dx) <= tolerance and abs(dy) <= tolerance:
         return True
-    dir_x, dir_y = session._angle_to_step(source_angle)
+    dir_x, dir_y = _angle_to_step(settings, state, source_angle)
     if dir_x == 0 and dir_y == 0:
         return False
     if dir_x == 0:
@@ -73,7 +81,8 @@ def _direction_reaches_target_ray(
 
 
 def _source_lower_bounds(
-    session,
+    settings,
+    state,
     *,
     source_x: int,
     source_y: int,
@@ -82,54 +91,58 @@ def _source_lower_bounds(
     target_y: int,
     target_angle: int,
 ) -> tuple[float, float]:
-    grid_size_um = float(session.grid.grid_size_um)
+    grid_size_um = float(state.grid.grid_size_um)
     dx = target_x - source_x
     dy = target_y - source_y
     distance = math.hypot(float(dx), float(dy)) * grid_size_um
     heading_lower_bound = distance
-    if str(session.settings.heuristic_mode) == "heading_aware":
-        target_angle_ok = not bool(getattr(session.astar_cfg, "require_target_angle", True)) or (
+    if str(settings.heuristic_mode) == "heading_aware":
+        target_angle_ok = not bool(getattr(state.astar_cfg, "require_target_angle", True)) or (
             source_angle % 8 == target_angle % 8
         )
-        reaches_target_ray = session._direction_reaches_target_ray(
+        reaches_target_ray = _direction_reaches_target_ray(settings, state,
             source_x=source_x,
             source_y=source_y,
             source_angle=source_angle,
             target_x=target_x,
             target_y=target_y,
-            tolerance=max(0, int(getattr(session.astar_cfg, "target_tolerance_cells", 0))),
+            tolerance=max(0, int(getattr(state.astar_cfg, "target_tolerance_cells", 0))),
         )
         if not target_angle_ok or not reaches_target_ray:
-            minimum_bend_units = 1.0 if session.settings.allow_45_degree_turns else 2.0
-            bend_weight = float(getattr(session.astar_cfg, "bend_weight", 1.0)) * float(
-                getattr(session.primitive_cfg, "bend_weight", 1.0)
+            minimum_bend_units = 1.0 if settings.allow_45_degree_turns else 2.0
+            bend_weight = float(getattr(state.astar_cfg, "bend_weight", 1.0)) * float(
+                getattr(state.primitive_cfg, "bend_weight", 1.0)
             )
             heading_lower_bound += minimum_bend_units * bend_weight
     return distance, heading_lower_bound
 
 
-def _foreign_keepout_cleanup_cells_for_spec(session, port_spec: str) -> set[tuple[int, int]]:
-    cells = set(session.foreign_port_keepout_cells_by_spec.get(port_spec, set()))
+def _foreign_keepout_cleanup_cells_for_spec(
+    settings, state, port_spec: str
+) -> set[tuple[int, int]]:
+    cells = set(state.foreign_port_keepout_cells_by_spec.get(port_spec, set()))
     if not cells:
         return set()
-    cells.difference_update(session.normal_port_runway_cells)
-    cells.difference_update(session.fanout_stub_static_cells)
-    cells.difference_update(session._cells_in_raw_static_geometry(cells))
+    cells.difference_update(state.normal_port_runway_cells)
+    cells.difference_update(state.fanout_stub_static_cells)
+    cells.difference_update(_cells_in_raw_static_geometry(settings, state, cells))
     return cells
 
 
-def _foreign_keepout_cleanup_cells_for_job(session, job: RouteJob) -> list[tuple[int, int]]:
-    cells = session._foreign_keepout_cleanup_cells_for_spec(f"{job.inst1},{job.port1}")
-    cells.update(session._foreign_keepout_cleanup_cells_for_spec(f"{job.inst2},{job.port2}"))
+def _foreign_keepout_cleanup_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
+    cells = _foreign_keepout_cleanup_cells_for_spec(settings, state, f"{job.inst1},{job.port1}")
+    cells.update(_foreign_keepout_cleanup_cells_for_spec(
+        settings, state, f"{job.inst2},{job.port2}"
+    ))
     return sorted(cells)
 
 
-def _timing_start(session) -> float:
-    return time.perf_counter() if session.collect_timing else 0.0
+def _timing_start(settings, state) -> float:
+    return time.perf_counter() if state.collect_timing else 0.0
 
 
-def _record_native_batch_timings(session, batch_result: dict[str, Any]) -> None:
-    if not session.settings.collect_pipeline_timing:
+def _record_native_batch_timings(settings, state, batch_result: dict[str, Any]) -> None:
+    if not settings.collect_pipeline_timing:
         return
     raw_timings = batch_result.get("timings_s")
     if raw_timings is None:
@@ -140,10 +153,10 @@ def _record_native_batch_timings(session, batch_result: dict[str, Any]) -> None:
         except (TypeError, ValueError):
             continue
         name = f"native_batch_{raw_name}"
-        session.route_nets_timings_s[name] = session.route_nets_timings_s.get(name, 0.0) + elapsed_s
+        state.route_nets_timings_s[name] = state.route_nets_timings_s.get(name, 0.0) + elapsed_s
 
 
-def _report_long_straight_congestion(session, batch_result: dict[str, Any]) -> None:
+def _report_long_straight_congestion(settings, state, batch_result: dict[str, Any]) -> None:
     records = [
         dict(record)
         for record in cast(
@@ -151,7 +164,7 @@ def _report_long_straight_congestion(session, batch_result: dict[str, Any]) -> N
             batch_result.get("long_straight_congestion", []),
         )
     ]
-    if not records or not session.settings.verbose_route_diagnostics:
+    if not records or not settings.verbose_route_diagnostics:
         return
     grouped: dict[int, list[dict[str, object]]] = {}
     for record in records:
@@ -162,7 +175,7 @@ def _report_long_straight_congestion(session, batch_result: dict[str, Any]) -> N
         grouped.setdefault(net_id, []).append(record)
     print("      - Long-straight congestion contributors:")
     for net_id in sorted(grouped):
-        job = session.route_jobs_by_id.get(net_id)
+        job = state.route_jobs_by_id.get(net_id)
         label = job.net_name if job is not None else f"net_id={net_id}"
         route_index = job.route_index if job is not None else "?"
         segments = grouped[net_id]
@@ -179,32 +192,34 @@ def _report_long_straight_congestion(session, batch_result: dict[str, Any]) -> N
 
 
 def _committed_dynamic_cells(
-    session, *, exclude_net_id: int | None = None
+    settings, state, *, exclude_net_id: int | None = None
 ) -> set[tuple[int, int]]:
-    return session.route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
+    return state.route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
 
 
 def _committed_dynamic_cells_for_attempt(
-    session,
+    settings,
+    state,
     *,
     exclude_net_id: int | None = None,
 ) -> set[tuple[int, int]]:
-    if session.route_bookkeeping.diagnostics_enabled:
-        return session.route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
+    if state.route_bookkeeping.diagnostics_enabled:
+        return state.route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
     merged: set[tuple[int, int]] = set()
-    for net_id in session.route_bookkeeping.records_by_id:
+    for net_id in state.route_bookkeeping.records_by_id:
         if exclude_net_id is not None and int(net_id) == int(exclude_net_id):
             continue
-        merged.update(session._route_cells_from_router(net_id))
+        merged.update(_route_cells_from_router(settings, state, net_id))
     return merged
 
 
-def _route_cells_from_router(session, net_id: int) -> set[tuple[int, int]]:
-    return {(int(cell[0]), int(cell[1])) for cell in session.router.get_net_cells(int(net_id))}
+def _route_cells_from_router(settings, state, net_id: int) -> set[tuple[int, int]]:
+    return {(int(cell[0]), int(cell[1])) for cell in state.router.get_net_cells(int(net_id))}
 
 
 def _append_centerline_points(
-    session,
+    settings,
+    state,
     out: list[tuple[float, float]],
     points: Iterable[tuple[float, float]],
 ) -> None:
@@ -218,7 +233,8 @@ def _append_centerline_points(
 
 
 def _fanout_stubbed_centerline(
-    session,
+    settings,
+    state,
     job: RouteJob,
     route_obj: Any,
 ) -> tuple[tuple[float, float], ...]:
@@ -239,10 +255,10 @@ def _fanout_stubbed_centerline(
     has completed. See
     `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
     """
-    source_anchor = session.fanout_anchor_by_port_spec.get(f"{job.inst1},{job.port1}")
+    source_anchor = state.fanout_anchor_by_port_spec.get(f"{job.inst1},{job.port1}")
     if source_anchor is None:
         return ()
-    route_primitive_centerline = getattr(session.router, "route_primitive_centerline", None)
+    route_primitive_centerline = getattr(state.router, "route_primitive_centerline", None)
     try:
         if route_primitive_centerline is not None:
             route_centerline = _centerline_tuple(route_primitive_centerline(route_obj))
@@ -253,46 +269,48 @@ def _fanout_stubbed_centerline(
     if len(route_centerline) < 2:
         return ()
     points: list[tuple[float, float]] = []
-    session._append_centerline_points(points, source_anchor.stub_centerline_um)
-    session._append_centerline_points(points, route_centerline)
+    _append_centerline_points(settings, state, points, source_anchor.stub_centerline_um)
+    _append_centerline_points(settings, state, points, route_centerline)
     centerline = _compress_centerline(tuple(points))
     return centerline if len(centerline) >= 2 else ()
 
 
 def _routing_endpoint_center_um(
-    session,
+    settings,
+    state,
     job: RouteJob,
     *,
     source: bool,
 ) -> tuple[float, float] | None:
     if source:
         port_spec = f"{job.inst1},{job.port1}"
-        anchor = session.fanout_anchor_by_port_spec.get(port_spec)
+        anchor = state.fanout_anchor_by_port_spec.get(port_spec)
         return anchor.center_um if anchor is not None else _port_center_um(job.source_port)
     port_spec = f"{job.inst2},{job.port2}"
-    anchor = session.fanout_anchor_by_port_spec.get(port_spec)
+    anchor = state.fanout_anchor_by_port_spec.get(port_spec)
     return anchor.center_um if anchor is not None else _port_center_um(job.target_port)
 
 
 def _state_openings_for_job(
-    session,
+    settings,
+    state,
     job: RouteJob,
 ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
-    return session.route_state_openings_by_id[int(job.net_id)]
+    return state.route_state_openings_by_id[int(job.net_id)]
 
 
-def _clearance_exempt_cells_for_job(session, job: RouteJob) -> list[tuple[int, int]]:
-    return session.batch_clearance_exempt_cells_by_id.get(int(job.net_id), [])
+def _clearance_exempt_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
+    return state.batch_clearance_exempt_cells_by_id.get(int(job.net_id), [])
 
 
-def _clearance_exempt_cell_set_for_job(session, job: RouteJob) -> set[tuple[int, int]]:
-    return set(session._clearance_exempt_cells_for_job(job))
+def _clearance_exempt_cell_set_for_job(settings, state, job: RouteJob) -> set[tuple[int, int]]:
+    return set(_clearance_exempt_cells_for_job(settings, state, job))
 
 
-def _static_cells_in_rect(session, min_x: int, max_x: int, min_y: int, max_y: int) -> int:
+def _static_cells_in_rect(settings, state, min_x: int, max_x: int, min_y: int, max_y: int) -> int:
     if min_x > max_x or min_y > max_y:
         return 0
-    if session.blocked_static_rects_for_diagnostics:
+    if state.blocked_static_rects_for_diagnostics:
         return sum(
             _rect_overlap_cell_count(
                 rect,
@@ -301,17 +319,18 @@ def _static_cells_in_rect(session, min_x: int, max_x: int, min_y: int, max_y: in
                 min_y=min_y,
                 max_y=max_y,
             )
-            for rect in session.blocked_static_rects_for_diagnostics
+            for rect in state.blocked_static_rects_for_diagnostics
         )
     return sum(
         1
-        for x, y in session.static_blocked_cells_before_port_reservations
+        for x, y in state.static_blocked_cells_before_port_reservations
         if min_x <= x <= max_x and min_y <= y <= max_y
     )
 
 
 def _cells_in_rect(
-    session,
+    settings,
+    state,
     cells: set[tuple[int, int]],
     *,
     min_x: int,
@@ -325,15 +344,18 @@ def _cells_in_rect(
 
 
 def _route_attempt_diagnostics(
-    session,
+    settings,
+    state,
     job: RouteJob,
     route_obj: object | None,
     *,
     candidate_blockers: list[int] | None = None,
     ripup_ids: list[int] | None = None,
 ) -> dict[str, object]:
-    dynamic_cells_before = session._committed_dynamic_cells_for_attempt(exclude_net_id=job.net_id)
-    source_state, target_state, _, _, opened_cells = session._state_openings_for_job(job)
+    dynamic_cells_before = _committed_dynamic_cells_for_attempt(
+        settings, state, exclude_net_id=job.net_id
+    )
+    source_state, target_state, _, _, opened_cells = _state_openings_for_job(settings, state, job)
     source_x = int(source_state.x)
     source_y = int(source_state.y)
     source_angle = int(source_state.angle)
@@ -364,26 +386,26 @@ def _route_attempt_diagnostics(
             min_y=window_min_y,
             max_y=window_max_y,
         )
-    window_static_cells = session._static_cells_in_rect(
+    window_static_cells = _static_cells_in_rect(settings, state,
         window_min_x,
         window_max_x,
         window_min_y,
         window_max_y,
     )
-    window_dynamic_cells = session._cells_in_rect(
+    window_dynamic_cells = _cells_in_rect(settings, state,
         dynamic_cells_before,
         min_x=window_min_x,
         max_x=window_max_x,
         min_y=window_min_y,
         max_y=window_max_y,
     )
-    span_static_cells = session._static_cells_in_rect(
+    span_static_cells = _static_cells_in_rect(settings, state,
         span_bbox_min_x,
         span_bbox_max_x,
         span_bbox_min_y,
         span_bbox_max_y,
     )
-    span_dynamic_cells = session._cells_in_rect(
+    span_dynamic_cells = _cells_in_rect(settings, state,
         dynamic_cells_before,
         min_x=span_bbox_min_x,
         max_x=span_bbox_max_x,
@@ -406,7 +428,7 @@ def _route_attempt_diagnostics(
         max_y=route_bbox_max_y,
     )
     total_cost = float(getattr(route_obj, "total_cost", 0.0)) if route_obj is not None else None
-    euclidean_lower_bound, heading_lower_bound = session._source_lower_bounds(
+    euclidean_lower_bound, heading_lower_bound = _source_lower_bounds(settings, state,
         source_x=source_x,
         source_y=source_y,
         source_angle=source_angle,
@@ -421,23 +443,23 @@ def _route_attempt_diagnostics(
     raw_core_cells: set[tuple[int, int]] = set()
     raw_core_refcount_gt1_cells: set[tuple[int, int]] = set()
     raw_net_route_cells: set[tuple[int, int]] = set()
-    if hasattr(session.router, "raw_dynamic_obstacle_cells"):
+    if hasattr(state.router, "raw_dynamic_obstacle_cells"):
         raw_dynamic_entries = [
             (int(x), int(y), int(refs))
-            for x, y, refs in session.router.raw_dynamic_obstacle_cells()
+            for x, y, refs in state.router.raw_dynamic_obstacle_cells()
         ]
         raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
         raw_dynamic_refcount_gt1_cells = {
             (x, y) for x, y, refs in raw_dynamic_entries if refs > 1
         }
-    if hasattr(session.router, "raw_dynamic_core_cells"):
+    if hasattr(state.router, "raw_dynamic_core_cells"):
         raw_core_entries = [
-            (int(x), int(y), int(refs)) for x, y, refs in session.router.raw_dynamic_core_cells()
+            (int(x), int(y), int(refs)) for x, y, refs in state.router.raw_dynamic_core_cells()
         ]
         raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
         raw_core_refcount_gt1_cells = {(x, y) for x, y, refs in raw_core_entries if refs > 1}
-    if hasattr(session.router, "all_net_route_cells"):
-        for _, cells in session.router.all_net_route_cells():
+    if hasattr(state.router, "all_net_route_cells"):
+        for _, cells in state.router.all_net_route_cells():
             raw_net_route_cells.update((int(cell[0]), int(cell[1])) for cell in cells)
     raw_dynamic_without_owner = raw_dynamic_cells - raw_net_route_cells
     raw_net_route_without_dynamic = raw_net_route_cells - raw_dynamic_cells
@@ -474,17 +496,17 @@ def _route_attempt_diagnostics(
             else None
         ),
         "opened_cells_count": len(opened_cells),
-        "block_radius_cells": session.block_radius_cells,
+        "block_radius_cells": state.block_radius_cells,
         "dynamic_obstacle_search_expansion_radius_cells": (
-            session.clearance_policy.dynamic_obstacle_search_expansion_radius_cells
+            state.clearance_policy.dynamic_obstacle_search_expansion_radius_cells
         ),
         "dynamic_route_commit_keepout_radius_cells": (
-            session.clearance_policy.dynamic_route_commit_keepout_radius_cells
+            state.clearance_policy.dynamic_route_commit_keepout_radius_cells
         ),
         "dynamic_route_core_radius_cells": (
-            session.clearance_policy.dynamic_route_core_radius_cells
+            state.clearance_policy.dynamic_route_core_radius_cells
         ),
-        "bend_radius_cells": session.bend_radius_cells,
+        "bend_radius_cells": state.bend_radius_cells,
         "window_width_cells": max(0, window_max_x - window_min_x + 1),
         "window_height_cells": max(0, window_max_y - window_min_y + 1),
         "window_area_cells": window_area,
@@ -543,22 +565,23 @@ def _route_attempt_diagnostics(
         "candidate_blocker_count": len(blocker_ids),
         "candidate_blocker_net_ids": blocker_ids,
         "candidate_blocker_route_indices": [
-            session.route_jobs_by_id[net_id].route_index
+            state.route_jobs_by_id[net_id].route_index
             for net_id in blocker_ids
-            if net_id in session.route_jobs_by_id
+            if net_id in state.route_jobs_by_id
         ],
         "ripup_victim_count": len(victim_ids),
         "ripup_victim_net_ids": victim_ids,
         "ripup_victim_route_indices": [
-            session.route_jobs_by_id[net_id].route_index
+            state.route_jobs_by_id[net_id].route_index
             for net_id in victim_ids
-            if net_id in session.route_jobs_by_id
+            if net_id in state.route_jobs_by_id
         ],
     }
 
 
 def _write_route_diagnostics(
-    session,
+    settings,
+    state,
     *,
     job: RouteJob,
     source_state: Any,
@@ -579,13 +602,13 @@ def _write_route_diagnostics(
     port2_spec = f"{job.inst2},{job.port2}"
     source_anchor_cell = (int(source_state.x), int(source_state.y))
     target_anchor_cell = (int(target_state.x), int(target_state.y))
-    committed_dynamic_cells = session._committed_dynamic_cells(exclude_net_id=job.net_id)
-    if session.diagnostics_enabled:
+    committed_dynamic_cells = _committed_dynamic_cells(settings, state, exclude_net_id=job.net_id)
+    if state.diagnostics_enabled:
         opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
-        opened_candidate_static_overlap = session._cells_in_raw_static_geometry(
+        opened_candidate_static_overlap = _cells_in_raw_static_geometry(settings, state,
             opened_candidate_cells
         )
-        opened_static_overlap = session._cells_in_raw_static_geometry(opened_cells_set)
+        opened_static_overlap = _cells_in_raw_static_geometry(settings, state, opened_cells_set)
         opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
         dynamic_exempt_dynamic_overlap = (
             dynamic_clearance_exempt_cells & committed_dynamic_cells
@@ -598,7 +621,7 @@ def _write_route_diagnostics(
         dynamic_exempt_dynamic_overlap = set()
 
     route_cells = route_cells or set()
-    route_static_overlap = session._cells_in_raw_static_geometry(route_cells)
+    route_static_overlap = _cells_in_raw_static_geometry(settings, state, route_cells)
     route_overlap_with_candidate_opened_static = route_cells & opened_candidate_static_overlap
     route_overlap_with_effective_opened_static = route_cells & opened_static_overlap
     route_dynamic_overlap = route_cells & committed_dynamic_cells
@@ -606,31 +629,31 @@ def _write_route_diagnostics(
     route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
     route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
     current_endpoint_foreign_keepout_cells = set(
-        session._foreign_keepout_open_cells_for_spec(port1_spec)
+        _foreign_keepout_open_cells_for_spec(settings, state, port1_spec)
     )
     current_endpoint_foreign_keepout_cells.update(
-        session._foreign_keepout_open_cells_for_spec(port2_spec)
+        _foreign_keepout_open_cells_for_spec(settings, state, port2_spec)
     )
     foreign_keepout_open_cells = current_endpoint_foreign_keepout_cells & opened_cells_set
-    current_port_runway_cells = set(session.port_runway_cells_by_spec.get(port1_spec, set()))
-    current_port_runway_cells.update(session.port_runway_cells_by_spec.get(port2_spec, set()))
+    current_port_runway_cells = set(state.port_runway_cells_by_spec.get(port1_spec, set()))
+    current_port_runway_cells.update(state.port_runway_cells_by_spec.get(port2_spec, set()))
     source_sibling_port_runway_cells: set[tuple[int, int]] = set()
-    for cluster_port_spec in session.dense_source_cluster_specs_by_port_spec.get(
+    for cluster_port_spec in state.dense_source_cluster_specs_by_port_spec.get(
         port1_spec, set()
     ):
         if cluster_port_spec == port1_spec:
             continue
         source_sibling_port_runway_cells.update(
-            session.port_runway_cells_by_spec.get(cluster_port_spec, set())
+            state.port_runway_cells_by_spec.get(cluster_port_spec, set())
         )
     target_sibling_port_runway_cells: set[tuple[int, int]] = set()
-    for cluster_port_spec in session.dense_source_cluster_specs_by_port_spec.get(
+    for cluster_port_spec in state.dense_source_cluster_specs_by_port_spec.get(
         port2_spec, set()
     ):
         if cluster_port_spec == port2_spec:
             continue
         target_sibling_port_runway_cells.update(
-            session.port_runway_cells_by_spec.get(cluster_port_spec, set())
+            state.port_runway_cells_by_spec.get(cluster_port_spec, set())
         )
     sibling_port_runway_cells = (
         source_sibling_port_runway_cells | target_sibling_port_runway_cells
@@ -688,7 +711,7 @@ def _write_route_diagnostics(
         cells: int = 0,
         delta: int = 0,
     ) -> tuple[tuple[int, int], int, list[tuple[int, int]]]:
-        start_dir = session._angle_to_step(source_angle)
+        start_dir = _angle_to_step(settings, state, source_angle)
         if kind == "straight":
             relative = _relative_line_cells(
                 start=(0, 0),
@@ -699,8 +722,8 @@ def _write_route_diagnostics(
             end_angle = int(source_angle) % 8
         else:
             end_angle = (int(source_angle) + int(delta)) % 8
-            end_dir = session._angle_to_step(end_angle)
-            radius = max(0, int(session.bend_radius_cells))
+            end_dir = _angle_to_step(settings, state, end_angle)
+            radius = max(0, int(state.bend_radius_cells))
             first_leg = _relative_line_cells(
                 start=(0, 0),
                 direction=start_dir,
@@ -725,16 +748,16 @@ def _write_route_diagnostics(
         cells: set[tuple[int, int]],
     ) -> dict[int, list[tuple[int, int]]]:
         owners: dict[int, list[tuple[int, int]]] = {}
-        for net_id in session.route_bookkeeping.records_by_id:
+        for net_id in state.route_bookkeeping.records_by_id:
             if int(net_id) == int(job.net_id):
                 continue
-            overlap = cells & session._route_cells_from_router(int(net_id))
+            overlap = cells & _route_cells_from_router(settings, state, int(net_id))
             if overlap:
                 owners[int(net_id)] = sorted(overlap)
         return owners
 
     def _format_post_crossing_orthogonal_candidates() -> list[str]:
-        if not session.diagnostics_enabled or not route_dynamic_overlap:
+        if not state.diagnostics_enabled or not route_dynamic_overlap:
             return []
         if int(source_state.angle) != 0 or int(target_state.angle) != 0:
             return []
@@ -748,11 +771,11 @@ def _write_route_diagnostics(
         dx_sign = 1 if target_anchor_cell[0] > cross_x else -1
         if dx_sign != 1:
             return []
-        radius = max(1, int(session.bend_radius_cells))
-        routing_static_cells = set(session.static_blocked_cells_before_port_reservations)
-        routing_static_cells.update(session.debug_port_keepout_cells)
-        routing_static_cells.update(session.foreign_port_keepout_static_cells)
-        routing_static_cells.update(session.fanout_stub_static_cells)
+        radius = max(1, int(state.bend_radius_cells))
+        routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
+        routing_static_cells.update(state.debug_port_keepout_cells)
+        routing_static_cells.update(state.foreign_port_keepout_static_cells)
+        routing_static_cells.update(state.fanout_stub_static_cells)
         opened_search_cells = set(opened_cells_set)
         allowed_dynamic_cells = set(route_dynamic_overlap)
         lines: list[str] = []
@@ -798,13 +821,13 @@ def _write_route_diagnostics(
         return lines
 
     def _format_target_bend_footprints() -> list[str]:
-        if not session.diagnostics_enabled:
+        if not state.diagnostics_enabled:
             return []
-        radius = max(1, int(session.bend_radius_cells))
-        routing_static_cells = set(session.static_blocked_cells_before_port_reservations)
-        routing_static_cells.update(session.debug_port_keepout_cells)
-        routing_static_cells.update(session.foreign_port_keepout_static_cells)
-        routing_static_cells.update(session.fanout_stub_static_cells)
+        radius = max(1, int(state.bend_radius_cells))
+        routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
+        routing_static_cells.update(state.debug_port_keepout_cells)
+        routing_static_cells.update(state.foreign_port_keepout_static_cells)
+        routing_static_cells.update(state.fanout_stub_static_cells)
         opened_search_cells = set(opened_cells_set)
 
         def turn_cells(
@@ -812,9 +835,9 @@ def _write_route_diagnostics(
             start_angle: int,
             delta: int,
         ) -> set[tuple[int, int]]:
-            start_dir = session._angle_to_step(start_angle)
+            start_dir = _angle_to_step(settings, state, start_angle)
             end_angle = (int(start_angle) + int(delta)) % 8
-            end_dir = session._angle_to_step(end_angle)
+            end_dir = _angle_to_step(settings, state, end_angle)
             cells: set[tuple[int, int]] = set()
             for step in range(radius + 1):
                 cells.add(
@@ -875,7 +898,7 @@ def _write_route_diagnostics(
         return lines
 
     def _format_first_move_debug() -> list[str]:
-        if not session.diagnostics_enabled:
+        if not state.diagnostics_enabled:
             return []
         source = source_anchor_cell
         source_angle = int(source_state.angle)
@@ -886,13 +909,13 @@ def _write_route_diagnostics(
             for cell in opened_cells_set
             if cell == source_key or cell == target_key or cell not in committed_dynamic_cells
         }
-        routing_static_cells = set(session.static_blocked_cells_before_port_reservations)
-        routing_static_cells.update(session.debug_port_keepout_cells)
-        routing_static_cells.update(session.foreign_port_keepout_static_cells)
-        routing_static_cells.update(session.fanout_stub_static_cells)
+        routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
+        routing_static_cells.update(state.debug_port_keepout_cells)
+        routing_static_cells.update(state.foreign_port_keepout_static_cells)
+        routing_static_cells.update(state.fanout_stub_static_cells)
         primitive_specs: list[tuple[str, str, int, int]] = [
-            ("straight_short", "straight", int(session.primitive_cfg.straight_short_cells), 0),
-            ("straight_long", "straight", int(session.primitive_cfg.straight_long_cells), 0),
+            ("straight_short", "straight", int(state.primitive_cfg.straight_short_cells), 0),
+            ("straight_long", "straight", int(state.primitive_cfg.straight_long_cells), 0),
             ("turn45_left", "turn", 0, 1),
             ("turn45_right", "turn", 0, -1),
             ("turn90_left", "turn", 0, 2),
@@ -900,7 +923,7 @@ def _write_route_diagnostics(
         ]
         debug_lines: list[str] = []
         for label, kind, cells, delta in primitive_specs:
-            if not session.settings.allow_45_degree_turns and abs(int(delta)) == 1:
+            if not settings.allow_45_degree_turns and abs(int(delta)) == 1:
                 continue
             end_cell, end_angle, footprint = _first_move_footprint(
                 source=source,
@@ -910,7 +933,7 @@ def _write_route_diagnostics(
                 delta=delta,
             )
             footprint_set = set(footprint)
-            static_overlap = session._cells_in_raw_static_geometry(footprint_set)
+            static_overlap = _cells_in_raw_static_geometry(settings, state, footprint_set)
             routing_static_overlap = footprint_set & routing_static_cells
             effective_static_blockers = routing_static_overlap - opened_search_cells
             dynamic_overlap = footprint_set & committed_dynamic_cells
@@ -956,27 +979,27 @@ def _write_route_diagnostics(
         f"status={status}",
         f"source_spec={port1_spec}",
         f"target_spec={port2_spec}",
-        f"source_component={_schematic_instance_component_name(session.settings.schematic, job.inst1)}",
-        f"target_component={_schematic_instance_component_name(session.settings.schematic, job.inst2)}",
-        f"source_access_rule={session.port_access_rule_by_spec.get(port1_spec)}",
-        f"target_access_rule={session.port_access_rule_by_spec.get(port2_spec)}",
-        f"foreign_port_keepout_cells={int(session.settings.foreign_port_keepout_cells)}",
-        f"fanout_access_mode={session.settings.fanout_access_mode_normalized}",
-        f"fanout_stub_bend_degrees={45 * int(session._fanout_stub_bend_steps())}",
-        f"fanout_anchor_port_count={len(session.fanout_anchor_by_port_spec)}",
-        f"fanout_stub_center_cell_count={len(session.fanout_stub_center_cells)}",
-        f"fanout_stub_static_cell_count={len(session.fanout_stub_static_cells)}",
-        f"source_fanout_anchor={f'{job.inst1},{job.port1}' in session.fanout_anchor_by_port_spec}",
-        f"target_fanout_anchor={f'{job.inst2},{job.port2}' in session.fanout_anchor_by_port_spec}",
+        f"source_component={_schematic_instance_component_name(settings.schematic, job.inst1)}",
+        f"target_component={_schematic_instance_component_name(settings.schematic, job.inst2)}",
+        f"source_access_rule={state.port_access_rule_by_spec.get(port1_spec)}",
+        f"target_access_rule={state.port_access_rule_by_spec.get(port2_spec)}",
+        f"foreign_port_keepout_cells={int(settings.foreign_port_keepout_cells)}",
+        f"fanout_access_mode={settings.fanout_access_mode_normalized}",
+        f"fanout_stub_bend_degrees={45 * int(_fanout_stub_bend_steps(settings, state))}",
+        f"fanout_anchor_port_count={len(state.fanout_anchor_by_port_spec)}",
+        f"fanout_stub_center_cell_count={len(state.fanout_stub_center_cells)}",
+        f"fanout_stub_static_cell_count={len(state.fanout_stub_static_cells)}",
+        f"source_fanout_anchor={f'{job.inst1},{job.port1}' in state.fanout_anchor_by_port_spec}",
+        f"target_fanout_anchor={f'{job.inst2},{job.port2}' in state.fanout_anchor_by_port_spec}",
         "source_dense_port_runway_cells="
-        f"{session.dense_source_port_runway_length_by_spec.get(port1_spec)}",
+        f"{state.dense_source_port_runway_length_by_spec.get(port1_spec)}",
         "target_dense_port_runway_cells="
-        f"{session.dense_target_port_runway_length_by_spec.get(port2_spec)}",
+        f"{state.dense_target_port_runway_length_by_spec.get(port2_spec)}",
         "source_dense_source_cluster_size="
-        f"{len(session.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()))}",
+        f"{len(state.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()))}",
         "target_dense_source_cluster_size="
-        f"{len(session.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()))}",
-        f"foreign_port_keepout_static_count={len(session.foreign_port_keepout_static_cells)}",
+        f"{len(state.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()))}",
+        f"foreign_port_keepout_static_count={len(state.foreign_port_keepout_static_cells)}",
         f"foreign_port_keepout_open_count={len(foreign_keepout_open_cells)}",
         f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
         f"target_state=({target_anchor_cell[0]}, {target_anchor_cell[1]}, {int(target_state.angle)})",
@@ -1033,7 +1056,8 @@ def _write_route_diagnostics(
 
 
 def _record_route(
-    session,
+    settings,
+    state,
     job: RouteJob,
     route_obj: Any,
     opened_cells: list[tuple[int, int]],
@@ -1042,35 +1066,35 @@ def _record_route(
     corrected_total_length_um: float | None = None,
 ) -> None:
     if not corrected_centerline_um:
-        corrected_centerline_um = session._fanout_stubbed_centerline(job, route_obj)
+        corrected_centerline_um = _fanout_stubbed_centerline(settings, state, job, route_obj)
     if (
         not corrected_centerline_um
-        and not session.settings.enable_checked_endpoint_correction
-        and hasattr(session.router, "route_primitive_centerline")
+        and not settings.enable_checked_endpoint_correction
+        and hasattr(state.router, "route_primitive_centerline")
     ):
         try:
             corrected_centerline_um = _centerline_tuple(
-                session.router.route_primitive_centerline(route_obj)
+                state.router.route_primitive_centerline(route_obj)
             )
         except Exception:
             corrected_centerline_um = ()
-        if corrected_centerline_um and hasattr(session.router, "centerline_length_um"):
+        if corrected_centerline_um and hasattr(state.router, "centerline_length_um"):
             try:
                 corrected_total_length_um = float(
-                    session.router.centerline_length_um(list(corrected_centerline_um))
+                    state.router.centerline_length_um(list(corrected_centerline_um))
                 )
             except Exception:
                 corrected_total_length_um = None
-    target_anchor = session.fanout_anchor_by_port_spec.get(f"{job.inst2},{job.port2}")
+    target_anchor = state.fanout_anchor_by_port_spec.get(f"{job.inst2},{job.port2}")
     target_port_center_um_override = (
         target_anchor.center_um if target_anchor is not None else None
     )
-    session.route_bookkeeping.record_route(
+    state.route_bookkeeping.record_route(
         job,
         route_obj,
         opened_cells,
-        route_cells=session._route_cells_from_router(job.net_id)
-        if session.track_dynamic_cells
+        route_cells=_route_cells_from_router(settings, state, job.net_id)
+        if state.track_dynamic_cells
         else None,
         corrected_centerline_um=corrected_centerline_um,
         corrected_total_length_um=corrected_total_length_um,
@@ -1079,7 +1103,8 @@ def _record_route(
 
 
 def _export_route_svg(
-    session,
+    settings,
+    state,
     job: RouteJob,
     route_obj: Any,
     *,
@@ -1087,48 +1112,48 @@ def _export_route_svg(
     obstacle_cells: set[tuple[int, int]] | None = None,
     opened_cells: list[tuple[int, int]] | None = None,
 ) -> None:
-    should_export = session.debug_path is not None and (
-        session.settings.debug_route_indices is None
-        or job.route_index in session.settings.debug_route_indices
+    should_export = state.debug_path is not None and (
+        settings.debug_route_indices is None
+        or job.route_index in settings.debug_route_indices
     )
     if not should_export:
         return
-    route_dir = session.debug_path / "routes"
+    route_dir = state.debug_path / "routes"
     _ensure_dir(route_dir)
-    route_svg = route_dir / f"{session.settings.debug_prefix}_{job.net_name}{suffix}.svg"
+    route_svg = route_dir / f"{settings.debug_prefix}_{job.net_name}{suffix}.svg"
     if obstacle_cells is not None and hasattr(
-        session.router, "export_debug_svg_with_obstacle_cells"
+        state.router, "export_debug_svg_with_obstacle_cells"
     ):
-        svg_text = session.router.export_debug_svg_with_obstacle_cells(
+        svg_text = state.router.export_debug_svg_with_obstacle_cells(
             route_obj,
             sorted(obstacle_cells),
         )
     else:
-        svg_text = session.router.export_debug_svg(route_obj)
+        svg_text = state.router.export_debug_svg(route_obj)
     if opened_cells is None:
         try:
-            _, _, _, _, opened_cells = session._state_openings_for_job(job)
+            _, _, _, _, opened_cells = _state_openings_for_job(settings, state, job)
         except Exception:
             opened_cells = []
-    if session.settings.debug_stop_after_route_index is not None and int(job.route_index) == int(
-        session.settings.debug_stop_after_route_index
+    if settings.debug_stop_after_route_index is not None and int(job.route_index) == int(
+        settings.debug_stop_after_route_index
     ):
-        next_job = session.full_route_jobs_by_route_index.get(
-            int(session.settings.debug_stop_after_route_index) + 1
+        next_job = state.full_route_jobs_by_route_index.get(
+            int(settings.debug_stop_after_route_index) + 1
         )
         if next_job is not None:
             try:
-                _, _, _, _, opened_cells = session._states_and_openings(next_job)
+                _, _, _, _, opened_cells = _states_and_openings(settings, state, next_job)
             except Exception:
                 pass
-    red_keepout_cells = session.debug_port_keepout_cells - {
+    red_keepout_cells = state.debug_port_keepout_cells - {
         (int(cell[0]), int(cell[1])) for cell in opened_cells
     }
     if red_keepout_cells:
         overlay = ['<g id="port-keepout-cells">']
         for gx, gy in sorted(red_keepout_cells):
-            if 0 <= gx < session.grid_width and 0 <= gy < session.grid_height:
-                svg_y = session.grid_height - gy - 1
+            if 0 <= gx < state.grid_width and 0 <= gy < state.grid_height:
+                svg_y = state.grid_height - gy - 1
                 overlay.append(
                     f'<rect class="port-keepout" x="{gx}" y="{svg_y}" '
                     'width="1" height="1" fill="#d93025" opacity="0.38" />'
@@ -1138,10 +1163,10 @@ def _export_route_svg(
         if "</svg>" in svg_text and 'id="port-keepout-cells"' not in svg_text:
             svg_text = svg_text.replace("</svg>", overlay_text + "</svg>", 1)
     route_svg.write_text(svg_text, encoding="utf-8")
-    session.route_svgs.append(route_svg)
+    state.route_svgs.append(route_svg)
 
 
-def _route_engine_summary(session, route_obj: Any) -> str:
+def _route_engine_summary(settings, state, route_obj: Any) -> str:
     expanded_states = int(getattr(route_obj, "expanded_states", 0))
     route_kind = "simple" if expanded_states == 0 else "astar"
     length_um = _as_float(getattr(route_obj, "total_length_um", 0.0), 0.0)
@@ -1155,7 +1180,8 @@ def _route_engine_summary(session, route_obj: Any) -> str:
 
 
 def _corridor_clearance_diagnostic(
-    session,
+    settings,
+    state,
     source_state: Any,
     target_state: Any,
     blocked_cells: set[tuple[int, int]],
@@ -1163,7 +1189,7 @@ def _corridor_clearance_diagnostic(
     max_radius: int | None = None,
 ) -> dict[str, Any]:
     if max_radius is None:
-        max_radius = max(4, int(session.bend_radius_cells) + 2)
+        max_radius = max(4, int(state.bend_radius_cells) + 2)
     else:
         max_radius = int(max_radius)
 
@@ -1198,7 +1224,7 @@ def _corridor_clearance_diagnostic(
         blocked: set[tuple[int, int]],
     ) -> set[tuple[int, int]]:
         sx, sy = start
-        if not (0 <= sx < session.grid_width and 0 <= sy < session.grid_height):
+        if not (0 <= sx < state.grid_width and 0 <= sy < state.grid_height):
             return set()
         if start in blocked:
             return set()
@@ -1211,8 +1237,8 @@ def _corridor_clearance_diagnostic(
                 ny = y + dy
                 neighbor = (nx, ny)
                 if (
-                    0 <= nx < session.grid_width
-                    and 0 <= ny < session.grid_height
+                    0 <= nx < state.grid_width
+                    and 0 <= ny < state.grid_height
                     and neighbor not in blocked
                     and neighbor not in reached
                 ):
@@ -1267,7 +1293,8 @@ def _corridor_clearance_diagnostic(
 
 
 def _write_failed_log(
-    session,
+    settings,
+    state,
     job: RouteJob,
     source_state: Any,
     target_state: Any,
@@ -1275,35 +1302,35 @@ def _write_failed_log(
     opened_cells: list[tuple[int, int]],
     error_text: str,
 ) -> None:
-    if session.debug_path is None:
+    if state.debug_path is None:
         return
-    route_dir = session.debug_path / "routes"
+    route_dir = state.debug_path / "routes"
     _ensure_dir(route_dir)
     port1_spec = f"{job.inst1},{job.port1}"
     port2_spec = f"{job.inst2},{job.port2}"
-    fail_txt = route_dir / f"{session.settings.debug_prefix}_{job.net_name}_FAILED.txt"
-    committed_dynamic_cells = session._committed_dynamic_cells()
+    fail_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_FAILED.txt"
+    committed_dynamic_cells = _committed_dynamic_cells(settings, state)
     opened_candidate_static_overlap = (
-        opened_candidate_cells & session.static_blocked_cells_before_port_reservations
+        opened_candidate_cells & state.static_blocked_cells_before_port_reservations
     )
     opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
     opened_cells_set = set(opened_cells)
-    corridor_diagnostic = session._corridor_clearance_diagnostic(
+    corridor_diagnostic = _corridor_clearance_diagnostic(settings, state,
         source_state,
         target_state,
-        (session.static_blocked_cells_before_port_reservations - opened_cells_set)
+        (state.static_blocked_cells_before_port_reservations - opened_cells_set)
         | committed_dynamic_cells,
     )
     opened_static_overlap = (
-        opened_cells_set & session.static_blocked_cells_before_port_reservations
+        opened_cells_set & state.static_blocked_cells_before_port_reservations
     )
     opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
     current_attempts = [
         ("current", record)
-        for record in session.route_attempt_records
+        for record in state.route_attempt_records
         if getattr(record, "net_id", None) == job.net_id
     ]
-    recent_attempts = [("recent", record) for record in session.route_attempt_records[-12:]]
+    recent_attempts = [("recent", record) for record in state.route_attempt_records[-12:]]
     root_cause_line = _format_illegal_crossing_root_causes_line(
         [error_text]
         + [
@@ -1318,17 +1345,17 @@ def _write_failed_log(
         f"target_spec={port2_spec}",
         f"source_state=({int(source_state.x)}, {int(source_state.y)}, {int(source_state.angle)})",
         f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
-        f"allow_45_degree_turns={session.settings.allow_45_degree_turns}",
-        f"block_radius_cells={session.block_radius_cells}",
+        f"allow_45_degree_turns={settings.allow_45_degree_turns}",
+        f"block_radius_cells={state.block_radius_cells}",
         "dynamic_obstacle_search_expansion_radius_cells="
-        f"{session.clearance_policy.dynamic_obstacle_search_expansion_radius_cells}",
+        f"{state.clearance_policy.dynamic_obstacle_search_expansion_radius_cells}",
         "dynamic_route_commit_keepout_radius_cells="
-        f"{session.clearance_policy.dynamic_route_commit_keepout_radius_cells}",
+        f"{state.clearance_policy.dynamic_route_commit_keepout_radius_cells}",
         "dynamic_route_core_radius_cells="
-        f"{session.clearance_policy.dynamic_route_core_radius_cells}",
-        f"bend_radius_cells={session.bend_radius_cells}",
-        f"port_lane_length_cells={session.port_lane_length_cells}",
-        f"port_lane_half_width_cells={session.port_lane_half_width_cells}",
+        f"{state.clearance_policy.dynamic_route_core_radius_cells}",
+        f"bend_radius_cells={state.bend_radius_cells}",
+        f"port_lane_length_cells={state.port_lane_length_cells}",
+        f"port_lane_half_width_cells={state.port_lane_half_width_cells}",
         f"opened_candidate_cells_count={len(opened_candidate_cells)}",
         f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
         f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",
@@ -1352,7 +1379,7 @@ def _write_failed_log(
     ]
     if root_cause_line is not None:
         fail_lines.append(root_cause_line)
-    fail_lines.extend(_format_native_repair_trace_lines(session.native_repair_trace_records))
+    fail_lines.extend(_format_native_repair_trace_lines(state.native_repair_trace_records))
     for label, attempt in current_attempts[-8:] + recent_attempts:
         as_dict = attempt.as_dict()
         diagnostics = as_dict.get("diagnostics")
@@ -1400,7 +1427,8 @@ def _write_failed_log(
 
 
 def _finalize_committed_route(
-    session,
+    settings,
+    state,
     job: RouteJob,
     route_obj: Any,
     opened_cells: list[tuple[int, int]],
@@ -1410,23 +1438,23 @@ def _finalize_committed_route(
     debug_obstacle_cells: set[tuple[int, int]] | None = None,
 ) -> None:
     expanded_states = int(getattr(route_obj, "expanded_states", 0))
-    session.total_expanded_states += expanded_states
+    state.total_expanded_states += expanded_states
     if expanded_states == 0:
-        session.simple_route_count += 1
+        state.simple_route_count += 1
 
-    if session.diagnostics_enabled:
+    if state.diagnostics_enabled:
         source_state, target_state, opened_candidate_cells, opened_cells_set, _ = (
-            session._state_openings_for_job(job)
+            _state_openings_for_job(settings, state, job)
         )
         route_cells = {
             (int(cell[0]), int(cell[1])) for cell in (getattr(route_obj, "cells", None) or [])
         }
-        session._write_route_diagnostics(
+        _write_route_diagnostics(settings, state,
             job=job,
             source_state=source_state,
             target_state=target_state,
             opened_candidate_cells=opened_candidate_cells,
-            dynamic_clearance_exempt_cells=session._clearance_exempt_cell_set_for_job(job),
+            dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(settings, state, job),
             opened_cells_set=opened_cells_set,
             diag_txt=diag_txt,
             status="ok",
@@ -1434,7 +1462,7 @@ def _finalize_committed_route(
             route_obj=route_obj,
         )
 
-    session._export_route_svg(
+    _export_route_svg(settings, state,
         job,
         route_obj,
         obstacle_cells=debug_obstacle_cells,
@@ -1442,12 +1470,14 @@ def _finalize_committed_route(
     )
 
     if should_print_route:
-        print(f"ok {session._route_engine_summary(route_obj)}")
+        print(f"ok {_route_engine_summary(settings, state, route_obj)}")
 
 
-def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
-    if session.repair_config.enabled:
-        if not hasattr(session.router, "route_many_with_repair_and_commit"):
+def dispatch_native_routing(
+    settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
+) -> None:
+    if state.repair_config.enabled:
+        if not hasattr(state.router, "route_many_with_repair_and_commit"):
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
                 "PyPhotonicRouter.route_many_with_repair_and_commit. Rebuild it with "
@@ -1467,18 +1497,20 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
         ] = []
         batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
         batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-        t_batch_job_pack_start = session._pipeline_timer_start()
+        t_batch_job_pack_start = timing.pipeline_timer_start(settings, state)
         for job in route_jobs:
-            source_state, target_state, _, _, opened_cells = session._state_openings_for_job(job)
-            clearance_exempt_cells = session._clearance_exempt_cells_for_job(job)
+            source_state, target_state, _, _, opened_cells = _state_openings_for_job(
+                settings, state, job
+            )
+            clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
             route_selected_for_debug = (
-                session.settings.debug_route_indices is None
-                or job.route_index in session.settings.debug_route_indices
+                settings.debug_route_indices is None
+                or job.route_index in settings.debug_route_indices
             )
             should_print_route = (
-                session.settings.verbose_route_diagnostics and route_selected_for_debug
+                settings.verbose_route_diagnostics and route_selected_for_debug
             )
-            if session.settings.debug_route_indices is not None and route_selected_for_debug:
+            if settings.debug_route_indices is not None and route_selected_for_debug:
                 should_print_route = True
             if should_print_route:
                 print(
@@ -1486,16 +1518,16 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                     f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
                     end=" ",
                 )
-            route_dir = session.debug_path / "routes" if session.debug_path is not None else None
+            route_dir = state.debug_path / "routes" if state.debug_path is not None else None
             diag_txt: Path | None = None
             if (
-                session.debug_path is not None
-                and (route_selected_for_debug or session.settings.collect_attempt_diagnostics)
+                state.debug_path is not None
+                and (route_selected_for_debug or settings.collect_attempt_diagnostics)
                 and route_dir is not None
             ):
                 _ensure_dir(route_dir)
                 diag_txt = (
-                    route_dir / f"{session.settings.debug_prefix}_{job.net_name}_diagnostics.txt"
+                    route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
                 )
             batch_jobs.append(
                 (
@@ -1504,17 +1536,17 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                     target_state,
                     opened_cells,
                     clearance_exempt_cells,
-                    session._foreign_keepout_cleanup_cells_for_job(job),
-                    session._routing_endpoint_center_um(job, source=True),
-                    session._routing_endpoint_center_um(job, source=False),
+                    _foreign_keepout_cleanup_cells_for_job(settings, state, job),
+                    _routing_endpoint_center_um(settings, state, job, source=True),
+                    _routing_endpoint_center_um(settings, state, job, source=False),
                 )
             )
             batch_opened_cells_by_id[int(job.net_id)] = opened_cells
             batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
-        session._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
+        timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
 
-        batch_start = session._timing_start()
-        if negotiated_repair_engine_enabled(session.settings.config.engine):
+        batch_start = _timing_start(settings, state)
+        if negotiated_repair_engine_enabled(settings.config.engine):
             # Default since 2026-09-16 (owner decision, baseline
             # freeze): the LiDAR-style negotiated rip-up loop of
             # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
@@ -1523,51 +1555,51 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
             # stays available for A/B runs via
             # PHOTONIC_ROUTER_LEGACY_REPAIR_CHAIN=1 (or
             # PHOTONIC_ROUTER_NEGOTIATED_REPAIR=0).
-            if not hasattr(session.router, "route_many_with_negotiated_repair_and_commit"):
+            if not hasattr(state.router, "route_many_with_negotiated_repair_and_commit"):
                 raise RuntimeError(
                     "The loaded photonic_router._rust extension does not expose "
                     "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. "
                     "Rebuild it with `maturin develop --release`."
                 )
-            raw_batch_result = session.router.route_many_with_negotiated_repair_and_commit(
+            raw_batch_result = state.router.route_many_with_negotiated_repair_and_commit(
                 batch_jobs,
-                session.block_radius_cells,
-                session.commit_radius_cells,
-                session.core_commit_radius_cells,
+                state.block_radius_cells,
+                state.commit_radius_cells,
+                state.core_commit_radius_cells,
                 NEGOTIATED_MAX_ROUNDS,
-                float(session.repair_config.history_weight),
-                int(session.repair_config.history_increment),
+                float(state.repair_config.history_weight),
+                int(state.repair_config.history_increment),
             )
         else:
-            raw_batch_result = session.router.route_many_with_repair_and_commit(
+            raw_batch_result = state.router.route_many_with_repair_and_commit(
                 batch_jobs,
-                session.block_radius_cells,
-                session.commit_radius_cells,
-                session.core_commit_radius_cells,
-                int(session.repair_config.max_rounds),
-                int(session.repair_config.max_victims_per_failure),
-                float(session.repair_config.history_weight),
-                int(session.repair_config.history_increment),
+                state.block_radius_cells,
+                state.commit_radius_cells,
+                state.core_commit_radius_cells,
+                int(state.repair_config.max_rounds),
+                int(state.repair_config.max_victims_per_failure),
+                float(state.repair_config.history_weight),
+                int(state.repair_config.history_increment),
             )
-        batch_elapsed_s = time.perf_counter() - batch_start if session.collect_timing else 0.0
-        session._record_pipeline_timing("native_route_batch", batch_start)
-        t_batch_result_processing_start = session._pipeline_timer_start()
+        batch_elapsed_s = time.perf_counter() - batch_start if state.collect_timing else 0.0
+        timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
+        t_batch_result_processing_start = timing.pipeline_timer_start(settings, state)
         batch_result = dict(raw_batch_result)
-        session.native_repair_trace_records = [
+        state.native_repair_trace_records = [
             dict(record)
             for record in cast(
                 Iterable[Mapping[str, object]],
                 batch_result.get("repair_trace", []),
             )
         ]
-        session._record_native_batch_timings(batch_result)
-        session._report_long_straight_congestion(batch_result)
+        _record_native_batch_timings(settings, state, batch_result)
+        _report_long_straight_congestion(settings, state, batch_result)
         raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
         per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
         for raw_attempt in raw_attempts:
             attempt = dict(raw_attempt)
             net_id = int(attempt["net_id"])
-            job = session.route_jobs_by_id[net_id]
+            job = state.route_jobs_by_id[net_id]
             route_obj = attempt.get("route")
             if route_obj is None:
                 route_obj = None
@@ -1576,7 +1608,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
             error_text = str(attempt.get("error")) if attempt.get("error") is not None else None
             repair_round_raw = attempt.get("repair_round")
             repair_round = int(repair_round_raw) if repair_round_raw is not None else None
-            attempt_index = len(session.route_attempt_records) + 1
+            attempt_index = len(state.route_attempt_records) + 1
             candidate_blockers = [
                 int(value)
                 for value in cast(list[object], attempt.get("candidate_blockers", []))
@@ -1588,19 +1620,19 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 route_obj is not None
                 and not failed
                 and bucket_name != "normal_route"
-                and session.debug_path is not None
+                and state.debug_path is not None
                 and (
-                    session.settings.debug_route_indices is None
-                    or job.route_index in session.settings.debug_route_indices
+                    settings.debug_route_indices is None
+                    or job.route_index in settings.debug_route_indices
                 )
             ):
-                session._export_route_svg(
+                _export_route_svg(settings, state,
                     job,
                     route_obj,
                     suffix=f"_attempt{attempt_index}_{bucket_name}",
                 )
-            if session.collect_timing:
-                bucket = session.route_timing_buckets.setdefault(
+            if state.collect_timing:
+                bucket = state.route_timing_buckets.setdefault(
                     bucket_name,
                     RouteTimingBucket(),
                 )
@@ -1614,7 +1646,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                         per_attempt_elapsed_s,
                         failed=failed,
                     )
-                session.route_attempt_records.append(
+                state.route_attempt_records.append(
                     route_attempt_record_from_route(
                         attempt_index=attempt_index,
                         bucket_name=bucket_name,
@@ -1628,43 +1660,43 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                         failed=failed,
                         repair_round=repair_round,
                         error=error_text,
-                        diagnostics=session._route_attempt_diagnostics(
+                        diagnostics=_route_attempt_diagnostics(settings, state,
                             job,
                             route_obj if route_obj is not None and not failed else None,
                             candidate_blockers=candidate_blockers,
                             ripup_ids=ripup_ids,
                         )
-                        if session.settings.collect_attempt_diagnostics
+                        if settings.collect_attempt_diagnostics
                         else None,
                     )
                 )
 
-        session.repair_count += int(batch_result.get("repair_count", 0) or 0)
-        session.deferred_count += int(batch_result.get("deferred_count", 0) or 0)
+        state.repair_count += int(batch_result.get("repair_count", 0) or 0)
+        state.deferred_count += int(batch_result.get("deferred_count", 0) or 0)
         raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
         for raw_entry in raw_routes:
             entry = dict(raw_entry)
             net_id = int(entry["net_id"])
             route_obj = entry["route"]
-            job = session.route_jobs_by_id[net_id]
+            job = state.route_jobs_by_id[net_id]
             opened_cells = batch_opened_cells_by_id[net_id]
-            session._record_route(job, route_obj, opened_cells)
+            _record_route(settings, state, job, route_obj, opened_cells)
             should_print_route, diag_txt = batch_debug_by_id[net_id]
-            session._finalize_committed_route(
+            _finalize_committed_route(settings, state,
                 job,
                 route_obj,
                 opened_cells,
                 should_print_route=should_print_route,
                 diag_txt=diag_txt,
             )
-        session._record_pipeline_timing(
+        timing.record_pipeline_timing(settings, state,
             "batch_result_processing",
             t_batch_result_processing_start,
         )
 
         if str(batch_result.get("status", "")) != "routed":
             failed_net_id = int(batch_result.get("failed_net_id", -1))
-            failed_job = session.route_jobs_by_id.get(failed_net_id)
+            failed_job = state.route_jobs_by_id.get(failed_net_id)
             error_text = str(batch_result.get("error", "No route found"))
             if failed_job is None:
                 raise RuntimeError(error_text)
@@ -1674,7 +1706,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 opened_candidate_cells,
                 opened_cells_set,
                 opened_cells,
-            ) = session._state_openings_for_job(failed_job)
+            ) = _state_openings_for_job(settings, state, failed_job)
             should_print_route, diag_txt = batch_debug_by_id.get(
                 failed_net_id,
                 (False, None),
@@ -1685,12 +1717,12 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                     f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
                     f"{failed_job.inst2},{failed_job.port2}... failed"
                 )
-            session._write_route_diagnostics(
+            _write_route_diagnostics(settings, state,
                 job=failed_job,
                 source_state=source_state,
                 target_state=target_state,
                 opened_candidate_cells=opened_candidate_cells,
-                dynamic_clearance_exempt_cells=session._clearance_exempt_cell_set_for_job(
+                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(settings, state,
                     failed_job
                 ),
                 opened_cells_set=opened_cells_set,
@@ -1698,7 +1730,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 status="failed",
                 error_text=error_text,
             )
-            session._write_failed_log(
+            _write_failed_log(settings, state,
                 failed_job,
                 source_state,
                 target_state,
@@ -1711,12 +1743,12 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
                 f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
                 f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                f"allow_45_degree_turns={session.settings.allow_45_degree_turns}. "
+                f"allow_45_degree_turns={settings.allow_45_degree_turns}. "
                 f"error={error_text}"
             )
 
     else:
-        if not hasattr(session.router, "route_many_normal_and_commit"):
+        if not hasattr(state.router, "route_many_normal_and_commit"):
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
                 "PyPhotonicRouter.route_many_normal_and_commit. Rebuild it with "
@@ -1736,18 +1768,20 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
         ] = []
         batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
         batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-        t_batch_job_pack_start = session._pipeline_timer_start()
+        t_batch_job_pack_start = timing.pipeline_timer_start(settings, state)
         for job in route_jobs:
-            source_state, target_state, _, _, opened_cells = session._state_openings_for_job(job)
-            clearance_exempt_cells = session._clearance_exempt_cells_for_job(job)
+            source_state, target_state, _, _, opened_cells = _state_openings_for_job(
+                settings, state, job
+            )
+            clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
             route_selected_for_debug = (
-                session.settings.debug_route_indices is None
-                or job.route_index in session.settings.debug_route_indices
+                settings.debug_route_indices is None
+                or job.route_index in settings.debug_route_indices
             )
             should_print_route = (
-                session.settings.verbose_route_diagnostics and route_selected_for_debug
+                settings.verbose_route_diagnostics and route_selected_for_debug
             )
-            if session.settings.debug_route_indices is not None and route_selected_for_debug:
+            if settings.debug_route_indices is not None and route_selected_for_debug:
                 should_print_route = True
             if should_print_route:
                 print(
@@ -1755,16 +1789,16 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                     f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
                     end=" ",
                 )
-            route_dir = session.debug_path / "routes" if session.debug_path is not None else None
+            route_dir = state.debug_path / "routes" if state.debug_path is not None else None
             diag_txt: Path | None = None
             if (
-                session.debug_path is not None
-                and (route_selected_for_debug or session.settings.collect_attempt_diagnostics)
+                state.debug_path is not None
+                and (route_selected_for_debug or settings.collect_attempt_diagnostics)
                 and route_dir is not None
             ):
                 _ensure_dir(route_dir)
                 diag_txt = (
-                    route_dir / f"{session.settings.debug_prefix}_{job.net_name}_diagnostics.txt"
+                    route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
                 )
             batch_jobs.append(
                 (
@@ -1773,44 +1807,44 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                     target_state,
                     opened_cells,
                     clearance_exempt_cells,
-                    session._foreign_keepout_cleanup_cells_for_job(job),
-                    session._routing_endpoint_center_um(job, source=True),
-                    session._routing_endpoint_center_um(job, source=False),
+                    _foreign_keepout_cleanup_cells_for_job(settings, state, job),
+                    _routing_endpoint_center_um(settings, state, job, source=True),
+                    _routing_endpoint_center_um(settings, state, job, source=False),
                 )
             )
             batch_opened_cells_by_id[int(job.net_id)] = opened_cells
             batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
-        session._record_pipeline_timing("batch_job_pack", t_batch_job_pack_start)
+        timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
 
-        batch_start = session._timing_start()
-        raw_batch_result = session.router.route_many_normal_and_commit(
+        batch_start = _timing_start(settings, state)
+        raw_batch_result = state.router.route_many_normal_and_commit(
             batch_jobs,
-            session.block_radius_cells,
-            session.commit_radius_cells,
-            session.core_commit_radius_cells,
+            state.block_radius_cells,
+            state.commit_radius_cells,
+            state.core_commit_radius_cells,
         )
-        batch_elapsed_s = time.perf_counter() - batch_start if session.collect_timing else 0.0
-        session._record_pipeline_timing("native_route_batch", batch_start)
-        t_batch_result_processing_start = session._pipeline_timer_start()
+        batch_elapsed_s = time.perf_counter() - batch_start if state.collect_timing else 0.0
+        timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
+        t_batch_result_processing_start = timing.pipeline_timer_start(settings, state)
         batch_result = dict(raw_batch_result)
-        session._record_native_batch_timings(batch_result)
-        session._report_long_straight_congestion(batch_result)
+        _record_native_batch_timings(settings, state, batch_result)
+        _report_long_straight_congestion(settings, state, batch_result)
         raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
         per_route_elapsed_s = batch_elapsed_s / max(1, len(raw_routes))
         for raw_entry in raw_routes:
             entry = dict(raw_entry)
             net_id = int(entry["net_id"])
             route_obj = entry["route"]
-            job = session.route_jobs_by_id[net_id]
+            job = state.route_jobs_by_id[net_id]
             opened_cells = batch_opened_cells_by_id[net_id]
-            if session.collect_timing:
-                session.route_timing_buckets["normal_route"].record_route(
+            if state.collect_timing:
+                state.route_timing_buckets["normal_route"].record_route(
                     per_route_elapsed_s,
                     route_obj,
                 )
-                session.route_attempt_records.append(
+                state.route_attempt_records.append(
                     route_attempt_record_from_route(
-                        attempt_index=len(session.route_attempt_records) + 1,
+                        attempt_index=len(state.route_attempt_records) + 1,
                         bucket_name="normal_route",
                         net_id=job.net_id,
                         route_index=job.route_index,
@@ -1821,23 +1855,23 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                         route_obj=route_obj,
                     )
                 )
-            session._record_route(job, route_obj, opened_cells)
+            _record_route(settings, state, job, route_obj, opened_cells)
             should_print_route, diag_txt = batch_debug_by_id[net_id]
-            session._finalize_committed_route(
+            _finalize_committed_route(settings, state,
                 job,
                 route_obj,
                 opened_cells,
                 should_print_route=should_print_route,
                 diag_txt=diag_txt,
             )
-        session._record_pipeline_timing(
+        timing.record_pipeline_timing(settings, state,
             "batch_result_processing",
             t_batch_result_processing_start,
         )
 
         if str(batch_result.get("status", "")) != "routed":
             failed_net_id = int(batch_result.get("failed_net_id", -1))
-            failed_job = session.route_jobs_by_id.get(failed_net_id)
+            failed_job = state.route_jobs_by_id.get(failed_net_id)
             error_text = str(batch_result.get("error", "No route found"))
             if failed_job is None:
                 raise RuntimeError(error_text)
@@ -1847,16 +1881,16 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 opened_candidate_cells,
                 opened_cells_set,
                 opened_cells,
-            ) = session._state_openings_for_job(failed_job)
+            ) = _state_openings_for_job(settings, state, failed_job)
             should_print_route, diag_txt = batch_debug_by_id.get(
                 failed_net_id,
                 (False, None),
             )
-            if session.collect_timing:
-                session.route_timing_buckets["normal_route"].record_elapsed(0.0, failed=True)
-                session.route_attempt_records.append(
+            if state.collect_timing:
+                state.route_timing_buckets["normal_route"].record_elapsed(0.0, failed=True)
+                state.route_attempt_records.append(
                     route_attempt_record_from_route(
-                        attempt_index=len(session.route_attempt_records) + 1,
+                        attempt_index=len(state.route_attempt_records) + 1,
                         bucket_name="normal_route",
                         net_id=failed_job.net_id,
                         route_index=failed_job.route_index,
@@ -1875,12 +1909,12 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                     f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
                     f"{failed_job.inst2},{failed_job.port2}... failed"
                 )
-            session._write_route_diagnostics(
+            _write_route_diagnostics(settings, state,
                 job=failed_job,
                 source_state=source_state,
                 target_state=target_state,
                 opened_candidate_cells=opened_candidate_cells,
-                dynamic_clearance_exempt_cells=session._clearance_exempt_cell_set_for_job(
+                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(settings, state,
                     failed_job
                 ),
                 opened_cells_set=opened_cells_set,
@@ -1888,7 +1922,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 status="failed",
                 error_text=error_text,
             )
-            session._write_failed_log(
+            _write_failed_log(settings, state,
                 failed_job,
                 source_state,
                 target_state,
@@ -1901,7 +1935,7 @@ def dispatch_native_routing(session, route_jobs: list[RouteJob]) -> None:
                 f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
                 f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
                 f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                f"allow_45_degree_turns={session.settings.allow_45_degree_turns}"
+                f"allow_45_degree_turns={settings.allow_45_degree_turns}"
             )
 
 

@@ -19,10 +19,14 @@ from photonic_router.routing_layers import ComponentPortAccessRule
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
 
 from translation import route_rust
+from translation.routing import crossing_plan_stage as routing_crossing_plan_stage
+from translation.routing import dispatch as routing_dispatch
+from translation.routing import finalize as routing_finalize
 from translation.routing import obstacle_context as routing_obstacle_context
 from translation.routing import route_jobs as routing_route_jobs
 from translation.routing import session as routing_session
 from translation.routing.settings import SessionSettings
+from translation.routing.state import SessionState
 
 
 def settings_for_test(**overrides: Any) -> SessionSettings:
@@ -98,8 +102,8 @@ def _diagnostic_opened_cells(text: str) -> set[tuple[int, int]]:
     return {(int(x), int(y)) for x, y in ast.literal_eval(_diagnostic_value(text, "opened_cells"))}
 
 
-def _corridor_session(width: int, height: int, bend_radius_cells: int = 2):
-    return SimpleNamespace(
+def _corridor_state(width: int, height: int, bend_radius_cells: int = 2) -> SessionState:
+    return SessionState(
         grid_width=width,
         grid_height=height,
         bend_radius_cells=bend_radius_cells,
@@ -228,57 +232,80 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
     assert captured_lane_widths == [2, 2, 4, 4]
 
 
-def _footprint_resolver_session(
+@pytest.fixture
+def footprint_resolver_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the two `route_jobs` helpers `_resolve_port_footprint_cells` reaches.
+
+    Milestone 5 Slice 2b: the helper calls `_port_access_rule_for` and
+    `_is_dense_source_fanout_instance` as module functions (imported into
+    `crossing_plan_stage` from their home module) instead of through a session
+    forwarder, so the test stubs them where the helper looks them up. Each stub
+    answers from the fake session it is handed, so one monkeypatch serves
+    several fake sessions in the same test.
+    """
+    monkeypatch.setattr(
+        routing_crossing_plan_stage,
+        "_port_access_rule_for",
+        lambda _settings, state, **_kwargs: state.access_rule,
+    )
+    monkeypatch.setattr(
+        routing_crossing_plan_stage,
+        "_is_dense_source_fanout_instance",
+        lambda _settings, state, instance_name: (
+            instance_name in state.dense_source_fanout_instances
+        ),
+    )
+
+
+def _footprint_resolver_state(
     *,
     bend_radius_cells: int,
     commit_radius_cells: int = 0,
     grid_size_um: float = 1.0,
     access_rule: ComponentPortAccessRule | None = None,
 ) -> SimpleNamespace:
-    def port_access_rule_for(**_kwargs: object) -> ComponentPortAccessRule | None:
-        return access_rule
-
-    def is_dense_source_fanout_instance(_instance_name: str) -> bool:
-        return False
-
     return SimpleNamespace(
         grid=SimpleNamespace(grid_size_um=grid_size_um),
         port_lane_length_cells=max(3, 2 * bend_radius_cells + 2),
         port_lane_half_width_cells=max(1, bend_radius_cells + commit_radius_cells + 1),
-        _port_access_rule_for=port_access_rule_for,
-        _is_dense_source_fanout_instance=is_dense_source_fanout_instance,
+        access_rule=access_rule,
+        dense_source_fanout_instances=frozenset(),
     )
 
 
-def test_resolve_port_footprint_cells_uses_lane_sized_optical_default():
-    small_bend_session = _footprint_resolver_session(bend_radius_cells=1)
-    large_bend_session = _footprint_resolver_session(bend_radius_cells=3)
+def test_resolve_port_footprint_cells_uses_lane_sized_optical_default(
+    footprint_resolver_stubs: None,
+):
+    small_bend_state = _footprint_resolver_state(bend_radius_cells=1)
+    large_bend_state = _footprint_resolver_state(bend_radius_cells=3)
     port = SimpleNamespace(port_type="optical")
 
-    small_footprint = route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
-        small_bend_session,
+    small_footprint = routing_crossing_plan_stage._resolve_port_footprint_cells(
+        settings_for_test(),
+        small_bend_state,
         instance_name="gc_0",
         port_name="o1",
         port=port,
     )
-    large_footprint = route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
-        large_bend_session,
+    large_footprint = routing_crossing_plan_stage._resolve_port_footprint_cells(
+        settings_for_test(),
+        large_bend_state,
         instance_name="gc_0",
         port_name="o1",
         port=port,
     )
 
     assert small_footprint == (
-        small_bend_session.port_lane_length_cells,
-        small_bend_session.port_lane_half_width_cells,
+        small_bend_state.port_lane_length_cells,
+        small_bend_state.port_lane_half_width_cells,
     )
     assert large_footprint == (
-        large_bend_session.port_lane_length_cells,
-        large_bend_session.port_lane_half_width_cells,
+        large_bend_state.port_lane_length_cells,
+        large_bend_state.port_lane_half_width_cells,
     )
     assert large_footprint[1] > small_footprint[1]
 
-    custom_session = _footprint_resolver_session(
+    custom_state = _footprint_resolver_state(
         bend_radius_cells=3,
         grid_size_um=2.0,
         access_rule=ComponentPortAccessRule(
@@ -288,33 +315,34 @@ def test_resolve_port_footprint_cells_uses_lane_sized_optical_default():
             access_width_um=5.0,
         ),
     )
-    assert route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
-        custom_session,
+    assert routing_crossing_plan_stage._resolve_port_footprint_cells(
+        settings_for_test(),
+        custom_state,
         instance_name="gc_0",
         port_name="o1",
         port=port,
     ) == (4, 2)
 
 
-def test_resolve_port_footprint_cells_uses_stub_override_only_for_dense_fanout_instances():
+def test_resolve_port_footprint_cells_uses_stub_override_only_for_dense_fanout_instances(
+    footprint_resolver_stubs: None,
+):
     port = SimpleNamespace(port_type="optical")
 
-    def is_dense_source_fanout_instance(instance_name: str) -> bool:
-        return instance_name == "mmi0_multiport_0_0"
-
-    session = SimpleNamespace(
+    state = SimpleNamespace(
         grid=SimpleNamespace(grid_size_um=1.0),
         port_lane_length_cells=8,
         port_lane_half_width_cells=4,
         stub_port_lane_length_cells=8,
         stub_port_lane_half_width_cells=2,
-        _port_access_rule_for=lambda **_kwargs: None,
-        _is_dense_source_fanout_instance=is_dense_source_fanout_instance,
+        access_rule=None,
+        dense_source_fanout_instances=frozenset({"mmi0_multiport_0_0"}),
     )
 
     # A port on the dense-fanout instance gets the stub-scoped override...
-    assert route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
-        session,
+    assert routing_crossing_plan_stage._resolve_port_footprint_cells(
+        settings_for_test(),
+        state,
         instance_name="mmi0_multiport_0_0",
         port_name="o1",
         port=port,
@@ -323,8 +351,9 @@ def test_resolve_port_footprint_cells_uses_stub_override_only_for_dense_fanout_i
     # benchmark) is unaffected and still gets the general default -- the
     # real regression (test_rust_batch_repair-adjacent multiportmmi_8x8
     # n_76 endpoint-correction failure) this scoping fixed.
-    assert route_rust._RouteNetsRustSession._resolve_port_footprint_cells(
-        session,
+    assert routing_crossing_plan_stage._resolve_port_footprint_cells(
+        settings_for_test(),
+        state,
         instance_name="mmi1_ps_array_0_heater_5",
         port_name="o1",
         port=port,
@@ -332,11 +361,12 @@ def test_resolve_port_footprint_cells_uses_stub_override_only_for_dense_fanout_i
 
 
 def test_corridor_clearance_reports_no_bare_centerline_path():
-    session = _corridor_session(width=12, height=6)
+    state = _corridor_state(width=12, height=6)
     blocked_cells = {(5, y) for y in range(6)}
 
-    diagnostic = route_rust._RouteNetsRustSession._corridor_clearance_diagnostic(
-        session,
+    diagnostic = routing_dispatch._corridor_clearance_diagnostic(
+        settings_for_test(),
+        state,
         _state(2, 3),
         _state(9, 3),
         blocked_cells,
@@ -351,11 +381,12 @@ def test_corridor_clearance_reports_no_bare_centerline_path():
 
 
 def test_corridor_clearance_reports_narrow_gap_closed_by_one_cell_clearance():
-    session = _corridor_session(width=12, height=6)
+    state = _corridor_state(width=12, height=6)
     blocked_cells = {(8, y) for y in range(6) if y != 3}
 
-    diagnostic = route_rust._RouteNetsRustSession._corridor_clearance_diagnostic(
-        session,
+    diagnostic = routing_dispatch._corridor_clearance_diagnostic(
+        settings_for_test(),
+        state,
         _state(2, 3),
         _state(10, 3),
         blocked_cells,
@@ -371,10 +402,11 @@ def test_corridor_clearance_reports_narrow_gap_closed_by_one_cell_clearance():
 
 
 def test_corridor_clearance_reports_open_grid_stays_connected():
-    session = _corridor_session(width=12, height=6)
+    state = _corridor_state(width=12, height=6)
 
-    diagnostic = route_rust._RouteNetsRustSession._corridor_clearance_diagnostic(
-        session,
+    diagnostic = routing_dispatch._corridor_clearance_diagnostic(
+        settings_for_test(),
+        state,
         _state(2, 3),
         _state(10, 3),
         set(),
@@ -1288,7 +1320,9 @@ def test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor(
     assert len(record.corrected_centerline_um) > 2
 
 
-def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_sides_fanout_net():
+def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_sides_fanout_net(
+    monkeypatch: pytest.MonkeyPatch,
+):
     # Until 2026-08-27 a net with fanout stubs on both sides was skipped by
     # this pass entirely, on the (then true) premise that every stub was
     # eagerly pre-stitched. Target stubs stopped being pre-stitched with
@@ -1316,36 +1350,56 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
         submitted.extend(jobs)
         return []
 
-    def _endpoint(job_arg: Any, *, source: bool) -> tuple[float, float]:
+    def _endpoint(
+        _settings: Any, _state: Any, job_arg: Any, *, source: bool
+    ) -> tuple[float, float]:
         endpoint_calls.append(source)
         assert job_arg is job
         return anchor
 
-    session = object.__new__(route_rust._RouteNetsRustSession)
-    session.settings = settings_for_test(
+    settings = settings_for_test(
         enable_checked_endpoint_correction=True,
         enable_crossings=False,
         route_width_um=0.5,
     )
-    session.fanout_anchor_net_ids = {net_id}
-    session.fanout_anchor_source_net_ids = {net_id}
-    session.fanout_anchor_target_net_ids = {net_id}
-    session.fanout_stub_static_cells_by_spec = {}
-    session.collect_timing = False
-    session.router = SimpleNamespace(apply_checked_endpoint_corrections=_apply)
-    session.route_bookkeeping = SimpleNamespace(records_by_id={net_id: record})
-    session.route_jobs_by_id = {net_id: job}
-    session.commit_radius_cells = 0
-    session.core_commit_radius_cells = 0
-    session._pipeline_timer_start = lambda: 0.0
-    session._record_pipeline_timing = lambda *_args, **_kwargs: None
-    session._timing_start = lambda: 0.0
-    session._routing_endpoint_center_um = _endpoint
-    session._state_openings_for_job = lambda _job: (None, None, set(), None, None)
-    session._clearance_exempt_cells_for_job = lambda _job: []
-    session._endpoint_correction_crossing_net_ids = lambda: set()
+    state = SessionState(
+        fanout_anchor_net_ids={net_id},
+        fanout_anchor_source_net_ids={net_id},
+        fanout_anchor_target_net_ids={net_id},
+        fanout_stub_static_cells_by_spec={},
+        collect_timing=False,
+        router=SimpleNamespace(apply_checked_endpoint_corrections=_apply),
+        route_bookkeeping=SimpleNamespace(records_by_id={net_id: record}),
+        route_jobs_by_id={net_id: job},
+        commit_radius_cells=0,
+        core_commit_radius_cells=0,
+    )
+    # Milestone 5 Slice 2b: the pass calls its collaborators as module
+    # functions, so the stubs are monkeypatched where `finalize` looks them up
+    # instead of being attached to the fake session.
+    monkeypatch.setattr(
+        routing_finalize, "_timing_start", lambda _settings, _state: 0.0
+    )
+    monkeypatch.setattr(routing_finalize, "_routing_endpoint_center_um", _endpoint)
+    monkeypatch.setattr(
+        routing_finalize,
+        "_state_openings_for_job",
+        lambda _settings, _state, _job: (None, None, set(), None, None),
+    )
+    monkeypatch.setattr(
+        routing_finalize,
+        "_clearance_exempt_cells_for_job",
+        lambda _settings, _state, _job: [],
+    )
+    monkeypatch.setattr(
+        routing_finalize,
+        "_endpoint_correction_crossing_net_ids",
+        lambda _settings, _state: set(),
+    )
 
-    session._apply_checked_fanout_stub_endpoint_corrections_for_net_ids([net_id])
+    routing_finalize._apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
+        settings, state, [net_id]
+    )
 
     assert endpoint_calls == [False], (
         "only the target side is resolved (source stub is pre-stitched)"
@@ -1375,14 +1429,14 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
     def _record(corrected_centerline_um=()):
         return SimpleNamespace(corrected_centerline_um=corrected_centerline_um)
 
-    session = object.__new__(route_rust._RouteNetsRustSession)
-    session.settings = settings_for_test(enable_crossings=True)
-    session.fanout_anchor_source_net_ids = {source_stub_net_id, both_stub_net_id}
-    session.fanout_anchor_target_net_ids = {target_stub_net_id, both_stub_net_id}
-    session.fanout_anchor_net_ids = (
-        session.fanout_anchor_source_net_ids | session.fanout_anchor_target_net_ids
+    settings = settings_for_test(enable_crossings=True)
+    state = SessionState()
+    state.fanout_anchor_source_net_ids = {source_stub_net_id, both_stub_net_id}
+    state.fanout_anchor_target_net_ids = {target_stub_net_id, both_stub_net_id}
+    state.fanout_anchor_net_ids = (
+        state.fanout_anchor_source_net_ids | state.fanout_anchor_target_net_ids
     )
-    session.route_bookkeeping = SimpleNamespace(
+    state.route_bookkeeping = SimpleNamespace(
         records_by_id={
             plain_net_id: _record(),
             crossing_net_id: _record(),
@@ -1391,7 +1445,7 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
             both_stub_net_id: _record(corrected_centerline_um=((0.0, 0.0), (1.0, 0.0))),
         }
     )
-    session.route_jobs_by_id = {
+    state.route_jobs_by_id = {
         net_id: SimpleNamespace()
         for net_id in (
             plain_net_id,
@@ -1404,8 +1458,8 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
     crossing_net_ids = {crossing_net_id}
 
     def classify(net_id: int):
-        return session._classify_net_for_endpoint_correction(
-            net_id, crossing_net_ids=crossing_net_ids
+        return routing_finalize._classify_net_for_endpoint_correction(
+            settings, state, net_id, crossing_net_ids=crossing_net_ids
         )
 
     assert classify(missing_net_id) is None
@@ -1439,7 +1493,7 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
     # corrected centerline falls through to UNRESTRICTED, matching the
     # real pass 1 today (see _classify_net_for_endpoint_correction's own
     # docstring) -- not a bug, an explicit, tested edge case.
-    session.route_bookkeeping.records_by_id[source_stub_net_id] = _record()
+    state.route_bookkeeping.records_by_id[source_stub_net_id] = _record()
     not_yet_precorrected = classify(source_stub_net_id)
     assert not_yet_precorrected.category is route_rust.EndpointCorrectionCategory.UNRESTRICTED
 
@@ -1457,12 +1511,11 @@ def test_endpoint_correction_crossing_net_ids_propagates_real_failures():
         def crossing_events(self):
             raise RuntimeError("crossing_events backend failure")
 
-    session = object.__new__(route_rust._RouteNetsRustSession)
-    session.settings = settings_for_test(enable_crossings=True)
-    session.router = _BrokenCrossingEventsRouter()
+    settings = settings_for_test(enable_crossings=True)
+    state = SessionState(router=_BrokenCrossingEventsRouter())
 
     with pytest.raises(RuntimeError, match="crossing_events backend failure"):
-        session._endpoint_correction_crossing_net_ids()
+        routing_finalize._endpoint_correction_crossing_net_ids(settings, state)
 
 
 def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
@@ -1700,12 +1753,13 @@ def test_only_rules_flagged_for_instance_geometry_open_the_heater_pad(monkeypatc
         lambda _schematic, name: component_by_instance[name],
     )
     monkeypatch.setattr(routing_layers, "REGISTERED_PORT_ACCESS_RULES", [grid_rule])
-    session = SimpleNamespace(settings=SimpleNamespace(schematic=object()))
-    rule_for = route_rust_module._RouteNetsRustSession._port_access_rule_for
+    settings = SimpleNamespace(schematic=object())
+    state = SessionState()
+    rule_for = routing_route_jobs._port_access_rule_for
     port = SimpleNamespace(port_type="optical")
 
-    grid = rule_for(session, instance_name="grid", port_name="in_0", port=port)
+    grid = rule_for(settings, state, instance_name="grid", port_name="in_0", port=port)
     assert grid is grid_rule and not grid.opens_instance_static_geometry
-    heater = rule_for(session, instance_name="heater", port_name="o1", port=port)
+    heater = rule_for(settings, state, instance_name="heater", port_name="o1", port=port)
     assert heater is not None and heater.opens_instance_static_geometry
-    assert rule_for(session, instance_name="heater", port_name="e1", port=port) is None
+    assert rule_for(settings, state, instance_name="heater", port_name="e1", port=port) is None

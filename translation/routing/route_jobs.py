@@ -25,6 +25,12 @@ from translation.route_rust_obstacle_config import (
 )
 from translation.route_rust_types import RouteJob
 
+from translation.routing.router_setup import _fanout_int_or_default
+from translation.routing import timing
+from translation.routing.settings import SessionSettings
+from translation.routing.stages import RouteJobsResult
+from translation.routing.state import SessionState
+
 @dataclass(frozen=True)
 class _FanoutAnchor:
     port_spec: str
@@ -36,7 +42,7 @@ class _FanoutAnchor:
     stub_centerline_um: tuple[tuple[float, float], ...]
 
 
-def _orientation_to_angle(session, orientation: float | None, *, flip: bool = False) -> int:
+def _orientation_to_angle(settings, state, orientation: float | None, *, flip: bool = False) -> int:
     if orientation is None:
         angle = 0
     else:
@@ -48,7 +54,7 @@ def _orientation_to_angle(session, orientation: float | None, *, flip: bool = Fa
     return angle
 
 
-def _angle_to_step(session, angle: int) -> tuple[int, int]:
+def _angle_to_step(settings, state, angle: int) -> tuple[int, int]:
     steps = [
         (1, 0),  # 0 east
         (1, 1),  # 1 northeast
@@ -62,12 +68,13 @@ def _angle_to_step(session, angle: int) -> tuple[int, int]:
     return steps[angle % 8]
 
 
-def _in_bounds(session, gx: int, gy: int) -> bool:
-    return 0 <= gx < int(session.grid.width) and 0 <= gy < int(session.grid.height)
+def _in_bounds(settings, state, gx: int, gy: int) -> bool:
+    return 0 <= gx < int(state.grid.width) and 0 <= gy < int(state.grid.height)
 
 
 def port_to_grid_state(
-    session,
+    settings,
+    state,
     port: Port,
     grid_origin_x_um: float,
     grid_origin_y_um: float,
@@ -76,11 +83,11 @@ def port_to_grid_state(
     as_target: bool = False,
     outward_cells: int = 1,
 ):
-    port_angle = session._orientation_to_angle(port.orientation, flip=False)
+    port_angle = _orientation_to_angle(settings, state, port.orientation, flip=False)
 
     # For choosing the grid cell, always move outward from the physical port.
     # This avoids starting inside the real component/port geometry.
-    sx, sy = session._angle_to_step(port_angle)
+    sx, sy = _angle_to_step(settings, state, port_angle)
 
     x = float(port.center[0]) + sx * outward_cells * grid_size_um
     y = float(port.center[1]) + sy * outward_cells * grid_size_um
@@ -91,13 +98,14 @@ def port_to_grid_state(
     # For the route state angle:
     # - source: route leaves the port outward
     # - target: route approaches the port, so flip direction
-    route_angle = session._orientation_to_angle(port.orientation, flip=as_target)
+    route_angle = _orientation_to_angle(settings, state, port.orientation, flip=as_target)
 
-    return session.rust_backend.State(gx, gy, route_angle)
+    return state.rust_backend.State(gx, gy, route_angle)
 
 
 def _port_access_rule_for(
-    session,
+    settings,
+    state,
     *,
     instance_name: str,
     port_name: str,
@@ -111,14 +119,14 @@ def _port_access_rule_for(
     """
     return find_component_port_access_rule(
         component_name=_schematic_instance_component_name(
-            session.settings.schematic, instance_name
+            settings.schematic, instance_name
         ),
         port_name=port_name,
         port_type=_port_type_name(port),
     )
 
 
-def _dense_fanout_min_ports(session) -> int:
+def _dense_fanout_min_ports(settings, state) -> int:
     """Smallest same-instance, same-angle port group treated as a dense fanout.
 
     Default 3 (the historical `> 2`). `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS`
@@ -126,11 +134,11 @@ def _dense_fanout_min_ports(session) -> int:
     switch's port pair (1.25 um apart, inside one routing cell) gets the
     same staggered static stubs a multiport MMI's port row gets.
     """
-    value = session.settings.config.fanout.dense_fanout_min_ports
+    value = settings.config.fanout.dense_fanout_min_ports
     return 3 if value is None else value
 
 
-def _dense_fanout_group_size(session, port_specs: set[str]) -> int:
+def _dense_fanout_group_size(settings, state, port_specs: set[str]) -> int:
     """Ports of a group that qualify for automatic dense-fanout handling.
 
     A port with an explicit component access rule (see
@@ -143,12 +151,12 @@ def _dense_fanout_group_size(session, port_specs: set[str]) -> int:
     """
     count = 0
     for spec in port_specs:
-        endpoint = session.endpoint_ports_by_spec.get(spec)
+        endpoint = state.endpoint_ports_by_spec.get(spec)
         if endpoint is None:
             count += 1
             continue
         instance_name, port_name, port = endpoint
-        rule = session._port_access_rule_for(
+        rule = _port_access_rule_for(settings, state,
             instance_name=instance_name, port_name=port_name, port=port
         )
         if rule is None:
@@ -156,66 +164,69 @@ def _dense_fanout_group_size(session, port_specs: set[str]) -> int:
     return count
 
 
-def _dense_fanout_min_ports_for(session, instance_name: str) -> int:
+def _dense_fanout_min_ports_for(settings, state, instance_name: str) -> int:
     """Per-instance threshold: instances listed in
     `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES` (comma separated) get static
     stubs from two ports up -- the pre-placed crossing column grid needs
     every crossing lane of a multiport MMI on a spread row, also when
     only two of its outputs cross in a layer -- while everything else
     (e.g. the 1x2 splitter tree) keeps the global threshold."""
-    instances = session.settings.config.fanout.dense_fanout_instances
+    instances = settings.config.fanout.dense_fanout_instances
     if instances and instance_name in instances:
         return 2
-    return session._dense_fanout_min_ports()
+    return _dense_fanout_min_ports(settings, state)
 
 
-def _is_dense_source_fanout_instance(session, instance_name: str) -> bool:
+def _is_dense_source_fanout_instance(settings, state, instance_name: str) -> bool:
     return any(
-        session._dense_fanout_group_size(port_specs)
-        >= session._dense_fanout_min_ports_for(instance_name)
+        _dense_fanout_group_size(settings, state, port_specs)
+        >= _dense_fanout_min_ports_for(settings, state, instance_name)
         for (
             group_instance,
             _angle,
-        ), port_specs in session.source_port_specs_by_instance_angle.items()
+        ), port_specs in state.source_port_specs_by_instance_angle.items()
         if group_instance == instance_name
     )
 
 
-def _is_dense_source_fanout_group(session, instance_name: str, angle: int) -> bool:
+def _is_dense_source_fanout_group(settings, state, instance_name: str, angle: int) -> bool:
     return (
-        session._dense_fanout_group_size(
-            session.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set())
+        _dense_fanout_group_size(settings, state,
+            state.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set())
         )
-        >= session._dense_fanout_min_ports_for(instance_name)
+        >= _dense_fanout_min_ports_for(settings, state, instance_name)
     )
 
 
-def _is_dense_target_fanout_instance(session, instance_name: str) -> bool:
+def _is_dense_target_fanout_instance(settings, state, instance_name: str) -> bool:
     return any(
-        session._dense_fanout_group_size(port_specs) >= session._dense_fanout_min_ports()
+        _dense_fanout_group_size(
+            settings, state, port_specs
+        ) >= _dense_fanout_min_ports(settings, state)
         for (
             group_instance,
             _angle,
-        ), port_specs in session.target_port_specs_by_instance_angle.items()
+        ), port_specs in state.target_port_specs_by_instance_angle.items()
         if group_instance == instance_name
     )
 
 
-def _is_dense_target_fanout_group(session, instance_name: str, angle: int) -> bool:
+def _is_dense_target_fanout_group(settings, state, instance_name: str, angle: int) -> bool:
     return (
-        session._dense_fanout_group_size(
-            session.target_port_specs_by_instance_angle.get((instance_name, int(angle)), set())
+        _dense_fanout_group_size(settings, state,
+            state.target_port_specs_by_instance_angle.get((instance_name, int(angle)), set())
         )
-        >= session._dense_fanout_min_ports()
+        >= _dense_fanout_min_ports(settings, state)
     )
 
 
-def _grid_cell_center_um(session, cell_x: int, cell_y: int) -> tuple[float, float]:
-    return grid_cell_center(cell_x, cell_y, session.grid)
+def _grid_cell_center_um(settings, state, cell_x: int, cell_y: int) -> tuple[float, float]:
+    return grid_cell_center(cell_x, cell_y, state.grid)
 
 
 def _centerline_grid_cells(
-    session,
+    settings,
+    state,
     centerline_um: Iterable[tuple[float, float]],
 ) -> tuple[tuple[int, int], ...]:
     points = [
@@ -230,20 +241,20 @@ def _centerline_grid_cells(
     def append_point(point: tuple[float, float]) -> None:
         cell = _physical_point_to_grid_cell(
             point,
-            grid_size_um=float(session.grid.grid_size_um),
-            origin_x_um=float(session.origin_x_um),
-            origin_y_um=float(session.origin_y_um),
+            grid_size_um=float(state.grid.grid_size_um),
+            origin_x_um=float(state.origin_x_um),
+            origin_y_um=float(state.origin_y_um),
         )
         if cell is None:
             return
-        if not session._in_bounds(cell[0], cell[1]):
+        if not _in_bounds(settings, state, cell[0], cell[1]):
             return
         if cells and cells[-1] == cell:
             return
         cells.append(cell)
 
     append_point(points[0])
-    sample_step_um = max(float(session.grid.grid_size_um) / 4.0, 1.0e-6)
+    sample_step_um = max(float(state.grid.grid_size_um) / 4.0, 1.0e-6)
     for start, end in zip(points, points[1:]):
         dx = float(end[0]) - float(start[0])
         dy = float(end[1]) - float(start[1])
@@ -258,8 +269,8 @@ def _centerline_grid_cells(
     return tuple(dict.fromkeys(cells))
 
 
-def _fanout_stub_bend_steps(session) -> int:
-    raw_value = session.settings.config.fanout.fanout_stub_bend_degrees
+def _fanout_stub_bend_steps(settings, state) -> int:
+    raw_value = settings.config.fanout.fanout_stub_bend_degrees
     if raw_value is None:
         raw_value = "90"
     normalized = raw_value.strip().lower().replace("_", "-")
@@ -283,7 +294,8 @@ def _fanout_stub_bend_steps(session) -> int:
 
 
 def _append_grid_step(
-    session,
+    settings,
+    state,
     path: list[tuple[int, int]],
     step_x: int,
     step_y: int,
@@ -295,12 +307,13 @@ def _append_grid_step(
     for _ in range(count):
         cell_x += step_x
         cell_y += step_y
-        if session._in_bounds(cell_x, cell_y):
+        if _in_bounds(settings, state, cell_x, cell_y):
             path.append((cell_x, cell_y))
 
 
 def _inflated_cells(
-    session,
+    settings,
+    state,
     cells: Iterable[tuple[int, int]],
     radius: int,
 ) -> set[tuple[int, int]]:
@@ -311,26 +324,27 @@ def _inflated_cells(
             for dy in range(-radius, radius + 1):
                 nx = int(cell_x) + dx
                 ny = int(cell_y) + dy
-                if session._in_bounds(nx, ny):
+                if _in_bounds(settings, state, nx, ny):
                     inflated.add((nx, ny))
     return inflated
 
 
-def _angle_to_unit_vector(session, angle: int) -> tuple[float, float]:
+def _angle_to_unit_vector(settings, state, angle: int) -> tuple[float, float]:
     radians = (int(angle) % 8) * (math.pi / 4.0)
     return (math.cos(radians), math.sin(radians))
 
 
-def _rotate_left_vector(session, vector: tuple[float, float]) -> tuple[float, float]:
+def _rotate_left_vector(settings, state, vector: tuple[float, float]) -> tuple[float, float]:
     return (-vector[1], vector[0])
 
 
-def _rotate_right_vector(session, vector: tuple[float, float]) -> tuple[float, float]:
+def _rotate_right_vector(settings, state, vector: tuple[float, float]) -> tuple[float, float]:
     return (vector[1], -vector[0])
 
 
 def _cross2(
-    session,
+    settings,
+    state,
     a: tuple[float, float],
     b: tuple[float, float],
 ) -> float:
@@ -338,7 +352,8 @@ def _cross2(
 
 
 def _append_stub_point(
-    session,
+    settings,
+    state,
     out: list[tuple[float, float]],
     point: tuple[float, float],
 ) -> None:
@@ -351,7 +366,8 @@ def _append_stub_point(
 
 
 def _append_circular_stub_bend(
-    session,
+    settings,
+    state,
     out: list[tuple[float, float]],
     *,
     start_point: tuple[float, float],
@@ -360,29 +376,29 @@ def _append_circular_stub_bend(
     end_angle: int,
     angle_delta: int,
 ) -> None:
-    radius_um = float(session.bend_radius_cells) * float(session.grid.grid_size_um)
+    radius_um = float(state.bend_radius_cells) * float(state.grid.grid_size_um)
     if radius_um <= 0.0 or not math.isfinite(radius_um):
-        session._append_stub_point(out, end_point)
+        _append_stub_point(settings, state, out, end_point)
         return
-    start_dir = session._angle_to_unit_vector(start_angle)
-    end_dir = session._angle_to_unit_vector(end_angle)
+    start_dir = _angle_to_unit_vector(settings, state, start_angle)
+    end_dir = _angle_to_unit_vector(settings, state, end_angle)
     chord = (
         float(end_point[0]) - float(start_point[0]),
         float(end_point[1]) - float(start_point[1]),
     )
-    denom = session._cross2(start_dir, end_dir)
+    denom = _cross2(settings, state, start_dir, end_dir)
     if abs(denom) <= 1.0e-9:
-        session._append_stub_point(out, end_point)
+        _append_stub_point(settings, state, out, end_point)
         return
-    in_len = session._cross2(chord, end_dir) / denom
-    out_len = session._cross2(start_dir, chord) / denom
+    in_len = _cross2(settings, state, chord, end_dir) / denom
+    out_len = _cross2(settings, state, start_dir, chord) / denom
     if (
         not math.isfinite(in_len)
         or not math.isfinite(out_len)
         or in_len <= 1.0e-9
         or out_len <= 1.0e-9
     ):
-        session._append_stub_point(out, end_point)
+        _append_stub_point(settings, state, out, end_point)
         return
     corner = (
         float(start_point[0]) + start_dir[0] * in_len,
@@ -392,7 +408,7 @@ def _append_circular_stub_bend(
     trim = radius_um * math.tan(turn_abs / 2.0)
     trim_eff = min(trim, in_len, out_len)
     if not math.isfinite(trim_eff) or trim_eff <= 1.0e-9:
-        session._append_stub_point(out, end_point)
+        _append_stub_point(settings, state, out, end_point)
         return
     t_in = (
         corner[0] - start_dir[0] * trim_eff,
@@ -402,15 +418,17 @@ def _append_circular_stub_bend(
         corner[0] + end_dir[0] * trim_eff,
         corner[1] + end_dir[1] * trim_eff,
     )
-    session._append_stub_point(out, t_in)
+    _append_stub_point(settings, state, out, t_in)
     left_turn = int(angle_delta) > 0
     n_start = (
-        session._rotate_left_vector(start_dir)
+        _rotate_left_vector(settings, state, start_dir)
         if left_turn
-        else session._rotate_right_vector(start_dir)
+        else _rotate_right_vector(settings, state, start_dir)
     )
     n_end = (
-        session._rotate_left_vector(end_dir) if left_turn else session._rotate_right_vector(end_dir)
+        _rotate_left_vector(settings, state, end_dir)
+        if left_turn
+        else _rotate_right_vector(settings, state, end_dir)
     )
     c0 = (
         t_in[0] + n_start[0] * radius_um,
@@ -434,19 +452,20 @@ def _append_circular_stub_bend(
     for index in range(1, steps):
         t = float(index) / float(steps)
         angle = a0 + (a1 - a0) * t
-        session._append_stub_point(
+        _append_stub_point(settings, state,
             out,
             (
                 center[0] + radius_um * math.cos(angle),
                 center[1] + radius_um * math.sin(angle),
             ),
         )
-    session._append_stub_point(out, t_out)
-    session._append_stub_point(out, end_point)
+    _append_stub_point(settings, state, out, t_out)
+    _append_stub_point(settings, state, out, end_point)
 
 
 def _append_arc_from_tangencies(
-    session,
+    settings,
+    state,
     out: list[tuple[float, float]],
     *,
     t_in: tuple[float, float],
@@ -455,21 +474,23 @@ def _append_arc_from_tangencies(
     end_angle: int,
     angle_delta: int,
 ) -> None:
-    radius_um = float(session.bend_radius_cells) * float(session.grid.grid_size_um)
+    radius_um = float(state.bend_radius_cells) * float(state.grid.grid_size_um)
     if radius_um <= 0.0 or not math.isfinite(radius_um):
-        session._append_stub_point(out, t_out)
+        _append_stub_point(settings, state, out, t_out)
         return
-    start_dir = session._angle_to_unit_vector(start_angle)
-    end_dir = session._angle_to_unit_vector(end_angle)
-    session._append_stub_point(out, t_in)
+    start_dir = _angle_to_unit_vector(settings, state, start_angle)
+    end_dir = _angle_to_unit_vector(settings, state, end_angle)
+    _append_stub_point(settings, state, out, t_in)
     left_turn = int(angle_delta) > 0
     n_start = (
-        session._rotate_left_vector(start_dir)
+        _rotate_left_vector(settings, state, start_dir)
         if left_turn
-        else session._rotate_right_vector(start_dir)
+        else _rotate_right_vector(settings, state, start_dir)
     )
     n_end = (
-        session._rotate_left_vector(end_dir) if left_turn else session._rotate_right_vector(end_dir)
+        _rotate_left_vector(settings, state, end_dir)
+        if left_turn
+        else _rotate_right_vector(settings, state, end_dir)
     )
     c0 = (
         float(t_in[0]) + n_start[0] * radius_um,
@@ -493,32 +514,33 @@ def _append_arc_from_tangencies(
     for index in range(1, steps):
         t = float(index) / float(steps)
         angle = a0 + (a1 - a0) * t
-        session._append_stub_point(
+        _append_stub_point(settings, state,
             out,
             (
                 center[0] + radius_um * math.cos(angle),
                 center[1] + radius_um * math.sin(angle),
             ),
         )
-    session._append_stub_point(out, t_out)
+    _append_stub_point(settings, state, out, t_out)
 
 
 def _append_realized_stub_bend(
-    session,
+    settings,
+    state,
     out: list[tuple[float, float]],
     start_point_um: tuple[float, float],
     start_angle: int,
     angle_delta: int,
 ) -> tuple[float, float]:
-    arm_um = float(session.bend_radius_cells) * float(session.grid.grid_size_um)
+    arm_um = float(state.bend_radius_cells) * float(state.grid.grid_size_um)
     radius_um = arm_um
     turn_abs = abs(int(angle_delta)) * (math.pi / 4.0)
     trim = radius_um * math.tan(turn_abs / 2.0)
     end_angle = (int(start_angle) + int(angle_delta)) % 8
-    start_dir = session._angle_to_unit_vector(int(start_angle) % 8)
-    end_dir = session._angle_to_unit_vector(end_angle)
-    start_step = session._angle_to_step(int(start_angle) % 8)
-    end_step = session._angle_to_step(end_angle)
+    start_dir = _angle_to_unit_vector(settings, state, int(start_angle) % 8)
+    end_dir = _angle_to_unit_vector(settings, state, end_angle)
+    start_step = _angle_to_step(settings, state, int(start_angle) % 8)
+    end_step = _angle_to_step(settings, state, end_angle)
     start_point = (float(start_point_um[0]), float(start_point_um[1]))
     corner = (
         start_point[0] + float(start_step[0]) * arm_um,
@@ -536,8 +558,8 @@ def _append_realized_stub_bend(
         corner[0] + end_dir[0] * trim,
         corner[1] + end_dir[1] * trim,
     )
-    session._append_stub_point(out, t_in)
-    session._append_arc_from_tangencies(
+    _append_stub_point(settings, state, out, t_in)
+    _append_arc_from_tangencies(settings, state,
         out,
         t_in=t_in,
         t_out=t_out,
@@ -545,12 +567,13 @@ def _append_realized_stub_bend(
         end_angle=end_angle,
         angle_delta=int(angle_delta),
     )
-    session._append_stub_point(out, end_point)
+    _append_stub_point(settings, state, out, end_point)
     return end_point
 
 
 def _two_bend_static_stub_centerline_um(
-    session,
+    settings,
+    state,
     port_center_um: tuple[float, float],
     physical_angle: int,
     lateral_sign: int,
@@ -560,11 +583,11 @@ def _two_bend_static_stub_centerline_um(
     extra_final_forward_cells: int = 0,
 ) -> tuple[tuple[tuple[float, float], ...], tuple[int, int]] | None:
     start_angle = int(physical_angle) % 8
-    bend_delta = int(lateral_sign) * session._fanout_stub_bend_steps()
+    bend_delta = int(lateral_sign) * _fanout_stub_bend_steps(settings, state)
     intermediate_angle = (start_angle + bend_delta) % 8
-    intermediate_step = session._angle_to_step(intermediate_angle)
-    final_step = session._angle_to_step(start_angle)
-    trace_fanout_stubs = session.settings.config.diagnostics.trace_fanout_stubs
+    intermediate_step = _angle_to_step(settings, state, intermediate_angle)
+    final_step = _angle_to_step(settings, state, start_angle)
+    trace_fanout_stubs = settings.config.diagnostics.trace_fanout_stubs
 
     def fail(reason: str, extra: str = "") -> None:
         if trace_fanout_stubs:
@@ -596,8 +619,8 @@ def _two_bend_static_stub_centerline_um(
     ) -> float | None:
         if direction == 0:
             return None
-        origin = session.origin_x_um if axis == "x" else session.origin_y_um
-        rel = (float(value) - float(origin)) / float(session.grid.grid_size_um) - 0.5
+        origin = state.origin_x_um if axis == "x" else state.origin_y_um
+        rel = (float(value) - float(origin)) / float(state.grid.grid_size_um) - 0.5
         eps = 1.0e-9
         if direction > 0:
             index = math.ceil(rel - eps)
@@ -606,22 +629,22 @@ def _two_bend_static_stub_centerline_um(
         center = grid_cell_center(
             int(index) if axis == "x" else 0,
             int(index) if axis == "y" else 0,
-            session.grid,
+            state.grid,
         )
         return center[0] if axis == "x" else center[1]
 
     points: list[tuple[float, float]] = [port_point]
     bend_start = port_point
     initial_forward_um = float(max(0, int(initial_forward_cells))) * float(
-        session.grid.grid_size_um
+        state.grid.grid_size_um
     )
     if initial_forward_um > 1.0e-9:
         bend_start = (
             port_point[0] + float(final_step[0]) * initial_forward_um,
             port_point[1] + float(final_step[1]) * initial_forward_um,
         )
-        session._append_stub_point(points, bend_start)
-    first_end = session._append_realized_stub_bend(
+        _append_stub_point(settings, state, points, bend_start)
+    first_end = _append_realized_stub_bend(settings, state,
         points,
         bend_start,
         start_angle,
@@ -634,9 +657,9 @@ def _two_bend_static_stub_centerline_um(
             int(intermediate_step[1]),
         )
     else:
-        target_intermediate_y = session._grid_cell_center_um(
+        target_intermediate_y = _grid_cell_center_um(settings, state,
             0,
-            int(target_anchor_y_cell) - int(intermediate_step[1]) * int(session.bend_radius_cells),
+            int(target_anchor_y_cell) - int(intermediate_step[1]) * int(state.bend_radius_cells),
         )[1]
     if target_intermediate_y is None:
         fail("no_target_intermediate_y")
@@ -652,8 +675,8 @@ def _two_bend_static_stub_centerline_um(
         first_end[0] + intermediate_delta_x,
         float(target_intermediate_y),
     )
-    session._append_stub_point(points, intermediate_end)
-    second_end = session._append_realized_stub_bend(
+    _append_stub_point(settings, state, points, intermediate_end)
+    second_end = _append_realized_stub_bend(settings, state,
         points,
         intermediate_end,
         intermediate_angle,
@@ -672,7 +695,7 @@ def _two_bend_static_stub_centerline_um(
             max(0, int(min_forward_cells))
             + max(0, int(initial_forward_cells))
             + max(0, int(extra_final_forward_cells))
-        ) * float(session.grid.grid_size_um)
+        ) * float(state.grid.grid_size_um)
         if int(final_step[0]) > 0:
             if float(target_final_x) < float(min_forward_x):
                 snapped_min_forward_x = _next_grid_axis_value(
@@ -714,38 +737,39 @@ def _two_bend_static_stub_centerline_um(
             fail("final_moves_backward_y")
             return None
         anchor_point = (float(second_end[0]), float(target_final_y))
-    session._append_stub_point(points, anchor_point)
+    _append_stub_point(settings, state, points, anchor_point)
     anchor_x = int(
-        round((anchor_point[0] - session.origin_x_um) / float(session.grid.grid_size_um) - 0.5)
+        round((anchor_point[0] - state.origin_x_um) / float(state.grid.grid_size_um) - 0.5)
     )
     anchor_y = int(
-        round((anchor_point[1] - session.origin_y_um) / float(session.grid.grid_size_um) - 0.5)
+        round((anchor_point[1] - state.origin_y_um) / float(state.grid.grid_size_um) - 0.5)
     )
-    snapped_anchor = session._grid_cell_center_um(anchor_x, anchor_y)
+    snapped_anchor = _grid_cell_center_um(settings, state, anchor_x, anchor_y)
     snap_error_um = math.hypot(
         float(snapped_anchor[0]) - float(anchor_point[0]),
         float(snapped_anchor[1]) - float(anchor_point[1]),
     )
-    if snap_error_um > max(1.0e-6, 0.05 * float(session.grid.grid_size_um)):
+    if snap_error_um > max(1.0e-6, 0.05 * float(state.grid.grid_size_um)):
         fail(
             f"snap_error:{snap_error_um:.6g}",
             " "
             f"anchor_point=({anchor_point[0]:.6g},{anchor_point[1]:.6g}) "
             f"anchor_cell=({anchor_x},{anchor_y}) "
             f"snapped=({snapped_anchor[0]:.6g},{snapped_anchor[1]:.6g}) "
-            f"origin=({session.origin_x_um:.6g},{session.origin_y_um:.6g}) "
-            f"grid={float(session.grid.grid_size_um):.6g} "
-            f"bend_radius_cells={session.bend_radius_cells}",
+            f"origin=({state.origin_x_um:.6g},{state.origin_y_um:.6g}) "
+            f"grid={float(state.grid.grid_size_um):.6g} "
+            f"bend_radius_cells={state.bend_radius_cells}",
         )
         return None
-    if not session._in_bounds(anchor_x, anchor_y):
+    if not _in_bounds(settings, state, anchor_x, anchor_y):
         fail("anchor_out_of_bounds")
         return None
     return _compress_centerline(tuple(points)), (anchor_x, anchor_y)
 
 
 def _straight_static_stub_centerline_um(
-    session,
+    settings,
+    state,
     port_center_um: tuple[float, float],
     physical_angle: int,
     forward_cells: int,
@@ -784,7 +808,7 @@ def _straight_static_stub_centerline_um(
     every other primitive in this router uses, not an approximation)
     only when they are not.
     """
-    step_x, step_y = session._angle_to_step(int(physical_angle) % 8)
+    step_x, step_y = _angle_to_step(settings, state, int(physical_angle) % 8)
     if abs(step_x) + abs(step_y) != 1:
         return None
     forward_cells = max(0, int(forward_cells))
@@ -792,15 +816,15 @@ def _straight_static_stub_centerline_um(
         return None
     port_cell = _physical_point_to_grid_cell(
         port_center_um,
-        grid_size_um=float(session.grid.grid_size_um),
-        origin_x_um=session.origin_x_um,
-        origin_y_um=session.origin_y_um,
+        grid_size_um=float(state.grid.grid_size_um),
+        origin_x_um=state.origin_x_um,
+        origin_y_um=state.origin_y_um,
     )
     if port_cell is None:
         return None
     anchor_x = int(port_cell[0]) + step_x * forward_cells
     anchor_y = int(port_cell[1]) + step_y * forward_cells
-    if not session._in_bounds(anchor_x, anchor_y):
+    if not _in_bounds(settings, state, anchor_x, anchor_y):
         return None
     # Deliberately NOT grid-snapped: a port's exact physical position
     # generally does not fall exactly on a grid cell center, and a
@@ -812,9 +836,9 @@ def _straight_static_stub_centerline_um(
     # and `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
     anchor_point_um = (
         float(port_center_um[0])
-        + float(step_x) * float(forward_cells) * float(session.grid.grid_size_um),
+        + float(step_x) * float(forward_cells) * float(state.grid.grid_size_um),
         float(port_center_um[1])
-        + float(step_y) * float(forward_cells) * float(session.grid.grid_size_um),
+        + float(step_y) * float(forward_cells) * float(state.grid.grid_size_um),
     )
     centerline = _compress_centerline((tuple(port_center_um), anchor_point_um))
     if len(centerline) < 2:
@@ -823,14 +847,15 @@ def _straight_static_stub_centerline_um(
 
 
 def _fanout_stub_centerline_um(
-    session,
+    settings,
+    state,
     port_center_um: tuple[float, float] | None,
     anchor_center_um: tuple[float, float],
     physical_angle: int,
 ) -> tuple[tuple[float, float], ...]:
     if port_center_um is None:
         return (anchor_center_um,)
-    forward_x, forward_y = session._angle_to_step(int(physical_angle) % 8)
+    forward_x, forward_y = _angle_to_step(settings, state, int(physical_angle) % 8)
     lateral_x, lateral_y = -forward_y, forward_x
     port_x, port_y = (float(port_center_um[0]), float(port_center_um[1]))
     anchor_x, anchor_y = (float(anchor_center_um[0]), float(anchor_center_um[1]))
@@ -846,8 +871,8 @@ def _fanout_stub_centerline_um(
         return _compress_centerline((port_center_um, anchor_center_um))
 
     preferred_first_straight_um = max(
-        float(session.grid.grid_size_um),
-        float(session.bend_radius_cells) * float(session.grid.grid_size_um),
+        float(state.grid.grid_size_um),
+        float(state.bend_radius_cells) * float(state.grid.grid_size_um),
     )
     first_straight_um = min(preferred_first_straight_um, available_straight)
     points: list[tuple[float, float]] = [
@@ -865,7 +890,7 @@ def _fanout_stub_centerline_um(
             points[-1][1] + forward_y * lateral_abs + lateral_y * lateral_delta,
         )
         smoothed: list[tuple[float, float]] = [points[0]]
-        session._append_circular_stub_bend(
+        _append_circular_stub_bend(settings, state,
             smoothed,
             start_point=points[0],
             start_angle=physical_angle,
@@ -873,7 +898,7 @@ def _fanout_stub_centerline_um(
             end_angle=diagonal_angle,
             angle_delta=lateral_sign,
         )
-        session._append_circular_stub_bend(
+        _append_circular_stub_bend(settings, state,
             smoothed,
             start_point=diagonal_end,
             start_angle=diagonal_angle,
@@ -886,35 +911,37 @@ def _fanout_stub_centerline_um(
     return _compress_centerline(tuple(points))
 
 
-def _build_static_fanout_anchors(session) -> dict[str, _FanoutAnchor]:
-    if session.settings.fanout_access_mode_normalized != "static-stubs":
+def _build_static_fanout_anchors(settings, state) -> dict[str, _FanoutAnchor]:
+    if settings.fanout_access_mode_normalized != "static-stubs":
         return {}
-    default_forward_cells = max(3, int(session.bend_radius_cells) + 3)
+    default_forward_cells = max(3, int(state.bend_radius_cells) + 3)
     default_lane_spacing_cells = 11
-    forward_cells = session._fanout_int_or_default(
-        session.settings.config.fanout.fanout_stub_forward_cells,
+    forward_cells = _fanout_int_or_default(
+        settings.config.fanout.fanout_stub_forward_cells,
         default_forward_cells,
     )
-    lane_spacing_cells = session._fanout_int_or_default(
-        session.settings.config.fanout.fanout_lane_spacing_cells,
+    lane_spacing_cells = _fanout_int_or_default(
+        settings.config.fanout.fanout_lane_spacing_cells,
         default_lane_spacing_cells,
     )
-    stub_x_offset_cells = session._fanout_int_or_default(
-        session.settings.config.fanout.fanout_stub_x_offset_cells,
+    stub_x_offset_cells = _fanout_int_or_default(
+        settings.config.fanout.fanout_stub_x_offset_cells,
         1,
     )
     if forward_cells <= 0 or lane_spacing_cells <= 0:
         return {}
 
     anchors: dict[str, _FanoutAnchor] = {}
-    for instance_name, port_specs in session.source_port_specs_by_instance.items():
-        if not session._is_dense_source_fanout_instance(instance_name):
+    for instance_name, port_specs in state.source_port_specs_by_instance.items():
+        if not _is_dense_source_fanout_instance(settings, state, instance_name):
             continue
         by_angle: dict[int, list[str]] = {}
         for port_spec in port_specs:
-            _inst, _port_name, port = session.endpoint_ports_by_spec[port_spec]
-            angle = session._orientation_to_angle(getattr(port, "orientation", None), flip=False)
-            step_x, step_y = session._angle_to_step(angle)
+            _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+            angle = _orientation_to_angle(
+                settings, state, getattr(port, "orientation", None), flip=False
+            )
+            step_x, step_y = _angle_to_step(settings, state, angle)
             # The first static-stub implementation intentionally handles
             # cardinal MMI port rows. Diagonal component ports fall back to
             # the normal endpoint behavior until a safe breakout is defined.
@@ -923,25 +950,25 @@ def _build_static_fanout_anchors(session) -> dict[str, _FanoutAnchor]:
             by_angle.setdefault(angle, []).append(port_spec)
 
         for angle, group_specs in by_angle.items():
-            if not session._is_dense_source_fanout_group(instance_name, angle):
+            if not _is_dense_source_fanout_group(settings, state, instance_name, angle):
                 continue
-            step_x, step_y = session._angle_to_step(angle)
+            step_x, step_y = _angle_to_step(settings, state, angle)
             lateral_x, lateral_y = -step_y, step_x
             ordered_items: list[tuple[str, int, Any]] = []
             for port_spec in group_specs:
-                _inst, _port_name, port = session.endpoint_ports_by_spec[port_spec]
-                state = session.port_to_grid_state(
+                _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+                grid_state = port_to_grid_state(settings, state,
                     port,
-                    session.origin_x_um,
-                    session.origin_y_um,
-                    float(session.grid.grid_size_um),
+                    state.origin_x_um,
+                    state.origin_y_um,
+                    float(state.grid.grid_size_um),
                     as_target=False,
                 )
-                lateral_cell = int(state.x) * lateral_x + int(state.y) * lateral_y
-                ordered_items.append((port_spec, lateral_cell, state))
+                lateral_cell = int(grid_state.x) * lateral_x + int(grid_state.y) * lateral_y
+                ordered_items.append((port_spec, lateral_cell, grid_state))
             ordered_items.sort(key=lambda item: (item[1], item[0]))
             count = len(ordered_items)
-            if count < session._dense_fanout_min_ports_for(instance_name) or step_y != 0:
+            if count < _dense_fanout_min_ports_for(settings, state, instance_name) or step_y != 0:
                 continue
 
             def add_two_bend_anchor(
@@ -951,12 +978,12 @@ def _build_static_fanout_anchors(session) -> dict[str, _FanoutAnchor]:
                 initial_forward_cells: int = 0,
                 extra_final_forward_cells: int = 0,
             ) -> tuple[int, int] | None:
-                port_spec, _current_lateral, state = item
-                _inst, _port_name, port = session.endpoint_ports_by_spec[port_spec]
+                port_spec, _current_lateral, _grid_state = item
+                _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
                 real_center = _port_center_um(port)
                 if real_center is None:
                     return None
-                stub_result = session._two_bend_static_stub_centerline_um(
+                stub_result = _two_bend_static_stub_centerline_um(settings, state,
                     real_center,
                     angle,
                     lateral_sign,
@@ -968,14 +995,14 @@ def _build_static_fanout_anchors(session) -> dict[str, _FanoutAnchor]:
                 if stub_result is None:
                     return None
                 centerline, (anchor_x, anchor_y) = stub_result
-                anchor_center = session._grid_cell_center_um(anchor_x, anchor_y)
-                anchors[port_spec] = session._FanoutAnchor(
+                anchor_center = _grid_cell_center_um(settings, state, anchor_x, anchor_y)
+                anchors[port_spec] = _FanoutAnchor(
                     port_spec=port_spec,
                     state_x=anchor_x,
                     state_y=anchor_y,
                     physical_angle=angle,
                     center_um=anchor_center,
-                    stub_center_cells=session._centerline_grid_cells(centerline),
+                    stub_center_cells=_centerline_grid_cells(settings, state, centerline),
                     stub_centerline_um=centerline,
                 )
                 return anchor_x, anchor_y
@@ -984,7 +1011,7 @@ def _build_static_fanout_anchors(session) -> dict[str, _FanoutAnchor]:
             upper_items = ordered_items[count // 2 :]
             if not lower_items or not upper_items:
                 continue
-            stub_bend_steps = session._fanout_stub_bend_steps()
+            stub_bend_steps = _fanout_stub_bend_steps(settings, state)
             stagger_forward_cells = int(stub_x_offset_cells) if int(stub_bend_steps) >= 2 else 0
 
             lower_inner = lower_items[-1]
@@ -1053,7 +1080,7 @@ def _build_static_fanout_anchors(session) -> dict[str, _FanoutAnchor]:
     return anchors
 
 
-def _build_static_fanout_target_anchors(session) -> dict[str, _FanoutAnchor]:
+def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnchor]:
     """Build real, pre-committed straight stubs for dense TARGET ports.
 
     Unlike `_build_static_fanout_anchors` (the source-side equivalent),
@@ -1085,19 +1112,19 @@ def _build_static_fanout_target_anchors(session) -> dict[str, _FanoutAnchor]:
     that is required for the rest of the routing pipeline to pick them
     up correctly -- no other call site needs to change.
     """
-    if session.settings.fanout_access_mode_normalized != "static-stubs":
+    if settings.fanout_access_mode_normalized != "static-stubs":
         return {}
-    default_forward_cells = max(3, int(session.bend_radius_cells) + 3)
-    forward_cells = session._fanout_int_or_default(
-        session.settings.config.fanout.fanout_stub_forward_cells,
+    default_forward_cells = max(3, int(state.bend_radius_cells) + 3)
+    forward_cells = _fanout_int_or_default(
+        settings.config.fanout.fanout_stub_forward_cells,
         default_forward_cells,
     )
-    spacing_cells = session._fanout_int_or_default(
-        session.settings.config.fanout.target_protected_lane_spacing_cells,
-        session._fanout_int_or_default(
-            session.settings.config.fanout.fanout_protected_lane_spacing_cells,
-            session._fanout_int_or_default(
-                session.settings.config.fanout.fanout_lane_spacing_cells,
+    spacing_cells = _fanout_int_or_default(
+        settings.config.fanout.target_protected_lane_spacing_cells,
+        _fanout_int_or_default(
+            settings.config.fanout.fanout_protected_lane_spacing_cells,
+            _fanout_int_or_default(
+                settings.config.fanout.fanout_lane_spacing_cells,
                 3,
             ),
         ),
@@ -1106,14 +1133,16 @@ def _build_static_fanout_target_anchors(session) -> dict[str, _FanoutAnchor]:
         return {}
 
     anchors: dict[str, _FanoutAnchor] = {}
-    for instance_name, port_specs in session.target_port_specs_by_instance.items():
-        if not session._is_dense_target_fanout_instance(instance_name):
+    for instance_name, port_specs in state.target_port_specs_by_instance.items():
+        if not _is_dense_target_fanout_instance(settings, state, instance_name):
             continue
         by_angle: dict[int, list[str]] = {}
         for port_spec in port_specs:
-            _inst, _port_name, port = session.endpoint_ports_by_spec[port_spec]
-            angle = session._orientation_to_angle(getattr(port, "orientation", None), flip=False)
-            step_x, step_y = session._angle_to_step(angle)
+            _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+            angle = _orientation_to_angle(
+                settings, state, getattr(port, "orientation", None), flip=False
+            )
+            step_x, step_y = _angle_to_step(settings, state, angle)
             # Mirrors the source-side restriction: static stub geometry
             # is only defined for cardinal (axis-aligned) port rows
             # today. Diagonal target ports fall back to the normal
@@ -1124,13 +1153,13 @@ def _build_static_fanout_target_anchors(session) -> dict[str, _FanoutAnchor]:
             by_angle.setdefault(angle, []).append(port_spec)
 
         for angle, group_specs in by_angle.items():
-            if not session._is_dense_target_fanout_group(instance_name, angle):
+            if not _is_dense_target_fanout_group(settings, state, instance_name, angle):
                 continue
-            step_x, step_y = session._angle_to_step(angle)
+            step_x, step_y = _angle_to_step(settings, state, angle)
             lateral_x, lateral_y = -step_y, step_x
 
             def _lateral_position(port_spec: str) -> float:
-                _inst, _port_name, port = session.endpoint_ports_by_spec[port_spec]
+                _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
                 center = _port_center_um(port)
                 if center is None:
                     return 0.0
@@ -1138,7 +1167,7 @@ def _build_static_fanout_target_anchors(session) -> dict[str, _FanoutAnchor]:
 
             ordered = sorted(group_specs, key=lambda spec: (_lateral_position(spec), spec))
             count = len(ordered)
-            if count < session._dense_fanout_min_ports():
+            if count < _dense_fanout_min_ports(settings, state):
                 continue
             lower_specs = ordered[: count // 2]
             upper_specs = ordered[count // 2 :]
@@ -1162,12 +1191,12 @@ def _build_static_fanout_target_anchors(session) -> dict[str, _FanoutAnchor]:
                 ranked = [(ordered[0], 1), (ordered[1], 2)]
 
             for port_spec, rank in ranked:
-                _inst, _port_name, port = session.endpoint_ports_by_spec[port_spec]
+                _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
                 real_center = _port_center_um(port)
                 if real_center is None:
                     continue
                 length_cells = int(forward_cells) + int(spacing_cells) * (int(rank) - 1)
-                stub_result = session._straight_static_stub_centerline_um(
+                stub_result = _straight_static_stub_centerline_um(settings, state,
                     real_center,
                     angle,
                     length_cells,
@@ -1180,33 +1209,34 @@ def _build_static_fanout_target_anchors(session) -> dict[str, _FanoutAnchor]:
                 # NOT the grid cell's snapped center -- see
                 # `_straight_static_stub_centerline_um`.
                 anchor_center = centerline[-1]
-                anchors[port_spec] = session._FanoutAnchor(
+                anchors[port_spec] = _FanoutAnchor(
                     port_spec=port_spec,
                     state_x=anchor_x,
                     state_y=anchor_y,
                     physical_angle=angle,
                     center_um=anchor_center,
-                    stub_center_cells=session._centerline_grid_cells(centerline),
+                    stub_center_cells=_centerline_grid_cells(settings, state, centerline),
                     stub_centerline_um=centerline,
                 )
     return anchors
 
 
 def _dense_source_port_runway_lengths(
-    session,
+    settings,
+    state,
     jobs: list[RouteJob],
 ) -> dict[str, int]:
     """Reserve staggered source-port access in dense MMI fanout runs."""
     lengths_by_spec: dict[str, int] = {}
-    if session.settings.fanout_access_mode_normalized == "static-stubs":
+    if settings.fanout_access_mode_normalized == "static-stubs":
         grouped_specs: dict[tuple[str, int], set[str]] = {}
         source_specs = {
             f"{run_job.inst1},{run_job.port1}"
             for run_job in jobs
-            if f"{run_job.inst1},{run_job.port1}" in session.fanout_anchor_by_port_spec
+            if f"{run_job.inst1},{run_job.port1}" in state.fanout_anchor_by_port_spec
         }
         for port_spec in source_specs:
-            anchor = session.fanout_anchor_by_port_spec[port_spec]
+            anchor = state.fanout_anchor_by_port_spec[port_spec]
             instance_name = port_spec.split(",", 1)[0]
             grouped_specs.setdefault(
                 (instance_name, int(anchor.physical_angle) % 8),
@@ -1214,13 +1244,13 @@ def _dense_source_port_runway_lengths(
             ).add(port_spec)
 
         for (_instance_name, angle), specs in grouped_specs.items():
-            if len(specs) < session._dense_fanout_min_ports():
+            if len(specs) < _dense_fanout_min_ports(settings, state):
                 continue
-            step_x, step_y = session._angle_to_step(angle)
+            step_x, step_y = _angle_to_step(settings, state, angle)
             lateral_x, lateral_y = -step_y, step_x
 
             def anchor_lateral_position(port_spec: str) -> int:
-                anchor = session.fanout_anchor_by_port_spec[port_spec]
+                anchor = state.fanout_anchor_by_port_spec[port_spec]
                 return int(anchor.state_x) * lateral_x + int(anchor.state_y) * lateral_y
 
             ordered_specs = sorted(
@@ -1231,10 +1261,10 @@ def _dense_source_port_runway_lengths(
                 ),
             )
             count = len(ordered_specs)
-            spacing_cells = session._fanout_int_or_default(
-                session.settings.config.fanout.fanout_protected_lane_spacing_cells,
-                session._fanout_int_or_default(
-                    session.settings.config.fanout.fanout_lane_spacing_cells,
+            spacing_cells = _fanout_int_or_default(
+                settings.config.fanout.fanout_protected_lane_spacing_cells,
+                _fanout_int_or_default(
+                    settings.config.fanout.fanout_lane_spacing_cells,
                     3,
                 ),
             )
@@ -1248,39 +1278,39 @@ def _dense_source_port_runway_lengths(
             for port_index, port_spec in enumerate(upper_specs):
                 runway_rank = upper_count - int(port_index)
                 lengths_by_spec[port_spec] = spacing_cells * runway_rank
-            session._equalize_dense_runway_reach(lengths_by_spec, list(ordered_specs))
+            _equalize_dense_runway_reach(settings, state, lengths_by_spec, list(ordered_specs))
         return lengths_by_spec
 
-    if session.settings.fanout_access_mode_normalized != "legacy-runway":
+    if settings.fanout_access_mode_normalized != "legacy-runway":
         return {}
 
     index = 0
     while index < len(jobs):
         job = jobs[index]
-        if not session._is_dense_source_fanout_instance(job.inst1):
+        if not _is_dense_source_fanout_instance(settings, state, job.inst1):
             index += 1
             continue
         run_end = index + 1
         while (
             run_end < len(jobs)
             and jobs[run_end].inst1 == job.inst1
-            and session._is_dense_source_fanout_instance(jobs[run_end].inst1)
+            and _is_dense_source_fanout_instance(settings, state, jobs[run_end].inst1)
         ):
             run_end += 1
 
         run = jobs[index:run_end]
         by_angle: dict[int, list[RouteJob]] = {}
         for run_job in run:
-            angle = session._orientation_to_angle(
+            angle = _orientation_to_angle(settings, state,
                 getattr(run_job.source_port, "orientation", None),
                 flip=False,
             )
             by_angle.setdefault(angle, []).append(run_job)
 
         for angle, angle_jobs in by_angle.items():
-            if not session._is_dense_source_fanout_group(job.inst1, angle):
+            if not _is_dense_source_fanout_group(settings, state, job.inst1, angle):
                 continue
-            step_x, step_y = session._angle_to_step(angle)
+            step_x, step_y = _angle_to_step(settings, state, angle)
             lateral_x, lateral_y = -step_y, step_x
 
             def _lateral_position_for_dense_source_runway(run_job: RouteJob) -> float:
@@ -1302,14 +1332,15 @@ def _dense_source_port_runway_lengths(
                 port_spec = f"{run_job.inst1},{run_job.port1}"
                 lengths_by_spec[port_spec] = 3 + 3 * (count - 1 - port_index)
                 group_port_specs.append(port_spec)
-            session._equalize_dense_runway_reach(lengths_by_spec, group_port_specs)
+            _equalize_dense_runway_reach(settings, state, lengths_by_spec, group_port_specs)
 
         index = run_end
     return lengths_by_spec
 
 
 def _equalize_dense_runway_reach(
-    session,
+    settings,
+    state,
     lengths_by_spec: dict[str, int],
     port_specs: list[str],
 ) -> None:
@@ -1335,7 +1366,7 @@ def _equalize_dense_runway_reach(
     """
     if not port_specs:
         return
-    half_width_cells = int(session.port_lane_half_width_cells)
+    half_width_cells = int(state.port_lane_half_width_cells)
     max_reach = max(int(lengths_by_spec[spec]) + half_width_cells - 1 for spec in port_specs)
     equalized_length = max_reach - half_width_cells + 1
     for spec in port_specs:
@@ -1343,26 +1374,27 @@ def _equalize_dense_runway_reach(
 
 
 def _dense_target_port_runway_lengths(
-    session,
+    settings,
+    state,
     jobs: list[RouteJob],
 ) -> dict[str, int]:
     """Reserve staggered target-port access for dense same-instance sinks."""
     lengths_by_spec: dict[str, int] = {}
     grouped: dict[tuple[str, int], list[RouteJob]] = {}
     for run_job in jobs:
-        angle = session._orientation_to_angle(
+        angle = _orientation_to_angle(settings, state,
             getattr(run_job.target_port, "orientation", None),
             flip=False,
         )
         grouped.setdefault((run_job.inst2, int(angle)), []).append(run_job)
 
-    base_cells = max(1, int(session.bend_radius_cells) + 1)
-    spacing_cells = session._fanout_int_or_default(
-        session.settings.config.fanout.target_protected_lane_spacing_cells,
-        session._fanout_int_or_default(
-            session.settings.config.fanout.fanout_protected_lane_spacing_cells,
-            session._fanout_int_or_default(
-                session.settings.config.fanout.fanout_lane_spacing_cells,
+    base_cells = max(1, int(state.bend_radius_cells) + 1)
+    spacing_cells = _fanout_int_or_default(
+        settings.config.fanout.target_protected_lane_spacing_cells,
+        _fanout_int_or_default(
+            settings.config.fanout.fanout_protected_lane_spacing_cells,
+            _fanout_int_or_default(
+                settings.config.fanout.fanout_lane_spacing_cells,
                 3,
             ),
         ),
@@ -1372,7 +1404,7 @@ def _dense_target_port_runway_lengths(
     for (_instance_name, angle), angle_jobs in grouped.items():
         if len(angle_jobs) < 4:
             continue
-        step_x, step_y = session._angle_to_step(angle)
+        step_x, step_y = _angle_to_step(settings, state, angle)
         lateral_x, lateral_y = -step_y, step_x
 
         def _lateral_position_for_dense_target_runway(run_job: RouteJob) -> float:
@@ -1394,7 +1426,7 @@ def _dense_target_port_runway_lengths(
         group_port_specs: list[str] = []
         for port_index, run_job in enumerate(lower_jobs):
             port_spec = f"{run_job.inst2},{run_job.port2}"
-            if port_spec in session.fanout_anchor_by_port_spec:
+            if port_spec in state.fanout_anchor_by_port_spec:
                 # A real, pre-committed static stub already exists for
                 # this port (see `_build_static_fanout_target_anchors`):
                 # the abstract reservation this function computes is
@@ -1409,24 +1441,20 @@ def _dense_target_port_runway_lengths(
         upper_count = len(upper_jobs)
         for port_index, run_job in enumerate(upper_jobs):
             port_spec = f"{run_job.inst2},{run_job.port2}"
-            if port_spec in session.fanout_anchor_by_port_spec:
+            if port_spec in state.fanout_anchor_by_port_spec:
                 lengths_by_spec[port_spec] = 0
                 continue
             lengths_by_spec[port_spec] = base_cells + spacing_cells * (
                 upper_count - 1 - int(port_index)
             )
             group_port_specs.append(port_spec)
-        session._equalize_dense_runway_reach(lengths_by_spec, group_port_specs)
+        _equalize_dense_runway_reach(settings, state, lengths_by_spec, group_port_specs)
     return lengths_by_spec
 
 
 def build_route_jobs_and_fanout_clustering(
-    session, nets: Mapping[str, Any]
-) -> tuple[
-    list[RouteJob],
-    dict[str, set[str]],
-    dict[str, int],
-]:
+    settings: SessionSettings, state: SessionState, nets: Mapping[str, Any]
+) -> RouteJobsResult:
     """Build the per-net `RouteJob` list from the schematic netlist and compute fanout/dense-port clustering.
 
     Populates `self.endpoint_ports_by_spec`, `self.source_port_specs_by_instance`
@@ -1438,21 +1466,21 @@ def build_route_jobs_and_fanout_clustering(
     `dense_port_runway_length_by_spec` (the merged source+target runway-length map).
     """
     route_jobs: list[RouteJob] = []
-    session.endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = {}
+    state.endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = {}
     endpoint_port_specs_by_instance: dict[str, set[str]] = {}
-    session.port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
-    session.port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
-    session.port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
-    session.port_access_rule_by_spec: dict[str, str | None] = {}
+    state.port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
+    state.port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
+    state.port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
+    state.port_access_rule_by_spec: dict[str, str | None] = {}
     next_net_id = 1
-    t_route_job_build_start = session._pipeline_timer_start()
+    t_route_job_build_start = timing.pipeline_timer_start(settings, state)
     for net_name, bundle in nets.items():
         links = bundle.links
         for port1_spec, port2_spec in links.items():
             inst1, port1 = port1_spec.split(",")
             inst2, port2 = port2_spec.split(",")
-            source_port = get_port_from_instance(session.routed_layout, inst1, port1)
-            target_port = get_port_from_instance(session.routed_layout, inst2, port2)
+            source_port = get_port_from_instance(state.routed_layout, inst1, port1)
+            target_port = get_port_from_instance(state.routed_layout, inst2, port2)
             route_jobs.append(
                 RouteJob(
                     net_id=next_net_id,
@@ -1467,110 +1495,112 @@ def build_route_jobs_and_fanout_clustering(
                 )
             )
             next_net_id += 1
-            session.endpoint_ports_by_spec.setdefault(port1_spec, (inst1, port1, source_port))
-            session.endpoint_ports_by_spec.setdefault(port2_spec, (inst2, port2, target_port))
+            state.endpoint_ports_by_spec.setdefault(port1_spec, (inst1, port1, source_port))
+            state.endpoint_ports_by_spec.setdefault(port2_spec, (inst2, port2, target_port))
             endpoint_port_specs_by_instance.setdefault(inst1, set()).add(port1_spec)
             endpoint_port_specs_by_instance.setdefault(inst2, set()).add(port2_spec)
-    session._record_pipeline_timing("route_job_build", t_route_job_build_start)
+    timing.record_pipeline_timing(settings, state, "route_job_build", t_route_job_build_start)
 
-    session.source_port_specs_by_instance: dict[str, set[str]] = {}
-    session.source_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
-    session.target_port_specs_by_instance: dict[str, set[str]] = {}
-    session.target_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
+    state.source_port_specs_by_instance: dict[str, set[str]] = {}
+    state.source_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
+    state.target_port_specs_by_instance: dict[str, set[str]] = {}
+    state.target_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
     for run_job in route_jobs:
         port_spec = f"{run_job.inst1},{run_job.port1}"
-        session.source_port_specs_by_instance.setdefault(run_job.inst1, set()).add(port_spec)
-        angle = session._orientation_to_angle(
+        state.source_port_specs_by_instance.setdefault(run_job.inst1, set()).add(port_spec)
+        angle = _orientation_to_angle(settings, state,
             getattr(run_job.source_port, "orientation", None),
             flip=False,
         )
-        session.source_port_specs_by_instance_angle.setdefault(
+        state.source_port_specs_by_instance_angle.setdefault(
             (run_job.inst1, int(angle)), set()
         ).add(port_spec)
         target_port_spec = f"{run_job.inst2},{run_job.port2}"
-        session.target_port_specs_by_instance.setdefault(run_job.inst2, set()).add(
+        state.target_port_specs_by_instance.setdefault(run_job.inst2, set()).add(
             target_port_spec
         )
-        target_angle = session._orientation_to_angle(
+        target_angle = _orientation_to_angle(settings, state,
             getattr(run_job.target_port, "orientation", None),
             flip=False,
         )
-        session.target_port_specs_by_instance_angle.setdefault(
+        state.target_port_specs_by_instance_angle.setdefault(
             (run_job.inst2, int(target_angle)), set()
         ).add(target_port_spec)
 
-    session.fanout_anchor_by_port_spec = {
-        **session._build_static_fanout_anchors(),
-        **session._build_static_fanout_target_anchors(),
+    state.fanout_anchor_by_port_spec = {
+        **_build_static_fanout_anchors(settings, state),
+        **_build_static_fanout_target_anchors(settings, state),
     }
-    traced_instance = session.settings.config.diagnostics.trace_runway_instance
+    traced_instance = settings.config.diagnostics.trace_runway_instance
     if traced_instance:
-        for port_spec, anchor in sorted(session.fanout_anchor_by_port_spec.items()):
+        for port_spec, anchor in sorted(state.fanout_anchor_by_port_spec.items()):
             if port_spec.startswith(f"{traced_instance},"):
                 print(
                     f"anchor_trace {port_spec} state=({anchor.state_x},{anchor.state_y}) "
                     f"angle={anchor.physical_angle} "
                     f"centerline={anchor.stub_centerline_um}"
                 )
-    session.fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = {
-        port_spec: session._inflated_cells(anchor.stub_center_cells, int(session.commit_radius_cells))
-        for port_spec, anchor in session.fanout_anchor_by_port_spec.items()
+    state.fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = {
+        port_spec: _inflated_cells(settings, state, anchor.stub_center_cells, int(state.commit_radius_cells))
+        for port_spec, anchor in state.fanout_anchor_by_port_spec.items()
     }
-    session.fanout_stub_center_cells: set[tuple[int, int]] = set()
-    for anchor in session.fanout_anchor_by_port_spec.values():
-        session.fanout_stub_center_cells.update(anchor.stub_center_cells)
-    session.fanout_stub_static_cells: set[tuple[int, int]] = set()
-    for cells in session.fanout_stub_static_cells_by_spec.values():
-        session.fanout_stub_static_cells.update(cells)
-    session.fanout_anchor_net_ids = {
+    state.fanout_stub_center_cells: set[tuple[int, int]] = set()
+    for anchor in state.fanout_anchor_by_port_spec.values():
+        state.fanout_stub_center_cells.update(anchor.stub_center_cells)
+    state.fanout_stub_static_cells: set[tuple[int, int]] = set()
+    for cells in state.fanout_stub_static_cells_by_spec.values():
+        state.fanout_stub_static_cells.update(cells)
+    state.fanout_anchor_net_ids = {
         int(job.net_id)
         for job in route_jobs
-        if f"{job.inst1},{job.port1}" in session.fanout_anchor_by_port_spec
-        or f"{job.inst2},{job.port2}" in session.fanout_anchor_by_port_spec
+        if f"{job.inst1},{job.port1}" in state.fanout_anchor_by_port_spec
+        or f"{job.inst2},{job.port2}" in state.fanout_anchor_by_port_spec
     }
-    session.fanout_anchor_source_net_ids = {
+    state.fanout_anchor_source_net_ids = {
         int(job.net_id)
         for job in route_jobs
-        if f"{job.inst1},{job.port1}" in session.fanout_anchor_by_port_spec
+        if f"{job.inst1},{job.port1}" in state.fanout_anchor_by_port_spec
     }
-    session.fanout_anchor_target_net_ids = {
+    state.fanout_anchor_target_net_ids = {
         int(job.net_id)
         for job in route_jobs
-        if f"{job.inst2},{job.port2}" in session.fanout_anchor_by_port_spec
+        if f"{job.inst2},{job.port2}" in state.fanout_anchor_by_port_spec
     }
 
-    session.dense_source_port_runway_length_by_spec = session._dense_source_port_runway_lengths(
+    state.dense_source_port_runway_length_by_spec = _dense_source_port_runway_lengths(
+        settings, state,
         route_jobs
     )
-    session.dense_target_port_runway_length_by_spec = session._dense_target_port_runway_lengths(
+    state.dense_target_port_runway_length_by_spec = _dense_target_port_runway_lengths(
+        settings, state,
         route_jobs
     )
-    traced_instance = session.settings.config.diagnostics.trace_runway_instance
+    traced_instance = settings.config.diagnostics.trace_runway_instance
     if traced_instance:
         for port_spec, runway_length in sorted(
-            session.dense_target_port_runway_length_by_spec.items()
+            state.dense_target_port_runway_length_by_spec.items()
         ):
             if port_spec.startswith(f"{traced_instance},"):
                 print(f"runway_trace target {port_spec} length={runway_length}")
         for port_spec, runway_length in sorted(
-            session.dense_source_port_runway_length_by_spec.items()
+            state.dense_source_port_runway_length_by_spec.items()
         ):
             if port_spec.startswith(f"{traced_instance},"):
                 print(f"runway_trace source {port_spec} length={runway_length}")
     dense_port_runway_length_by_spec: dict[str, int] = dict(
-        session.dense_source_port_runway_length_by_spec
+        state.dense_source_port_runway_length_by_spec
     )
-    for port_spec, runway_length in session.dense_target_port_runway_length_by_spec.items():
+    for port_spec, runway_length in state.dense_target_port_runway_length_by_spec.items():
         existing_length = dense_port_runway_length_by_spec.get(port_spec)
         dense_port_runway_length_by_spec[port_spec] = max(
             int(existing_length) if existing_length is not None else 0,
             int(runway_length),
         )
-    session.dense_source_cluster_specs_by_port_spec: dict[str, set[str]] = {}
+    state.dense_source_cluster_specs_by_port_spec: dict[str, set[str]] = {}
     index = 0
     while index < len(route_jobs):
         job = route_jobs[index]
-        if f"{job.inst1},{job.port1}" not in session.dense_source_port_runway_length_by_spec:
+        if f"{job.inst1},{job.port1}" not in state.dense_source_port_runway_length_by_spec:
             index += 1
             continue
         run_end = index + 1
@@ -1578,22 +1608,22 @@ def build_route_jobs_and_fanout_clustering(
             run_end < len(route_jobs)
             and route_jobs[run_end].inst1 == job.inst1
             and f"{route_jobs[run_end].inst1},{route_jobs[run_end].port1}"
-            in session.dense_source_port_runway_length_by_spec
+            in state.dense_source_port_runway_length_by_spec
         ):
             run_end += 1
         cluster_specs = {
             f"{run_job.inst1},{run_job.port1}"
             for run_job in route_jobs[index:run_end]
             if f"{run_job.inst1},{run_job.port1}"
-            in session.dense_source_port_runway_length_by_spec
+            in state.dense_source_port_runway_length_by_spec
         }
         if len(cluster_specs) > 1:
             for port_spec in cluster_specs:
-                session.dense_source_cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
+                state.dense_source_cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
         index = run_end
-    if session.fanout_anchor_by_port_spec:
+    if state.fanout_anchor_by_port_spec:
         static_stub_groups: dict[tuple[str, int], set[str]] = {}
-        for port_spec, anchor in session.fanout_anchor_by_port_spec.items():
+        for port_spec, anchor in state.fanout_anchor_by_port_spec.items():
             instance_name = port_spec.split(",", 1)[0]
             static_stub_groups.setdefault(
                 (instance_name, int(anchor.physical_angle) % 8),
@@ -1603,6 +1633,32 @@ def build_route_jobs_and_fanout_clustering(
             if len(cluster_specs) <= 1:
                 continue
             for port_spec in cluster_specs:
-                session.dense_source_cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
+                state.dense_source_cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
 
-    return route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec
+    return RouteJobsResult(
+        route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec
+    )
+
+
+def apply_long_straight_fanout_exemption(
+    settings: SessionSettings, state: SessionState
+) -> None:
+    """Hand the dense fan-out nets to the kernel as long-straight-penalty exempt.
+
+    Moved verbatim out of `run()` in Milestone 5 Slice 2b: it is the one step of
+    the pipeline that was an inline branch rather than a phase call. It consumes
+    phase 3's fan-out anchor net ids and configures the router, so it belongs to
+    phase 3 and runs at exactly the point it used to.
+    """
+    if settings.config.search.long_straight_exempt_dense_fanout is True:
+        # 2026-09-17 (multiportmmi_128x128): the fan-in / fan-out bands of
+        # dense multi-port instances route without the long-straight
+        # penalty, so their lanes may pack in parallel; every other net
+        # keeps the configured weight. See PyPhotonicRouter's
+        # `long_straight_exempt_net_ids`.
+        exempt_ids = sorted(
+            set(state.fanout_anchor_source_net_ids) | set(state.fanout_anchor_target_net_ids)
+        )
+        if hasattr(state.router, "set_long_straight_exempt_net_ids"):
+            state.router.set_long_straight_exempt_net_ids(exempt_ids)
+            print(f"      - long-straight penalty exempt for {len(exempt_ids)} dense fan-out net(s)")
