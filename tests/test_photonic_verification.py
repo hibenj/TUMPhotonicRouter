@@ -13,9 +13,11 @@ from photonic_router.static_obstacle_builder import _load_rust_backend
 import translation.photonic_verification as photonic_verification_module
 from translation.photonic_verification import (
     PhotonicVerificationIssue,
+    _BoxBucketIndex,
+    _combined_region,
     _component_layer_region,
+    _net_id_pair,
     _polygon_regions_by_pair_um,
-    _PolygonBucketIndex,
     _region_area_um2,
     _region_bbox_um,
     _verify_crossing_component_overlaps,
@@ -316,6 +318,209 @@ def test_photonic_verifier_ignores_cross_net_overlap_inside_port_window():
 
     assert overlap_count == 0
     assert issues == []
+
+
+def _oracle_verify_cross_net_route_overlaps(
+    issues,
+    route_regions_by_key,
+    *,
+    dbu,
+    legal_overlap_region,
+    net_id_by_key=None,
+    legal_overlap_regions_by_net_id_pair=None,
+    min_overlap_area_um2=0.0,
+):
+    """Verbatim copy of the pre-Milestone-3 `_verify_cross_net_route_overlaps`
+    double loop: visits every pair (i, j), i < j, in record order with a
+    bounding-box prefilter, and no spatial index. Used as the correctness
+    oracle for the `_BoxBucketIndex`-based candidate query.
+    """
+    overlap_count = 0
+    items = [(key, region) for key, region in route_regions_by_key.items() if not region.is_empty()]
+    bboxes = [region.bbox() for _key, region in items]
+    for index, (left_key, left_region) in enumerate(items):
+        left_bbox = bboxes[index]
+        for offset, (right_key, right_region) in enumerate(items[index + 1 :], start=index + 1):
+            if not left_bbox.overlaps(bboxes[offset]) and not left_bbox.touches(bboxes[offset]):
+                continue
+            allowed_region = legal_overlap_region
+            if (
+                net_id_by_key is not None
+                and legal_overlap_regions_by_net_id_pair is not None
+                and left_key in net_id_by_key
+                and right_key in net_id_by_key
+            ):
+                allowed_region = _combined_region(
+                    legal_overlap_region,
+                    legal_overlap_regions_by_net_id_pair.get(
+                        _net_id_pair(net_id_by_key[left_key], net_id_by_key[right_key]),
+                        kdb.Region(),
+                    ),
+                )
+            overlap = (left_region & right_region) - allowed_region
+            if overlap.is_empty():
+                continue
+            overlap_area_um2 = _region_area_um2(overlap, dbu)
+            if overlap_area_um2 <= float(min_overlap_area_um2):
+                continue
+            overlap_count += 1
+            issues.append(
+                PhotonicVerificationIssue(
+                    code="cross_net_waveguide_overlap",
+                    message=(f"Waveguide for {left_key[0]} overlaps waveguide for {right_key[0]}."),
+                    net_name=left_key[0],
+                    details={
+                        "other_net_name": right_key[0],
+                        "overlap_area_um2": overlap_area_um2,
+                        "overlap_bbox_um": _region_bbox_um(overlap, dbu),
+                    },
+                )
+            )
+    return overlap_count
+
+
+def test_cross_net_overlap_issues_match_double_loop_oracle():
+    def _route(net_name, xmin, ymin, xmax, ymax):
+        key = (net_name, (f"{net_name}_src", "o1"), (f"{net_name}_dst", "o2"))
+        return key, _box_region(xmin, ymin, xmax, ymax)
+
+    # Lane 0 (y 0-2000): n0 illegally overlaps both n1 and n2 (same route
+    # in two issues, so the order of issues matters); n1 and n2 do not
+    # overlap each other.
+    r0 = _route("n0", 0, 0, 30_000, 2_000)
+    r1 = _route("n1", 5_000, 0, 15_000, 2_000)
+    r2 = _route("n2", 20_000, 0, 28_000, 2_000)
+    # Lane 1 (y 20000-22000): n3 illegally overlaps both n4 and n5.
+    r3 = _route("n3", 0, 20_000, 30_000, 22_000)
+    r4 = _route("n4", 5_000, 20_000, 15_000, 22_000)
+    r5 = _route("n5", 20_000, 20_000, 28_000, 22_000)
+    # Lane 2 (y 40000-42000): n6 illegally overlaps n7 (the 5th illegal pair).
+    r6 = _route("n6", 0, 40_000, 10_000, 42_000)
+    r7 = _route("n7", 5_000, 40_000, 15_000, 42_000)
+    # Lanes 3 and 4: pairs that only touch at an edge -- zero-area overlap,
+    # no issue.
+    r8 = _route("n8", 0, 60_000, 10_000, 62_000)
+    r9 = _route("n9", 10_000, 60_000, 20_000, 62_000)
+    r10 = _route("n10", 0, 80_000, 5_000, 82_000)
+    r11 = _route("n11", 5_000, 80_000, 12_000, 82_000)
+    # Lanes 5 and 6: overlaps fully inside the global legal_overlap_region.
+    r12 = _route("n12", 0, 100_000, 10_000, 102_000)
+    r13 = _route("n13", 5_000, 100_000, 15_000, 102_000)
+    r14 = _route("n14", 0, 120_000, 10_000, 122_000)
+    r15 = _route("n15", 5_000, 120_000, 15_000, 122_000)
+    # Lane 7: an overlap that is legal only under its net-id-pair's own
+    # legal region (not covered by the global legal_overlap_region).
+    r16 = _route("n16", 0, 140_000, 10_000, 142_000)
+    r17 = _route("n17", 5_000, 140_000, 15_000, 142_000)
+    # Far from every other route.
+    r18 = _route("n18", 0, 10_000_000, 5_000, 10_002_000)
+    r19 = _route("n19", 0, 20_000_000, 5_000, 20_002_000)
+
+    # Deliberate, non-sequential insertion order (so a correct
+    # implementation must not depend on insertion order matching the
+    # geometric layout above).
+    route_regions_by_key = {
+        route[0]: route[1]
+        for route in (
+            r9,
+            r0,
+            r16,
+            r3,
+            r12,
+            r18,
+            r1,
+            r6,
+            r14,
+            r10,
+            r4,
+            r17,
+            r2,
+            r19,
+            r13,
+            r7,
+            r11,
+            r5,
+            r15,
+            r8,
+        )
+    }
+
+    net_id_by_key = {r16[0]: 1, r17[0]: 2}
+    legal_overlap_regions_by_net_id_pair = {
+        _net_id_pair(1, 2): _box_region(5_000, 140_000, 10_000, 142_000),
+    }
+    legal_overlap_region = kdb.Region()
+    legal_overlap_region.insert(kdb.Box(0, 95_000, 20_000, 107_000))
+    legal_overlap_region.insert(kdb.Box(0, 115_000, 20_000, 127_000))
+
+    kwargs = {
+        "route_regions_by_key": route_regions_by_key,
+        "dbu": 0.001,
+        "legal_overlap_region": legal_overlap_region,
+        "net_id_by_key": net_id_by_key,
+        "legal_overlap_regions_by_net_id_pair": legal_overlap_regions_by_net_id_pair,
+    }
+
+    shipped_issues: list[PhotonicVerificationIssue] = []
+    shipped_count = _verify_cross_net_route_overlaps(shipped_issues, **kwargs)
+    oracle_issues: list[PhotonicVerificationIssue] = []
+    oracle_count = _oracle_verify_cross_net_route_overlaps(oracle_issues, **kwargs)
+
+    assert shipped_count == oracle_count
+    assert len(shipped_issues) >= 5
+    assert shipped_issues == oracle_issues
+
+
+def test_cross_net_overlap_index_is_exact_on_random_rectangles():
+    rng = random.Random(20260925)
+    n = 80
+    chip_span = 200_000  # 200 um chip, in dbu at dbu=0.001 um.
+
+    def _random_box(rng: random.Random) -> tuple[int, int, int, int]:
+        x0 = rng.randint(0, chip_span - 5_000)
+        y0 = rng.randint(0, chip_span - 5_000)
+        w = rng.randint(100, 5_000)
+        h = rng.randint(100, 5_000)
+        return (x0, y0, x0 + w, y0 + h)
+
+    boxes = [_random_box(rng) for _ in range(n)]
+    # A few chip-spanning routes.
+    boxes[0] = (0, 0, chip_span, 50_000)
+    boxes[1] = (0, chip_span - 50_000, chip_span, chip_span)
+    boxes[2] = (0, 0, 50_000, chip_span)
+    # Forced touching pairs: share an edge, zero-area overlap.
+    boxes[3] = (10_000, 10_000, 15_000, 12_000)
+    boxes[4] = (15_000, 10_000, 20_000, 12_000)  # touches box 3 at x=15000
+    boxes[5] = (30_000, 30_000, 35_000, 32_000)
+    boxes[6] = (30_000, 32_000, 35_000, 34_000)  # touches box 5 at y=32000
+    # A forced overlap below the min-overlap threshold.
+    boxes[7] = (50_000, 50_000, 50_100, 50_100)
+    boxes[8] = (50_050, 50_050, 50_150, 50_150)  # 0.0025 um^2 overlap
+    # A forced overlap comfortably above the threshold.
+    boxes[9] = (60_000, 60_000, 70_000, 62_000)
+    boxes[10] = (65_000, 60_000, 75_000, 62_000)  # 10 um^2 overlap
+
+    route_keys = [(f"n{i}", (f"src{i}", "o1"), (f"dst{i}", "o2")) for i in range(n)]
+    order = list(range(n))
+    rng.shuffle(order)  # deliberate, non-sequential insertion order
+    route_regions_by_key = {route_keys[i]: _box_region(*boxes[i]) for i in order}
+
+    kwargs = {
+        "route_regions_by_key": route_regions_by_key,
+        "dbu": 0.001,
+        "legal_overlap_region": kdb.Region(),
+        "min_overlap_area_um2": 0.05,
+    }
+
+    shipped_issues: list[PhotonicVerificationIssue] = []
+    shipped_count = _verify_cross_net_route_overlaps(shipped_issues, **kwargs)
+    oracle_issues: list[PhotonicVerificationIssue] = []
+    oracle_count = _oracle_verify_cross_net_route_overlaps(oracle_issues, **kwargs)
+
+    assert oracle_count > 0
+    assert shipped_issues != []
+    assert shipped_count == oracle_count
+    assert shipped_issues == oracle_issues
 
 
 def test_photonic_verifier_accepts_stubbed_centerline_port_connections(monkeypatch):
@@ -758,7 +963,7 @@ def _oracle_verify_route_obstacle_overlaps(
     """Verbatim copy of the pre-Milestone-2 `_verify_route_obstacle_overlaps`
     per-route loop: intersects each route directly with the FULL residue,
     with no bounding-box index. Used as the correctness oracle for
-    `_PolygonBucketIndex`.
+    `_BoxBucketIndex`.
     """
     overlap_count = 0
     for layer in obstacle_layers:
@@ -949,21 +1154,16 @@ def test_obstacle_overlap_index_is_exact_on_random_rectangles():
 def test_polygon_bucket_index_candidates_are_conservative_and_exact():
     # 20 boxes on a 5x4 grid, each 10x10 dbu, spaced 20 dbu apart, so
     # adjacent boxes never touch or overlap unless a query is built to do so.
-    region = kdb.Region()
-    for row in range(4):
-        for col in range(5):
-            box = kdb.Box(col * 20, row * 20, col * 20 + 10, row * 20 + 10)
-            region.insert(box)
-    polygons = list(region.each())
-    assert len(polygons) == 20
-    index = _PolygonBucketIndex(region)
+    boxes = [
+        kdb.Box(col * 20, row * 20, col * 20 + 10, row * 20 + 10)
+        for row in range(4)
+        for col in range(5)
+    ]
+    assert len(boxes) == 20
+    index = _BoxBucketIndex(boxes)
 
     def _exact_candidates(query: kdb.Box) -> set[int]:
-        return {
-            i
-            for i, polygon in enumerate(polygons)
-            if query.overlaps(polygon.bbox()) or query.touches(polygon.bbox())
-        }
+        return {i for i, box in enumerate(boxes) if query.overlaps(box) or query.touches(box)}
 
     equal_count = 0
     queries = [
@@ -1000,27 +1200,29 @@ def test_polygon_bucket_index_query_cost_is_bounded_by_polygon_count():
     area_height = 5_000_000
     polygon_extent = 250
     n = 40
-    region = kdb.Region()
-    # Anchor two polygons at the extreme corners so the region's bbox is
+    # Anchor two boxes at the extreme corners so the indexed bbox is
     # exactly (0, 0, area_width, area_height), matching the nominal area
     # the cell-size formula below is checked against exactly.
-    region.insert(kdb.Box(0, 0, polygon_extent, polygon_extent))
-    region.insert(
+    boxes = [
+        kdb.Box(0, 0, polygon_extent, polygon_extent),
         kdb.Box(
             area_width - polygon_extent,
             area_height - polygon_extent,
             area_width,
             area_height,
-        )
-    )
+        ),
+    ]
     for _ in range(n - 2):
         x0 = rng.randint(0, area_width - polygon_extent)
         y0 = rng.randint(0, area_height - polygon_extent)
-        region.insert(kdb.Box(x0, y0, x0 + polygon_extent, y0 + polygon_extent))
-    assert region.count() == n
-    assert region.bbox() == kdb.Box(0, 0, area_width, area_height)
+        boxes.append(kdb.Box(x0, y0, x0 + polygon_extent, y0 + polygon_extent))
+    assert len(boxes) == n
+    overall_bbox = kdb.Box()
+    for box in boxes:
+        overall_bbox += box
+    assert overall_bbox == kdb.Box(0, 0, area_width, area_height)
 
-    index = _PolygonBucketIndex(region)
+    index = _BoxBucketIndex(boxes)
     expected_min_cell = math.ceil(math.sqrt((area_width * area_height) / n))
     assert index._cell >= expected_min_cell
 

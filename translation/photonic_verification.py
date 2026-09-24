@@ -511,15 +511,36 @@ def _verify_cross_net_route_overlaps(
 ) -> int:
     overlap_count = 0
     items = [(key, region) for key, region in route_regions_by_key.items() if not region.is_empty()]
-    # Bounding-box prefilter: two waveguides can only overlap where their
-    # bounding boxes do. Without it every pair pays a polygon boolean --
-    # 663k pairs and 90 s on benes_32x32 in grid mode (1152 routes) for a
-    # check that ends up empty in all but a handful of pairs.
     bboxes = [region.bbox() for _key, region in items]
-    for index, (left_key, left_region) in enumerate(items):
-        left_bbox = bboxes[index]
-        for offset, (right_key, right_region) in enumerate(items[index + 1 :], start=index + 1):
-            if not left_bbox.overlaps(bboxes[offset]) and not left_bbox.touches(bboxes[offset]):
+    # Performance pass 2026-09-25 (Milestone 3): candidate pairs come from a
+    # `_BoxBucketIndex` over `bboxes` instead of a quadratic Python double
+    # loop -- 209 million pair visits at N = 20,480 records (Benes 128x128
+    # contribution 2), almost all Python iteration paid before the cheap
+    # bbox test below ever ran (a boolean is rare). Before the 2026-09-07
+    # bounding-box prefilter this loop paid a region boolean on every pair
+    # unconditionally: 663k pairs and 90 s on benes_32x32 in grid mode
+    # (1152 routes).
+    #
+    # Why the issues are identical to the old double loop: that loop
+    # visited (i, j) for every i < j in ascending record order and emitted
+    # an issue only when box i and box j overlapped or touched. A box is
+    # registered in every grid cell its bounding box covers, and a query
+    # over box i's bbox visits every cell box i covers, so `index.candidates
+    # (left_bbox)` returns every j whose box can meet box i's bbox
+    # (conservative coverage), in ascending j (`candidates()` sorts) --
+    # a superset of the pairs the old loop tested, filtered here to j > i.
+    # The same bbox overlap-or-touch test then filters exactly the same
+    # pairs, so the sequence of (i, j) that reaches the boolean below, and
+    # therefore the issues appended, is identical.
+    index = _BoxBucketIndex(bboxes)
+    for index_left, (left_key, left_region) in enumerate(items):
+        left_bbox = bboxes[index_left]
+        for index_right in index.candidates(left_bbox):
+            if index_right <= index_left:
+                continue
+            right_key, right_region = items[index_right]
+            right_bbox = bboxes[index_right]
+            if not left_bbox.overlaps(right_bbox) and not left_bbox.touches(right_bbox):
                 continue
             allowed_region = legal_overlap_region
             if (
@@ -557,54 +578,58 @@ def _verify_cross_net_route_overlaps(
     return overlap_count
 
 
-class _PolygonBucketIndex:
-    """Bounding-box grid index over a `kdb.Region`'s polygons.
+class _BoxBucketIndex:
+    """Uniform grid index over a list of `kdb.Box` bounding boxes.
 
     Performance pass 2026-09-25 (Milestone 2): `_verify_route_obstacle_overlaps`
     used to boolean every route against the whole residue (thousands of
     legal crossing-tile overlap polygons under contribution 2, on every
     obstacle layer): 510 of 551 s of verification on Benes 64x64. This index
     lets that check ask only the residue polygons whose bounding box can
-    possibly meet a route's bounding box.
+    possibly meet a route's bounding box; `_verify_cross_net_route_overlaps`
+    (Milestone 3) uses the same index over the route bboxes to find
+    candidate pairs instead of a quadratic Python double loop.
 
     Performance pass 2026-09-25 (Milestone 2, cell-size decision): the cell
-    size is the larger of the median polygon bbox extent and
-    `ceil(sqrt(area(region bbox) / n_polygons))`. A query box always lies
-    inside the region's own bbox, so it covers at most
-    `area(query) / cell^2 <= area(region bbox) / cell^2 <= n_polygons`
-    cells -- a query is never worse than a linear scan of the polygons, no
-    matter how large the query box is relative to the polygons. A dense
-    residue (Benes crossing tiles: thousands of polygons at one pitch)
+    size is the larger of the median box extent and
+    `ceil(sqrt(area(bbox of all boxes) / n_boxes))`. A query box always lies
+    inside the indexed boxes' own bbox, so it covers at most
+    `area(query) / cell^2 <= area(bbox of all boxes) / cell^2 <= n_boxes`
+    cells -- a query is never worse than a linear scan of the boxes, no
+    matter how large the query box is relative to the individual boxes. A
+    dense set (Benes crossing tiles: thousands of polygons at one pitch)
     still gets a cell near the tile pitch from the median term; a sparse
     one on a chip-wide bbox (multiportmmi: 42 sub-micron slivers on a
     layer spanning the whole chip) gets a chip-scale cell from the area
     term instead of the tiny median, which is what made a route's bbox
     query cost millions of empty cells before this term was added.
     Registration stays cheap either way because the cell is never smaller
-    than the median polygon extent.
+    than the median box extent.
     """
 
-    def __init__(self, region: kdb.Region) -> None:
-        self._polygons: list[kdb.Polygon] = list(region.each())
-        self._cell = self._cell_size(self._polygons, region.bbox())
+    def __init__(self, boxes: list[kdb.Box]) -> None:
+        self._boxes = boxes
+        self._cell = self._cell_size(boxes)
         self._buckets: dict[tuple[int, int], list[int]] = {}
-        for index, polygon in enumerate(self._polygons):
-            box = polygon.bbox()
+        for index, box in enumerate(boxes):
             for grid_x in range(box.left // self._cell, box.right // self._cell + 1):
                 for grid_y in range(box.bottom // self._cell, box.top // self._cell + 1):
                     self._buckets.setdefault((grid_x, grid_y), []).append(index)
 
     @staticmethod
-    def _cell_size(polygons: list[kdb.Polygon], region_bbox: kdb.Box) -> int:
-        if not polygons:
+    def _cell_size(boxes: list[kdb.Box]) -> int:
+        if not boxes:
             return 1
-        widths = sorted(polygon.bbox().width() for polygon in polygons)
-        heights = sorted(polygon.bbox().height() for polygon in polygons)
+        widths = sorted(box.width() for box in boxes)
+        heights = sorted(box.height() for box in boxes)
         median_width = widths[len(widths) // 2]
         median_height = heights[len(heights) // 2]
         median_extent = max(int(median_width), int(median_height))
-        region_area = int(region_bbox.width()) * int(region_bbox.height())
-        bounded_extent = math.ceil(math.sqrt(region_area / len(polygons)))
+        bbox = kdb.Box()
+        for box in boxes:
+            bbox += box
+        region_area = int(bbox.width()) * int(bbox.height())
+        bounded_extent = math.ceil(math.sqrt(region_area / len(boxes)))
         return max(median_extent, bounded_extent, 1)
 
     def candidates(self, box: kdb.Box) -> list[int]:
@@ -613,9 +638,6 @@ class _PolygonBucketIndex:
             for grid_y in range(box.bottom // self._cell, box.top // self._cell + 1):
                 indices.update(self._buckets.get((grid_x, grid_y), ()))
         return sorted(indices)
-
-    def polygon(self, index: int) -> kdb.Polygon:
-        return self._polygons[index]
 
 
 def _verify_route_obstacle_overlaps(
@@ -669,14 +691,15 @@ def _verify_route_obstacle_overlaps(
         # covers, and a query returns every cell the route's bounding box
         # covers -- so a polygon whose bounding box meets the query box is
         # always among the candidates.
-        residue_index = _PolygonBucketIndex(residue)
+        residue_polygons = list(residue.each())
+        residue_index = _BoxBucketIndex([polygon.bbox() for polygon in residue_polygons])
         for key, route_region in route_regions_by_key.items():
             candidate_indices = residue_index.candidates(route_region.bbox())
             if not candidate_indices:
                 continue
             candidates_region = kdb.Region()
             for candidate_index in candidate_indices:
-                candidates_region.insert(residue_index.polygon(candidate_index))
+                candidates_region.insert(residue_polygons[candidate_index])
             touching = route_region & candidates_region
             if touching.is_empty():
                 continue

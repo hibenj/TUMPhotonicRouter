@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. This document must be maintained in accordance with `.agent/PLANS.md`.
 
-Status: **2026-09-25 02:20 -- Milestones 1 and 2 done (obstacle check 526 s to 38 s on Benes 64x64, reports byte-identical); Milestone 3 (pair-check index) next.**
+Status: **2026-09-25 03:30 -- Milestones 1 to 3 done (Benes 64x64 contribution 2 verification 526 s to 32 s, reports byte-identical); Milestone 4 (one router per pass, regions without a component) next.**
 
 
 ## Purpose / Big Picture
@@ -17,7 +17,7 @@ After this plan the same call takes minutes instead of an hour on that layout, t
 - [x] (2026-09-24 23:20) Evidence gathered (structure of the verifier, the 2026-09-07 prefilter plan, phase timings from the Milestone 8 reproduction logs); plan written.
 - [x] (2026-09-25 00:45) Milestone 1: attribution by cProfile (Benes 64x64 contribution 2, 5,824 records, verification 551 s under the profiler) and by an instrumented copy of the verifier in a scratch working directory (Benes 32x32 contribution 2, 1,728 records, 64 s). Both scratch runs produced reports byte-identical to the `results_m8_check` archives, so the harness is sound. Benes 64x64: `_verify_route_obstacle_overlaps` 510 s, `_realized_record_region` 26 s (5,824 calls), `_verify_cross_net_route_overlaps` 12 s, everything else under 1 s. Benes 32x32 inside the obstacle check, per obstacle layer: the union of routes 0.01 s, the union-vs-obstacle boolean 0.15 s, the residue minus the global legal region 0.00 s, then the per-route loop 9 to 14 s on each of five crossing-tile layers (residue of 576 or 2,880 polygons, every one a legal per-key overlap, 576 touching routes, zero issues). The loop does one boolean of each route against the whole residue: 1,728 routes x 5 layers on 32x32, 5,824 x 6 on 64x64, and the residue grows with the layout, so the cost is quadratic. cProfile cannot see it because klayout's operators are not attributed to a Python frame (508 s of "own time" in the loop's frame).
 - [x] (2026-09-25 02:20) Milestone 2: `_PolygonBucketIndex` over the residue's polygons, cell = max(median extent, sqrt(bbox area / n)); the loop intersects each route with its candidate polygons only; four tests (two oracle comparisons against the full-residue loop, the index's conservativeness, the query-cost bound); the dead duplicate in `_polyline_self_intersects_um` removed. Reports byte-identical to the archives on Benes 64x64 contribution 2 (verification 526 s to 38 s) and ADEPT 128x128 contribution 2 (143 s to 70 s). Rust 567, Python 526; gate 9/9 exact, verified independently.
-- [ ] Milestone 3: candidate pairs from a spatial index, issues in the original order.
+- [x] (2026-09-25 03:30) Milestone 3: the index generalized to `_BoxBucketIndex` over boxes; the pair check queries it per route and keeps the ascending (i, j) order and the bbox test, so the issue sequence is unchanged; two oracle tests against the old double loop. Reports byte-identical on Benes 64x64 contribution 2 (verification 38 s to 32 s), ADEPT 128x128 contribution 2 (70 s to 67 s) and Benes 16x16 baseline with its crossing plan (1.7 s). Rust 567, Python 528; gate 9/9 exact, verified independently.
 - [ ] Milestone 4: regions without a component per record (optional; 26 s on 64x64, about 100 s expected on 128x128).
 - [ ] Milestone 5: acceptance on the archived reports and the full reproduction.
 
