@@ -42,7 +42,7 @@ from photonic_router.static_obstacle_builder import grid_cell_center, physical_t
 from photonic_router.topology_analysis import analyze_schematic_topology
 
 from translation import route_rust_meanders as _meander_impl
-from translation.crossing_modes import is_collision_mode, is_lidar_mode, normalize_crossing_mode
+from translation.crossing_modes import is_lidar_mode, normalize_crossing_mode
 from translation.photonic_verification import (
     PhotonicVerificationIssue,
     PhotonicVerificationResult,
@@ -413,7 +413,6 @@ __all__ = [
     "grid_cell_center",
     "importlib",
     "insert_meanders_for_requirements",
-    "is_collision_mode",
     "is_lidar_mode",
     "json",
     "matching_group_diagnostics_to_info",

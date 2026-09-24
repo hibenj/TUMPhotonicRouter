@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Iterable, cast
 
-from translation.crossing_modes import is_collision_mode
 from translation.route_rust_obstacle_config import _grid_origin_xy
 from translation.route_rust_types import (
     OpticalRouteClearancePolicy,
@@ -93,21 +92,7 @@ def configure_router_and_grid(
     if settings.allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
         effective_heuristic_mode = "diagonal_aware"
     state.astar_cfg.heuristic_mode = effective_heuristic_mode
-    collision_crossing_mode = bool(settings.enable_crossings) and is_collision_mode(
-        settings.crossing_mode
-    )
     min_heuristic_weight = float(settings.config.search.min_heuristic_weight)
-    if (
-        settings.allow_45_degree_turns
-        and not collision_crossing_mode
-        and min_heuristic_weight > 1.0
-        and hasattr(state.astar_cfg, "max_iterations")
-    ):
-        # This cap was sized for Weighted A* (min weight > 1.0), which
-        # reaches targets in few expansions; admissible search (1.0)
-        # legitimately needs the caller's full iteration budget
-        # (heater_s_mod's mmi_extra_3->mmi_extra_4 net exhausts 50k).
-        state.astar_cfg.max_iterations = min(int(state.astar_cfg.max_iterations), 50_000)
     if settings.allow_45_degree_turns and hasattr(state.astar_cfg, "heuristic_weight"):
         # 1.0 is admissible A*: cheapest paths, no weighted-search
         # geometry artifacts (chicanes, overshoot detours), and the only

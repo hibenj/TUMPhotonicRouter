@@ -50,9 +50,11 @@ The current implementation reports the route-dependent terms. `device_loss`,
 explicit per-net crossing budgets, and nonzero propagation/bend loss defaults
 are left as follow-up knobs.
 
-On this branch, `routing_flow.py` defaults `--crossing-mode` to `lidar-pure`.
-Pass `--crossing-mode window` or `--crossing-mode collision` explicitly when a
-comparison run needs one of the other modes.
+`--crossing-mode` defaults to `lidar-pure` (the baseline). The only other mode
+is `lidar-guided` (contribution 1); the `window` and `collision` modes were
+removed on 2026-09-24 (Milestone 8 of
+`.agent/execplans/2026-09-22-modular-readable-router-restructure.md`), so the
+rows below that name them are historical.
 
 ## Benchmark Snapshot
 

@@ -13,7 +13,7 @@ from gdsfactory.schematic import Schematic
 
 from photonic_router.config import CrossingPlanConfig
 from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
-from translation.crossing_modes import is_collision_mode, is_guided_mode, is_lidar_mode
+from translation.crossing_modes import is_guided_mode
 from photonic_router.topology_analysis import analyze_schematic_topology
 from translation.route_rust_crossing_components import _crossing_component_bbox_size_um
 from translation.route_rust_geometry import _first_perpendicular_route_intersection
@@ -132,8 +132,11 @@ def _effective_crossing_search_loss(
     """Return the search-only crossing penalty passed to Rust A*.
 
     ``crossing_loss`` is the physical insertion-loss term reported to users.
-    Collision-discovered crossing modes also need a non-physical search cost so
-    A* tries a clean same-net route before probing route-route collisions.
+    The crossings are discovered by collision during the search, so they also
+    need a non-physical search cost, so that A* tries a clean same-net route
+    before probing route-route collisions. ``crossing_mode`` no longer changes
+    the result (every remaining mode discovers crossings by collision) and is
+    kept only so the call sites read as the mode-dependent price they report.
     """
     config = config if config is not None else CrossingPlanConfig()
     physical_loss = float(crossing_loss)
@@ -141,11 +144,9 @@ def _effective_crossing_search_loss(
         return physical_loss
     if physical_loss > 0.0:
         return physical_loss
-    if is_collision_mode(crossing_mode):
-        if config.collision_crossing_search_loss_um is not None:
-            return config.collision_crossing_search_loss_um
-        return DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
-    return physical_loss
+    if config.collision_crossing_search_loss_um is not None:
+        return config.collision_crossing_search_loss_um
+    return DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
 
 
 def _effective_planned_crossing_search_loss(config: CrossingPlanConfig | None = None) -> float:
@@ -210,10 +211,7 @@ def _build_crossing_plan_info(
     if not enable_crossings:
         return info
 
-    required_backend = (
-        "CrossingConfig",
-        "CrossingConstraint",
-    )
+    required_backend = ("CrossingConfig",)
     missing_backend = [name for name in required_backend if not hasattr(rust_backend, name)]
     required_router = (
         "set_crossing_config",
@@ -239,8 +237,7 @@ def _build_crossing_plan_info(
         )
     )
 
-    guided = is_guided_mode(crossing_mode)
-    if is_lidar_mode(crossing_mode) and not guided:
+    if not is_guided_mode(crossing_mode):
         # "lidar-pure" is the router-discovered crossing path: A* explores
         # and decides, live, whether a collision it finds can legally
         # become a crossing -- it must not be informed by a precomputed
@@ -252,9 +249,6 @@ def _build_crossing_plan_info(
         # that found this plan's constraints reaching the router
         # unconditionally, biasing post-commit search cost via
         # net_has_crossing_requirements() / add_crossing_spacing_history_for_route()
-        # in src/py_router.rs even in this mode. "window" and "collision"
-        # modes are unaffected -- expected-pair matching against this same
-        # topology plan is their actual, intended design, not a leak.
         info["reason"] = "lidar_pure_mode_ignores_topology_plan"
         return info
 
@@ -279,7 +273,6 @@ def _build_crossing_plan_info(
     info["plan_text"] = crossing_plan.to_text(include_empty_stages=True)
 
     jobs_by_edge = {route_edge_key(job): job for job in route_jobs}
-    constraints = []
     missing_events: list[dict[str, object]] = []
     event_records: list[dict[str, object]] = []
     crossing_counts_by_net_id: Counter[int] = Counter()
@@ -327,49 +320,40 @@ def _build_crossing_plan_info(
             }
         )
         event_records.append(event_record)
-        constraints.append(
-            rust_backend.CrossingConstraint(
-                int(job_a.net_id),
-                int(job_b.net_id),
-                level=int(event.level),
-                source_depth=int(event.source_depth),
-                target_depth=int(event.target_depth),
-            )
-        )
         crossing_counts_by_net_id[int(job_a.net_id)] += 1
         crossing_counts_by_net_id[int(job_b.net_id)] += 1
         crossing_counts_by_net_name[str(job_a.net_name)] += 1
         crossing_counts_by_net_name[str(job_b.net_name)] += 1
 
-    if guided:
-        # Contribution 1: the plan reaches the router ONLY as soft guidance
-        # (planned pairs + planned search price). The hard window-mode
-        # constraints stay empty, so expected counts, whitelists and the
-        # spacing history never see the plan; the search keeps the lidar-pure
-        # mechanics and may still add unplanned crossings at the full price.
-        if not hasattr(router, "set_crossing_guidance"):
-            raise RuntimeError(
-                "The loaded photonic_router._rust extension does not expose "
-                "PyPhotonicRouter.set_crossing_guidance. Rebuild it with "
-                "`maturin develop --release`."
-            )
-        planned_pairs = [
-            (int(cast(int, record["net_id_a"])), int(cast(int, record["net_id_b"])))
-            for record in event_records
-            if record.get("loaded")
-        ]
-        planned_loss = _effective_planned_crossing_search_loss(config)
-        single_per_pair = _effective_single_discounted_crossing_per_pair(config)
-        router.set_crossing_guidance(planned_pairs, planned_loss, single_per_pair)
-        info["guidance"] = {
-            "planned_pair_count": len(planned_pairs),
-            "planned_crossing_loss": float(planned_loss),
-            "single_discounted_crossing_per_pair": bool(single_per_pair),
-        }
-        constraints = []
-    router.set_crossing_constraints(constraints)
+    # Contribution 1 (the only path that reaches here): the plan reaches the
+    # router ONLY as soft guidance (planned pairs + planned search price). No
+    # hard constraint is ever loaded, so expected counts, whitelists and the
+    # spacing history never see the plan; the search keeps the lidar-pure
+    # mechanics and may still add unplanned crossings at the full price. The
+    # hard-constraint branch belonged to the two crossing modes removed on
+    # 2026-09-24 (Milestone 8 of
+    # .agent/execplans/2026-09-22-modular-readable-router-restructure.md), and
+    # `info["constraint_count"]` therefore stays at its initial 0.
+    if not hasattr(router, "set_crossing_guidance"):
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.set_crossing_guidance. Rebuild it with "
+            "`maturin develop --release`."
+        )
+    planned_pairs = [
+        (int(cast(int, record["net_id_a"])), int(cast(int, record["net_id_b"])))
+        for record in event_records
+        if record.get("loaded")
+    ]
+    planned_loss = _effective_planned_crossing_search_loss(config)
+    single_per_pair = _effective_single_discounted_crossing_per_pair(config)
+    router.set_crossing_guidance(planned_pairs, planned_loss, single_per_pair)
+    info["guidance"] = {
+        "planned_pair_count": len(planned_pairs),
+        "planned_crossing_loss": float(planned_loss),
+        "single_discounted_crossing_per_pair": bool(single_per_pair),
+    }
 
-    info["constraint_count"] = len(constraints)
     info["missing_event_count"] = len(missing_events)
     info["missing_events"] = missing_events
     info["events"] = event_records

@@ -79,6 +79,9 @@ class _FakeCrossingRouter:
     def __init__(self):
         self.config = None
         self.constraints = []
+        self.guidance_pairs = []
+        self.guidance_loss = 0.0
+        self.guidance_single_per_pair = False
         self.core_cells_by_net_id = {}
 
     def set_crossing_config(self, config):
@@ -86,6 +89,11 @@ class _FakeCrossingRouter:
 
     def set_crossing_constraints(self, constraints):
         self.constraints = list(constraints)
+
+    def set_crossing_guidance(self, planned_pairs, planned_loss, single_per_pair):
+        self.guidance_pairs = [(int(a), int(b)) for a, b in planned_pairs]
+        self.guidance_loss = float(planned_loss)
+        self.guidance_single_per_pair = bool(single_per_pair)
 
     def crossing_expected_count(self, net_id):
         return sum(
@@ -340,57 +348,6 @@ def test_crossing_plan_orders_4x4_benes_events_by_stage():
     assert "stage 0->1" in plan.to_text(include_empty_stages=True)
 
 
-def test_benes_crossing_plan_can_be_loaded_into_router_context():
-    schematic = build_schematic()
-    router = _FakeCrossingRouter()
-
-    info = _build_crossing_plan_info(
-        rust_backend=_FakeCrossingBackend,
-        router=router,
-        schematic=schematic,
-        route_jobs=_route_jobs_from_schematic(schematic),
-        enable_crossings=True,
-        crossing_mode="window",
-        node_depths=NODE_DEPTHS,
-        node_ranks=NODE_RANKS,
-        edge_ranks=EDGE_RANKS,
-        crossing_loss=1.25,
-        crossing_search_loss=1.25,
-        crossing_half_size_cells=3,
-        min_straight_cells_per_crossing=6,
-        allow_only_expected_crossings=True,
-    )
-
-    assert info["enabled"] is True
-    assert info["event_count"] == 2
-    assert info["constraint_count"] == 2
-    assert info["missing_event_count"] == 0
-    assert router.config.enabled is True
-    assert router.config.crossing_loss == 1.25
-    assert router.config.crossing_half_size_cells == 3
-    assert router.config.min_straight_cells_per_crossing == 6
-    assert len(router.constraints) == 2
-    assert all(constraint.net_id != constraint.partner_net_id for constraint in router.constraints)
-    assert sum(info["expected_crossings_by_net_id"].values()) == 4
-    assert "CrossingPlan:" in info["plan_text"]
-    assert len(info["events"]) == 2
-    assert all(event["loaded"] for event in info["events"])
-
-    first = router.constraints[0]
-    router.core_cells_by_net_id = {
-        first.net_id: [(10, 20), (11, 20)],
-        first.partner_net_id: [(11, 20), (12, 20)],
-    }
-    plan = CrossingPlanInfo.from_dict(info)
-    _augment_crossing_plan_with_realized_overlaps(
-        router=router,
-        crossing_plan_info=plan,
-    )
-    assert plan.actual_crossing_count == 1
-    assert plan.actual_crossings[0]["cell_count"] == 1
-    assert plan.unrealized_expected_crossing_count == 1
-
-
 def test_benes_crossing_plan_counts_geometric_route_intersections():
     schematic = build_schematic()
     router = _FakeCrossingRouter()
@@ -401,7 +358,7 @@ def test_benes_crossing_plan_counts_geometric_route_intersections():
         schematic=schematic,
         route_jobs=_route_jobs_from_schematic(schematic),
         enable_crossings=True,
-        crossing_mode="window",
+        crossing_mode="lidar-guided",
         node_depths=NODE_DEPTHS,
         node_ranks=NODE_RANKS,
         edge_ranks=EDGE_RANKS,
@@ -412,17 +369,17 @@ def test_benes_crossing_plan_counts_geometric_route_intersections():
         allow_only_expected_crossings=True,
     )
 
-    first = router.constraints[0]
+    net_id_a, net_id_b = router.guidance_pairs[0]
     router.core_cells_by_net_id = {}
     plan = CrossingPlanInfo.from_dict(info)
     _augment_crossing_plan_with_realized_overlaps(
         router=router,
         crossing_plan_info=plan,
         routed_records_by_net_id={
-            first.net_id: _FakeRouteRecord(
+            net_id_a: _FakeRouteRecord(
                 _FakeRouteObj([(-5, -5), (15, 15)]),
             ),
-            first.partner_net_id: _FakeRouteRecord(
+            net_id_b: _FakeRouteRecord(
                 _FakeRouteObj([(-5, 15), (15, -5)]),
             ),
         },
@@ -446,7 +403,7 @@ def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
         schematic=schematic,
         route_jobs=_route_jobs_from_schematic(schematic),
         enable_crossings=True,
-        crossing_mode="window",
+        crossing_mode="lidar-guided",
         node_depths=NODE_DEPTHS,
         node_ranks=NODE_RANKS,
         edge_ranks=EDGE_RANKS,
@@ -456,7 +413,7 @@ def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
         min_straight_cells_per_crossing=6,
         allow_only_expected_crossings=True,
     )
-    first = router.constraints[0]
+    net_id_a, net_id_b = router.guidance_pairs[0]
     router.core_cells_by_net_id = {}
     plan = CrossingPlanInfo.from_dict(info)
     plan.bend_runout_cells_per_crossing = 6
@@ -464,10 +421,10 @@ def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
         router=router,
         crossing_plan_info=plan,
         routed_records_by_net_id={
-            first.net_id: _FakeRouteRecord(
+            net_id_a: _FakeRouteRecord(
                 _FakeRouteObj([(0, 0), (10, 10)]),
             ),
-            first.partner_net_id: _FakeRouteRecord(
+            net_id_b: _FakeRouteRecord(
                 _FakeRouteObj([(0, 10), (10, 0)]),
             ),
         },
@@ -495,7 +452,7 @@ def test_benes_crossing_plan_rejects_non_perpendicular_route_intersections():
         schematic=schematic,
         route_jobs=_route_jobs_from_schematic(schematic),
         enable_crossings=True,
-        crossing_mode="window",
+        crossing_mode="lidar-guided",
         node_depths=NODE_DEPTHS,
         node_ranks=NODE_RANKS,
         edge_ranks=EDGE_RANKS,
@@ -506,17 +463,17 @@ def test_benes_crossing_plan_rejects_non_perpendicular_route_intersections():
         allow_only_expected_crossings=True,
     )
 
-    first = router.constraints[0]
+    net_id_a, net_id_b = router.guidance_pairs[0]
     router.core_cells_by_net_id = {}
     plan = CrossingPlanInfo.from_dict(info)
     _augment_crossing_plan_with_realized_overlaps(
         router=router,
         crossing_plan_info=plan,
         routed_records_by_net_id={
-            first.net_id: _FakeRouteRecord(
+            net_id_a: _FakeRouteRecord(
                 _FakeRouteObj([(0, 5), (10, 5)]),
             ),
-            first.partner_net_id: _FakeRouteRecord(
+            net_id_b: _FakeRouteRecord(
                 _FakeRouteObj([(0, 0), (10, 10)]),
             ),
         },

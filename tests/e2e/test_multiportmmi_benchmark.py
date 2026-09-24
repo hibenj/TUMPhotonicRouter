@@ -45,7 +45,7 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
         "expected_repair_count",
     ),
     [
-        (False, "window", 31, 0, 0),
+        (False, "lidar-pure", 31, 0, 0),
         # attempts=39 (not 31), failures=8 (not 0), repairs=0: fixing
         # try_route_with_collision_crossings_using_primitives's
         # "collision_crossing_route_without_event_is_not_accepted" bug (a route

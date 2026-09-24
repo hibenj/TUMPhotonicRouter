@@ -51,7 +51,9 @@ class CrossingPlanInfo:
     """Whether crossing-aware routing is on at all. w:4"""
 
     constraint_count: int = 0
-    """Hard window-mode crossing constraints handed to the router. w:4"""
+    """Hard crossing constraints handed to the router. Always 0 since the
+    window and collision crossing modes were removed (2026-09-24): neither
+    lidar-pure nor lidar-guided loads a hard constraint. w:4"""
 
     event_count: int = 0
     """Planned crossing events in the topology plan. w:4"""

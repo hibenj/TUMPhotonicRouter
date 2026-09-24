@@ -127,7 +127,6 @@ def _collision_crossing_router(*, crossing_half_size_cells: int = 0):
             heuristic_mode="distance",
         ),
     )
-    router.set_collision_crossing_routing(True)
     router.set_crossing_config(
         backend.CrossingConfig(
             enabled=True,

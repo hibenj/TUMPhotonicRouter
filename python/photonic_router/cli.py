@@ -274,14 +274,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=CROSSING_MODES,
         default=SCRIPT_CROSSING_MODE,
         help=(
-            "Crossing search mode. 'window' preserves the existing expected-partner "
-            "window search; 'collision' enables LiDAR-style collision-driven "
-            "crossing legalization constrained by topology; 'lidar-pure' enables "
-            "collision-driven crossing legalization without topology pair permissions "
-            "(the baseline); 'lidar-guided' is contribution 1: lidar-pure mechanics "
-            "plus the precomputed topology crossings as soft search guidance "
-            "(planned crossings cost PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM, "
-            "default 0, in the search; unplanned ones keep the collision price) "
+            "Crossing search mode. 'lidar-pure' enables collision-driven crossing "
+            "legalization against any committed route, with no topology pair "
+            "permissions (the baseline); 'lidar-guided' is contribution 1: "
+            "lidar-pure mechanics plus the precomputed topology crossings as soft "
+            "search guidance (planned crossings cost "
+            "PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM, default 0, in the "
+            "search; unplanned ones keep the collision price) "
             f"(default: {SCRIPT_CROSSING_MODE})."
         ),
     )

@@ -157,43 +157,6 @@ pub(crate) fn crossing_events_for_partner(
     events
 }
 
-pub(crate) fn crossing_candidate_keys_for_partner(
-    partner_waypoints: &[(i32, i32)],
-    min_straight_cells: i32,
-    half_size_cells: i32,
-    bend_runout_cells: i32,
-    width: i32,
-    height: i32,
-) -> FxHashSet<CellKey> {
-    let mut keys = FxHashSet::default();
-    if partner_waypoints.len() < 2 {
-        return keys;
-    }
-    let required_margin =
-        crossing_required_margin_cells(half_size_cells, min_straight_cells, bend_runout_cells);
-    for segment in partner_waypoints.windows(2) {
-        if direction_angle_between_cells(segment[0], segment[1]).is_none() {
-            continue;
-        }
-        let dx = (segment[1].0 - segment[0].0).signum();
-        let dy = (segment[1].1 - segment[0].1).signum();
-        let steps = (segment[1].0 - segment[0].0)
-            .abs()
-            .max((segment[1].1 - segment[0].1).abs());
-        if steps <= 0 || steps < 2 * required_margin {
-            continue;
-        }
-        for step in required_margin..=(steps - required_margin) {
-            let x = segment[0].0 + dx * step;
-            let y = segment[0].1 + dy * step;
-            if x >= 0 && x < width && y >= 0 && y < height {
-                keys.insert(pack_xy(x, y));
-            }
-        }
-    }
-    keys
-}
-
 pub(crate) fn crossing_spacing_history_cells_for_route(
     route_waypoints: &[(i32, i32)],
     min_straight_cells: i32,
@@ -314,58 +277,18 @@ impl PyPhotonicRouter {
             && self.crossing_context.expected_crossing_count(net_id) > 0
     }
 
-    /// The topology-declared allowed-partner set for `net_id`, used only in
-    /// `allow_only_expected_pairs` mode: before routing, some upstream
-    /// process decides which specific pairs of nets are allowed to cross,
-    /// and this returns that pre-decided set (filtered to partners that
-    /// actually have committed cells). See `lidar_pure_full_map_partner_set`
-    /// for the unrelated, reactive lidar-pure case this function used to be
-    /// silently combined with inside the single `crossing_allowed_partner_set`
-    /// function (split apart in
-    /// .agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md,
-    /// Milestone 1, since the two represent different intents, not two
-    /// configurations of the same intent).
-    // candidate for removal, see Milestone 8 of .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-    pub(crate) fn expected_pairs_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
-        self.crossing_context
-            .allowed_partners_for(net_id)
-            .into_iter()
-            .filter(|partner_id| self.obstacle_map.get_net_cells(*partner_id).is_some())
-            .collect()
-    }
-
     /// Every currently-committed net other than `net_id`, unfiltered by any
     /// spatial window. In lidar-pure mode this is not a whitelist of nets a
     /// route is allowed to cross -- it is the full centerline lookup
     /// database a collision-crossing search attempt can consult once it
     /// discovers, from actual dynamic obstacle cells while expanding moves,
-    /// which other net it just collided with. See `expected_pairs_partner_set`
-    /// for the unrelated `allow_only_expected_pairs` case.
+    /// which other net it just collided with.
     pub(crate) fn lidar_pure_full_map_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
         self.obstacle_map
             .net_route_entries()
             .map(|(partner_id, _)| partner_id)
             .filter(|partner_id| *partner_id != net_id)
             .collect()
-    }
-
-    /// Dispatches to `expected_pairs_partner_set` or
-    /// `lidar_pure_full_map_partner_set` depending on
-    /// `allow_only_expected_pairs`, or an empty set when crossing is
-    /// disabled entirely. Kept as a thin, unchanged-behavior compatibility
-    /// point for callers not yet migrated to call the specific function
-    /// their own mode already implies directly (Milestone 2 of
-    /// .agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md
-    /// decides which remaining callers should migrate).
-    // candidate for removal, see Milestone 8 of .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-    pub(crate) fn crossing_allowed_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
-        if !self.crossing_context.is_enabled() {
-            return FxHashSet::default();
-        }
-        if !self.crossing_context.config().allow_only_expected_pairs {
-            return self.lidar_pure_full_map_partner_set(net_id);
-        }
-        self.expected_pairs_partner_set(net_id)
     }
 
     pub(crate) fn lidar_pure_owner_lookup_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
@@ -376,10 +299,13 @@ impl PyPhotonicRouter {
         self.lidar_pure_full_map_partner_set(net_id)
     }
 
+    /// Router-discovered ("lidar") crossing routing, the only crossing
+    /// mechanics the router has since the window and collision modes were
+    /// removed (Milestone 8 of
+    /// .agent/execplans/2026-09-22-modular-readable-router-restructure.md):
+    /// enabled exactly when crossings are enabled at all.
     pub(crate) fn lidar_pure_crossing_enabled(&self) -> bool {
         self.crossing_context.is_enabled()
-            && self.use_collision_crossing_routing
-            && !self.crossing_context.config().allow_only_expected_pairs
     }
 
     /// Every currently-committed net (other than `net_id`) with at least one
@@ -425,7 +351,7 @@ impl PyPhotonicRouter {
         extra_radius_cells: i32,
     ) -> FxHashSet<u64> {
         if !self.lidar_pure_crossing_enabled() {
-            return self.crossing_allowed_partner_set(net_id);
+            return FxHashSet::default();
         }
         let extra = extra_radius_cells.max(0);
         let min_x = source.x.min(target.x).saturating_sub(extra);
@@ -455,7 +381,7 @@ impl PyPhotonicRouter {
         extra_radius_cells: i32,
     ) -> FxHashSet<u64> {
         if !self.lidar_pure_crossing_enabled() {
-            return self.crossing_allowed_partner_set(net_id);
+            return FxHashSet::default();
         }
         let points: Vec<(i32, i32)> = if route.cells.is_empty() {
             route.compressed_waypoints.clone()
@@ -498,22 +424,22 @@ impl PyPhotonicRouter {
         net_id: u64,
         route: &RouteResult,
     ) -> FxHashSet<u64> {
-        if self.lidar_pure_crossing_enabled() {
-            let config = self.crossing_context.config();
-            let margin = crossing_required_margin_cells(
-                config.crossing_half_size_cells,
-                config.min_straight_cells_per_crossing,
-                self.primitive_cfg.bend_radius_cells,
-            );
-            return self.lidar_route_result_partner_lookup_set(
-                net_id,
-                route,
-                margin
-                    .saturating_mul(2)
-                    .saturating_add(self.primitive_cfg.bend_radius_cells),
-            );
+        if !self.lidar_pure_crossing_enabled() {
+            return FxHashSet::default();
         }
-        self.crossing_allowed_partner_set(net_id)
+        let config = self.crossing_context.config();
+        let margin = crossing_required_margin_cells(
+            config.crossing_half_size_cells,
+            config.min_straight_cells_per_crossing,
+            self.primitive_cfg.bend_radius_cells,
+        );
+        self.lidar_route_result_partner_lookup_set(
+            net_id,
+            route,
+            margin
+                .saturating_mul(2)
+                .saturating_add(self.primitive_cfg.bend_radius_cells),
+        )
     }
 
     pub(crate) fn crossing_partner_lookup_set_for_route(
@@ -522,23 +448,23 @@ impl PyPhotonicRouter {
         source: State,
         target: State,
     ) -> FxHashSet<u64> {
-        if self.lidar_pure_crossing_enabled() {
-            let config = self.crossing_context.config();
-            let margin = crossing_required_margin_cells(
-                config.crossing_half_size_cells,
-                config.min_straight_cells_per_crossing,
-                self.primitive_cfg.bend_radius_cells,
-            );
-            return self.lidar_route_window_partner_lookup_set(
-                net_id,
-                source,
-                target,
-                margin
-                    .saturating_mul(2)
-                    .saturating_add(self.primitive_cfg.bend_radius_cells),
-            );
+        if !self.lidar_pure_crossing_enabled() {
+            return FxHashSet::default();
         }
-        self.crossing_allowed_partner_set(net_id)
+        let config = self.crossing_context.config();
+        let margin = crossing_required_margin_cells(
+            config.crossing_half_size_cells,
+            config.min_straight_cells_per_crossing,
+            self.primitive_cfg.bend_radius_cells,
+        );
+        self.lidar_route_window_partner_lookup_set(
+            net_id,
+            source,
+            target,
+            margin
+                .saturating_mul(2)
+                .saturating_add(self.primitive_cfg.bend_radius_cells),
+        )
     }
 
     /// The collision-crossing partner set to use for an *upfront* (not
@@ -550,12 +476,9 @@ impl PyPhotonicRouter {
     /// directly, a second time, if that plain attempt fails (matching
     /// `route_single_net_and_commit_native`'s existing two-stage
     /// structure, which this function does not otherwise change). For
-    /// `CrossingFirst` callers in lidar-pure mode, and for both callers in
-    /// the non-lidar-pure "collision-crossing mechanics restricted to
-    /// expected pairs" hybrid mode (`use_collision_crossing_routing=true`
-    /// with `allow_only_expected_pairs=true`), the appropriate partner set
-    /// is returned immediately, since neither of those cases has a
-    /// deferred second stage.
+    /// `CrossingFirst` callers the full partner set is returned
+    /// immediately, since that case has no deferred second stage. With
+    /// crossings disabled the set is empty either way.
     pub(crate) fn upfront_collision_crossing_partner_ids(
         &self,
         net_id: u64,
@@ -563,9 +486,6 @@ impl PyPhotonicRouter {
         target: State,
         try_order: CollisionCrossingTryOrder,
     ) -> FxHashSet<u64> {
-        if !self.use_collision_crossing_routing {
-            return FxHashSet::default();
-        }
         if self.lidar_pure_crossing_enabled() {
             return match try_order {
                 CollisionCrossingTryOrder::PlainFirst => FxHashSet::default(),
@@ -740,43 +660,8 @@ impl PyPhotonicRouter {
         events
     }
 
-    pub(crate) fn crossing_candidate_keys_for_partners(
-        &self,
-        partner_ids: &FxHashSet<u64>,
-    ) -> FxHashSet<CellKey> {
-        let config = self.crossing_context.config();
-        let mut keys = FxHashSet::default();
-        for partner_id in partner_ids {
-            let Some(partner_waypoints) = self.committed_center_routes.get(partner_id) else {
-                continue;
-            };
-            keys.extend(crossing_candidate_keys_for_partner(
-                partner_waypoints,
-                config.min_straight_cells_per_crossing,
-                config.crossing_half_size_cells,
-                self.primitive_cfg.bend_radius_cells,
-                self.grid.width as i32,
-                self.grid.height as i32,
-            ));
-        }
-        keys
-    }
-
     pub(crate) fn crossing_partner_ids_from_events(events: &[CrossingEvent]) -> FxHashSet<u64> {
         events.iter().map(|event| event.partner_net_id).collect()
-    }
-
-    pub(crate) fn crossing_events_cover_partners(
-        events: &[CrossingEvent],
-        partner_ids: &FxHashSet<u64>,
-    ) -> bool {
-        if partner_ids.is_empty() {
-            return true;
-        }
-        let crossed_partner_ids = Self::crossing_partner_ids_from_events(events);
-        partner_ids
-            .iter()
-            .all(|partner_id| crossed_partner_ids.contains(partner_id))
     }
 
     pub(crate) fn crossing_events_have_disjoint_reservations(events: &[CrossingEvent]) -> bool {
@@ -1005,24 +890,6 @@ impl PyPhotonicRouter {
         keys
     }
 
-    pub(crate) fn crossing_route_satisfies_partner_constraints(
-        &self,
-        net_id: u64,
-        route: &RouteResult,
-        partner_ids: &FxHashSet<u64>,
-        crossing_events: &[CrossingEvent],
-        opened_cell_keys: Option<&FxHashSet<CellKey>>,
-    ) -> bool {
-        self.invalid_crossing_intersections_for_route(net_id, route, partner_ids)
-            .is_empty()
-            && self.crossing_events_satisfy_partner_constraints(
-                net_id,
-                partner_ids,
-                crossing_events,
-                opened_cell_keys,
-            )
-    }
-
     pub(crate) fn crossing_events_satisfy_partner_constraints(
         &self,
         net_id: u64,
@@ -1038,8 +905,6 @@ impl PyPhotonicRouter {
         !crossing_events.is_empty()
             && Self::crossing_events_have_disjoint_reservations(crossing_events)
             && reservation_blockers.is_clear()
-            && (!self.crossing_context.config().allow_only_expected_pairs
-                || Self::crossing_events_cover_partners(crossing_events, partner_ids))
     }
 
     pub(crate) fn invalid_grid_crossing_error_for_route(
@@ -1491,25 +1356,10 @@ impl PyPhotonicRouter {
                     let route_margin = (t * route_len).min((1.0 - t) * route_len);
                     let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
                     let pair_allowed = self.crossing_context.allows_pair(net_id, *partner_id);
-                    let footprint_blocker = if self
-                        .crossing_context
-                        .config()
-                        .allow_only_expected_pairs
-                        && pair_allowed
-                        && perpendicular
-                        && route_margin + 1e-9 >= required_margin
-                        && partner_margin + 1e-9 >= required_margin
-                    {
-                        self.crossing_footprint_unrelated_dynamic_owner(net_id, *partner_id, (x, y))
-                    } else {
-                        None
-                    };
-                    let footprint_has_blocker = footprint_blocker.is_some();
                     if pair_allowed
                         && perpendicular
                         && route_margin + 1e-9 >= required_margin
                         && partner_margin + 1e-9 >= required_margin
-                        && !footprint_has_blocker
                     {
                         // Geometrically legal is not enough in the
                         // post-commit context: a crossing is only real
@@ -1548,14 +1398,12 @@ impl PyPhotonicRouter {
                         "unexpected_pair"
                     } else if !perpendicular {
                         "not_perpendicular"
-                    } else if footprint_has_blocker {
-                        "crossing_footprint_contains_route_geometry"
                     } else {
                         "insufficient_straight_margin"
                     };
                     invalid.push(InvalidCrossingIntersection {
                         net_id,
-                        partner_net_id: footprint_blocker.unwrap_or(*partner_id),
+                        partner_net_id: *partner_id,
                         point: (x, y),
                         reason,
                     });
@@ -1829,6 +1677,29 @@ impl PyPhotonicRouter {
 mod tests {
     use super::*;
     use crate::engine::test_support::*;
+
+    /// The grid-level and the event-level crossing check together, as the
+    /// commit path applies them (`invalid_grid_crossing_error_for_route`
+    /// followed by `crossing_events_satisfy_partner_constraints`). Lives here
+    /// because only these tests need the two as one predicate.
+    fn route_satisfies_partner_constraints(
+        router: &PyPhotonicRouter,
+        net_id: u64,
+        route: &RouteResult,
+        partner_ids: &FxHashSet<u64>,
+        crossing_events: &[CrossingEvent],
+        opened_cell_keys: Option<&FxHashSet<CellKey>>,
+    ) -> bool {
+        router
+            .invalid_crossing_intersections_for_route(net_id, route, partner_ids)
+            .is_empty()
+            && router.crossing_events_satisfy_partner_constraints(
+                net_id,
+                partner_ids,
+                crossing_events,
+                opened_cell_keys,
+            )
+    }
 
     #[test]
     fn crossing_conflict_fixture_blocks_the_vertical_net_with_a_non_perpendicular_crossing() {
@@ -2886,50 +2757,6 @@ mod tests {
     }
 
     #[test]
-    fn router_discovered_crossing_partner_set_uses_committed_routes() {
-        let grid = PyGridSpec::new(32, 32, 1.0, 0.0, 0.0).unwrap();
-        let mut router = PyPhotonicRouter::new(
-            grid,
-            PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
-            PyAStarConfig::new(
-                10000,
-                1.0,
-                0,
-                true,
-                None,
-                true,
-                12,
-                0.35,
-                3,
-                true,
-                0.5,
-                10_000_000,
-                false,
-                0.0,
-                0.0,
-                0,
-                false,
-                false,
-                "library".to_string(),
-                "distance".to_string(),
-                1.0,
-            ),
-            None,
-        );
-        router.crossing_context.set_config(CrossingConfig {
-            enabled: true,
-            allow_only_expected_pairs: false,
-            ..CrossingConfig::default()
-        });
-        assert!(router.obstacle_map.commit_route(1, &[(4, 4)]));
-        assert!(router.obstacle_map.commit_route(2, &[(6, 6)]));
-
-        let partners = router.crossing_allowed_partner_set(3);
-        assert!(partners.contains(&1));
-        assert!(partners.contains(&2));
-    }
-
-    #[test]
     fn crossing_events_reject_overlapping_reservation_footprints() {
         let grid = PyGridSpec::new(32, 32, 1.0, 0.0, 0.0).unwrap();
         let mut router = PyPhotonicRouter::new(
@@ -2962,7 +2789,7 @@ mod tests {
         );
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
-            allow_only_expected_pairs: true,
+            allow_only_expected_pairs: false,
             crossing_half_size_cells: 2,
             min_straight_cells_per_crossing: 2,
             ..CrossingConfig::default()
@@ -3012,12 +2839,9 @@ mod tests {
             },
         ];
 
-        assert!(PyPhotonicRouter::crossing_events_cover_partners(
-            &events,
-            &partner_ids
-        ));
         assert!(!PyPhotonicRouter::crossing_events_have_disjoint_reservations(&events));
-        assert!(!router.crossing_route_satisfies_partner_constraints(
+        assert!(!route_satisfies_partner_constraints(
+            &router,
             3,
             &route,
             &partner_ids,
@@ -3063,7 +2887,7 @@ mod tests {
         );
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
-            allow_only_expected_pairs: true,
+            allow_only_expected_pairs: false,
             crossing_half_size_cells: 2,
             min_straight_cells_per_crossing: 2,
             ..CrossingConfig::default()
@@ -3095,7 +2919,8 @@ mod tests {
             reservation_keys: reservation,
         }];
 
-        assert!(router.crossing_route_satisfies_partner_constraints(
+        assert!(route_satisfies_partner_constraints(
+            &router,
             3,
             &route,
             &partner_ids,
@@ -3104,7 +2929,8 @@ mod tests {
         ));
 
         router.obstacle_map.add_static_cells(&[(10, 13)]);
-        assert!(!router.crossing_route_satisfies_partner_constraints(
+        assert!(!route_satisfies_partner_constraints(
+            &router,
             3,
             &route,
             &partner_ids,
@@ -3112,7 +2938,8 @@ mod tests {
             None,
         ));
         let opened_static = [pack_xy(10, 13)].into_iter().collect();
-        assert!(router.crossing_route_satisfies_partner_constraints(
+        assert!(route_satisfies_partner_constraints(
+            &router,
             3,
             &route,
             &partner_ids,
@@ -3126,28 +2953,14 @@ mod tests {
         let blockers = router.crossing_reservation_blockers(3, &events, None);
         assert!(!blockers.is_clear());
         assert!(blockers.dynamic_blockers.contains(&4));
-        assert!(!router.crossing_route_satisfies_partner_constraints(
+        assert!(!route_satisfies_partner_constraints(
+            &router,
             3,
             &route,
             &partner_ids,
             &events,
             Some(&opened_static),
         ));
-    }
-
-    #[test]
-    fn crossing_candidate_keys_keep_partner_bends_blocked() {
-        let partner = vec![(10, 5), (10, 15), (18, 15)];
-        let keys = crossing_candidate_keys_for_partner(&partner, 2, 2, 0, 32, 32);
-
-        assert!(keys.contains(&pack_xy(10, 10)));
-        assert!(keys.contains(&pack_xy(10, 11)));
-        assert!(!keys.contains(&pack_xy(10, 5)));
-        assert!(!keys.contains(&pack_xy(10, 14)));
-        assert!(!keys.contains(&pack_xy(10, 15)));
-        assert!(keys.contains(&pack_xy(14, 15)));
-        assert!(!keys.contains(&pack_xy(17, 15)));
-        assert!(!keys.contains(&pack_xy(18, 15)));
     }
 
     #[test]

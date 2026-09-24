@@ -10,7 +10,6 @@ from gdsfactory.typings import Port
 
 from photonic_router.static_obstacle_builder import physical_to_grid
 
-from translation.crossing_modes import is_collision_mode
 from translation.route_rust_crossing_components import _bbox_bounds_um
 from translation.route_rust_crossing_plan import _build_crossing_plan_info, _port_center_um
 from translation.route_rust_obstacle_config import _port_type_name
@@ -397,20 +396,6 @@ def build_crossing_plan_and_port_footprints(
         )
     ]
     state.crossing_plan_info.crossing_device = crossing_device_info
-    if bool(settings.enable_crossings) and is_collision_mode(
-        settings.crossing_mode
-    ):
-        if not hasattr(state.router, "set_collision_crossing_routing"):
-            extension_path = getattr(state.rust_backend, "__file__", "<unknown>")
-            raise RuntimeError(
-                "The loaded photonic_router._rust extension does not expose "
-                "PyPhotonicRouter.set_collision_crossing_routing. Rebuild it with "
-                "`maturin develop --release`. "
-                f"Loaded extension: {extension_path}"
-            )
-        state.router.set_collision_crossing_routing(True)
-    elif hasattr(state.router, "set_collision_crossing_routing"):
-        state.router.set_collision_crossing_routing(False)
     timing.record_pipeline_timing(settings, state, "crossing_context", t_crossing_context_start)
 
     if not hasattr(state.router, "build_port_footprint_cells"):

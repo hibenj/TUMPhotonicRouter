@@ -249,7 +249,7 @@ Contribution 2: the pre-placed crossing grid stage (stage 2b).
 | field | type | default | command line | description |
 | --- | --- | --- | --- | --- |
 | `enable_crossings` | `bool` | `False` | `--crossings` | -- |
-| `crossing_mode` | `str` | `'window'` | `--crossing-mode` | -- |
+| `crossing_mode` | `str` | `'lidar-pure'` | `--crossing-mode` | -- |
 | `crossing_half_size_cells` | `int` | `0` | -- | -- |
 | `min_straight_cells_per_crossing` | `int` | `2` | `--min-straight-cells-per-crossing` | -- |
 | `foreign_port_keepout_cells` | `int` | `6` | `--foreign-port-keepout-cells` | -- |

@@ -19,8 +19,6 @@ use crate::search::{CrossingSearch, DynamicExpansion, SearchEnvironment, SearchR
 
 #[cfg(test)]
 use crate::config::SearchOverrides;
-#[cfg(test)]
-use crate::crossings::CrossingConstraint;
 use crate::engine::*;
 #[cfg(test)]
 use crate::static_obstacle_builder::StaticGridSpec;
@@ -421,53 +419,23 @@ impl PyPhotonicRouter {
         }
         self.clear_pending_straight_victim_hint(net_id);
         let crossing_cfg = self.crossing_context.config();
-        let crossing_partners: Vec<CrossingSearchPartner> =
-            if crossing_cfg.allow_only_expected_pairs {
-                self.crossing_context
-                    .ordered_constraints_for(net_id)
-                    .into_iter()
-                    .filter_map(|constraint| {
-                        let partner_id = if constraint.net_id == net_id {
-                            constraint.partner_net_id
-                        } else {
-                            constraint.net_id
-                        };
-                        if !partner_ids.contains(&partner_id) {
-                            return None;
-                        }
-                        self.committed_center_routes
-                            .get(&partner_id)
-                            .map(|waypoints| CrossingSearchPartner {
-                                net_id: partner_id,
-                                waypoints: waypoints.clone(),
-                                target_terminal_bump_guard: self
-                                    .committed_target_terminal_bump_guards
-                                    .get(&partner_id)
-                                    .copied(),
-                                crossing_loss_override: None,
-                                single_discounted_crossing: false,
-                            })
-                    })
-                    .collect()
-            } else {
-                partner_ids
-                    .iter()
-                    .filter_map(|partner_id| {
-                        self.committed_center_routes
+        let crossing_partners: Vec<CrossingSearchPartner> = partner_ids
+            .iter()
+            .filter_map(|partner_id| {
+                self.committed_center_routes
+                    .get(partner_id)
+                    .map(|waypoints| CrossingSearchPartner {
+                        net_id: *partner_id,
+                        waypoints: waypoints.clone(),
+                        target_terminal_bump_guard: self
+                            .committed_target_terminal_bump_guards
                             .get(partner_id)
-                            .map(|waypoints| CrossingSearchPartner {
-                                net_id: *partner_id,
-                                waypoints: waypoints.clone(),
-                                target_terminal_bump_guard: self
-                                    .committed_target_terminal_bump_guards
-                                    .get(partner_id)
-                                    .copied(),
-                                crossing_loss_override: None,
-                                single_discounted_crossing: false,
-                            })
+                            .copied(),
+                        crossing_loss_override: None,
+                        single_discounted_crossing: false,
                     })
-                    .collect()
-            };
+            })
+            .collect();
         if crossing_partners.is_empty() {
             return Ok(None);
         }
@@ -581,11 +549,7 @@ impl PyPhotonicRouter {
             );
         }
         let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
-        let required_partner_ids = if crossing_cfg.allow_only_expected_pairs {
-            partner_ids
-        } else {
-            &crossed_partner_ids
-        };
+        let required_partner_ids = &crossed_partner_ids;
         let skip_rust_level2_validation =
             self.router_config.crossing.disable_rust_crossing_validation;
         let route_has_no_unresolved_grid_crossings = skip_rust_level2_validation
@@ -596,9 +560,9 @@ impl PyPhotonicRouter {
         // crossing with at least one of `partner_ids` -- a route with zero
         // crossing events never engaged with any partner at all, so it must
         // never be accepted here, regardless of what `required_partner_ids`
-        // evaluates to. Without this, the `!crossing_cfg.allow_only_expected_pairs`
-        // branch above derives `required_partner_ids` from `crossing_events`
-        // itself (`crossed_partner_ids`), so zero events yields an empty
+        // evaluates to. Without this, `required_partner_ids` is derived from
+        // `crossing_events` itself (`crossed_partner_ids`), so zero events
+        // yields an empty
         // required set, which `crossing_events_satisfy_partner_constraints`'s
         // own `partner_ids.is_empty() => true` case (itself correct and
         // needed by an unrelated repair-probe caller, `src/py_router.rs`
@@ -737,207 +701,6 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Shared low-level search primitive for the "window" (topology
-    /// expected-partner) crossing mode -- the sibling of
-    /// [`Self::try_route_through_collision_partner_set`] for nets whose
-    /// crossing partners come from `crossing_allowed_partner_set` rather
-    /// than lidar-pure collision detection. Called from the native
-    /// route/repair entry points that resolve crossing mode before
-    /// dispatching into repair.
-    // candidate for removal, see Milestone 8 of .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-    pub(crate) fn try_route_through_expected_crossing_partner(
-        &self,
-        net_id: u64,
-        source: State,
-        target: State,
-        target_port_um: Option<(f64, f64)>,
-        opened_ref: &FxHashSet<CellKey>,
-        search_cfg: &AStarConfig,
-        block_radius_cells: i32,
-        dynamic_clearance_exempt_keys: Option<&FxHashSet<CellKey>>,
-    ) -> Option<(RouteResult, Vec<CrossingEvent>)> {
-        let partner_ids = self.crossing_allowed_partner_set(net_id);
-        if partner_ids.is_empty() {
-            return None;
-        }
-        let require_all_expected_partners =
-            self.crossing_context.config().allow_only_expected_pairs;
-
-        let mut crossing_search_cfg = search_cfg.clone();
-        crossing_search_cfg.require_terminal_straights = false;
-        crossing_search_cfg.enable_simple_routes = false;
-        if crossing_search_cfg.history_weight > 0.0 {
-            crossing_search_cfg.routing_window_max_expansions =
-                crossing_search_cfg.routing_window_max_expansions.min(1);
-            crossing_search_cfg.routing_window_fallback_full_grid = false;
-        }
-        let crossing_cfg = self.crossing_context.config();
-        let crossing_partners: Vec<CrossingSearchPartner> = self
-            .crossing_context
-            .ordered_constraints_for(net_id)
-            .into_iter()
-            .filter_map(|constraint| {
-                let partner_id = if constraint.net_id == net_id {
-                    constraint.partner_net_id
-                } else {
-                    constraint.net_id
-                };
-                if !partner_ids.contains(&partner_id) {
-                    return None;
-                }
-                self.committed_center_routes
-                    .get(&partner_id)
-                    .map(|waypoints| CrossingSearchPartner {
-                        net_id: partner_id,
-                        waypoints: waypoints.clone(),
-                        target_terminal_bump_guard: self
-                            .committed_target_terminal_bump_guards
-                            .get(&partner_id)
-                            .copied(),
-                        crossing_loss_override: None,
-                        single_discounted_crossing: false,
-                    })
-            })
-            .collect();
-        if crossing_partners.is_empty() {
-            return None;
-        }
-        let crossing_search = self.crossing_search_config(
-            net_id,
-            crossing_partners,
-            crossing_cfg,
-            target,
-            target_port_um,
-            None,
-            Some(require_all_expected_partners),
-        );
-        let trace_crossing = self
-            .router_config
-            .diagnostics
-            .trace_crossing_net
-            .map_or_else(
-                || self.router_config.diagnostics.trace_crossing,
-                |trace_net_id| trace_net_id == net_id,
-            );
-        if trace_crossing {
-            eprintln!(
-                "crossing-search start net={} partners={:?} max_iterations={} block_radius={} min_straight={} half_size={}",
-                net_id,
-                crossing_search
-                    .partners
-                    .iter()
-                    .map(|partner| partner.net_id)
-                    .collect::<Vec<_>>(),
-                crossing_search_cfg.max_iterations,
-                block_radius_cells,
-                crossing_search.min_straight_cells,
-                crossing_search.crossing_half_size_cells,
-            );
-        }
-
-        let crossing_candidate_keys = self.crossing_candidate_keys_for_partners(&partner_ids);
-        if !crossing_candidate_keys.is_empty() {
-            let mut search_map = self.obstacle_map.clone();
-            search_map
-                .clear_dynamic_blocking_in_cells_for_nets(&crossing_candidate_keys, &partner_ids);
-            if trace_crossing {
-                eprintln!(
-                    "crossing-search candidate-phase net={} candidate_keys={}",
-                    net_id,
-                    crossing_candidate_keys.len()
-                );
-            }
-            let env = SearchEnvironment {
-                obstacle_map: &search_map,
-                primitives: &self.primitives,
-            };
-            let request = SearchRequest {
-                source,
-                target,
-                port_open_cells: Some(opened_ref),
-                dynamic_expansion: Some(DynamicExpansion {
-                    radius_cells: block_radius_cells.max(0),
-                    clearance_exempt_cells: dynamic_clearance_exempt_keys,
-                }),
-                crossing: Some(CrossingSearch {
-                    config: &crossing_search,
-                    reservation_open_cells: None,
-                }),
-                config: &crossing_search_cfg,
-            };
-            if let Some(result) = self.search_engine.search(&env, &request).route {
-                if trace_crossing {
-                    eprintln!(
-                        "crossing-search candidate-result net={} expanded={} generated={} heap={} events={}",
-                        net_id,
-                        result.stats.expanded_states,
-                        result.stats.generated_neighbors,
-                        result.stats.max_heap_size,
-                        self.crossing_events_for_route(net_id, &result, &partner_ids).len(),
-                    );
-                }
-                let crossing_events = self.crossing_events_for_route(net_id, &result, &partner_ids);
-                if self.crossing_route_satisfies_partner_constraints(
-                    net_id,
-                    &result,
-                    &partner_ids,
-                    &crossing_events,
-                    Some(opened_ref),
-                ) {
-                    return Some((result, crossing_events));
-                }
-            }
-        }
-
-        let mut search_map = self.obstacle_map.clone();
-        search_map.clear_dynamic_blocking_for_nets(&partner_ids);
-        if trace_crossing {
-            eprintln!("crossing-search broad-phase net={}", net_id);
-        }
-        let env = SearchEnvironment {
-            obstacle_map: &search_map,
-            primitives: &self.primitives,
-        };
-        let request = SearchRequest {
-            source,
-            target,
-            port_open_cells: Some(opened_ref),
-            dynamic_expansion: Some(DynamicExpansion {
-                radius_cells: block_radius_cells.max(0),
-                clearance_exempt_cells: dynamic_clearance_exempt_keys,
-            }),
-            crossing: Some(CrossingSearch {
-                config: &crossing_search,
-                reservation_open_cells: None,
-            }),
-            config: &crossing_search_cfg,
-        };
-        let result = self.search_engine.search(&env, &request).route?;
-        if trace_crossing {
-            eprintln!(
-                "crossing-search broad-result net={} expanded={} generated={} heap={} events={}",
-                net_id,
-                result.stats.expanded_states,
-                result.stats.generated_neighbors,
-                result.stats.max_heap_size,
-                self.crossing_events_for_route(net_id, &result, &partner_ids)
-                    .len(),
-            );
-        }
-        let crossing_events = self.crossing_events_for_route(net_id, &result, &partner_ids);
-        if self.crossing_route_satisfies_partner_constraints(
-            net_id,
-            &result,
-            &partner_ids,
-            &crossing_events,
-            Some(opened_ref),
-        ) {
-            return Some((result, crossing_events));
-        }
-        None
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn route_single_net_and_commit_native(
         &mut self,
         net_id: u64,
@@ -1015,16 +778,6 @@ impl PyPhotonicRouter {
             dynamic_clearance_exempt_keys,
         );
         let opened_search_ref = opened_search_owned.as_ref().unwrap_or(opened_ref);
-        let expected_crossing_partner_ids =
-            if self.crossing_context.config().allow_only_expected_pairs {
-                self.crossing_allowed_partner_set(net_id)
-            } else {
-                FxHashSet::default()
-            };
-        let require_crossing_compliant_route = self.crossing_context.is_enabled()
-            && !self.use_collision_crossing_routing
-            && self.crossing_context.config().allow_only_expected_pairs
-            && !expected_crossing_partner_ids.is_empty();
         // `negotiated_crossing_free_search`: contribution 1's crossing-free
         // search for a net without any planned crossing -- the deferred
         // lidar-pure crossing search below is skipped, so a failed simple
@@ -1043,8 +796,7 @@ impl PyPhotonicRouter {
             target_state,
             CollisionCrossingTryOrder::PlainFirst,
         );
-        let used_collision_crossing_attempt =
-            self.use_collision_crossing_routing && !collision_partner_ids.is_empty();
+        let used_collision_crossing_attempt = !collision_partner_ids.is_empty();
         let crossing_attempt = if used_collision_crossing_attempt {
             self.try_route_with_collision_crossings(
                 net_id,
@@ -1060,28 +812,15 @@ impl PyPhotonicRouter {
                 Some(&validation_opened_cell_keys),
                 true,
             )?
-        } else if self.crossing_context.config().allow_only_expected_pairs {
-            self.try_route_through_expected_crossing_partner(
-                net_id,
-                source_state,
-                target_state,
-                target_port_um,
-                opened_search_ref,
-                &cfg,
-                block_radius_cells,
-                dynamic_clearance_exempt_keys,
-            )
         } else {
             None
         };
+        // Deliberately no early error here: a failed local collision-crossing
+        // attempt means only that this specific crossing placement is
+        // unavailable, not that the net is unroutable -- normal A* can still
+        // route around the blocker, and only a true dynamic blockage should
+        // enter rip-up/repair.
         let mut deferred_crossing_attempt = crossing_attempt;
-        // A failed local collision-crossing attempt means this specific
-        // crossing placement is unavailable. It must not make the whole net
-        // unroutable: normal A* can still route around the blocker, and only a
-        // true dynamic blockage should enter rip-up/repair.
-        if require_crossing_compliant_route {
-            return Err("No crossing-compliant route found".to_string());
-        }
         // Set when the simple probe found a route whose commit was rejected
         // only by other nets' clearance halos, never by another net's core
         // (see the probe commit below). Such a conflict is a spacing problem,
@@ -1326,7 +1065,7 @@ impl PyPhotonicRouter {
                     ) {
                         self.rollback_committed_route(net_id);
                         self.remove_crossing_events_for_net(net_id);
-                        if !self.use_collision_crossing_routing || lidar_pure_crossing {
+                        if lidar_pure_crossing {
                             return Err(error);
                         }
                     } else {
@@ -1609,16 +1348,6 @@ impl PyPhotonicRouter {
             dynamic_clearance_exempt_keys,
         );
         let opened_search_ref = opened_search_owned.as_ref().unwrap_or(opened_ref);
-        let expected_crossing_partner_ids =
-            if self.crossing_context.config().allow_only_expected_pairs {
-                self.crossing_allowed_partner_set(net_id)
-            } else {
-                FxHashSet::default()
-            };
-        let require_crossing_compliant_route = self.crossing_context.is_enabled()
-            && !self.use_collision_crossing_routing
-            && self.crossing_context.config().allow_only_expected_pairs
-            && !expected_crossing_partner_ids.is_empty();
         // Repair: consult collision-crossing partners immediately (see
         // `CollisionCrossingTryOrder::CrossingFirst`'s own doc comment) --
         // repair only runs after this net already failed to route normally,
@@ -1630,8 +1359,7 @@ impl PyPhotonicRouter {
             target_state,
             CollisionCrossingTryOrder::CrossingFirst,
         );
-        let used_collision_crossing_attempt =
-            self.use_collision_crossing_routing && !collision_partner_ids.is_empty();
+        let used_collision_crossing_attempt = !collision_partner_ids.is_empty();
         let crossing_attempt = if used_collision_crossing_attempt {
             self.try_route_with_collision_crossings(
                 net_id,
@@ -1647,17 +1375,6 @@ impl PyPhotonicRouter {
                 Some(&validation_opened_cell_keys),
                 true,
             )?
-        } else if self.crossing_context.config().allow_only_expected_pairs {
-            self.try_route_through_expected_crossing_partner(
-                net_id,
-                source_state,
-                target_state,
-                target_port_um,
-                opened_search_ref,
-                &cfg,
-                block_radius_cells,
-                dynamic_clearance_exempt_keys,
-            )
         } else {
             None
         };
@@ -1735,11 +1452,6 @@ impl PyPhotonicRouter {
                 }
                 return Ok(crossing_result);
             }
-        }
-        // Keep collision-crossing as a preferred fast path, but fall back to
-        // ordinary A* when the local legal crossing candidate is rejected.
-        if require_crossing_compliant_route {
-            return Err("No crossing-compliant route found".to_string());
         }
         let zero_radius_overlay =
             block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some() && !cfg.enable_jps4;
@@ -1990,7 +1702,7 @@ impl PyPhotonicRouter {
         trace_native_repair: bool,
         partner_filter: Option<&[u64]>,
     ) -> PyResult<LidarDirectCrossingOutcome> {
-        if !self.lidar_pure_crossing_enabled() || !self.use_collision_crossing_routing {
+        if !self.lidar_pure_crossing_enabled() {
             return Ok(LidarDirectCrossingOutcome::NotResolved);
         }
         let source_state = State::new(job.source.x, job.source.y, job.source.angle);
@@ -2977,93 +2689,8 @@ mod tests {
     }
 
     #[test]
-    fn upfront_collision_crossing_partner_ids_uses_declared_pairs_in_expected_pairs_hybrid_mode() {
-        // allow_only_expected_pairs=true with use_collision_crossing_routing=true
-        // (the "collision-crossing mechanics restricted to expected pairs"
-        // hybrid mode Milestone 0 found) is *not* windowed at all: since
-        // lidar_pure_crossing_enabled() is false whenever
-        // allow_only_expected_pairs=true regardless of
-        // use_collision_crossing_routing, this mode always falls through to
-        // the topology-declared expected-pairs set, for both try orders,
-        // with no deferred second stage. Confirmed directly here after this
-        // test's own first draft (assuming a windowed lookup, matching the
-        // non-lidar-pure-but-collision-crossing case's naive reading)
-        // failed against the real implementation -- corrected rather than
-        // adjusted to force a pass, per this repository's own testing
-        // discipline of trusting real failures over first assumptions. Net
-        // 1 is declared as net 3's only expected partner; net 2 is
-        // committed but never declared, so it must not appear even though
-        // both are equally "physically present" in the obstacle map.
-        let mut router = crossing_partner_discovery_test_router();
-        router.crossing_context.set_config(CrossingConfig {
-            enabled: true,
-            allow_only_expected_pairs: true,
-            ..CrossingConfig::default()
-        });
-        router
-            .crossing_context
-            .replace_constraints(vec![CrossingConstraint {
-                net_id: 3,
-                partner_net_id: 1,
-                level: 0,
-                source_depth: 0,
-                target_depth: 0,
-            }]);
-
-        for try_order in [
-            CollisionCrossingTryOrder::PlainFirst,
-            CollisionCrossingTryOrder::CrossingFirst,
-        ] {
-            let partners = router.upfront_collision_crossing_partner_ids(
-                3,
-                State::new(5, 5, 0),
-                State::new(10, 10, 0),
-                try_order,
-            );
-            assert!(
-                partners.contains(&1),
-                "expected net 1 (declared partner) for try_order {try_order:?}: {partners:?}"
-            );
-            assert!(
-                !partners.contains(&2),
-                "did not expect net 2 (committed but not a declared partner) for \
-                 try_order {try_order:?}: {partners:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn upfront_collision_crossing_partner_ids_empty_when_collision_crossing_routing_disabled() {
-        let mut router = crossing_partner_discovery_test_router();
-        router.set_collision_crossing_routing(false);
-        router.crossing_context.set_config(CrossingConfig {
-            enabled: true,
-            allow_only_expected_pairs: false,
-            ..CrossingConfig::default()
-        });
-
-        for try_order in [
-            CollisionCrossingTryOrder::PlainFirst,
-            CollisionCrossingTryOrder::CrossingFirst,
-        ] {
-            let partners = router.upfront_collision_crossing_partner_ids(
-                3,
-                State::new(5, 5, 0),
-                State::new(10, 10, 0),
-                try_order,
-            );
-            assert!(
-                partners.is_empty(),
-                "collision-crossing routing is disabled, so no partner set should \
-                 be computed regardless of try_order {try_order:?}: {partners:?}"
-            );
-        }
-    }
-
-    #[test]
     fn committed_partners_intersecting_route_names_the_crossed_net_with_crossings_disabled() {
         let (mut router, batch, vertical) = single_horizontal_crossing_fixture();
-        router.set_collision_crossing_routing(false);
         router.crossing_context.set_config(CrossingConfig {
             enabled: false,
             ..CrossingConfig::default()

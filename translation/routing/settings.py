@@ -143,7 +143,7 @@ class SessionSettings:
         node_ranks: dict[str, int] | None = None,
         edge_ranks: dict[str, dict[str, int]] | None = None,
         crossing_loss: float = 0.0,
-        crossing_mode: str = "window",
+        crossing_mode: str = "lidar-pure",
         crossing_half_size_cells: int = 0,
         min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
         foreign_port_keepout_cells: int = 0,

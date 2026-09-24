@@ -152,14 +152,7 @@ impl PyPhotonicRouter {
                 .or_insert(priority);
         };
         let crossing_repair_enabled = self.crossing_context.is_enabled();
-        let allowed_crossing_partners: FxHashSet<u64> = if crossing_repair_enabled
-            && self.crossing_context.config().allow_only_expected_pairs
-        {
-            self.crossing_allowed_partner_set(job.net_id)
-                .into_iter()
-                .filter(|partner_id| batch.final_routes.contains_key(partner_id))
-                .collect()
-        } else if crossing_repair_enabled && self.lidar_pure_crossing_enabled() {
+        let allowed_crossing_partners: FxHashSet<u64> = if crossing_repair_enabled {
             self.lidar_probe_partner_lookup_set(
                 job.net_id,
                 &probe_route,
@@ -265,15 +258,6 @@ impl PyPhotonicRouter {
             if reservation_blockers.has_static_blocker {
                 for event in &probe_crossing_events {
                     add_candidate_blocker(event.partner_net_id, 1);
-                }
-            }
-            if self.crossing_context.config().allow_only_expected_pairs {
-                for partner_id in &allowed_crossing_partners {
-                    if !legal_crossed_partners.contains(partner_id)
-                        && batch.final_routes.contains_key(partner_id)
-                    {
-                        add_candidate_blocker(*partner_id, 2);
-                    }
                 }
             }
         } else {

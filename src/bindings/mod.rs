@@ -223,10 +223,6 @@ impl PyPhotonicRouter {
         self.long_straight_exempt_net_ids = net_ids.into_iter().collect();
     }
 
-    pub(crate) fn set_collision_crossing_routing(&mut self, enabled: bool) {
-        self.use_collision_crossing_routing = enabled;
-    }
-
     pub(crate) fn crossing_events(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
         let mut out = Vec::with_capacity(self.crossing_events.len());
         for event in &self.crossing_events {

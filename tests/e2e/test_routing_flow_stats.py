@@ -105,16 +105,6 @@ def test_lidar_pure_uses_search_only_crossing_penalty_by_default():
     ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
     assert _effective_crossing_search_loss(
         enable_crossings=True,
-        crossing_mode="collision",
-        crossing_loss=0.0,
-    ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
-    assert _effective_crossing_search_loss(
-        enable_crossings=True,
-        crossing_mode="window",
-        crossing_loss=0.0,
-    ) == pytest.approx(0.0)
-    assert _effective_crossing_search_loss(
-        enable_crossings=True,
         crossing_mode="lidar-pure",
         crossing_loss=0.07,
     ) == pytest.approx(0.07)
@@ -132,12 +122,6 @@ def test_collision_crossing_search_penalty_can_be_overridden(monkeypatch):
         crossing_loss=0.0,
         config=crossing_plan_config,
     ) == pytest.approx(30.0)
-    assert _effective_crossing_search_loss(
-        enable_crossings=True,
-        crossing_mode="window",
-        crossing_loss=0.0,
-        config=crossing_plan_config,
-    ) == pytest.approx(0.0)
     assert _effective_crossing_search_loss(
         enable_crossings=True,
         crossing_mode="lidar-pure",
@@ -177,7 +161,7 @@ def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
         schematic=SimpleNamespace(),
         route_jobs=[],
         enable_crossings=True,
-        crossing_mode="window",
+        crossing_mode="lidar-pure",
         node_depths=None,
         node_ranks=None,
         edge_ranks=None,
@@ -401,7 +385,7 @@ def _route_heater_s_mod_sibling_pair(crossing_mode: str | None):
         collect_route_stats=True,
         include_heater_obstacles=True,
         enable_crossings=crossing_mode is not None,
-        crossing_mode=crossing_mode or "window",
+        crossing_mode=crossing_mode or "lidar-pure",
         debug_stop_after_route_index=2,
         obstacle_config=StaticObstacleMapConfig(
             grid_size_um=2.0,

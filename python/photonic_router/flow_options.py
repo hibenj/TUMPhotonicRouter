@@ -93,7 +93,7 @@ class OpticalStageOptions:
     """`build_optical_routing_stage_config`: the optical routing stage."""
 
     enable_crossings: bool = False
-    crossing_mode: str = "window"
+    crossing_mode: str = "lidar-pure"
     crossing_half_size_cells: int = 0
     min_straight_cells_per_crossing: int = SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING
     foreign_port_keepout_cells: int = SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS

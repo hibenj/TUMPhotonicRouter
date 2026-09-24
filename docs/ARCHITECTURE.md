@@ -530,12 +530,23 @@ the negotiated loop (D8), and the probe-guided and direct-crossing budgets
 follow `NegotiationConfig` instead of the constants, whose values are those
 fields' defaults (D9).
 
+Already removed, Slice B, the window and collision crossing modes (D2,
+2026-09-24): `expected_pairs_partner_set`, `crossing_allowed_partner_set` and
+`try_route_through_expected_crossing_partner` with every branch keyed on
+`allow_only_expected_pairs == true` or `use_collision_crossing_routing ==
+false`, the field `use_collision_crossing_routing` and its pymethod
+`set_collision_crossing_routing`, the two mode names (`CROSSING_MODES` is now
+`("lidar-pure", "lidar-guided")`, `is_collision_mode` folded into
+`is_lidar_mode`, the flow default became `lidar-pure`), the hard-constraint
+branch of `_build_crossing_plan_info` and the window-only Weighted-A*
+iteration cap. `CrossingConfig::allow_only_expected_pairs` stays: it is what
+`CrossingContext::allows_pair` reads, and Python passes `False` for both
+remaining modes.
+
 Still labelled in the source:
 
 | item | module | size |
 | --- | --- | --- |
-| `expected_pairs_partner_set`, `crossing_allowed_partner_set` (the window and collision crossing modes, D2) | `src/engine/crossing_reservation.rs` | 2 methods |
-| `try_route_through_expected_crossing_partner` (same modes) | `src/engine/search_calls.rs` | about 220 lines with the two above, plus the branches keyed on `allow_only_expected_pairs` / `use_collision_crossing_routing` in shared functions, the `"window"` default at four sites, three Rust tests and one Python test |
 | `record_elapsed` and the four other helpers no phase reaches | `translation/routing/timing.py` (1), `translation/routing/route_jobs.py` (4: `_append_grid_step`, `_fanout_stub_centerline_um`, `_append_circular_stub_bend`, `_cross2`) | 5 functions |
 
 Named in the plan, not labelled in the source:

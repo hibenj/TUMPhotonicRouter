@@ -204,7 +204,6 @@ pub(crate) fn crossing_conflict_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJ
         ),
         None,
     );
-    router.set_collision_crossing_routing(true);
     router.crossing_context.set_config(CrossingConfig {
         enabled: true,
         allow_only_expected_pairs: false,
@@ -341,7 +340,6 @@ pub(crate) fn missing_crossing_event_fixture_router() -> PyPhotonicRouter {
         ),
         None,
     );
-    router.set_collision_crossing_routing(true);
     router.crossing_context.set_config(CrossingConfig {
         enabled: true,
         allow_only_expected_pairs: false,
@@ -578,7 +576,6 @@ pub(crate) fn crossing_partner_discovery_test_router() -> PyPhotonicRouter {
         ),
         None,
     );
-    router.set_collision_crossing_routing(true);
     assert!(router.obstacle_map.commit_route(1, &[(3, 3)]));
     assert!(router.obstacle_map.commit_route(2, &[(25, 25)]));
     router

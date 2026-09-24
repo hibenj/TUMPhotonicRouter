@@ -585,7 +585,7 @@ def run_routing_flow(
     path_length_match_outputs: bool = False,
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     enable_crossings: bool = False,
-    crossing_mode: str = "window",
+    crossing_mode: str = "lidar-pure",
     preplaced_crossing_grids: bool = False,
     crossing_half_size_cells: int = 0,
     min_straight_cells_per_crossing: int = SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
@@ -650,13 +650,11 @@ def run_routing_flow(
                       inserting path-length matching meanders.
         crossing_half_size_cells: Crossing keepout half-size in grid cells.
                       The default 0 derives it from the crossing component bbox.
-        crossing_mode: Crossing routing mode. "window" uses the existing
-                      expected-partner crossing search; "collision" legalizes
-                      crossings after A* collides with topology-allowed route
-                      geometry; "lidar-pure" uses dynamic DRC-style crossing
-                      permission against any committed route (the baseline);
-                      "lidar-guided" is contribution 1: lidar-pure mechanics plus
-                      the precomputed topology crossings as soft search guidance.
+        crossing_mode: Crossing routing mode. "lidar-pure" uses dynamic
+                      DRC-style crossing permission against any committed route
+                      (the baseline); "lidar-guided" is contribution 1:
+                      lidar-pure mechanics plus the precomputed topology
+                      crossings as soft search guidance.
                       Exactly one of lidar-pure / lidar-guided /
                       preplaced_crossing_grids (contribution 2) runs at a time.
         preplaced_crossing_grids: If True, derive every interstage layer's
