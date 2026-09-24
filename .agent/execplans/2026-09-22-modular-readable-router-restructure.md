@@ -466,6 +466,10 @@ The candidate list (from the indexes of 2026-09-23; sizes on `main` at that date
 
 Procedure: one short document (or a section of `docs/ARCHITECTURE.md`) lists the items with the facts above; the owner marks keep / remove / decide later; the removals happen in one slice per item with the short gate after each and the full 27-cell reproduction at the end; every removal is a separate commit so any single one can be reverted.
 
+## Follow-up after Milestone 8: the verifier's time on the largest layouts
+
+Not part of this plan's zero-behaviour-change rule; recorded here so it is not lost (owner question 2026-09-24). The full 27-cell reproduction takes about 4.5 hours, and one cell alone spends 71 of its 86 minutes outside the routing loop: Benes 128x128 with contribution 2, whose photonic verifier checks 20,480 routes (the ADEPT 64x64 baseline's 55 minutes are routing time, the paper's own metric, and stay). The 2026-09-07 verifier prefilter added a bounding-box filter; what remains at that route count behaves like a pairwise check that wants a spatial index. A small separate plan once the verifier module is readable: acceptance is identical verdicts and byte-identical verification JSONs on all 27 cells plus the time saved, about 75 minutes of the full run.
+
 ## Order, size and what could go wrong
 
 The order is deliberate: configuration first because hidden inputs make every later diff unreviewable; the file split second because it is mechanical and makes the real work reviewable; the kernel interface before the loop because the loop is generic over it; Python after Rust because the Python stages' outputs are defined by what the kernel needs; tests and documents last but written against interfaces that exist by then. Milestones 2, 3 and 4 are the large ones; Milestone 1 is medium and the most error-prone because 88 variables have to be mapped without changing any default; Milestones 0, 5, 6 and 7 are medium.
