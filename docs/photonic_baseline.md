@@ -9,6 +9,11 @@
 - Obstacle mode: `bounding_boxes`
 - Max iterations: `5000000`
 
+Historical note: the rows of both tables were measured on the toy benchmarks
+`TOY`, `mmi_heater` and `mmi_heater_8x4`, which Milestone 8, Slice D deleted on
+2026-09-24; this capture is kept as the record of that run, not as a baseline
+that can be reproduced.
+
 | Benchmark | Instances | Nets | Grid | Total s | Load s | Layout s | Route s |
 | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
 | TOY | 5 | 4 | 645x332 | 0.0591 | 0.0424 | 0.0030 | 0.0120 |

@@ -35,7 +35,7 @@ from routing_flow import (
 )
 
 
-DEFAULT_BENCHMARKS = ("TOY", "mmi_heater", "mmi_heater_8x4_ripup_reroute")
+DEFAULT_BENCHMARKS = ("heater_s_mod", "benes_4x4", "benes_8x8")
 PERF_SMOKE_BENCHMARKS = ("heater_s_mod", "clements_8x8", "benes_4x4", "benes_8x8")
 PERF_SMOKE_CROSSING_BENCHMARKS = frozenset({"benes_4x4", "benes_8x8"})
 PERF_SMOKE_PLM_BENCHMARKS = frozenset({"heater_s_mod"})

@@ -157,7 +157,7 @@ def test_electrical_benchmark_guardrails_accept_current_shape():
 def test_electrical_benchmark_uses_case_specific_guardrails():
     module = _load_benchmark_electrical_module()
     small_summary = module.electrical_benchmark_summary(
-        "mmi_heater",
+        "heater_single",
         ElectricalRoutingConfig(pad_side="top"),
         _result_stub(),
     )
@@ -213,13 +213,13 @@ def test_electrical_benchmark_uses_case_specific_guardrails():
     assert (
         module.guardrail_violations(
             small_summary,
-            module.guardrails_for_benchmark("mmi_heater"),
+            module.guardrails_for_benchmark("heater_single"),
         )
         == []
     )
     assert module.guardrail_violations(
         small_summary,
-        module.guardrails_for_benchmark("mmi_heater_8x4_ripup_reroute"),
+        module.guardrails_for_benchmark("heater_lanes_ripup"),
     )
 
 
@@ -324,8 +324,8 @@ def test_electrical_benchmark_suite_writes_json_list(monkeypatch, tmp_path):
     output_path = tmp_path / "suite.json"
     captured = {}
     rows = [
-        {"benchmark": "mmi_heater", "guardrail_violations": []},
-        {"benchmark": "mmi_heater_8x4", "guardrail_violations": []},
+        {"benchmark": "heater_single", "guardrail_violations": []},
+        {"benchmark": "heater_lanes_20", "guardrail_violations": []},
     ]
 
     def fake_run_electrical_benchmarks(benchmark_names, **kwargs):
@@ -337,8 +337,8 @@ def test_electrical_benchmark_suite_writes_json_list(monkeypatch, tmp_path):
 
     exit_code = module.main(
         [
-            "mmi_heater",
-            "mmi_heater_8x4",
+            "heater_single",
+            "heater_lanes_20",
             "--output",
             str(output_path),
             "--check",
@@ -346,7 +346,7 @@ def test_electrical_benchmark_suite_writes_json_list(monkeypatch, tmp_path):
     )
 
     assert exit_code == 0
-    assert captured["benchmark_names"] == ("mmi_heater", "mmi_heater_8x4")
+    assert captured["benchmark_names"] == ("heater_single", "heater_lanes_20")
     assert captured["artifacts_dir"] is None
     assert json.loads(output_path.read_text(encoding="utf-8")) == rows
 
@@ -389,9 +389,9 @@ def test_electrical_benchmark_suite_check_fails_on_any_violation(monkeypatch, tm
     module = _load_benchmark_electrical_module()
     output_path = tmp_path / "suite.json"
     rows = [
-        {"benchmark": "mmi_heater", "guardrail_violations": []},
+        {"benchmark": "heater_single", "guardrail_violations": []},
         {
-            "benchmark": "mmi_heater_8x4",
+            "benchmark": "heater_lanes_20",
             "guardrail_violations": [{"name": "verification_success"}],
         },
     ]

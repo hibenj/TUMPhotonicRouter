@@ -14,20 +14,28 @@ loading, schematic translation, obstacle extraction, Rust routing, and realizati
 Useful variants:
 
 ```bash
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --path-length-matching --include-heater-obstacles --ripup-reroute
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --attempt-output build/profiles/photonic_attempts.csv
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --use-indexed-heap
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --primitive-ordering long_straight_first
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --primitive-ordering target_biased
-.venv/bin/python scripts/benchmark_photonic.py mmi_heater_8x4_ripup_reroute --include-heater-obstacles --ripup-reroute --heuristic-mode distance
+.venv/bin/python scripts/benchmark_photonic.py heater_s_mod --include-heater-obstacles --ripup-reroute
+.venv/bin/python scripts/benchmark_photonic.py heater_s_mod --path-length-matching --include-heater-obstacles --ripup-reroute
+.venv/bin/python scripts/benchmark_photonic.py heater_s_mod --include-heater-obstacles --ripup-reroute --attempt-output build/profiles/photonic_attempts.csv
+.venv/bin/python scripts/benchmark_photonic.py heater_s_mod --include-heater-obstacles --ripup-reroute --use-indexed-heap
+.venv/bin/python scripts/benchmark_photonic.py heater_s_mod --include-heater-obstacles --ripup-reroute --primitive-ordering long_straight_first
+.venv/bin/python scripts/benchmark_photonic.py heater_s_mod --include-heater-obstacles --ripup-reroute --primitive-ordering target_biased
+.venv/bin/python scripts/benchmark_photonic.py heater_s_mod --include-heater-obstacles --ripup-reroute --heuristic-mode distance
 .venv/bin/python scripts/benchmark_photonic.py --output docs/photonic_baseline.md --include-heater-obstacles --ripup-reroute
 ```
 
-The `mmi_heater_8x4_ripup_reroute` case is the current end-to-end A* stress
-case: it forces one rip-up repair and runs real A* searches in the photonic
-pipeline. Use the default 5,000,000 iteration budget for this benchmark; lower
-budgets such as 500,000 can fail before the repair route completes.
+Historical note: every measurement quoted from here to the end of this section
+-- the stress-case paragraph below, the `--routing-window-scale` numbers, and the
+pass 8E and 8F results -- was taken on the toy benchmark
+`mmi_heater_8x4_ripup_reroute`, which Milestone 8, Slice D deleted on 2026-09-24
+(its electrical successor `heater_lanes_ripup` places heaters only and is not an
+A* case). The numbers are kept as the record of the decisions they justified; the
+commands above run on `heater_s_mod`.
+
+The `mmi_heater_8x4_ripup_reroute` case was the end-to-end A* stress case: it
+forced one rip-up repair and ran real A* searches in the photonic pipeline. Use
+the default 5,000,000 iteration budget for such a benchmark; lower budgets such
+as 500,000 can fail before the repair route completes.
 
 Use `--attempt-output` to write per-route-attempt records. A `.csv` suffix
 writes a spreadsheet-friendly table; other suffixes write JSON. Each record

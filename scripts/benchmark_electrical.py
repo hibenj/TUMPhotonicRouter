@@ -20,8 +20,8 @@ from translation.electrical import ElectricalRoutingConfig, route_electrical_hea
 from translation.layout_from_schematic import layout_from_schematic
 
 
-DEFAULT_BENCHMARK = "mmi_heater_8x4_ripup_reroute"
-DEFAULT_BENCHMARKS = ("mmi_heater", "mmi_heater_8x4", "mmi_heater_8x4_ripup_reroute")
+DEFAULT_BENCHMARK = "heater_lanes_ripup"
+DEFAULT_BENCHMARKS = ("heater_single", "heater_lanes_20", "heater_lanes_ripup")
 DEFAULT_BASELINE_PATH = PROJECT_ROOT / "tests" / "baselines" / "electrical_suite_metrics.json"
 BASELINE_FLOAT_TOLERANCE = 1e-6
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
@@ -48,7 +48,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
 }
 DEFAULT_GUARDRAILS = RIPUP_REROUTE_GUARDRAILS
 BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
-    "mmi_heater": {
+    "heater_single": {
         "verification_success": True,
         "verification_error_count_max": 0,
         "verification_warning_count_max": 0,
@@ -70,7 +70,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "output_polygon_count_max": 5,
         "pre_union_rect_count_max": 20,
     },
-    "mmi_heater_8x4": {
+    "heater_lanes_20": {
         "verification_success": True,
         "verification_error_count_max": 0,
         "verification_warning_count_max": 0,
@@ -92,7 +92,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "output_polygon_count_max": 25,
         "pre_union_rect_count_max": 230,
     },
-    "mmi_heater_8x4_ripup_reroute": RIPUP_REROUTE_GUARDRAILS,
+    "heater_lanes_ripup": RIPUP_REROUTE_GUARDRAILS,
 }
 
 

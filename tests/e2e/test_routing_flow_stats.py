@@ -554,7 +554,7 @@ def test_format_debug_route_indices_collapses_ranges():
 def test_electrical_cli_flags_parse_into_namespace():
     args = _build_arg_parser().parse_args(
         [
-            "mmi_heater",
+            "heater_single",
             "--electrical-routing",
             "true",
             "--electrical-pad-side",
@@ -579,7 +579,7 @@ def test_electrical_cli_flags_parse_into_namespace():
         ]
     )
 
-    assert args.benchmark == "mmi_heater"
+    assert args.benchmark == "heater_single"
     assert args.electrical_routing is True
     assert args.electrical_pad_side == "bottom"
     assert args.electrical_grid_pitch_um == 20.0

@@ -561,11 +561,15 @@ iteration cap Slice B removed with the window mode is back in
 
 Still open:
 
-* **The four toy benchmark modules** kept only as historical fixtures (`TOY`,
-  `mmi_heater`, `mmi_heater_8x4`, `mmi_heater_8x4_ripup_reroute`). No test
-  imports them any more (Milestone 6 Slice 3), but
-  `scripts/benchmark_electrical.py` and `tests/baselines/electrical_suite_metrics.json`
-  still name three of them as strings -- open question D10.
+Nothing. The list is empty since Slice D (2026-09-24) deleted the four toy
+benchmark modules (`TOY`, `mmi_heater`, `mmi_heater_8x4`,
+`mmi_heater_8x4_ripup_reroute`) together with the unused `generate_toy.py`:
+`scripts/benchmark_electrical.py` now runs its three cases on the real
+heater-only benchmarks `heater_single`, `heater_lanes_20` and
+`heater_lanes_ripup`, built from the synthetic fixtures of Milestone 6. The
+electrical guardrail finding those cases exposed (seven guardrails red on every
+case since the 2026-06 changes to `translation/electrical`, owner decision
+pending) is item 3 of `.agent/REPOSITORY_STATE.md`'s Current Findings.
 
 Each removal is one slice and one commit with the short gate after it, so any
 single one can be reverted; the full 27-cell reproduction runs at the end.

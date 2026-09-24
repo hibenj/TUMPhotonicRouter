@@ -101,7 +101,7 @@ def load_benchmark(benchmark_name: str) -> Schematic:
     """Load a benchmark schematic from the benchmarks directory.
 
     Parameters:
-        benchmark_name: The name of the benchmark module (e.g., 'TOY').
+        benchmark_name: The name of the benchmark module (e.g., 'heater_s_mod').
                        The module must have a `build_schematic()` function.
 
     Returns:
@@ -623,7 +623,7 @@ def run_routing_flow(
     """Execute the routing flow for a given benchmark.
 
     Parameters:
-        benchmark_name: Name of the benchmark to run (e.g., 'TOY').
+        benchmark_name: Name of the benchmark to run (e.g., 'heater_s_mod').
         debug_svgs: If True or "all", generate all debug SVGs into build/.
                     If a selector such as "5-10", "5", or "2,5-10" is
                     provided, generate only matching per-route SVGs by

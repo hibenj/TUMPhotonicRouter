@@ -1,64 +1,126 @@
 [
   {
     "artifacts": {
-      "common_bus_svg": "build/electrical_suite_17b/mmi_heater/electrical/mmi_heater_common_bus.svg",
-      "gds": "build/electrical_suite_17b/mmi_heater/mmi_heater_electrical.gds",
-      "metal_snapshot_svg": "build/electrical_suite_17b/mmi_heater/electrical/mmi_heater_metal_snapshot.svg",
-      "summary_json": "build/electrical_suite_17b/mmi_heater/mmi_heater_summary.json",
-      "summary_md": "build/electrical_suite_17b/mmi_heater/mmi_heater_summary.md"
+      "common_bus_svg": "build/electrical_suite_m8d/heater_single/electrical/heater_single_common_bus.svg",
+      "gds": "build/electrical_suite_m8d/heater_single/heater_single_electrical.gds",
+      "metal_snapshot_svg": "build/electrical_suite_m8d/heater_single/electrical/heater_single_metal_snapshot.svg",
+      "summary_json": "build/electrical_suite_m8d/heater_single/heater_single_summary.json",
+      "summary_md": "build/electrical_suite_m8d/heater_single/heater_single_summary.md"
     },
-    "benchmark": "mmi_heater",
+    "benchmark": "heater_single",
     "common_bus_escape_success": true,
     "common_bus_success": true,
     "detailed_route_count": 1,
     "failed_detailed_route_count": 0,
-    "guardrail_violations": [],
+    "guardrail_violations": [
+      {
+        "actual": 1800.0,
+        "expected": 1500.0,
+        "name": "metrics.centerline_length_um",
+        "operator": "<="
+      },
+      {
+        "actual": 912971.0,
+        "expected": 80000.0,
+        "name": "metrics.raw_metal_area_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 832727.32,
+        "expected": 80000.0,
+        "name": "metrics.union_metal_area_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 80243.68000000005,
+        "expected": 1200.0,
+        "name": "metrics.metal_area_overcount_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 0.08789291226117812,
+        "expected": 0.015,
+        "name": "metrics.metal_area_overcount_ratio",
+        "operator": "<="
+      },
+      {
+        "actual": 100.00000000000085,
+        "expected": 1e-06,
+        "name": "metrics.metal_redundant_area_overcount_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 1,
+        "expected": 0,
+        "name": "metrics.same_net_redundant_overlap_pair_count",
+        "operator": "<="
+      }
+    ],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 3,
-      "centerline_length_um": 1090.0,
-      "cross_net_min_spacing_um": 142.973,
+      "bend_count": 2,
+      "centerline_length_um": 1800.0,
+      "cross_net_min_spacing_um": 157.97299999999996,
       "metal_area_overcount_by_reason_um2": {
-        "bus_stripe_contact": 135.2200000000003,
-        "pad_contact": 543.2399999999984,
+        "pad_contact": 79802.68000000001,
+        "redundant": 100.00000000000085,
         "terminal_access_join": 341.0
       },
       "metal_area_overcount_by_source_um2": {
-        "bus_escape/bus_stripe": 35.22000000000001,
-        "bus_escape/pad": 362.15999999999894,
-        "bus_route/bus_stripe": 100.00000000000028,
+        "bus_escape/bus_route": 100.00000000000085,
+        "bus_escape/pad": 79621.6,
         "bus_route/terminal_adapter": 170.5,
-        "pad/route_tail": 181.07999999999947,
+        "pad/route_tail": 181.0800000000006,
         "route_tail/terminal_adapter": 170.5
       },
-      "metal_area_overcount_ratio": 0.012951793299817084,
-      "metal_area_overcount_um2": 1019.4600000000064,
-      "metal_redundant_area_overcount_by_source_um2": {},
-      "metal_redundant_area_overcount_um2": 0,
+      "metal_area_overcount_ratio": 0.08789291226117812,
+      "metal_area_overcount_um2": 80243.68000000005,
+      "metal_redundant_area_overcount_by_source_um2": {
+        "bus_escape/bus_route": 100.00000000000085
+      },
+      "metal_redundant_area_overcount_um2": 100.00000000000085,
       "net_count": 2,
       "pad_channel_height_um": 60.000000000000014,
-      "raw_metal_area_um2": 78711.88,
-      "rect_count": 9,
+      "port_access_biased_route_count_by_purpose": {
+        "common_bus": 1,
+        "individual": 1
+      },
+      "port_access_blocked_anchor_count": 0,
+      "port_access_count": 4,
+      "port_access_count_by_purpose": {
+        "common_bus": 2,
+        "individual": 2
+      },
+      "port_access_exact_anchor_route_count_by_purpose": {},
+      "port_access_max_length_um": 7.37999999999991,
+      "port_access_max_offset_um": 5.227463821012952,
+      "port_access_missing_contact_count": 0,
+      "port_access_route_start_count_by_purpose": {
+        "common_bus": 1,
+        "individual": 1
+      },
+      "raw_metal_area_um2": 912971.0,
+      "rect_count": 8,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_intentional_overlap_pair_count": 6,
+      "same_net_intentional_overlap_pair_count": 4,
       "same_net_intentional_overlap_pair_count_by_reason": {
-        "bus_stripe_contact": 2,
         "pad_contact": 2,
         "terminal_access_join": 2
       },
-      "same_net_overlap_pair_count": 6,
+      "same_net_overlap_pair_count": 5,
       "same_net_overlap_pair_count_by_source": {
-        "bus_escape/bus_stripe": 1,
+        "bus_escape/bus_route": 1,
         "bus_escape/pad": 1,
-        "bus_route/bus_stripe": 1,
         "bus_route/terminal_adapter": 1,
         "pad/route_tail": 1,
         "route_tail/terminal_adapter": 1
       },
-      "same_net_redundant_overlap_pair_count": 0,
-      "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 77692.42
+      "same_net_redundant_overlap_pair_count": 1,
+      "same_net_redundant_overlap_pair_count_by_source": {
+        "bus_escape/bus_route": 1
+      },
+      "union_metal_area_um2": 832727.32
     },
     "pad_assignment_count": 2,
     "pad_side": "top",
@@ -66,9 +128,9 @@
       "metal_area_overcount_um2": 0.0,
       "net_count": 2,
       "output_polygon_count": 2,
-      "pre_union_rect_count": 15,
-      "raw_metal_area_um2": 77692.42,
-      "union_metal_area_um2": 77692.42
+      "pre_union_rect_count": 11,
+      "raw_metal_area_um2": 832727.32,
+      "union_metal_area_um2": 832727.32
     },
     "terminal_group_count": 1,
     "verification_error_count": 0,
@@ -78,64 +140,132 @@
   },
   {
     "artifacts": {
-      "common_bus_svg": "build/electrical_suite_17b/mmi_heater_8x4/electrical/mmi_heater_8x4_common_bus.svg",
-      "gds": "build/electrical_suite_17b/mmi_heater_8x4/mmi_heater_8x4_electrical.gds",
-      "metal_snapshot_svg": "build/electrical_suite_17b/mmi_heater_8x4/electrical/mmi_heater_8x4_metal_snapshot.svg",
-      "summary_json": "build/electrical_suite_17b/mmi_heater_8x4/mmi_heater_8x4_summary.json",
-      "summary_md": "build/electrical_suite_17b/mmi_heater_8x4/mmi_heater_8x4_summary.md"
+      "common_bus_svg": "build/electrical_suite_m8d/heater_lanes_20/electrical/heater_lanes_20_common_bus.svg",
+      "gds": "build/electrical_suite_m8d/heater_lanes_20/heater_lanes_20_electrical.gds",
+      "metal_snapshot_svg": "build/electrical_suite_m8d/heater_lanes_20/electrical/heater_lanes_20_metal_snapshot.svg",
+      "summary_json": "build/electrical_suite_m8d/heater_lanes_20/heater_lanes_20_summary.json",
+      "summary_md": "build/electrical_suite_m8d/heater_lanes_20/heater_lanes_20_summary.md"
     },
-    "benchmark": "mmi_heater_8x4",
+    "benchmark": "heater_lanes_20",
     "common_bus_escape_success": true,
     "common_bus_success": true,
     "detailed_route_count": 20,
     "failed_detailed_route_count": 0,
-    "guardrail_violations": [],
+    "guardrail_violations": [
+      {
+        "actual": 61700.0,
+        "expected": 50000.0,
+        "name": "metrics.centerline_length_um",
+        "operator": "<="
+      },
+      {
+        "actual": 4020438.0,
+        "expected": 1020000.0,
+        "name": "metrics.raw_metal_area_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 3845633.5,
+        "expected": 1000000.0,
+        "name": "metrics.union_metal_area_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 174804.5,
+        "expected": 30000.0,
+        "name": "metrics.metal_area_overcount_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 0.043478969206837664,
+        "expected": 0.03,
+        "name": "metrics.metal_area_overcount_ratio",
+        "operator": "<="
+      },
+      {
+        "actual": 66.66666666666667,
+        "expected": 1e-06,
+        "name": "metrics.metal_redundant_area_overcount_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 1,
+        "expected": 0,
+        "name": "metrics.same_net_redundant_overlap_pair_count",
+        "operator": "<="
+      }
+    ],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 128,
-      "centerline_length_um": 46640.0,
+      "bend_count": 125,
+      "centerline_length_um": 61700.0,
       "cross_net_min_spacing_um": 20.0,
       "metal_area_overcount_by_reason_um2": {
-        "bus_stripe_contact": 1905.6600000000117,
-        "pad_contact": 3983.7600000000157,
-        "terminal_access_join": 6820.0
+        "bus_stripe_contact": 79933.33333333334,
+        "pad_contact": 88000.0,
+        "redundant": 66.66666666666667,
+        "terminal_access_join": 6804.500000000002
       },
       "metal_area_overcount_by_source_um2": {
-        "bus_escape/bus_stripe": 105.66000000001168,
-        "bus_escape/pad": 362.1600000000012,
-        "bus_route/bus_stripe": 1800.0,
-        "bus_route/terminal_adapter": 3410.0,
-        "pad/route_tail": 3621.600000000014,
-        "route_tail/terminal_adapter": 3410.0
+        "bus_escape/bus_route": 66.66666666666667,
+        "bus_escape/bus_stripe": 78966.66666666667,
+        "bus_escape/pad": 82000.0,
+        "bus_route/bus_stripe": 966.6666666666666,
+        "bus_route/terminal_adapter": 3406.900000000003,
+        "pad/route_tail": 6000.0,
+        "route_tail/terminal_adapter": 3397.599999999999
       },
-      "metal_area_overcount_ratio": 0.012918836694038687,
-      "metal_area_overcount_um2": 12709.420000000042,
-      "metal_redundant_area_overcount_by_source_um2": {},
-      "metal_redundant_area_overcount_um2": 0,
+      "metal_area_overcount_ratio": 0.043478969206837664,
+      "metal_area_overcount_um2": 174804.5,
+      "metal_redundant_area_overcount_by_source_um2": {
+        "bus_escape/bus_route": 66.66666666666667
+      },
+      "metal_redundant_area_overcount_um2": 66.66666666666667,
       "net_count": 21,
-      "pad_channel_height_um": 179.99999999999994,
-      "raw_metal_area_um2": 983789.818,
-      "rect_count": 185,
+      "pad_channel_height_um": 180.0,
+      "port_access_biased_route_count_by_purpose": {
+        "common_bus": 20,
+        "individual": 20
+      },
+      "port_access_blocked_anchor_count": 0,
+      "port_access_count": 80,
+      "port_access_count_by_purpose": {
+        "common_bus": 40,
+        "individual": 40
+      },
+      "port_access_exact_anchor_route_count_by_purpose": {},
+      "port_access_max_length_um": 5.100000000000364,
+      "port_access_max_offset_um": 4.627094120504071,
+      "port_access_missing_contact_count": 0,
+      "port_access_route_start_count_by_purpose": {
+        "common_bus": 20,
+        "individual": 20
+      },
+      "raw_metal_area_um2": 4020438.0,
+      "rect_count": 182,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_intentional_overlap_pair_count": 72,
+      "same_net_intentional_overlap_pair_count": 67,
       "same_net_intentional_overlap_pair_count_by_reason": {
         "bus_stripe_contact": 6,
-        "pad_contact": 24,
-        "terminal_access_join": 42
+        "pad_contact": 21,
+        "terminal_access_join": 40
       },
-      "same_net_overlap_pair_count": 72,
+      "same_net_overlap_pair_count": 68,
       "same_net_overlap_pair_count_by_source": {
+        "bus_escape/bus_route": 1,
         "bus_escape/bus_stripe": 1,
         "bus_escape/pad": 1,
         "bus_route/bus_stripe": 5,
         "bus_route/terminal_adapter": 20,
-        "pad/route_tail": 23,
-        "route_tail/terminal_adapter": 22
+        "pad/route_tail": 20,
+        "route_tail/terminal_adapter": 20
       },
-      "same_net_redundant_overlap_pair_count": 0,
-      "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 971080.3979999999
+      "same_net_redundant_overlap_pair_count": 1,
+      "same_net_redundant_overlap_pair_count_by_source": {
+        "bus_escape/bus_route": 1
+      },
+      "union_metal_area_um2": 3845633.5
     },
     "pad_assignment_count": 21,
     "pad_side": "top",
@@ -143,9 +273,9 @@
       "metal_area_overcount_um2": 0.0,
       "net_count": 21,
       "output_polygon_count": 21,
-      "pre_union_rect_count": 228,
-      "raw_metal_area_um2": 971080.3979999999,
-      "union_metal_area_um2": 971080.3979999999
+      "pre_union_rect_count": 215,
+      "raw_metal_area_um2": 3845633.5,
+      "union_metal_area_um2": 3845633.5
     },
     "terminal_group_count": 20,
     "verification_error_count": 0,
@@ -155,64 +285,132 @@
   },
   {
     "artifacts": {
-      "common_bus_svg": "build/electrical_suite_17b/mmi_heater_8x4_ripup_reroute/electrical/mmi_heater_8x4_ripup_reroute_common_bus.svg",
-      "gds": "build/electrical_suite_17b/mmi_heater_8x4_ripup_reroute/mmi_heater_8x4_ripup_reroute_electrical.gds",
-      "metal_snapshot_svg": "build/electrical_suite_17b/mmi_heater_8x4_ripup_reroute/electrical/mmi_heater_8x4_ripup_reroute_metal_snapshot.svg",
-      "summary_json": "build/electrical_suite_17b/mmi_heater_8x4_ripup_reroute/mmi_heater_8x4_ripup_reroute_summary.json",
-      "summary_md": "build/electrical_suite_17b/mmi_heater_8x4_ripup_reroute/mmi_heater_8x4_ripup_reroute_summary.md"
+      "common_bus_svg": "build/electrical_suite_m8d/heater_lanes_ripup/electrical/heater_lanes_ripup_common_bus.svg",
+      "gds": "build/electrical_suite_m8d/heater_lanes_ripup/heater_lanes_ripup_electrical.gds",
+      "metal_snapshot_svg": "build/electrical_suite_m8d/heater_lanes_ripup/electrical/heater_lanes_ripup_metal_snapshot.svg",
+      "summary_json": "build/electrical_suite_m8d/heater_lanes_ripup/heater_lanes_ripup_summary.json",
+      "summary_md": "build/electrical_suite_m8d/heater_lanes_ripup/heater_lanes_ripup_summary.md"
     },
-    "benchmark": "mmi_heater_8x4_ripup_reroute",
+    "benchmark": "heater_lanes_ripup",
     "common_bus_escape_success": true,
     "common_bus_success": true,
     "detailed_route_count": 11,
     "failed_detailed_route_count": 0,
-    "guardrail_violations": [],
+    "guardrail_violations": [
+      {
+        "actual": 26510.0,
+        "expected": 21000.0,
+        "name": "metrics.centerline_length_um",
+        "operator": "<="
+      },
+      {
+        "actual": 2544769.4,
+        "expected": 580000.0,
+        "name": "metrics.raw_metal_area_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 2375930.8,
+        "expected": 570000.0,
+        "name": "metrics.union_metal_area_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 168838.6000000001,
+        "expected": 15000.0,
+        "name": "metrics.metal_area_overcount_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 0.06634730832585463,
+        "expected": 0.03,
+        "name": "metrics.metal_area_overcount_ratio",
+        "operator": "<="
+      },
+      {
+        "actual": 66.66666666666666,
+        "expected": 1e-06,
+        "name": "metrics.metal_redundant_area_overcount_um2",
+        "operator": "<="
+      },
+      {
+        "actual": 1,
+        "expected": 0,
+        "name": "metrics.same_net_redundant_overlap_pair_count",
+        "operator": "<="
+      }
+    ],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 65,
-      "centerline_length_um": 19390.0,
-      "cross_net_min_spacing_um": 11.019763064603511,
+      "bend_count": 60,
+      "centerline_length_um": 26510.0,
+      "cross_net_min_spacing_um": 20.0,
       "metal_area_overcount_by_reason_um2": {
-        "bus_stripe_contact": 1255.659999999998,
-        "pad_contact": 2172.9600000000073,
-        "terminal_access_join": 3751.0
+        "bus_stripe_contact": 79733.33333333331,
+        "pad_contact": 85300.0,
+        "redundant": 66.66666666666666,
+        "terminal_access_join": 3738.6000000000067
       },
       "metal_area_overcount_by_source_um2": {
-        "bus_escape/bus_stripe": 255.65999999999804,
-        "bus_escape/pad": 181.0800000000006,
-        "bus_route/bus_stripe": 1000.0,
-        "bus_route/terminal_adapter": 1875.5,
-        "pad/route_tail": 1991.8800000000067,
-        "route_tail/terminal_adapter": 1875.5
+        "bus_escape/bus_route": 66.66666666666666,
+        "bus_escape/bus_stripe": 78966.66666666666,
+        "bus_escape/pad": 82000.0,
+        "bus_route/bus_stripe": 766.6666666666666,
+        "bus_route/terminal_adapter": 1870.8500000000008,
+        "pad/route_tail": 3300.0,
+        "route_tail/terminal_adapter": 1867.7500000000052
       },
-      "metal_area_overcount_ratio": 0.0128949240902453,
-      "metal_area_overcount_um2": 7179.619999999995,
-      "metal_redundant_area_overcount_by_source_um2": {},
-      "metal_redundant_area_overcount_um2": 0,
+      "metal_area_overcount_ratio": 0.06634730832585463,
+      "metal_area_overcount_um2": 168838.6000000001,
+      "metal_redundant_area_overcount_by_source_um2": {
+        "bus_escape/bus_route": 66.66666666666666
+      },
+      "metal_redundant_area_overcount_um2": 66.66666666666666,
       "net_count": 12,
-      "pad_channel_height_um": 179.99999999999994,
-      "raw_metal_area_um2": 556778.772,
-      "rect_count": 102,
+      "pad_channel_height_um": 180.0,
+      "port_access_biased_route_count_by_purpose": {
+        "common_bus": 11,
+        "individual": 11
+      },
+      "port_access_blocked_anchor_count": 0,
+      "port_access_count": 44,
+      "port_access_count_by_purpose": {
+        "common_bus": 22,
+        "individual": 22
+      },
+      "port_access_exact_anchor_route_count_by_purpose": {},
+      "port_access_max_length_um": 5.100000000000136,
+      "port_access_max_offset_um": 4.627094120503846,
+      "port_access_missing_contact_count": 0,
+      "port_access_route_start_count_by_purpose": {
+        "common_bus": 11,
+        "individual": 11
+      },
+      "raw_metal_area_um2": 2544769.4,
+      "rect_count": 94,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_intentional_overlap_pair_count": 41,
+      "same_net_intentional_overlap_pair_count": 39,
       "same_net_intentional_overlap_pair_count_by_reason": {
-        "bus_stripe_contact": 4,
-        "pad_contact": 13,
-        "terminal_access_join": 24
+        "bus_stripe_contact": 5,
+        "pad_contact": 12,
+        "terminal_access_join": 22
       },
-      "same_net_overlap_pair_count": 41,
+      "same_net_overlap_pair_count": 40,
       "same_net_overlap_pair_count_by_source": {
+        "bus_escape/bus_route": 1,
         "bus_escape/bus_stripe": 1,
         "bus_escape/pad": 1,
-        "bus_route/bus_stripe": 3,
-        "bus_route/terminal_adapter": 12,
-        "pad/route_tail": 12,
-        "route_tail/terminal_adapter": 12
+        "bus_route/bus_stripe": 4,
+        "bus_route/terminal_adapter": 11,
+        "pad/route_tail": 11,
+        "route_tail/terminal_adapter": 11
       },
-      "same_net_redundant_overlap_pair_count": 0,
-      "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 549599.152
+      "same_net_redundant_overlap_pair_count": 1,
+      "same_net_redundant_overlap_pair_count_by_source": {
+        "bus_escape/bus_route": 1
+      },
+      "union_metal_area_um2": 2375930.8
     },
     "pad_assignment_count": 12,
     "pad_side": "top",
@@ -220,9 +418,9 @@
       "metal_area_overcount_um2": 0.0,
       "net_count": 12,
       "output_polygon_count": 12,
-      "pre_union_rect_count": 128,
-      "raw_metal_area_um2": 549599.152,
-      "union_metal_area_um2": 549599.152
+      "pre_union_rect_count": 115,
+      "raw_metal_area_um2": 2375930.8,
+      "union_metal_area_um2": 2375930.8
     },
     "terminal_group_count": 11,
     "verification_error_count": 0,

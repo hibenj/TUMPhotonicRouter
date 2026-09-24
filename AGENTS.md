@@ -177,7 +177,7 @@ def build_schematic() -> Schematic:
     schematic = Schematic()
     schematic.add_instance("comp1", Instance(component="grating_coupler_te"), Placement(x=0, y=0))
     schematic.add_instance("comp2", Instance(component="mmi_1x2"), Placement(x=100, y=0))
-    # Add nets via schematic.netlist.routes (see benchmarks/TOY.py for pattern)
+    # Add nets via schematic.netlist.routes (see benchmarks/heater_single.py for pattern)
     return schematic
 ```
 
@@ -223,7 +223,7 @@ Tests live in `tests/` (end-to-end ones in `tests/e2e/`):
 
 Benchmarks are **pure Python functions**, not YAML:
 ```python
-# benchmarks/TOY.py
+# benchmarks/heater_single.py
 def build_schematic() -> Schematic:
     # Return schematic - single source of truth
 ```

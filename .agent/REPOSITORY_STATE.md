@@ -625,7 +625,8 @@ slices by default once a change is well-specified.
 ## Current Findings (open, tracked, not active work)
 
 Two of the original three remain parked, pending a real design decision or
-restructuring; the third (below, in Resolved Findings) is fixed:
+restructuring; the third (below, in Resolved Findings) is fixed. Item 3 was
+added on 2026-09-24 and is likewise parked on an owner decision:
 
 0. (Resolved 2026-08-28) `heater_s_mod` 90-degree / 3 um path-length
    matching "no meander candidate": a consequence of the meander length
@@ -696,6 +697,31 @@ restructuring; the third (below, in Resolved Findings) is fixed:
    tuning, not either alone -- not attempted further per the repository
    owner's explicit instruction to stop guessing rather than keep
    spending ~8-minute runs on parameter search.
+3. **Electrical suite guardrails red since 2026-06 changes to
+   `translation/electrical`** (measured 2026-09-24, Milestone 8 Slice D):
+   `tests/baselines/electrical_suite_metrics.json` was pinned by `8e727b0`
+   (2026-06-23); the later commits `3ce1dfd`, `d109169`, `8aa6398` and
+   `4ffdd48` changed the electrical router, and nobody ran
+   `scripts/benchmark_electrical.py --check` since. On *every* case -- the
+   three suite cases `heater_single`, `heater_lanes_20`, `heater_lanes_ripup`
+   and also `heater_s_mod` -- the same seven guardrails are violated:
+   `metrics.centerline_length_um`, `metrics.raw_metal_area_um2`,
+   `metrics.union_metal_area_um2`, `metrics.metal_area_overcount_um2`,
+   `metrics.metal_area_overcount_ratio`,
+   `metrics.metal_redundant_area_overcount_um2` and
+   `metrics.same_net_redundant_overlap_pair_count`. The
+   redundant-overcount/overlap-pair signature is 66.67 um2 + 1 pair on the
+   lane cases (and on `heater_s_mod`) and 100 um2 + 1 pair on the single
+   heater, so it is a property of the current router, not of `heater_s_mod`
+   -- which is what the plan's open question D10 had assumed. Verification
+   itself is clean on all cases (`success`, 0 errors, 0 warnings). The
+   baseline is re-pinned to the current numbers, so `--compare-baseline`
+   detects drift again (0 drifted fields), while `--suite --check` stays red
+   on exactly those seven per case. **Owner decision pending**: move the
+   guardrails to the current behaviour, or fix the electrical router (the
+   area and overcount numbers grew by 4-11x, which suggests the pad/bus
+   geometry change is the cause and the guardrails are reporting it
+   correctly). Do not change a guardrail value solo.
 
 ## Resolved Findings
 

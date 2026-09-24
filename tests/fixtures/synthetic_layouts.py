@@ -12,8 +12,10 @@ in its section.
 Slice 3 added the sections after those: the two-instance S-bend layout, the
 path-length matching schematic and the heater layouts for the electrical
 router. Those are new code, written so that no test has to import one of the
-toy benchmarks (`TOY`, `mmi_heater`, `mmi_heater_8x4`,
-`mmi_heater_8x4_ripup_reroute`) that Milestone 8 may delete.
+four toy benchmarks (`TOY`, `mmi_heater`, `mmi_heater_8x4`,
+`mmi_heater_8x4_ripup_reroute`) that Milestone 8, Slice D deleted. The heater
+layouts became benchmark modules of their own in that slice (`heater_single`,
+`heater_lanes_20`, `heater_lanes_ripup`), so the last section only wraps them.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
+from benchmarks import heater_lanes_20, heater_lanes_ripup, heater_single
 from photonic_router.static_obstacle_builder import GridSpec
 
 get_generic_pdk().activate()
@@ -245,164 +248,31 @@ def path_length_schematic() -> Schematic:
 
 # `tests/test_electrical_routing.py` used to take its layouts from the toy
 # benchmarks `mmi_heater`, `mmi_heater_8x4` and `mmi_heater_8x4_ripup_reroute`,
-# which Milestone 8 of
-# `.agent/execplans/2026-09-22-modular-readable-router-restructure.md` may
-# delete. The builders below are the synthetic replacements (Milestone 6,
-# Slice 3). What the electrical router reads from a schematic is only
-# `netlist.instances` (instance name -> component name, so it can tell which
-# instances are heaters); everything else it needs comes from the built
-# layout's geometry. So the multi-heater builders place heaters only -- no
-# MMIs, no grating couplers and no optical nets -- while the single-heater
-# builder keeps the whole seven-instance arrangement because it is small
-# enough to state outright.
-
-HEATER_COMPONENT = "straight_heater_metal"
+# which Milestone 6, Slice 3 replaced with synthetic builders here and Milestone
+# 8, Slice D of
+# `.agent/execplans/2026-09-22-modular-readable-router-restructure.md` deleted.
+# Those synthetic layouts are now the benchmark modules `heater_single`,
+# `heater_lanes_20` and `heater_lanes_ripup` -- the three cases of
+# `scripts/benchmark_electrical.py` -- so the placements, the die outlines and
+# the reasoning behind them live there, in one place, and this section only names
+# them for the tests. `benchmarks/heater_lanes_20.py::heater_only_schematic` is
+# the shared builder of the two heater-only layouts.
 
 
 def single_heater_schematic() -> Schematic:
-    """One heater between two 2x2 MMIs, with two input and two output grating
-    couplers: the smallest die that carries exactly one heater terminal pair.
+    """One heater between two 2x2 MMIs; see `benchmarks/heater_single.py`."""
 
-    The placement is deliberately generous in x so the electrical router has a
-    free channel above and below the optical row.
-    """
-
-    schematic = Schematic()
-    grating_coupler = Instance(component="grating_coupler_te")
-    mmi = Instance(component="mmi2x2")
-    heater = Instance(component=HEATER_COMPONENT)
-
-    schematic.add_instance("gc_0", grating_coupler, Placement(x=0, y=40, mirror=True))
-    schematic.add_instance("gc_1", grating_coupler, Placement(x=0, y=-40, mirror=True))
-    schematic.add_instance("mmi_0", mmi, Placement(x=120, y=0, rotation=0))
-    schematic.add_instance("heater_0", heater, Placement(x=240, y=40, rotation=0))
-    schematic.add_instance("mmi_1", mmi, Placement(x=620, y=0, rotation=0))
-    schematic.add_instance("gc_2", grating_coupler, Placement(x=780, y=40, rotation=0))
-    schematic.add_instance("gc_3", grating_coupler, Placement(x=780, y=-40, rotation=0))
-
-    for net in (
-        Net(p1="gc_0,o1", p2="mmi_0,o2", name="gc0_to_mmi0_in1"),
-        Net(p1="gc_1,o1", p2="mmi_0,o1", name="gc1_to_mmi0_in2"),
-        Net(p1="mmi_0,o3", p2="heater_0,o1", name="mmi0_out1_to_heater"),
-        Net(p1="heater_0,o2", p2="mmi_1,o2", name="heater_to_mmi1_in1"),
-        Net(p1="mmi_0,o4", p2="mmi_1,o1", name="mmi0_out2_to_mmi1_in2"),
-        Net(p1="mmi_1,o3", p2="gc_2,o1", name="mmi1_out1_to_gc2"),
-        Net(p1="mmi_1,o4", p2="gc_3,o1", name="mmi1_out2_to_gc3"),
-    ):
-        schematic.add_net(net)
-
-    return schematic
-
-
-# Twenty heaters in four lanes. The pairs that share a row -- (`heater_N`,
-# `heater_post_N`) and (`heater_output_N`, `heater_final_N`) for each lane N,
-# plus (`heater_extra_1`, `heater_extra_2`) -- are what the common-bus
-# local-pair selection and local-trunk strategies are about, so the names and
-# the row sharing are part of the fixture's contract.
-MULTI_HEATER_PLACEMENTS_UM: dict[str, tuple[float, float]] = {
-    "heater_0": (300.0, 280.0),
-    "heater_post_0": (820.0, 280.0),
-    "heater_1": (300.0, 120.0),
-    "heater_post_1": (820.0, 120.0),
-    "heater_2": (300.0, -40.0),
-    "heater_post_2": (820.0, -40.0),
-    "heater_3": (300.0, -200.0),
-    "heater_post_3": (820.0, -200.0),
-    "heater_extra_0": (1480.0, 180.0),
-    "heater_extra_1": (2340.0, 40.0),
-    "heater_extra_2": (3000.0, 40.0),
-    "heater_extra_3": (3880.0, -120.0),
-    "heater_output_0": (5180.0, 280.0),
-    "heater_final_0": (5740.0, 280.0),
-    "heater_output_1": (5180.0, 120.0),
-    "heater_final_1": (5740.0, 120.0),
-    "heater_output_2": (5180.0, -40.0),
-    "heater_final_2": (5740.0, -40.0),
-    "heater_output_3": (5180.0, -200.0),
-    "heater_final_3": (5740.0, -200.0),
-}
-
-# Eleven heaters: the four lanes' pairs plus three extras staggered in x and
-# y, so the individual escapes group into several topology bundles of which
-# one (four tracks) is the widest -- what
-# `test_auto_pad_channel_height_uses_widest_topology_bundle` compares against
-# the eleven-track channel a global assignment would need. The extras sit at
-# distinct x positions on purpose: two extras stacked in one vertical corridor
-# (the arrangement the mmi_heater_8x4_ripup_reroute toy benchmark happens to
-# have)
-# leaves their escapes 9.5 um apart, half a micron inside the 10 um cross-net
-# clearance, and the verifier rejects the result.
-RIPUP_REROUTE_HEATER_PLACEMENTS_UM: dict[str, tuple[float, float]] = {
-    "heater_0": (300.0, 280.0),
-    "heater_post_0": (820.0, 280.0),
-    "heater_1": (300.0, 120.0),
-    "heater_post_1": (820.0, 120.0),
-    "heater_2": (300.0, -40.0),
-    "heater_post_2": (820.0, -40.0),
-    "heater_3": (300.0, -200.0),
-    "heater_post_3": (820.0, -200.0),
-    "heater_extra_0": (1480.0, 180.0),
-    "heater_extra_1": (2340.0, 40.0),
-    "heater_extra_2": (3000.0, 0.0),
-}
-
-
-# Die outlines for the two heater-only layouts, as (x0, y0, width, height) in
-# micrometres. The electrical router lays its pad row out above the layout's
-# bounding box and its common-bus rail below it, so a heater-only layout needs
-# a die to work against or the pad row lands on top of the heaters and the
-# escape corridors collide (verification then reports
-# `metal_overlaps_raw_obstacle`). The outline is drawn on the waveguide layer
-# (1, 0), which is NOT one of the electrical obstacle layers
-# (`ElectricalRoutingConfig.metal_obstacle_layers` covers metal and heater
-# layers only), so it sets the die extent without blocking any electrical
-# route. Both dies are 600 um tall, which clears the heater rows (y -200 to
-# 280 plus the heater's own height) with room to spare: at 560 um the escapes
-# of the outer lanes have nowhere to go and the verifier reports cross-net
-# overlaps, while every height from 580 um up leaves the cross-net spacing at
-# 20 um, twice the 10 um the verifier requires.
-MULTI_HEATER_DIE_UM = (-50.0, -300.0, 6500.0, 600.0)
-RIPUP_REROUTE_HEATER_DIE_UM = (-50.0, -300.0, 3750.0, 600.0)
-DIE_OUTLINE_LAYER = (1, 0)
-
-
-def heater_only_schematic(
-    placements_um: dict[str, tuple[float, float]],
-    die_um: tuple[float, float, float, float],
-) -> Schematic:
-    """Heaters at the given positions on a `die_um` waveguide-layer die.
-
-    The electrical router needs no optical nets (it reads only which instances
-    are heaters, then works on the built layout's metal geometry), so this
-    builder adds none: the layout is the heaters' metal plus the die outline.
-    """
-
-    schematic = Schematic()
-    heater = Instance(component=HEATER_COMPONENT)
-    for instance_name, (x_um, y_um) in placements_um.items():
-        schematic.add_instance(instance_name, heater, Placement(x=x_um, y=y_um, rotation=0))
-    die_x_um, die_y_um, die_width_um, die_height_um = die_um
-    schematic.add_instance(
-        "die_outline",
-        Instance(
-            component="rectangle",
-            settings={"size": (die_width_um, die_height_um), "layer": DIE_OUTLINE_LAYER},
-        ),
-        Placement(x=die_x_um, y=die_y_um),
-    )
-    return schematic
+    return heater_single.build_schematic()
 
 
 def multi_heater_schematic() -> Schematic:
-    """Twenty heaters in four lanes; see `MULTI_HEATER_PLACEMENTS_UM`."""
+    """Twenty heaters in four lanes; see `benchmarks/heater_lanes_20.py`."""
 
-    return heater_only_schematic(MULTI_HEATER_PLACEMENTS_UM, MULTI_HEATER_DIE_UM)
+    return heater_lanes_20.build_schematic()
 
 
 def ripup_reroute_heater_schematic() -> Schematic:
-    """Eleven heaters, two of them in adjacent rows; see
-    `RIPUP_REROUTE_HEATER_PLACEMENTS_UM`."""
+    """Eleven heaters, two of them one row apart; see
+    `benchmarks/heater_lanes_ripup.py`."""
 
-    return heater_only_schematic(
-        RIPUP_REROUTE_HEATER_PLACEMENTS_UM, RIPUP_REROUTE_HEATER_DIE_UM
-    )
+    return heater_lanes_ripup.build_schematic()
