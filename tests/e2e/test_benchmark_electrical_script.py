@@ -9,7 +9,7 @@ from translation.electrical.types import ElectricalRoutingConfig
 
 
 def _load_benchmark_electrical_module():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_electrical.py"
+    path = Path(__file__).resolve().parents[2] / "scripts" / "benchmark_electrical.py"
     spec = importlib.util.spec_from_file_location("benchmark_electrical", path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)

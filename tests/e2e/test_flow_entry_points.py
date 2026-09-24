@@ -18,7 +18,7 @@ from photonic_router import cli
 from photonic_router.flow import route_benchmark, run_routing_flow
 from photonic_router.flow_options import FlowOptions, LoadingOptions
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # `run_routing_flow`'s two parameters that are not FlowOptions fields: the
 # benchmark is `loading.benchmark_name` (positional, so it has no signature

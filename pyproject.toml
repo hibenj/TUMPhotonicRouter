@@ -71,3 +71,10 @@ files = ["translation", "routing_flow.py", "routing_flow_config.py"]
 warn_unused_configs = true
 warn_unreachable = true
 disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: loads a benchmark module or a script and runs it end to end",
+    "integration: several stages or the Rust router on a synthetic layout, or benchmark schematics without routing",
+]
+testpaths = ["tests"]

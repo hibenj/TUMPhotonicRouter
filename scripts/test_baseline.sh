@@ -20,6 +20,11 @@ rust_failed=$(echo "$rust_line" | grep -o "[0-9]* failed" | grep -o "[0-9]*")
 py_summary=$(grep -E "^[0-9]+ (passed|failed)|^=+ .*(passed|failed).* =+$" "$tmp/pytest.log" | tail -1 | sed 's/=//g; s/^ *//; s/ *$//')
 py_passed=$(echo "$py_summary" | grep -o "[0-9]* passed" | grep -o "[0-9]*")
 grep "^FAILED" "$tmp/pytest.log" | sed 's/ - .*//' | sort > "$tmp/failures.txt"
+not_e2e_start=$(date +%s.%N)
+.venv/bin/python -m pytest -q -m "not e2e" tests > "$tmp/pytest_not_e2e.log" 2>&1
+not_e2e_end=$(date +%s.%N)
+not_e2e_summary=$(grep -E "^[0-9]+ (passed|failed)|^=+ .*(passed|failed).* =+$" "$tmp/pytest_not_e2e.log" | tail -1 | sed 's/=//g; s/^ *//; s/ *$//')
+not_e2e_seconds=$(awk -v a="$not_e2e_start" -v b="$not_e2e_end" 'BEGIN { printf "%.2f", b - a }')
 {
   echo "rust_passed=$rust_passed"
   echo "python_passed=$py_passed"
@@ -31,11 +36,15 @@ if [ "${TEST_BASELINE_UPDATE:-0}" = 1 ]; then
 fi
 echo "rust: $rust_line"
 echo "python: $py_summary"
+echo "python (-m 'not e2e'): $not_e2e_summary [wall clock: ${not_e2e_seconds}s]"
 rc=0
 [ "${rust_failed:-0}" = 0 ] || { echo "RUST FAILURES"; rc=1; }
 if ! diff <(sed -n '/^python_failures:/,$p' "$pin") <(sed -n '/^python_failures:/,$p' "$tmp/current.txt"); then echo "PYTHON FAILURE LIST DIFFERS FROM BASELINE"; rc=1; fi
 pinned_rust=$(grep "^rust_passed=" "$pin" | cut -d= -f2); pinned_py=$(grep "^python_passed=" "$pin" | cut -d= -f2)
 [ "$rust_passed" -ge "$pinned_rust" ] || { echo "rust pass count dropped: $rust_passed < pinned $pinned_rust"; rc=1; }
 [ "$py_passed" -ge "$pinned_py" ] || { echo "python pass count dropped: $py_passed < pinned $pinned_py"; rc=1; }
-[ $rc = 0 ] && echo "test baseline: OK (rust $rust_passed, python $py_passed, failures as pinned)"
+if ! awk -v s="$not_e2e_seconds" 'BEGIN { exit !(s < 60) }'; then
+  echo "'-m not e2e' run took ${not_e2e_seconds}s, must be under 60s"; rc=1
+fi
+[ $rc = 0 ] && echo "test baseline: OK (rust $rust_passed, python $py_passed, failures as pinned, not-e2e ${not_e2e_seconds}s)"
 rm -rf "$tmp"; exit $rc

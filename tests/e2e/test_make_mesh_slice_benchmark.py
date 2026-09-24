@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location(
     "make_mesh_slice_benchmark", ROOT / "scripts" / "make_mesh_slice_benchmark.py"
 )

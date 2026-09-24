@@ -4,7 +4,7 @@ import sys
 
 
 def _load_profile_astar_module():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "profile_astar.py"
+    path = Path(__file__).resolve().parents[2] / "scripts" / "profile_astar.py"
     spec = importlib.util.spec_from_file_location("profile_astar", path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)

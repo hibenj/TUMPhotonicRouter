@@ -8,7 +8,7 @@ import pytest
 
 
 def _load_benchmark_photonic_module():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_photonic.py"
+    path = Path(__file__).resolve().parents[2] / "scripts" / "benchmark_photonic.py"
     spec = importlib.util.spec_from_file_location("benchmark_photonic", path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
