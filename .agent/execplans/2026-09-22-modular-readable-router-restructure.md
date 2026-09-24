@@ -50,6 +50,8 @@ The plan deliberately does not start from the rejected "cleanup" of 2026-09-19 (
   - [ ] Milestone 5 acceptance: full 27-cell reproduction.
 - [ ] Milestone 6: unit tests per module; Rust tests moved next to their modules.
   - [x] (2026-09-24 07:10) Slice 1, organisation: pytest markers `e2e` and `integration` registered in pyproject.toml; the ten fully end-to-end files moved to `tests/e2e/`; `tests/conftest.py` applies the markers by path and by node id (25 mixed-file tests); `scripts/test_baseline.sh` also times `-m "not e2e"` (366 tests, 21 s) and fails above 60 s. Counts: 502 total, 136 e2e, 127 integration. Verified with the baseline script (no gate, tests only).
+  - [x] (2026-09-24 07:40) Slice 2, shared fixtures: `tests/fixtures/{synthetic_layouts,sessions}.py` (single-rectangle schematic, the dummy schematic and layout, the three-net pipeline layout and `Pipeline`, `settings_for_test`, `state_for_test`, the square-port obstacle component) exposed as conftest fixtures; local copies removed from five files; 23 bespoke component constructions remain, each with a single-use geometry. Found on the way: a dependency in the venv ships a top-level package named `tests`, which shadowed the repository's `tests/` directory until it got an `__init__.py`. 502 tests unchanged; baseline OK (tests only, no gate).
+  - [ ] Slice 3, the gaps (needs the kernel rebuilt: after the Milestone 5 acceptance run).
 - [ ] Milestone 7: architecture document, configuration reference, full 27-cell reproduction on the restructured code.
 - [ ] Milestone 8: negotiation of removals with the owner on the readable code (the candidate list in that section), then the removals, then the final full reproduction.
 

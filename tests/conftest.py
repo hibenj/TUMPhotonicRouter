@@ -1,16 +1,36 @@
-"""Marker application for the test suite (ExecPlan Milestone 6, Slice 1).
+"""Marker application and shared fixtures for the test suite.
 
-No test body changes here: this module only attaches the ``e2e`` and
-``integration`` markers registered in ``pyproject.toml`` so the suite can be
-split by kind (``pytest -m "not e2e"`` etc.) without moving or editing the
-tests that already live outside ``tests/e2e/``.
+The marker application (ExecPlan Milestone 6, Slice 1) only attaches the
+``e2e`` and ``integration`` markers registered in ``pyproject.toml`` so the
+suite can be split by kind (``pytest -m "not e2e"`` etc.) without moving or
+editing the tests that already live outside ``tests/e2e/``.
+
+The fixtures below (Slice 2) expose the synthetic layout/schematic/session
+builders in ``tests/fixtures/`` as pytest fixtures. A test file may take one
+of these fixtures, or import the builder directly from ``tests.fixtures``
+when the parameters it varies make a bare import simpler than a fixture
+parameter; either way, ``tests/fixtures/`` is the only place these synthetic
+layouts are built.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
+
+from tests.fixtures.sessions import Pipeline, pipeline_for_test
+from tests.fixtures.sessions import settings_for_test as _settings_for_test
+from tests.fixtures.synthetic_layouts import (
+    DummySchematic,
+    GRID_HEIGHT,
+    GRID_WIDTH,
+    port_from_instance,
+    single_rectangle_schematic as _single_rectangle_schematic,
+    three_net_schematic,
+)
 
 # Mixed files: tests that route or import an unroutable toy benchmark
 # (`benchmarks.mmi_heater*`, `benchmarks.TOY`) or spawn a subprocess, named
@@ -77,3 +97,47 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
         if rel_path.stem in _INTEGRATION_FILE_STEMS:
             item.add_marker(pytest.mark.integration)
+
+
+@pytest.fixture
+def single_rectangle_schematic():
+    """Factory: `single_rectangle_schematic(placement)` builds a one-instance
+    schematic (a 10x2 rectangle at `placement`); see
+    `tests/test_layout_from_schematic.py`."""
+    return _single_rectangle_schematic
+
+
+@pytest.fixture
+def dummy_schematic():
+    """Factory: the `DummySchematic` dataclass used by
+    `tests/test_route_rust_opened_cells.py`, e.g.
+    `dummy_schematic(netlist=DummyNetlist(routes={...}))`."""
+    return DummySchematic
+
+
+@pytest.fixture
+def three_net_layout() -> Any:
+    """The three-net synthetic scenario `tests/test_routing_stages.py` and the
+    `pipeline` fixture below run the routing stages over: a `left` instance
+    fanning out to three `right*` grating couplers on a 30x20 one-micron grid."""
+    return SimpleNamespace(
+        schematic=three_net_schematic(),
+        port_from_instance=port_from_instance,
+        grid_width=GRID_WIDTH,
+        grid_height=GRID_HEIGHT,
+    )
+
+
+@pytest.fixture
+def settings_for_test():
+    """Factory: `settings_for_test(**overrides)` builds a `SessionSettings`
+    for a session assembled with `object.__new__`; see
+    `tests.fixtures.sessions.settings_for_test`."""
+    return _settings_for_test
+
+
+@pytest.fixture
+def pipeline(monkeypatch: pytest.MonkeyPatch) -> Pipeline:
+    """The nine `translation.routing` stages over the three-net synthetic
+    scenario, each run at most once; see `tests.fixtures.sessions.Pipeline`."""
+    return pipeline_for_test(monkeypatch)

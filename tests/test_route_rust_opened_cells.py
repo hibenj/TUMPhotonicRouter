@@ -2,18 +2,15 @@ from __future__ import annotations
 
 import ast
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
 import gdsfactory as gf
-from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
 from photonic_router.routing_layers import ComponentPortAccessRule
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
@@ -25,42 +22,17 @@ from translation.routing import finalize as routing_finalize
 from translation.routing import obstacle_context as routing_obstacle_context
 from translation.routing import route_jobs as routing_route_jobs
 from translation.routing import session as routing_session
-from translation.routing.settings import SessionSettings
 from translation.routing.state import SessionState
 
-
-def settings_for_test(**overrides: Any) -> SessionSettings:
-    """Build a `SessionSettings` for a session assembled with `object.__new__`.
-
-    Milestone 5 Slice 2a moved the session's keyword-derived attributes into one
-    frozen `SessionSettings`, so a test that used to write `session.<attr> = ...`
-    writes `session.settings = settings_for_test(<attr>=...)` instead. The
-    overrides are the constructor's own keywords, so they go through the same
-    validation and normalisation the production session uses.
-    """
-    return SessionSettings.from_arguments(
-        SimpleNamespace(),  # unrouted_layout: untouched by the unit tests below
-        SimpleNamespace(),  # schematic: untouched by the unit tests below
-        **overrides,
-    )
+from tests.fixtures.sessions import settings_for_test
+from tests.fixtures.synthetic_layouts import (
+    DummyBundle as _DummyBundle,
+    DummyNetlist as _DummyNetlist,
+    DummySchematic as _DummySchematic,
+    make_dummy_layout as _make_dummy_layout,
+)
 
 get_generic_pdk().activate()
-
-
-@dataclass
-class _DummyBundle:
-    links: dict[str, str]
-
-
-@dataclass
-class _DummyNetlist:
-    routes: dict[str, _DummyBundle]
-    instances: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _DummySchematic:
-    netlist: _DummyNetlist
 
 
 class _DummyObstacleData:
@@ -87,10 +59,6 @@ class _DummyObstacleData:
 
     def export_debug_svg(self, path: Any) -> None:
         path.write_text("<svg/>", encoding="utf-8")
-
-
-def _make_dummy_layout() -> Component:
-    return Component(f"dummy_layout_{uuid4().hex}")
 
 
 def _diagnostic_value(text: str, key: str) -> str:

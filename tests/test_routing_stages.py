@@ -9,6 +9,11 @@ phases before it, so each test asserts on one phase's own product -- the frozen
 dataclass it returns, or, for the two phases that return `None`, the state fields
 it writes.
 
+The synthetic scenario and the pipeline that runs the stages over it moved to
+`tests/fixtures/synthetic_layouts.py` and `tests/fixtures/sessions.py` in
+Milestone 6 Slice 2 (the `pipeline` fixture below comes from
+`tests/conftest.py`); this file keeps only the per-phase assertions.
+
 The last test is the conformance one: each phase function's signature is checked
 against the `__call__` of its Protocol at run time, and the nine module-level
 annotated assignments next to it are the same check for a type checker.
@@ -19,21 +24,11 @@ from __future__ import annotations
 import inspect
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
-from uuid import uuid4
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
-
-from gdsfactory.component import Component
-from gdsfactory.gpdk import get_generic_pdk
-from photonic_router.static_obstacle_builder import (
-    GridSpec,
-    StaticObstacleMapConfig,
-    _load_rust_backend,
-)
 
 from translation.routing import crossing_plan_stage as crossing_plan_stage_module
 from translation.routing import dispatch as dispatch_module
@@ -46,189 +41,16 @@ from translation.routing import router_setup as router_setup_module
 from translation.routing import stages
 from translation.routing import verify_repair as verify_repair_module
 from translation.routing.crossing_plan_info import CrossingPlanInfo
-from translation.routing.settings import SessionSettings
-from translation.routing.state import SessionState
 
-get_generic_pdk().activate()
-
-GRID_WIDTH = 30
-GRID_HEIGHT = 20
-
-# port spec -> (centre in micrometres, orientation in degrees).
-_PORTS: dict[str, tuple[tuple[float, float], float]] = {
-    "left,o1": ((2.5, 4.5), 0.0),
-    "left,o2": ((2.5, 9.5), 0.0),
-    "left,o3": ((2.5, 14.5), 0.0),
-    "right0,o1": ((27.5, 4.5), 180.0),
-    "right1,o1": ((27.5, 9.5), 180.0),
-    "right2,o1": ((27.5, 14.5), 180.0),
-}
-_LINKS = {
-    "net_0": ("left,o1", "right0,o1"),
-    "net_1": ("left,o2", "right1,o1"),
-    "net_2": ("left,o3", "right2,o1"),
-}
+from tests.fixtures.sessions import Pipeline
+from tests.fixtures.synthetic_layouts import GRID_HEIGHT, GRID_WIDTH, LINKS, ObstacleMapStandIn
 
 
-class _ObstacleMapStandIn:
-    """What phase 1 expects of `build_static_obstacle_map`: a grid and no obstacle."""
-
-    def __init__(self) -> None:
-        self.grid = GridSpec(
-            width=GRID_WIDTH,
-            height=GRID_HEIGHT,
-            grid_size_um=1.0,
-            origin=(0.0, 0.0),
-            die_bbox=(0.0, 0.0, float(GRID_WIDTH), float(GRID_HEIGHT)),
-        )
-        self.blocked_cells: set[tuple[int, int]] = set()
-        self.raw_blocked_cells: set[tuple[int, int]] = set()
-        self.port_open_cells: set[tuple[int, int]] = set()
-
-    def export_debug_svg(self, path: Any) -> None:  # pragma: no cover - debug only
-        path.write_text("<svg/>", encoding="utf-8")
-
-
-def _schematic() -> Any:
-    return SimpleNamespace(
-        netlist=SimpleNamespace(
-            routes={
-                name: SimpleNamespace(links={source: target})
-                for name, (source, target) in _LINKS.items()
-            },
-            instances={
-                "left": SimpleNamespace(component="left_mmi"),
-                "right0": SimpleNamespace(component="right_gc"),
-                "right1": SimpleNamespace(component="right_gc"),
-                "right2": SimpleNamespace(component="right_gc"),
-            },
-        )
-    )
-
-
-def _port_from_instance(_layout: Any, instance: str, port: str) -> SimpleNamespace:
-    center, orientation = _PORTS[f"{instance},{port}"]
-    return SimpleNamespace(center=center, orientation=orientation)
-
-
-class _Pipeline:
-    """The nine phases over one synthetic scenario, each run at most once."""
-
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> None:
-        monkeypatch.setattr(
-            obstacle_context_module,
-            "build_static_obstacle_map",
-            lambda _component, config=None: _ObstacleMapStandIn(),
-        )
-        monkeypatch.setattr(route_jobs_module, "get_port_from_instance", _port_from_instance)
-        layout = Component(f"routing_stage_layout_{uuid4().hex}")
-        self.settings = SessionSettings.from_arguments(
-            layout,
-            _schematic(),
-            obstacle_config=StaticObstacleMapConfig(
-                obstacle_mode="rasterized_polygons",
-                grid_size_um=1.0,
-                security_margin_um=0.0,
-                clearance_um=0.0,
-                port_open_radius_um=0.0,
-                die_bbox=(0.0, 0.0, float(GRID_WIDTH), float(GRID_HEIGHT)),
-            ),
-            route_width_um=0.5,
-            allow_45_degree_turns=True,
-            bend_radius_um=1.0,
-            max_iterations=20_000,
-            # Turns the pipeline timers on, so the phases that carry a clock
-            # (5's search start, 7's elapsed search time) carry a real one.
-            collect_route_stats=True,
-            **overrides,
-        )
-        rust_backend = _load_rust_backend()
-        if rust_backend is None:  # pragma: no cover - the kernel is built in CI
-            pytest.skip("Rust router backend unavailable.")
-        self.state = SessionState(rust_backend=rust_backend, routed_layout=layout.copy())
-        self._products: dict[int, Any] = {}
-
-    def through(self, phase: int) -> Any:
-        """The product of `phase`, running the phases before it once each."""
-
-        for index in range(1, phase + 1):
-            if index not in self._products:
-                self._products[index] = self._run(index)
-        return self._products[phase]
-
-    def _run(self, phase: int) -> Any:
-        settings, state = self.settings, self.state
-        if phase == 1:
-            return obstacle_context_module.build_static_obstacle_context(settings, state)
-        if phase == 2:
-            return router_setup_module.configure_router_and_grid(
-                settings, state, self.through(1).obstacle_map
-            )
-        if phase == 3:
-            jobs = route_jobs_module.build_route_jobs_and_fanout_clustering(
-                settings, state, settings.schematic.netlist.routes
-            )
-            route_jobs_module.apply_long_straight_fanout_exemption(settings, state)
-            return jobs
-        if phase == 4:
-            jobs = self.through(3)
-            return crossing_plan_stage_module.build_crossing_plan_and_port_footprints(
-                settings,
-                state,
-                jobs.route_jobs,
-                jobs.endpoint_port_specs_by_instance,
-                jobs.dense_port_runway_length_by_spec,
-                self.through(1).obstacle_map,
-                self.through(1).crossing_device_info,
-            )
-        if phase == 5:
-            planned = self.through(4)
-            return handoff_module.finalize_route_jobs_and_static_handoff(
-                settings,
-                state,
-                planned.route_jobs,
-                planned.foreign_port_keepout_cells_by_instance,
-                self.through(1).obstacle_map,
-            )
-        if phase == 6:
-            return dispatch_module.dispatch_native_routing(
-                settings, state, self.through(5).route_jobs
-            )
-        if phase == 7:
-            final = self.through(5)
-            self.through(6)
-            return finalize_module.finalize_routing_results(
-                settings, state, final.route_jobs, final.astar_start_s
-            )
-        if phase == 8:
-            return verify_repair_module.repair_and_verify_final_geometry(
-                settings, state, self.through(7).routed_net_records
-            )
-        if phase == 9:
-            verified = self.through(8)
-            return realize_module.realize_and_assemble_debug_artifacts(
-                settings,
-                state,
-                self.through(5).route_jobs,
-                verified.routed_net_records,
-                verified.illegal_realized_crossings,
-                self.through(1).obstacle_map,
-                self.through(1).obstacle_svg,
-                self.through(7).astar_elapsed_s,
-            )
-        raise AssertionError(f"no phase {phase}")
-
-
-@pytest.fixture
-def pipeline(monkeypatch: pytest.MonkeyPatch) -> _Pipeline:
-    return _Pipeline(monkeypatch)
-
-
-def test_phase1_obstacle_context_builder_returns_the_map_and_the_grid(pipeline: _Pipeline) -> None:
+def test_phase1_obstacle_context_builder_returns_the_map_and_the_grid(pipeline: Pipeline) -> None:
     context = pipeline.through(1)
 
     assert isinstance(context, stages.ObstacleContext)
-    assert isinstance(context.obstacle_map, _ObstacleMapStandIn)
+    assert isinstance(context.obstacle_map, ObstacleMapStandIn)
     assert context.obstacle_svg is None  # no debug_dir in this session
     assert context.crossing_device_info == {
         "requested_half_size_cells": 0,
@@ -242,7 +64,7 @@ def test_phase1_obstacle_context_builder_returns_the_map_and_the_grid(pipeline: 
     assert (pipeline.state.grid_width, pipeline.state.grid_height) == (0, 0)
 
 
-def test_phase2_router_setup_builds_the_kernel_router_into_the_state(pipeline: _Pipeline) -> None:
+def test_phase2_router_setup_builds_the_kernel_router_into_the_state(pipeline: Pipeline) -> None:
     assert pipeline.through(2) is None  # phase 2's product is the state
 
     state = pipeline.state
@@ -258,11 +80,11 @@ def test_phase2_router_setup_builds_the_kernel_router_into_the_state(pipeline: _
     assert state.realization_grid_spec is None
 
 
-def test_phase3_route_job_builder_turns_the_netlist_into_jobs(pipeline: _Pipeline) -> None:
+def test_phase3_route_job_builder_turns_the_netlist_into_jobs(pipeline: Pipeline) -> None:
     result = pipeline.through(3)
 
     assert isinstance(result, stages.RouteJobsResult)
-    assert [job.net_name for job in result.route_jobs] == list(_LINKS)
+    assert [job.net_name for job in result.route_jobs] == list(LINKS)
     assert [job.net_id for job in result.route_jobs] == [1, 2, 3]
     assert [(job.inst1, job.port1, job.inst2, job.port2) for job in result.route_jobs] == [
         ("left", "o1", "right0", "o1"),
@@ -276,7 +98,7 @@ def test_phase3_route_job_builder_turns_the_netlist_into_jobs(pipeline: _Pipelin
 
 
 def test_phase4_crossing_planner_types_the_plan_and_passes_the_jobs_through(
-    pipeline: _Pipeline,
+    pipeline: Pipeline,
 ) -> None:
     jobs = pipeline.through(3)
     planned = pipeline.through(4)
@@ -306,7 +128,7 @@ def test_phase4_crossing_planner_types_the_plan_and_passes_the_jobs_through(
 
 
 def test_phase5_static_handoff_orders_the_jobs_and_starts_the_search_clock(
-    pipeline: _Pipeline,
+    pipeline: Pipeline,
 ) -> None:
     planned = pipeline.through(4)
     final = pipeline.through(5)
@@ -324,7 +146,7 @@ def test_phase5_static_handoff_orders_the_jobs_and_starts_the_search_clock(
 
 
 def test_phase6_kernel_dispatcher_leaves_the_routes_in_the_bookkeeping(
-    pipeline: _Pipeline,
+    pipeline: Pipeline,
 ) -> None:
     assert pipeline.through(6) is None  # phase 6's product is the state
 
@@ -335,11 +157,11 @@ def test_phase6_kernel_dispatcher_leaves_the_routes_in_the_bookkeeping(
     assert len(state.route_bookkeeping.ordered_records()) == 3
 
 
-def test_phase7_result_finalizer_returns_one_record_per_net(pipeline: _Pipeline) -> None:
+def test_phase7_result_finalizer_returns_one_record_per_net(pipeline: Pipeline) -> None:
     routed = pipeline.through(7)
 
     assert isinstance(routed, stages.RoutedRecords)
-    assert [record.net_name for record in routed.routed_net_records] == list(_LINKS)
+    assert [record.net_name for record in routed.routed_net_records] == list(LINKS)
     assert routed.astar_elapsed_s > 0.0
     for record in routed.routed_net_records:
         assert record.total_length_um > 0.0
@@ -347,7 +169,7 @@ def test_phase7_result_finalizer_returns_one_record_per_net(pipeline: _Pipeline)
 
 
 def test_phase8_geometry_verifier_finds_no_illegal_crossing_on_parallel_nets(
-    pipeline: _Pipeline,
+    pipeline: Pipeline,
 ) -> None:
     routed = pipeline.through(7)
     verified = pipeline.through(8)
@@ -360,7 +182,7 @@ def test_phase8_geometry_verifier_finds_no_illegal_crossing_on_parallel_nets(
 
 
 def test_phase9_realizer_assembles_the_debug_artifacts_with_the_plan_as_a_mapping(
-    pipeline: _Pipeline,
+    pipeline: Pipeline,
 ) -> None:
     verified = pipeline.through(8)
     artifacts = pipeline.through(9)

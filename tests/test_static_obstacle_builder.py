@@ -34,6 +34,8 @@ from photonic_router.static_obstacle_builder import (
     resolve_routable_bbox,
 )
 
+from tests.fixtures.synthetic_layouts import component_with_square_port_obstacle
+
 get_generic_pdk().activate()
 
 
@@ -478,12 +480,7 @@ def test_perpendicular_heater_clearance_handle_policy_matches_changed_rects():
 
 
 def test_bounding_box_mode_preserves_port_opening_behavior():
-    component = gf.Component("bbox_port_opening_test")
-    component.add_polygon(
-        [(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)],
-        layer=(1, 0),
-    )
-    component.add_port(name="o1", center=(1.5, 1.5), width=0.5, orientation=0.0, layer=(1, 0))
+    component = component_with_square_port_obstacle("bbox_port_opening_test")
 
     config = StaticObstacleMapConfig(
         grid_size_um=1.0,
@@ -516,12 +513,7 @@ def test_bounding_box_mode_preserves_port_opening_behavior():
 
 
 def test_rasterized_mode_can_keep_port_cells_blocked_when_disabled():
-    component = gf.Component("strict_ports_rasterized")
-    component.add_polygon(
-        [(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)],
-        layer=(1, 0),
-    )
-    component.add_port(name="o1", center=(1.5, 1.5), width=0.5, orientation=0.0, layer=(1, 0))
+    component = component_with_square_port_obstacle("strict_ports_rasterized")
 
     data = build_static_obstacle_map(
         component,
@@ -542,12 +534,7 @@ def test_rasterized_mode_can_keep_port_cells_blocked_when_disabled():
 
 
 def test_bounding_box_mode_can_keep_port_cells_blocked_when_disabled():
-    component = gf.Component("strict_ports_bounding_box")
-    component.add_polygon(
-        [(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)],
-        layer=(1, 0),
-    )
-    component.add_port(name="o1", center=(1.5, 1.5), width=0.5, orientation=0.0, layer=(1, 0))
+    component = component_with_square_port_obstacle("strict_ports_bounding_box")
 
     data = build_static_obstacle_map(
         component,
