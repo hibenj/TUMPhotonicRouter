@@ -118,6 +118,15 @@ influenced the paper's rows and stays absent from this branch. Benes
 verification from 4,265 s to 33 s (run wall 912 s), with the verification
 report byte-identical. LiDAR rows are not covered.
 
+## Where the archives are
+
+The reproduction roots are not in git. The paper's run (`results_date2027/`, produced on commit 960d0ee, tag `date2027-results`) is attached to the GitHub release of that tag as `results_date2027.tar.gz` (36 MB, SHA256 in the release's `SHA256SUMS`); fetch and unpack it in the repository root with
+
+    gh release download date2027-results -p 'results_date2027.tar.gz'
+    tar xzf results_date2027.tar.gz
+
+Every other root named below was an intermediate re-verification whose numbers are recorded here; the roots themselves were deleted on 2026-09-25.
+
 ## Re-verification on the restructuring branch
 
 - 2026-09-23, commit c57bf31 (Milestone 1 of `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`: every environment variable became a typed configuration field): all 27 cells exact on crossings and GDS length, 0 verifier errors, loop-time ratio 0.88-1.05 (`results_m1_check/`, 10:49-14:38).
