@@ -32,6 +32,7 @@ After this plan: the suite check is green with guardrails that state real proper
 ## Decision Log
 
 - 2026-09-25 (owner): fix the guardrail issues first, then improve the wire shapes and detours, then clean the code. The plan follows that order.
+- 2026-09-25 (owner): Milestone 2 goes with the L-shape design (one horizontal run at the terminal row to the pad column, one vertical run into the pad, nested pad assignment, Z only as the fallback for a blocked column).
 - 2026-09-25 (lead, on D11, from the survey): neither "move the limits" nor "fix the router" alone. The two zero-tolerance guardrails stay at zero and the geometry is fixed (Milestone 1). The five size guardrails are replaced by limits on quantities that describe routing rather than pad inventory: total wire detour (length minus Manhattan distance, summed over pad wires), bends per pad wire, bus length and bends, wire-only metal area; the pad and contact areas are reported but not limited. The limits are derived from the improved output at the end of Milestone 3 and pinned with the baseline. Open for the owner only if the derived limits look wrong.
 
 
