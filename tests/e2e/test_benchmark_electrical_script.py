@@ -86,6 +86,14 @@ def _result_stub() -> SimpleNamespace:
             "centerline_length_um": 19_390.0,
             "bend_count": 65,
             "pad_channel_height_um": 180.0,
+            "bus_length_um": 8_000.0,
+            "bus_bend_count": 2,
+            "wire_metal_area_um2": 400_000.0,
+            "pad_metal_area_um2": 149_599.152,
+            "pad_wires": [],
+            "pad_wire_detour_total_um": 0.0,
+            "pad_wire_max_detour_um": 0.0,
+            "pad_wire_max_bend_count": 0,
             "internal_debug_metric": 123,
         },
     )
@@ -131,6 +139,8 @@ def test_electrical_benchmark_summary_is_compact_and_json_ready():
     assert summary["detailed_route_count"] == 11
     assert summary["failed_detailed_route_count"] == 0
     assert summary["metrics"]["centerline_length_um"] == 19_390.0
+    assert summary["metrics"]["pad_wires"] == []
+    assert summary["metrics"]["wire_metal_area_um2"] == 400_000.0
     assert "internal_debug_metric" not in summary["metrics"]
     assert summary["realization_metrics"] == {
         "net_count": 12,
@@ -232,26 +242,28 @@ def test_electrical_benchmark_guardrails_report_metric_regressions():
     )
     summary["verification_success"] = False
     summary["failed_detailed_route_count"] = 1
-    summary["metrics"]["centerline_length_um"] = 25_000.0
-    summary["metrics"]["metal_area_overcount_um2"] = 40_000.0
-    summary["metrics"]["metal_area_overcount_ratio"] = 0.2
     summary["metrics"]["metal_redundant_area_overcount_um2"] = 1.0
     summary["metrics"]["same_net_overlap_pair_count"] = 3_000
     summary["metrics"]["same_net_redundant_overlap_pair_count"] = 1
     summary["metrics"]["cross_net_min_spacing_um"] = 5.0
+    summary["metrics"]["pad_wire_max_bend_count"] = 100
+    summary["metrics"]["pad_wire_detour_total_um"] = 100_000.0
+    summary["metrics"]["bus_bend_count"] = 10_000
+    summary["metrics"]["wire_metal_area_um2"] = 1e9
 
     violations = module.guardrail_violations(summary)
 
     assert {violation["name"] for violation in violations} >= {
         "verification_success",
         "failed_detailed_route_count",
-        "metrics.centerline_length_um",
-        "metrics.metal_area_overcount_um2",
-        "metrics.metal_area_overcount_ratio",
         "metrics.metal_redundant_area_overcount_um2",
         "metrics.same_net_overlap_pair_count",
         "metrics.same_net_redundant_overlap_pair_count",
         "metrics.cross_net_min_spacing_um",
+        "metrics.pad_wire_max_bend_count",
+        "metrics.pad_wire_detour_total_um",
+        "metrics.bus_bend_count",
+        "metrics.wire_metal_area_um2",
     }
 
 

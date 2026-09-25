@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. This document must be maintained in accordance with `.agent/PLANS.md`.
 
-Status: **2026-09-25 -- plan written from the survey; Milestone 1 starting.**
+Status: **2026-09-25 09:10 -- Milestone 1 done (D11 closed: suite check green on four cases, redundant overlaps zero by geometry); Milestone 2 (L-shaped pad wires) starting.**
 
 
 ## Purpose / Big Picture
@@ -15,7 +15,7 @@ After this plan: the suite check is green with guardrails that state real proper
 ## Progress
 
 - [x] (2026-09-25 06:30) Survey (evidence lane): module inventory, algorithms, metric definitions, the four June commits, per-wire detour table on `heater_s_mod`, the one redundant overlap pair identified, test coverage. Plan written.
-- [ ] Milestone 1: the guardrails made true (D11 closed).
+- [x] (2026-09-25 09:10) Milestone 1: root cause case (a): the bus escape's first rectangle kept its half-width end cap and so reproduced 200 um of the stripe's own footprint, where a branch's 10 um junction poke then counted as a second same-net rectangle; fixed by a `trim_start` option in `rect_geometry.wire_rects_for_points` used by the escape's realization and its verification twin (no allow-list change), with a unit test that fails on the old code. Metrics added: `pad_wires` table, detour and bend aggregates, `bus_length_um`/`bus_bend_count`, `wire_metal_area_um2`/`pad_metal_area_um2`. Guardrails: the nine pad-inventory limits dropped, the four routing quantities added at today's values, zero-tolerance kept at zero; `heater_s_mod` is the fourth suite case; baseline re-pinned; suite check exits 0 on all four cases. Rust 567, Python 533; gate 9/9 exact, verified independently. Today's values to beat in Milestones 2 and 3: heater_s_mod detour total 940 um, max bends 4, bus bends 79; heater_lanes_20 detour 740, bus bends 75; heater_lanes_ripup detour 220, bus bends 38.
 - [ ] Milestone 2: pad wires without staircases or terminal hooks.
 - [ ] Milestone 3: the common bus as a trunk with straight stubs and merged junctions.
 - [ ] Milestone 4: `translation/electrical` as named stages with tests.
@@ -24,7 +24,7 @@ After this plan: the suite check is green with guardrails that state real proper
 
 ## Surprises & Discoveries
 
-- 2026-09-25: the one "same-net redundant overlap" on `heater_s_mod` is a bus branch whose last 5 um run into the bus-escape rectangle (a 20 x 5 um strip, 100 um2 raw, 66.7 um2 after the metric's attribution). Branches are clipped at their first entry into the bus stripe (commit 3ce1dfd) but not against the escape segment that commit d109169 added later. It is a real geometry slip, not a metric artefact, and the same slip appears on all three heater cases.
+- 2026-09-25: the one "same-net redundant overlap" on `heater_s_mod` (a 20 x 5 um strip, 100 um2 raw, 66.7 um2 after the metric's attribution) was first read as a branch running into the escape; measured, it is the reverse: the escape's first rectangle extended 200 um back into the bus stripe (its start kept the half-width end cap every open wire end gets), so the strip where a branch legitimately pokes into the stripe was covered twice. A real geometry slip, on all four cases, fixed in Milestone 1.
 - 2026-09-25: the size guardrails (length, raw and union area, overcount) were pinned before the metrics counted pad markers, terminal contacts and the bus bondpad; the ten-fold area jump is the pads (a 22-pad row dwarfs the wires), not worse wires. A limit on "raw metal area" that mixes pads with wires cannot state anything about routing quality.
 - 2026-09-25: 13 of the 21 pad wires on `heater_s_mod` carry a detour of 20 to 120 um (length minus Manhattan distance), every wire has 3 bends; the detours are the staircases. The bus tree: 52,770 um, 81 bends.
 

@@ -12,12 +12,19 @@ def wire_rects_for_points(
     width_um: float,
     *,
     trim_bends: bool = True,
+    trim_start: bool = False,
 ) -> tuple[BBox, ...]:
     """Return Manhattan wire rectangles for a centerline path.
 
     Nonzero segments already cover their endpoints. Avoiding separate vertex
     squares keeps the pre-union rectangle set compact while preserving physical
     connectivity at bends.
+
+    ``trim_start`` removes the half-width end-cap pad that would otherwise
+    extend the first segment backward past ``points[0]``. Use it when
+    ``points[0]`` is itself a hard boundary crossing (for example, the point
+    where a path was clipped to leave another shape's bbox) rather than a
+    genuine open terminus that should keep its cap for connectivity.
     """
 
     points = _simplify_manhattan_points(_dedupe_points(points))
@@ -34,11 +41,13 @@ def wire_rects_for_points(
             and index + 1 < len(directions)
             and directions[index] != directions[index + 1]
         )
+        trim_segment_start = trim_start and index == 0
         rects.extend(
             _segment_rects(
                 start,
                 end,
                 half_width,
+                trim_start_um=half_width if trim_segment_start else 0.0,
                 trim_end_um=(2.0 * half_width) if trim_end else 0.0,
             )
         )
@@ -247,6 +256,7 @@ def _segment_rects(
     end: Point,
     half_width: float,
     *,
+    trim_start_um: float = 0.0,
     trim_end_um: float = 0.0,
 ) -> tuple[BBox, ...]:
     sx, sy = start
@@ -254,32 +264,34 @@ def _segment_rects(
     if sx == ex and sy == ey:
         return (_point_rect(start, half_width),)
     if sx == ex:
+        trimmed_start_y = _trim_axis_endpoint(ey, sy, trim_start_um)
         trimmed_end_y = _trim_axis_endpoint(sy, ey, trim_end_um)
         return (
             _normalize_non_degenerate_rect(
                 (
                     sx - half_width,
-                    min(sy, trimmed_end_y) - half_width,
+                    min(trimmed_start_y, trimmed_end_y) - half_width,
                     sx + half_width,
-                    max(sy, trimmed_end_y) + half_width,
+                    max(trimmed_start_y, trimmed_end_y) + half_width,
                 )
             ),
         )
     if sy == ey:
+        trimmed_start_x = _trim_axis_endpoint(ex, sx, trim_start_um)
         trimmed_end_x = _trim_axis_endpoint(sx, ex, trim_end_um)
         return (
             _normalize_non_degenerate_rect(
                 (
-                    min(sx, trimmed_end_x) - half_width,
+                    min(trimmed_start_x, trimmed_end_x) - half_width,
                     sy - half_width,
-                    max(sx, trimmed_end_x) + half_width,
+                    max(trimmed_start_x, trimmed_end_x) + half_width,
                     sy + half_width,
                 )
             ),
         )
     via = (ex, sy)
     return (
-        *_segment_rects(start, via, half_width),
+        *_segment_rects(start, via, half_width, trim_start_um=trim_start_um),
         *_segment_rects(via, end, half_width, trim_end_um=trim_end_um),
     )
 

@@ -21,9 +21,33 @@ from translation.layout_from_schematic import layout_from_schematic
 
 
 DEFAULT_BENCHMARK = "heater_lanes_ripup"
-DEFAULT_BENCHMARKS = ("heater_single", "heater_lanes_20", "heater_lanes_ripup")
+DEFAULT_BENCHMARKS = (
+    "heater_single",
+    "heater_lanes_20",
+    "heater_lanes_ripup",
+    "heater_s_mod",
+)
 DEFAULT_BASELINE_PATH = PROJECT_ROOT / "tests" / "baselines" / "electrical_suite_metrics.json"
 BASELINE_FLOAT_TOLERANCE = 1e-6
+
+# Guardrail size fields, below, deliberately do NOT limit "raw metal area",
+# "union metal area", "metal area overcount", or "centerline length": those
+# mix pad and contact metal (fixed pad-row inventory, not routing quality)
+# with the actual wires, so a limit on them cannot say anything about
+# whether the routing improved or regressed (see the 2026-09-25 electrical
+# routing plan, Decision Log). They also do not limit "bend count" or
+# "rect count" totals, since those are dominated by the same pad/contact
+# inventory. Instead each case limits: the two zero-tolerance geometry
+# checks (no same-net metal drawn twice: same_net_redundant_overlap_pair_count
+# and metal_redundant_area_overcount_um2, both pinned at 0); the required
+# cross-net clearance (checked unconditionally, not through this table); and
+# four quantities that describe the wires themselves: total and per-wire pad
+# wire detour and bend count, the common bus's own bend count, and the
+# union area of wire metal only (bus stripe, bus branches, bus escape,
+# individual route tails, terminal adapters and contacts -- everything
+# except pad markers). These four are pinned to today's measured values,
+# rounded up to a round number; they tighten as later milestones straighten
+# the wires and the bus.
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -32,19 +56,14 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "detailed_route_count_min": 11,
     "pad_assignment_count_min": 12,
     "pad_channel_height_um_max": 220.0,
-    "centerline_length_um_max": 21_000.0,
-    "bend_count_max": 75,
-    "raw_metal_area_um2_max": 580_000.0,
-    "union_metal_area_um2_max": 570_000.0,
-    "metal_area_overcount_um2_max": 15_000.0,
-    "metal_area_overcount_ratio_max": 0.03,
     "metal_redundant_area_overcount_um2_max": 1e-6,
-    "rect_count_max": 130,
     "same_net_duplicate_rect_count_max": 0,
     "same_net_overlap_pair_count_max": 80,
     "same_net_redundant_overlap_pair_count_max": 0,
-    "output_polygon_count_max": 20,
-    "pre_union_rect_count_max": 130,
+    "pad_wire_max_bend_count_max": 3,
+    "pad_wire_detour_total_um_max": 220.0,
+    "bus_bend_count_max": 38,
+    "wire_metal_area_um2_max": 2_037_000.0,
 }
 DEFAULT_GUARDRAILS = RIPUP_REROUTE_GUARDRAILS
 BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
@@ -56,19 +75,14 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "detailed_route_count_min": 1,
         "pad_assignment_count_min": 2,
         "pad_channel_height_um_max": 100.0,
-        "centerline_length_um_max": 1_500.0,
-        "bend_count_max": 10,
-        "raw_metal_area_um2_max": 80_000.0,
-        "union_metal_area_um2_max": 80_000.0,
-        "metal_area_overcount_um2_max": 1_200.0,
-        "metal_area_overcount_ratio_max": 0.015,
         "metal_redundant_area_overcount_um2_max": 1e-6,
-        "rect_count_max": 20,
         "same_net_duplicate_rect_count_max": 0,
         "same_net_overlap_pair_count_max": 10,
         "same_net_redundant_overlap_pair_count_max": 0,
-        "output_polygon_count_max": 5,
-        "pre_union_rect_count_max": 20,
+        "pad_wire_max_bend_count_max": 0,
+        "pad_wire_detour_total_um_max": 0.0,
+        "bus_bend_count_max": 2,
+        "wire_metal_area_um2_max": 657_000.0,
     },
     "heater_lanes_20": {
         "verification_success": True,
@@ -78,21 +92,33 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "detailed_route_count_min": 20,
         "pad_assignment_count_min": 21,
         "pad_channel_height_um_max": 220.0,
-        "centerline_length_um_max": 50_000.0,
-        "bend_count_max": 140,
-        "raw_metal_area_um2_max": 1_020_000.0,
-        "union_metal_area_um2_max": 1_000_000.0,
-        "metal_area_overcount_um2_max": 30_000.0,
-        "metal_area_overcount_ratio_max": 0.03,
         "metal_redundant_area_overcount_um2_max": 1e-6,
-        "rect_count_max": 230,
         "same_net_duplicate_rect_count_max": 0,
         "same_net_overlap_pair_count_max": 130,
         "same_net_redundant_overlap_pair_count_max": 0,
-        "output_polygon_count_max": 25,
-        "pre_union_rect_count_max": 230,
+        "pad_wire_max_bend_count_max": 3,
+        "pad_wire_detour_total_um_max": 740.0,
+        "bus_bend_count_max": 75,
+        "wire_metal_area_um2_max": 3_293_000.0,
     },
     "heater_lanes_ripup": RIPUP_REROUTE_GUARDRAILS,
+    "heater_s_mod": {
+        "verification_success": True,
+        "verification_error_count_max": 0,
+        "verification_warning_count_max": 0,
+        "failed_detailed_route_count_max": 0,
+        "detailed_route_count_min": 21,
+        "pad_assignment_count_min": 22,
+        "pad_channel_height_um_max": 220.0,
+        "metal_redundant_area_overcount_um2_max": 1e-6,
+        "same_net_duplicate_rect_count_max": 0,
+        "same_net_overlap_pair_count_max": 130,
+        "same_net_redundant_overlap_pair_count_max": 0,
+        "pad_wire_max_bend_count_max": 4,
+        "pad_wire_detour_total_um_max": 940.0,
+        "bus_bend_count_max": 79,
+        "wire_metal_area_um2_max": 3_308_000.0,
+    },
 }
 
 
@@ -205,19 +231,12 @@ def guardrail_violations(
     _check_min(violations, summary, "detailed_route_count", guardrails)
     _check_min(violations, summary, "pad_assignment_count", guardrails)
     _check_metric_max(violations, summary, "pad_channel_height_um", guardrails)
-    _check_metric_max(violations, summary, "centerline_length_um", guardrails)
-    _check_metric_max(violations, summary, "bend_count", guardrails)
-    _check_metric_max(violations, summary, "raw_metal_area_um2", guardrails)
-    _check_metric_max(violations, summary, "union_metal_area_um2", guardrails)
-    _check_metric_max(violations, summary, "metal_area_overcount_um2", guardrails)
-    _check_metric_max(violations, summary, "metal_area_overcount_ratio", guardrails)
     _check_metric_max(
         violations,
         summary,
         "metal_redundant_area_overcount_um2",
         guardrails,
     )
-    _check_metric_max(violations, summary, "rect_count", guardrails)
     _check_metric_max(violations, summary, "same_net_duplicate_rect_count", guardrails)
     _check_metric_max(violations, summary, "same_net_overlap_pair_count", guardrails)
     _check_metric_max(
@@ -226,8 +245,10 @@ def guardrail_violations(
         "same_net_redundant_overlap_pair_count",
         guardrails,
     )
-    _check_realization_max(violations, summary, "output_polygon_count", guardrails)
-    _check_realization_max(violations, summary, "pre_union_rect_count", guardrails)
+    _check_metric_max(violations, summary, "pad_wire_max_bend_count", guardrails)
+    _check_metric_max(violations, summary, "pad_wire_detour_total_um", guardrails)
+    _check_metric_max(violations, summary, "bus_bend_count", guardrails)
+    _check_metric_max(violations, summary, "wire_metal_area_um2", guardrails)
     _check_cross_net_spacing(violations, summary)
     return violations
 
@@ -471,15 +492,6 @@ def _check_metric_max(
     _check_nested_max(violations, summary, "metrics", key, guardrails)
 
 
-def _check_realization_max(
-    violations: list[dict[str, Any]],
-    summary: Mapping[str, Any],
-    key: str,
-    guardrails: Mapping[str, float | int | bool],
-) -> None:
-    _check_nested_max(violations, summary, "realization_metrics", key, guardrails)
-
-
 def _check_nested_max(
     violations: list[dict[str, Any]],
     summary: Mapping[str, Any],
@@ -545,6 +557,14 @@ def _selected_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
         "centerline_length_um",
         "bend_count",
         "pad_channel_height_um",
+        "bus_length_um",
+        "bus_bend_count",
+        "wire_metal_area_um2",
+        "pad_metal_area_um2",
+        "pad_wires",
+        "pad_wire_detour_total_um",
+        "pad_wire_max_detour_um",
+        "pad_wire_max_bend_count",
         "port_access_count",
         "port_access_count_by_purpose",
         "port_access_max_offset_um",

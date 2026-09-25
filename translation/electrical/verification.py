@@ -644,6 +644,18 @@ def _quality_metrics(
     min_spacing = _min_cross_net_spacing(net_geometries)
     access_metrics = _port_access_metrics(obstacle_map)
     route_start_metrics = _route_start_metrics(common_bus, detailed_bundle_routes)
+    pad_wire_metrics = _pad_wire_metrics(detailed_bundle_routes, obstacle_map)
+    common_bus_net = next(
+        (net for net in net_geometries if net.net_id == "common_bus"),
+        None,
+    )
+    bus_length_um = (
+        _polyline_length(common_bus_net.centerline_points_um) if common_bus_net is not None else 0.0
+    )
+    bus_bend_count = (
+        _bend_count(common_bus_net.centerline_points_um) if common_bus_net is not None else 0
+    )
+    wire_metal_area_um2, pad_metal_area_um2 = _wire_and_pad_metal_area(net_geometries)
     return {
         "net_count": len(net_geometries),
         "rect_count": len(all_rects),
@@ -683,9 +695,99 @@ def _quality_metrics(
             pad_plan,
             obstacle_map,
         ),
+        "bus_length_um": bus_length_um,
+        "bus_bend_count": bus_bend_count,
+        "wire_metal_area_um2": wire_metal_area_um2,
+        "pad_metal_area_um2": pad_metal_area_um2,
+        **pad_wire_metrics,
         **access_metrics,
         **route_start_metrics,
     }
+
+
+def _pad_wire_metrics(
+    detailed_bundle_routes: DetailedBundleRoutingResult | None,
+    obstacle_map: ElectricalObstacleMap,
+) -> dict[str, Any]:
+    """Per-wire detour/bend table for every successful detailed bundle route.
+
+    ``detour_um`` is the centerline length minus the Manhattan distance
+    between its endpoints; it is never negative for a Manhattan centerline.
+    """
+
+    pad_wires: list[dict[str, Any]] = []
+    if detailed_bundle_routes is not None:
+        for route in detailed_bundle_routes.routes:
+            centerline = _detailed_route_centerline_points(route, obstacle_map)
+            length_um = _polyline_length(centerline)
+            manhattan_um = _endpoint_manhattan_distance(centerline)
+            detour_um = length_um - manhattan_um
+            assert detour_um >= -1e-9, (
+                f"pad wire detour must not be negative: {route.terminal.id} "
+                f"length={length_um} manhattan={manhattan_um}"
+            )
+            detour_um = max(0.0, detour_um)
+            pad_wires.append(
+                {
+                    "terminal_id": route.terminal.id,
+                    "heater_id": route.terminal.heater_id,
+                    "net_id": (
+                        route.pad_assignment.net_id
+                        if route.pad_assignment is not None
+                        else f"individual:{route.terminal.heater_id}"
+                    ),
+                    "length_um": length_um,
+                    "bend_count": _bend_count(centerline),
+                    "manhattan_um": manhattan_um,
+                    "detour_um": detour_um,
+                }
+            )
+    pad_wires.sort(key=lambda entry: str(entry["terminal_id"]))
+    detours = [float(entry["detour_um"]) for entry in pad_wires]
+    bend_counts = [int(entry["bend_count"]) for entry in pad_wires]
+    return {
+        "pad_wires": pad_wires,
+        "pad_wire_detour_total_um": sum(detours) if detours else 0.0,
+        "pad_wire_max_detour_um": max(detours) if detours else 0.0,
+        "pad_wire_max_bend_count": max(bend_counts) if bend_counts else 0,
+    }
+
+
+def _endpoint_manhattan_distance(
+    points: tuple[tuple[float, float], ...],
+) -> float:
+    if len(points) < 2:
+        return 0.0
+    start, end = points[0], points[-1]
+    return abs(end[0] - start[0]) + abs(end[1] - start[1])
+
+
+def _wire_and_pad_metal_area(
+    net_geometries: list[_NetGeometry],
+) -> tuple[float, float]:
+    """Union metal area split into wire metal (everything but pads) and pads.
+
+    Summed per net rather than globally: cross-net spacing already keeps
+    different nets' rects disjoint, so a per-net union summed over nets
+    equals the global union.
+    """
+
+    wire_area = 0.0
+    pad_area = 0.0
+    for net in net_geometries:
+        wire_rects = tuple(
+            rect
+            for rect, source in zip(net.rects, net.rect_sources, strict=True)
+            if source != "pad"
+        )
+        pad_rects = tuple(
+            rect
+            for rect, source in zip(net.rects, net.rect_sources, strict=True)
+            if source == "pad"
+        )
+        wire_area += union_rect_area(wire_rects)
+        pad_area += union_rect_area(pad_rects)
+    return wire_area, pad_area
 
 
 def _route_start_metrics(
@@ -811,7 +913,12 @@ def _tagged_grid_wire_rects(
     points = tuple(_grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map) for cell in path)
     if start_clip_bbox is not None:
         points = clip_manhattan_path_start_at_bbox(points, start_clip_bbox)
-    return _tagged_point_wire_rects(points, width_um, source)
+    return _tagged_point_wire_rects(
+        points,
+        width_um,
+        source,
+        trim_start=start_clip_bbox is not None,
+    )
 
 
 def _terminal_grid_route_tagged_rects(
@@ -974,10 +1081,16 @@ def _tagged_point_wire_rects(
     source: str,
     *,
     trim_bends: bool = True,
+    trim_start: bool = False,
 ) -> tuple[_TaggedRect, ...]:
     return tuple(
         _TaggedRect(rect, source)
-        for rect in wire_rects_for_points(points, width_um, trim_bends=trim_bends)
+        for rect in wire_rects_for_points(
+            points,
+            width_um,
+            trim_bends=trim_bends,
+            trim_start=trim_start,
+        )
     )
 
 

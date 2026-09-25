@@ -723,6 +723,19 @@ added on 2026-09-24 and is likewise parked on an owner decision:
    geometry change is the cause and the guardrails are reporting it
    correctly). Do not change a guardrail value solo.
 
+   **Closed 2026-09-25, Milestone 1 of
+   `.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`:**
+   the geometry slip is fixed -- the bus escape's leading rectangle no
+   longer reproduces part of the stripe's own footprint, so its overlap
+   with a branch's intentional stripe entry is gone and
+   `same_net_redundant_overlap_pair_count` /
+   `metal_redundant_area_overcount_um2` are 0 on all four suite cases
+   (`heater_s_mod` added as the fourth). The size guardrails were re-derived
+   into quantities that describe routing rather than pad inventory
+   (`pad_wire_max_bend_count`, `pad_wire_detour_total_um`, `bus_bend_count`,
+   `wire_metal_area_um2`), and `--suite --check --compare-baseline` is
+   green.
+
 ## Resolved Findings
 
 - **PLM meander length model booked (amplitude - r) too little per meander

@@ -263,7 +263,12 @@ def _append_grid_wire_path(
     )
     if start_clip_bbox is not None:
         points_um = clip_manhattan_path_start_at_bbox(points_um, start_clip_bbox)
-    _append_um_wire_path(rects, points_um, width_um=width_um)
+    _append_um_wire_path(
+        rects,
+        points_um,
+        width_um=width_um,
+        trim_start=start_clip_bbox is not None,
+    )
 
 
 def _append_um_wire_path(
@@ -272,8 +277,16 @@ def _append_um_wire_path(
     *,
     width_um: float,
     trim_bends: bool = True,
+    trim_start: bool = False,
 ) -> None:
-    rects.extend(wire_rects_for_points(points_um, width_um, trim_bends=trim_bends))
+    rects.extend(
+        wire_rects_for_points(
+            points_um,
+            width_um,
+            trim_bends=trim_bends,
+            trim_start=trim_start,
+        )
+    )
 
 
 def _append_rect(
