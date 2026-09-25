@@ -485,10 +485,12 @@ scripts/test_baseline.sh
 # The reproduction gate: the nine smallest paper cells, about two minutes
 scripts/results/gate_short.sh
 
-# The full 27-cell reproduction (hours; RESULTS_ROOT is never results/)
+# The full 27-cell reproduction (about 2.5 h; RESULTS_ROOT is never results/)
 scripts/results/reproduce_date2027.sh
 .venv/bin/python scripts/results/compare_date2027.py results_date2027 \
   <path>/EXPERIMENTS_TABLE_SOURCES.json
+# Byte-compare every verification report between two reproduction roots
+scripts/results/compare_verification_reports.sh <root_a> <root_b>
 
 # The configuration reference
 .venv/bin/python scripts/generate_config_reference.py            # regenerate
@@ -503,6 +505,11 @@ match`; it compares crossing count and GDS length exactly and requires zero
 verifier errors (`docs/date2027_table_sources.json`,
 `scripts/results/compare_date2027.py`). `docs/DATE2027_REPRODUCTION.md` records
 which commit last reproduced all 27 cells.
+`scripts/results/compare_verification_reports.sh` pairs the newest run of each
+cell in two roots and byte-compares their photonic and crossing verification
+reports; the reports carry no timing, so identical bytes mean identical
+verdicts and issue lists (the acceptance of the 2026-09-24 verifier plan, which
+took the verifier's share of the full run from 5,207 s to 140 s).
 
 
 ## 9. Removal candidates (Milestone 8)

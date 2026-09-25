@@ -112,8 +112,11 @@ all reproduced cells match
 Notes: the five ADEPT contribution 2 rows were archived with Milestone 9
 in the kernel and reproduce exactly without it, so Milestone 9 never
 influenced the paper's rows and stays absent from this branch. Benes
-128x128 with contribution 2: loop 912 s (archive 925 s), wall 5443 s of
-which the verifier is most (20480 routes). LiDAR rows are not covered.
+128x128 with contribution 2: loop 912 s (archive 925 s); the wall time was
+5443 s until 2026-09-25, when the verifier plan
+(`.agent/execplans/2026-09-24-verifier-speed-on-large-layouts.md`) took its
+verification from 4,265 s to 33 s (run wall 912 s), with the verification
+report byte-identical. LiDAR rows are not covered.
 
 ## Re-verification on the restructuring branch
 
@@ -123,3 +126,4 @@ which the verifier is most (20480 routes). LiDAR rows are not covered.
 - 2026-09-24, commit f8a711b (Milestone 5: the Python session as typed stages, `route_benchmark`/`route_schematic`, `python -m photonic_router route`): all 27 cells exact, 0 verifier errors, loop-time ratio 0.90-1.05 (`results_m5_check/`, 06:39-10:34).
 - 2026-09-24, commit e1ea40f (Milestones 6 and 7: tests per module, fixtures, architecture and configuration documents): all 27 cells exact, 0 verifier errors, loop-time ratio 0.88-1.18 (`results_m7_check/`, 11:43-15:36).
 - 2026-09-24, commit 26ce54b (Milestone 8: legacy repair engine, window/collision crossing modes and dead helpers removed): all 27 cells exact, 0 verifier errors, loop-time ratio 0.91-1.05 (`results_m8_check/`, 18:56-22:48).
+- 2026-09-25, commit 7f3e4fa (verifier plan, Milestones 2 to 4: residue and pair-check bucket indexes, one realization router per pass, record regions without a scratch component): all 27 cells exact, 0 verifier errors, loop-time ratio 0.89-1.05, all 43 verification reports byte-identical to `results_m8_check/` (`scripts/results/compare_verification_reports.sh`), verifier total 5,207 s to 140 s, run 2 h 27 min instead of 3 h 51 min (`results_verifier_check/`, 02:09-04:36).
