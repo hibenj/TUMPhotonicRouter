@@ -13,7 +13,10 @@ from gdsfactory.component import Component
 import klayout.db as kdb
 from shapely.geometry import LineString, Point
 
-from translation.route_rust_realization import realize_routed_net_records
+from translation.route_rust_realization import (
+    build_realization_router,
+    realized_record_polygons,
+)
 from translation.route_rust_types import RoutedNetRecord
 
 Layer = tuple[int, int]
@@ -161,6 +164,19 @@ def verify_photonic_routing(
         else None
     )
 
+    # 2026-09-25, Milestone 4 (verifier-speed-on-large-layouts): one router
+    # for the whole verification pass instead of one per record. Profiling
+    # attributed 13 s of `_realized_record_region`'s 26 s on Benes 64x64
+    # contribution 2 (5,824 records) to constructing a fresh
+    # `PyPhotonicRouter` per record, each allocating a whole-grid obstacle
+    # map; every method the realization path calls on it takes `&self` and
+    # touches no field a later call reads (see the plan's Milestone 4
+    # section), so one router is safe to reuse across every record.
+    realization_router = build_realization_router(
+        realization_grid_spec=realization_grid_spec,
+        allow_45_degree_turns=allow_45_degree_turns,
+        bend_radius_cells=bend_radius_cells,
+    )
     for record in records:
         key = _record_key(record)
         if key in record_by_key:
@@ -170,11 +186,10 @@ def verify_photonic_routing(
             net_id_by_key[key] = int(record.net_id)
         route_region = _realized_record_region(
             record,
-            route_layer=route_layer,
             route_width_um=route_width_um,
             realization_grid_spec=realization_grid_spec,
-            allow_45_degree_turns=allow_45_degree_turns,
-            bend_radius_cells=bend_radius_cells,
+            dbu=dbu,
+            router=realization_router,
             crossing_plan_info=crossing_clip_plan_info,
             enable_endpoint_correction=check_endpoint_connectivity,
         )
@@ -349,27 +364,32 @@ def _verify_record_coverage(
 def _realized_record_region(
     record: RoutedNetRecord,
     *,
-    route_layer: Layer,
     route_width_um: float,
     realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool,
-    bend_radius_cells: int,
+    dbu: float,
+    router: object,
     crossing_plan_info: Mapping[str, object] | None = None,
     enable_endpoint_correction: bool = True,
 ) -> kdb.Region:
-    temp = Component()
-    realize_routed_net_records(
-        temp,
-        [record],
+    # 2026-09-25, Milestone 4 (verifier-speed-on-large-layouts): the region
+    # straight from the router's polygon, no scratch `Component`/`add_polygon`/
+    # `get_polygons` round trip (was 12 s of the 26 s on Benes 64x64
+    # contribution 2). `realized_record_polygons` is proven bit-identical to
+    # that round trip by
+    # `tests/test_photonic_verification.py::test_realized_record_region_equals_component_path`.
+    polygons = realized_record_polygons(
+        record,
         route_width_um=route_width_um,
-        route_layer=route_layer,
         realization_grid_spec=realization_grid_spec,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_cells=bend_radius_cells,
+        dbu=dbu,
+        router=router,
         crossing_plan_info=crossing_plan_info,
         enable_endpoint_correction=enable_endpoint_correction,
     )
-    return _component_layer_region(temp, route_layer)
+    region = kdb.Region()
+    for polygon in polygons:
+        region.insert(polygon)
+    return region
 
 
 def _verify_record_connectivity(

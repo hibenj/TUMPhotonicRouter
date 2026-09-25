@@ -131,22 +131,20 @@ def _crossing_net_ids(
     return net_ids
 
 
-def realize_routed_net_records(
-    routed_layout: Component,
-    routed_net_records: list[RoutedNetRecord],
+def build_realization_router(
     *,
-    route_width_um: float = 0.5,
-    route_layer: tuple[int, int] = (1, 0),
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool = True,
     bend_radius_cells: int = 4,
-    crossing_plan_info: Mapping[str, object] | None = None,
-    enable_endpoint_correction: bool = True,
-) -> None:
-    """Phase B: realize routed records into polygons on the target layout."""
-    if route_width_um <= 0:
-        raise ValueError("route_width_um must be > 0")
+) -> object:
+    """Build the backend router used to realize routed records into polygons.
 
+    Extracted from ``realize_routed_net_records`` (Milestone 4 of
+    ``.agent/execplans/2026-09-24-verifier-speed-on-large-layouts.md``) so a
+    caller that realizes many records (the verifier) can build one router and
+    reuse it, instead of paying for a fresh grid-sized obstacle map and
+    primitive library on every record.
+    """
     rust_backend = _load_rust_backend()
     if rust_backend is None:
         raise RuntimeError(
@@ -168,7 +166,32 @@ def realize_routed_net_records(
         allow_45_degree_turns=allow_45_degree_turns,
     )
     astar_cfg = rust_backend.AStarConfig(max_iterations=1)
-    router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+    return rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+
+
+def realize_routed_net_records(
+    routed_layout: Component,
+    routed_net_records: list[RoutedNetRecord],
+    *,
+    route_width_um: float = 0.5,
+    route_layer: tuple[int, int] = (1, 0),
+    realization_grid_spec: tuple[int, int, float, float, float],
+    allow_45_degree_turns: bool = True,
+    bend_radius_cells: int = 4,
+    crossing_plan_info: Mapping[str, object] | None = None,
+    enable_endpoint_correction: bool = True,
+    router: object | None = None,
+) -> None:
+    """Phase B: realize routed records into polygons on the target layout."""
+    if route_width_um <= 0:
+        raise ValueError("route_width_um must be > 0")
+
+    if router is None:
+        router = build_realization_router(
+            realization_grid_spec=realization_grid_spec,
+            allow_45_degree_turns=allow_45_degree_turns,
+            bend_radius_cells=bend_radius_cells,
+        )
     dbu = _component_dbu(routed_layout)
     crossing_clip_regions_by_net_id = _crossing_clip_regions_by_net_id(
         crossing_plan_info,
@@ -182,148 +205,159 @@ def realize_routed_net_records(
             if record.net_id is not None
             else None
         )
-        corrected_centerline = _physical_port_centerline(
+        polygon = _record_realized_polygon(
             router,
             record,
+            route_width_um=route_width_um,
             realization_grid_spec=realization_grid_spec,
             enable_endpoint_correction=enable_endpoint_correction,
-            allow_unchecked_bumps=True,
             route_has_crossing=(
                 record.net_id is not None and int(record.net_id) in crossing_net_ids
             ),
         )
-        if record.meander_auto_plan is not None:
-            plan = record.meander_auto_plan
-            selected_side = plan.get("selected_side")
-            selected_box = plan.get("selected_box")
-            selected_run_start_index = plan.get("selected_run_start_index")
-            selected_run_end_index = plan.get("selected_run_end_index")
-            selected_meander_centerline = plan.get("selected_meander_centerline")
-            if (
-                isinstance(selected_run_start_index, (int, float))
-                and isinstance(selected_run_end_index, (int, float))
-                and isinstance(selected_meander_centerline, list)
-                and len(selected_meander_centerline) >= 2
-            ):
-                meander_centerline = [
-                    (_as_float(p[0], 0.0), _as_float(p[1], 0.0))
-                    for p in selected_meander_centerline
-                    if isinstance(p, (tuple, list)) and len(p) == 2
-                ]
-                if corrected_centerline:
-                    realize_with_tangents = getattr(
-                        router,
-                        "realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents",
-                    )
-                    try:
-                        polygon = realize_with_tangents(
-                            corrected_centerline,
-                            float(route_width_um),
-                            record.route_obj,
-                            selected_run_start_index=_as_int(selected_run_start_index, 0),
-                            selected_run_end_index=_as_int(selected_run_end_index, 0),
-                            meander_centerline=meander_centerline,
-                            source_enabled=record.source_port_center_um is not None,
-                            target_enabled=record.target_port_center_um is not None,
-                        )
-                    except ValueError as exc:
-                        raise RuntimeError(
-                            format_port_endpoint_correction_error(
-                                record,
-                                exc,
-                                realization_grid_spec=realization_grid_spec,
-                            )
-                        ) from exc
-                else:
-                    polygon = router.realize_route_polygon_from_planned_auto_meander(
-                        record.route_obj,
-                        float(route_width_um),
-                        selected_run_start_index=_as_int(selected_run_start_index, 0),
-                        selected_run_end_index=_as_int(selected_run_end_index, 0),
-                        meander_centerline=meander_centerline,
-                    )
-            elif (
-                isinstance(selected_side, str)
-                and selected_side in {"left", "right"}
-                and isinstance(selected_box, (tuple, list))
-                and len(selected_box) == 4
-            ):
-                box_tuple = (
-                    _as_float(selected_box[0], 0.0),
-                    _as_float(selected_box[1], 0.0),
-                    _as_float(selected_box[2], 0.0),
-                    _as_float(selected_box[3], 0.0),
-                )
-                polygon = router.realize_route_polygon_with_analytic_meander(
-                    record.route_obj,
-                    float(route_width_um),
-                    requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
-                    min_bend_radius_um=plan["min_bend_radius_um"],
-                    min_straight_um=_as_float(plan["min_straight_um"], 0.0),
-                    max_bumps=_as_int(plan["max_bumps"], 8),
-                    side=selected_side,
-                    available_box=box_tuple,
-                    planning_mode=str(plan["planning_mode"]),
-                )
-            else:
-                # Backward-compatible fallback for older records that lack
-                # persisted selected_side/selected_box metadata.
-                polygon = router.realize_route_polygon_with_auto_checked_analytic_meander(
-                    record.route_obj,
-                    float(route_width_um),
-                    requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
-                    min_bend_radius_um=plan["min_bend_radius_um"],
-                    min_straight_um=_as_float(plan["min_straight_um"], 0.0),
-                    max_bumps=_as_int(plan["max_bumps"], 8),
-                    max_meander_height_um=_as_float(
-                        plan.get("max_meander_height_um", DEFAULT_MEANDER_MAX_HEIGHT_UM),
-                        DEFAULT_MEANDER_MAX_HEIGHT_UM,
-                    ),
-                    box_depth_um=_as_float(plan["box_depth_um"], 20.0),
-                    min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
-                    clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),
-                    side_policy=str(plan["side_policy"]),
-                    opened_cells=[],
-                    planning_mode=str(plan["planning_mode"]),
-                )
-            _add_route_polygon(
-                routed_layout,
-                polygon,
-                route_layer=route_layer,
-                clip_region=clip_region,
-            )
-            continue
-        if corrected_centerline:
-            try:
-                polygon = router.realize_centerline_polygon_with_terminal_tangents(
-                    corrected_centerline,
-                    float(route_width_um),
-                    record.route_obj,
-                    source_enabled=record.source_port_center_um is not None,
-                    target_enabled=record.target_port_center_um is not None,
-                )
-            except ValueError as exc:
-                raise RuntimeError(
-                    format_port_endpoint_correction_error(
-                        record,
-                        exc,
-                        realization_grid_spec=realization_grid_spec,
-                    )
-                ) from exc
-            _add_route_polygon(
-                routed_layout,
-                polygon,
-                route_layer=route_layer,
-                clip_region=clip_region,
-            )
-            continue
-        polygon = router.realize_route_polygon(record.route_obj, float(route_width_um))
         _add_route_polygon(
             routed_layout,
             polygon,
             route_layer=route_layer,
             clip_region=clip_region,
         )
+
+
+def _record_realized_polygon(
+    router: object,
+    record: RoutedNetRecord,
+    *,
+    route_width_um: float,
+    realization_grid_spec: tuple[int, int, float, float, float],
+    enable_endpoint_correction: bool,
+    route_has_crossing: bool,
+) -> list[tuple[float, float]]:
+    """Compute one record's realized polygon (micron coordinates).
+
+    Shared by ``realize_routed_net_records`` (which adds the polygon to a
+    layout, clipped through a scratch ``Component``) and
+    ``realized_record_polygons`` (which converts and clips it directly to
+    database-unit ``kdb.Polygon`` objects without a ``Component``), so the
+    polygon computation is written once.
+    """
+    corrected_centerline = _physical_port_centerline(
+        router,
+        record,
+        realization_grid_spec=realization_grid_spec,
+        enable_endpoint_correction=enable_endpoint_correction,
+        allow_unchecked_bumps=True,
+        route_has_crossing=route_has_crossing,
+    )
+    if record.meander_auto_plan is not None:
+        plan = record.meander_auto_plan
+        selected_side = plan.get("selected_side")
+        selected_box = plan.get("selected_box")
+        selected_run_start_index = plan.get("selected_run_start_index")
+        selected_run_end_index = plan.get("selected_run_end_index")
+        selected_meander_centerline = plan.get("selected_meander_centerline")
+        if (
+            isinstance(selected_run_start_index, (int, float))
+            and isinstance(selected_run_end_index, (int, float))
+            and isinstance(selected_meander_centerline, list)
+            and len(selected_meander_centerline) >= 2
+        ):
+            meander_centerline = [
+                (_as_float(p[0], 0.0), _as_float(p[1], 0.0))
+                for p in selected_meander_centerline
+                if isinstance(p, (tuple, list)) and len(p) == 2
+            ]
+            if corrected_centerline:
+                realize_with_tangents = getattr(
+                    router,
+                    "realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents",
+                )
+                try:
+                    return realize_with_tangents(
+                        corrected_centerline,
+                        float(route_width_um),
+                        record.route_obj,
+                        selected_run_start_index=_as_int(selected_run_start_index, 0),
+                        selected_run_end_index=_as_int(selected_run_end_index, 0),
+                        meander_centerline=meander_centerline,
+                        source_enabled=record.source_port_center_um is not None,
+                        target_enabled=record.target_port_center_um is not None,
+                    )
+                except ValueError as exc:
+                    raise RuntimeError(
+                        format_port_endpoint_correction_error(
+                            record,
+                            exc,
+                            realization_grid_spec=realization_grid_spec,
+                        )
+                    ) from exc
+            return router.realize_route_polygon_from_planned_auto_meander(
+                record.route_obj,
+                float(route_width_um),
+                selected_run_start_index=_as_int(selected_run_start_index, 0),
+                selected_run_end_index=_as_int(selected_run_end_index, 0),
+                meander_centerline=meander_centerline,
+            )
+        if (
+            isinstance(selected_side, str)
+            and selected_side in {"left", "right"}
+            and isinstance(selected_box, (tuple, list))
+            and len(selected_box) == 4
+        ):
+            box_tuple = (
+                _as_float(selected_box[0], 0.0),
+                _as_float(selected_box[1], 0.0),
+                _as_float(selected_box[2], 0.0),
+                _as_float(selected_box[3], 0.0),
+            )
+            return router.realize_route_polygon_with_analytic_meander(
+                record.route_obj,
+                float(route_width_um),
+                requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
+                min_bend_radius_um=plan["min_bend_radius_um"],
+                min_straight_um=_as_float(plan["min_straight_um"], 0.0),
+                max_bumps=_as_int(plan["max_bumps"], 8),
+                side=selected_side,
+                available_box=box_tuple,
+                planning_mode=str(plan["planning_mode"]),
+            )
+        # Backward-compatible fallback for older records that lack
+        # persisted selected_side/selected_box metadata.
+        return router.realize_route_polygon_with_auto_checked_analytic_meander(
+            record.route_obj,
+            float(route_width_um),
+            requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
+            min_bend_radius_um=plan["min_bend_radius_um"],
+            min_straight_um=_as_float(plan["min_straight_um"], 0.0),
+            max_bumps=_as_int(plan["max_bumps"], 8),
+            max_meander_height_um=_as_float(
+                plan.get("max_meander_height_um", DEFAULT_MEANDER_MAX_HEIGHT_UM),
+                DEFAULT_MEANDER_MAX_HEIGHT_UM,
+            ),
+            box_depth_um=_as_float(plan["box_depth_um"], 20.0),
+            min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
+            clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),
+            side_policy=str(plan["side_policy"]),
+            opened_cells=[],
+            planning_mode=str(plan["planning_mode"]),
+        )
+    if corrected_centerline:
+        try:
+            return router.realize_centerline_polygon_with_terminal_tangents(
+                corrected_centerline,
+                float(route_width_um),
+                record.route_obj,
+                source_enabled=record.source_port_center_um is not None,
+                target_enabled=record.target_port_center_um is not None,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                format_port_endpoint_correction_error(
+                    record,
+                    exc,
+                    realization_grid_spec=realization_grid_spec,
+                )
+            ) from exc
+    return router.realize_route_polygon(record.route_obj, float(route_width_um))
 
 
 def _add_route_polygon(
@@ -345,6 +379,65 @@ def _add_route_polygon(
     clipped = route_region - clip_region
     for clipped_polygon in clipped.each():
         routed_layout.add_polygon(clipped_polygon, layer=route_layer)
+
+
+def realized_record_polygons(
+    record: RoutedNetRecord,
+    *,
+    route_width_um: float,
+    realization_grid_spec: tuple[int, int, float, float, float],
+    dbu: float,
+    router: object,
+    crossing_plan_info: Mapping[str, object] | None = None,
+    enable_endpoint_correction: bool = True,
+) -> list[kdb.Polygon]:
+    """Realize one record straight into database-unit ``kdb.Polygon`` objects.
+
+    2026-09-25, Milestone 4 of
+    ``.agent/execplans/2026-09-24-verifier-speed-on-large-layouts.md``: the
+    same polygon and the same clip as ``realize_routed_net_records`` plus
+    ``_add_route_polygon`` would produce through a scratch ``Component``, but
+    without building one. Bit-identical to that path, proven by
+    ``tests/test_photonic_verification.py::test_realized_record_region_equals_component_path``.
+    """
+    crossing_clip_regions_by_net_id = _crossing_clip_regions_by_net_id(
+        crossing_plan_info,
+        dbu=dbu,
+    )
+    crossing_net_ids = _crossing_net_ids(crossing_plan_info)
+    clip_region = (
+        crossing_clip_regions_by_net_id.get(int(record.net_id))
+        if record.net_id is not None
+        else None
+    )
+    polygon_um = _record_realized_polygon(
+        router,
+        record,
+        route_width_um=route_width_um,
+        realization_grid_spec=realization_grid_spec,
+        enable_endpoint_correction=enable_endpoint_correction,
+        route_has_crossing=(record.net_id is not None and int(record.net_id) in crossing_net_ids),
+    )
+    polygon = _polygon_um_to_dbu(polygon_um, dbu)
+    if clip_region is None or clip_region.is_empty():
+        return [polygon]
+    route_region = kdb.Region()
+    route_region.insert(polygon)
+    if route_region.is_empty():
+        return []
+    return list((route_region - clip_region).each())
+
+
+def _polygon_um_to_dbu(polygon_um: Iterable[tuple[float, float]], dbu: float) -> kdb.Polygon:
+    """Convert a router polygon (micron coordinates) to a ``kdb.Polygon`` (dbu).
+
+    Matches what ``Component.add_polygon`` (``gdsfactory/component.py``) does
+    with a plain point list: build a ``kdb.DPolygon`` and convert it with
+    klayout's own ``DPolygon.to_itype(dbu)``, the same call
+    ``Component.add_polygon`` makes.
+    """
+    points = [kdb.DPoint(float(x), float(y)) for x, y in polygon_um]
+    return kdb.DPolygon(points).to_itype(dbu)
 
 
 def _crossing_clip_regions_by_net_id(

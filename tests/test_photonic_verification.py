@@ -24,11 +24,17 @@ from translation.photonic_verification import (
     _verify_crossing_component_route_overlaps,
     _verify_cross_net_route_overlaps,
     _verify_record_coverage,
+    _realized_record_region,
     _verify_route_obstacle_overlaps,
     _verify_routes_inside_routable_bbox,
     _verify_self_intersecting_routes,
     _polyline_self_intersects_um,
     verify_photonic_routing,
+)
+from translation.route_rust_realization import (
+    build_realization_router,
+    realize_routed_net_records,
+    realized_record_polygons,
 )
 from translation.route_rust_types import RoutedNetRecord
 
@@ -1241,3 +1247,295 @@ def test_polygon_bucket_index_query_cost_is_bounded_by_polygon_count():
 
     assert sorted(candidates) == list(range(n))
     assert elapsed < 1.0
+
+
+def _component_path_region(
+    record: RoutedNetRecord,
+    *,
+    route_layer: tuple[int, int],
+    route_width_um: float,
+    realization_grid_spec: tuple[int, int, float, float, float],
+    router: object,
+    crossing_plan_info: dict[str, object] | None = None,
+    enable_endpoint_correction: bool = True,
+) -> kdb.Region:
+    """Oracle for `test_realized_record_region_equals_component_path`.
+
+    A verbatim copy of `_realized_record_region`
+    (`translation/photonic_verification.py`) as it read before Milestone 4
+    step 2 of `.agent/execplans/2026-09-24-verifier-speed-on-large-layouts.md`:
+    realize the record into a scratch `Component` and read the layer back as
+    a region. `realize_routed_net_records`'s outward behaviour for a given
+    router is unchanged by Milestone 4 (step 1 only adds an optional
+    pre-built router; step 2 only extracts the per-record polygon
+    computation into a helper it already called inline), so calling today's
+    `realize_routed_net_records` here still exercises the pre-Milestone-4
+    Component/add_polygon/get_polygons path byte for byte.
+    """
+    temp = Component()
+    realize_routed_net_records(
+        temp,
+        [record],
+        route_width_um=route_width_um,
+        route_layer=route_layer,
+        realization_grid_spec=realization_grid_spec,
+        crossing_plan_info=crossing_plan_info,
+        enable_endpoint_correction=enable_endpoint_correction,
+        router=router,
+    )
+    return _component_layer_region(temp, route_layer)
+
+
+def test_realized_record_region_equals_component_path():
+    """Milestone 4 step 2 (2026-09-25) exactness: the region built directly
+    from the router's polygon (`realized_record_polygons`, no scratch
+    `Component`) must be bit-identical to the region built the old way
+    (`_component_path_region`, above), for every kind of record this module
+    exercises for real (not monkeypatched) plus every routed record of
+    `heater_s_mod`.
+
+    `benes_4x4_flat --crossing-mode lidar-pure` (suggested by the plan for a
+    real crossing-clip record) took over 120 s to route inside this process
+    and was dropped as too slow for this unit test; the crossing-clip branch
+    is covered here by a synthetic clip carved out of a real router-realized
+    bend polygon (below), and end to end by the byte-identical
+    `benes_16x16_flat --crossing-mode lidar-pure` verification report checked
+    by this plan's validation harness.
+    """
+    route_width_um = 0.5
+    route_layer = (1, 0)
+    realization_grid_spec = (40, 40, 1.0, -15.0, -20.0)
+
+    backend = _load_rust_backend()
+    assert backend is not None
+    router = backend.PyPhotonicRouter(
+        backend.GridSpec(40, 40, 1.0, -15.0, -20.0),
+        backend.PrimitiveLibraryConfig(),
+        backend.AStarConfig(max_iterations=10_000),
+    )
+    bend_route_obj = router.route_single_net_and_commit(
+        1,
+        backend.State(15, 20, 0),
+        backend.State(25, 10, 6),
+        block_radius_cells=0,
+    )
+
+    # A real router-realized bend (terminal-tangent centerline branch).
+    record_bend = _routed_record(
+        centerline=((0.0, 0.0), (10.0, 0.0), (10.0, -10.0)),
+        source_port_center_um=(0.0, 0.0),
+        target_port_center_um=(10.0, -10.0),
+        route_obj=bend_route_obj,
+    )
+    # The same route, forced through the plain `realize_route_polygon`
+    # branch (no corrected centerline, no ports).
+    record_plain = replace(
+        record_bend,
+        corrected_centerline_um=(),
+        source_port_center_um=None,
+        target_port_center_um=None,
+    )
+    # The same route, forced through `route_port_corrected_centerline` (only
+    # one port set, no corrected centerline yet).
+    record_port_corrected = replace(
+        record_bend,
+        corrected_centerline_um=(),
+        source_port_center_um=(0.0, 0.0),
+        target_port_center_um=None,
+    )
+
+    # A crossing clip region cut out of `record_bend`'s own realized
+    # polygon, so the clip subtraction runs on real (not box) geometry.
+    unclipped_region = _component_path_region(
+        record_bend,
+        route_layer=route_layer,
+        route_width_um=route_width_um,
+        realization_grid_spec=realization_grid_spec,
+        router=router,
+    )
+    bbox = unclipped_region.bbox()
+    dbu = 0.001
+    mid_x_um = ((bbox.left + bbox.right) / 2.0) * dbu
+    ymin_um = bbox.bottom * dbu - 1.0
+    ymax_um = bbox.top * dbu + 1.0
+    record_clip = replace(record_bend, net_id=42)
+    crossing_plan_info = {
+        "enabled": True,
+        "realized_intersections": [
+            {
+                "classification": "legal_test_clip",
+                "net_id_a": 42,
+                "net_id_b": 43,
+                "crossing_footprint_polygon_um": [
+                    (mid_x_um - 1.0, ymin_um),
+                    (mid_x_um + 1.0, ymin_um),
+                    (mid_x_um + 1.0, ymax_um),
+                    (mid_x_um - 1.0, ymax_um),
+                ],
+            }
+        ],
+    }
+    # The clip must actually cut something, or this record is not testing
+    # what it claims to.
+    clip_region_um = kdb.Region(
+        kdb.DPolygon(
+            [
+                kdb.DPoint(mid_x_um - 1.0, ymin_um),
+                kdb.DPoint(mid_x_um + 1.0, ymin_um),
+                kdb.DPoint(mid_x_um + 1.0, ymax_um),
+                kdb.DPoint(mid_x_um - 1.0, ymax_um),
+            ]
+        ).to_itype(dbu)
+    )
+    assert not (unclipped_region & clip_region_um).is_empty()
+    assert not (unclipped_region - clip_region_um).is_empty()
+
+    fixtures: list[
+        tuple[RoutedNetRecord, tuple[int, int, float, float, float], dict[str, object] | None]
+    ] = [
+        (record_bend, realization_grid_spec, None),
+        (record_plain, realization_grid_spec, None),
+        (record_port_corrected, realization_grid_spec, None),
+        (record_clip, realization_grid_spec, crossing_plan_info),
+    ]
+
+    for record, grid_spec, plan_info in fixtures:
+        old_region = _component_path_region(
+            record,
+            route_layer=route_layer,
+            route_width_um=route_width_um,
+            realization_grid_spec=grid_spec,
+            router=router,
+            crossing_plan_info=plan_info,
+        )
+        new_region = _realized_record_region(
+            record,
+            route_width_um=route_width_um,
+            realization_grid_spec=grid_spec,
+            dbu=dbu,
+            router=router,
+            crossing_plan_info=plan_info,
+        )
+        assert (new_region ^ old_region).is_empty(), record.net_name
+        assert new_region.count() == old_region.count(), record.net_name
+
+    # heater_s_mod, routed with its own stable configuration (90-degree
+    # routing, 10 um bends, path-length matching, heater obstacles --
+    # `benchmarks/heater_s_mod.py`'s `STABLE_ROUTING_FLAGS`, the way
+    # `tests/e2e/test_routing_flow_stats.py::test_heater_s_mod_90_degree_plm_regression`
+    # loads and routes it), every routed record.
+    from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
+    import benchmark_metadata
+    from routing_flow import load_benchmark
+    from translation.layout_from_schematic import layout_from_schematic
+    from translation.routing.api import route_match_and_realize
+
+    schematic = load_benchmark("heater_s_mod")
+    unrouted_layout = layout_from_schematic(schematic)
+    metadata = benchmark_metadata.load_benchmark_metadata("heater_s_mod", schematic=schematic)
+    result = route_match_and_realize(
+        unrouted_layout,
+        schematic,
+        enable_path_length_matching=True,
+        path_length_match_outputs=True,
+        node_types=metadata.get("node_types"),
+        internal_delays_um=metadata.get("internal_delays_um"),
+        debug_dir=None,
+        debug_prefix="heater_s_mod",
+        allow_45_degree_turns=False,
+        bend_radius_um=10.0,
+        max_iterations=5_000_000,
+        routing_window_scale=0.05,
+        collect_route_stats=True,
+        include_heater_obstacles=True,
+        obstacle_config=StaticObstacleMapConfig(
+            grid_size_um=2.0,
+            obstacle_mode="bounding_boxes",
+            clearance_um=0.0,
+            heater_clearance_um=10.0,
+            chip_add_x_um=0.0,
+            chip_add_y_um=40.0,
+            clear_port_open_cells_from_static=False,
+        ),
+    )
+    heater_debug_artifacts = result.debug_artifacts
+    heater_records = heater_debug_artifacts.routed_net_records
+    assert len(heater_records) > 0
+    heater_grid_spec = heater_debug_artifacts.realization_grid_spec
+    heater_router = build_realization_router(
+        realization_grid_spec=heater_grid_spec,
+        allow_45_degree_turns=heater_debug_artifacts.realization_allow_45_degree_turns,
+        bend_radius_cells=heater_debug_artifacts.realization_bend_radius_cells,
+    )
+    for record in heater_records:
+        old_region = _component_path_region(
+            record,
+            route_layer=route_layer,
+            route_width_um=route_width_um,
+            realization_grid_spec=heater_grid_spec,
+            router=heater_router,
+        )
+        new_region = _realized_record_region(
+            record,
+            route_width_um=route_width_um,
+            realization_grid_spec=heater_grid_spec,
+            dbu=dbu,
+            router=heater_router,
+        )
+        assert (new_region ^ old_region).is_empty(), record.net_name
+        assert new_region.count() == old_region.count(), record.net_name
+
+
+def test_realized_record_polygons_returns_dbu_polygons_matching_component_add_polygon():
+    """Narrower unit check backing the region-equality test above: the
+    micron-to-dbu conversion `realized_record_polygons` uses must match what
+    `Component.add_polygon` does (`gdsfactory/component.py`: a `kdb.DPolygon`
+    converted with `DPolygon.to_itype(dbu)`), point for point, not just as
+    equal regions.
+    """
+    route_width_um = 0.5
+    realization_grid_spec = (40, 40, 1.0, -15.0, -20.0)
+    dbu = 0.001
+
+    backend = _load_rust_backend()
+    assert backend is not None
+    router = backend.PyPhotonicRouter(
+        backend.GridSpec(40, 40, 1.0, -15.0, -20.0),
+        backend.PrimitiveLibraryConfig(),
+        backend.AStarConfig(max_iterations=10_000),
+    )
+    route_obj = router.route_single_net_and_commit(
+        1,
+        backend.State(15, 20, 0),
+        backend.State(25, 10, 6),
+        block_radius_cells=0,
+    )
+    record = _routed_record(
+        centerline=((0.0, 0.0), (10.0, 0.0), (10.0, -10.0)),
+        source_port_center_um=(0.0, 0.0),
+        target_port_center_um=(10.0, -10.0),
+        route_obj=route_obj,
+    )
+
+    polygons = realized_record_polygons(
+        record,
+        route_width_um=route_width_um,
+        realization_grid_spec=realization_grid_spec,
+        dbu=dbu,
+        router=router,
+    )
+    assert len(polygons) == 1
+
+    temp = Component()
+    realize_routed_net_records(
+        temp,
+        [record],
+        route_width_um=route_width_um,
+        route_layer=(1, 0),
+        realization_grid_spec=realization_grid_spec,
+        router=router,
+    )
+    component_polygons = temp.get_polygons(merge=False, by="tuple").get((1, 0), [])
+    assert len(component_polygons) == 1
+    assert list(polygons[0].each_point_hull()) == list(component_polygons[0].each_point_hull())
