@@ -117,7 +117,7 @@ What the gate caught or forced: the lost congestion weight in Milestone 1 (an im
 
 Process observations worth keeping: an implementation lane that stops at a clean gate-verified checkpoint with a measured reason was right every time it did so; the lead's independent re-run of the baseline and gate before every commit cost about five minutes per slice and never disagreed with a lane, which is the reason the branch could be merged milestone by milestone; the full 27-cell run costs 4.5 hours of which 71 minutes are one cell's verifier (the follow-up item); and the plan's own timestamps drifted from the clock until they were taken from the commit log.
 
-Open after this plan: D11 (the electrical guardrails, red on every case since the June 2026 electrical-router changes; D10 was closed by the owner's clarification and the toy modules are gone), the verifier-time follow-up, `docs/crossing_baselines.md` as a historical document, and the deferred idea of splitting the session state further phase by phase.
+Open after this plan: the verifier-time follow-up (done 2026-09-25, its own plan) and D11 (closed 2026-09-25 by Milestone 1 of `2026-09-25-electrical-routing-quality-and-cleanup.md`: a geometry slip fixed, guardrails re-derived on routing quantities; D10 was closed by the owner's clarification and the toy modules are gone), the verifier-time follow-up, `docs/crossing_baselines.md` as a historical document, and the deferred idea of splitting the session state further phase by phase.
 
 
 ## Context and Orientation
