@@ -8,20 +8,16 @@ from pathlib import Path
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
-from .bundle_detail_router import (
-    dilate_cells,
-    route_detailed_bundles,
-    wire_reservation_radius_cells,
-)
-from .common_bus_router import (
+from .bundle_detail_router import route_detailed_bundles
+from .bus_search import (
     all_terminal_cells,
     forbidden_terminal_cells,
-    route_common_bus,
     route_uses_access_anchor,
     shortest_path_to_tree,
-    straight_drop_to_bus,
     terminal_access_anchor_cell,
 )
+from .column_trunks import straight_drop_to_bus
+from .common_bus_router import route_common_bus
 from .debug import export_electrical_debug_svg, export_electrical_metal_snapshot_svg
 from .escape_router import route_common_bus_escape
 from .individual_topology import compute_individual_escape_topology
@@ -30,6 +26,7 @@ from .obstacle_extraction import build_electrical_obstacle_map
 from .pad_slots import plan_pad_slots
 from .pitch_grid import bbox_to_grid_cells, grid_cell_center_um
 from .terminal_extraction import extract_heater_terminal_pairs
+from .wire_geometry import dilate_cells, wire_reservation_radius_cells
 from .types import (
     BusStripe,
     CommonBusRoutingResult,

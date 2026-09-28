@@ -22,12 +22,10 @@ from tests.fixtures.synthetic_layouts import (
     single_heater_schematic as build_single_heater_schematic,
 )
 from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.electrical.bundle_detail_router import (
-    _offset_path_by_local_normals,
-    _pad_stub_step_cost,
-)
-from translation.electrical.common_bus_router import _terminal_open_cells, route_common_bus
+from translation.electrical.bus_search import terminal_open_cells as _terminal_open_cells
+from translation.electrical.common_bus_router import route_common_bus
 from translation.electrical.obstacle_extraction import build_electrical_obstacle_map
+from translation.electrical.pad_wire_search import _pad_stub_step_cost
 from translation.electrical.pad_slots import pad_access_bbox
 from translation.electrical.pitch_grid import disk_cells
 from translation.electrical.port_access import build_terminal_port_access
@@ -429,11 +427,7 @@ def test_verifier_flags_cross_net_metal_overlap():
                 pad_assignment=pad_assignment,
                 path=((0, 0), (1, 0), (2, 0)),
                 target_cells=frozenset({(2, 26)}),
-                track_cell=(1, 0),
-                lane_cell=(2, 0),
-                offset_um=0.0,
-                offset_axis="x",
-                offset_path=((0.5, 0.5), (2.5, 0.5)),
+                centerline=((0.5, 0.5), (2.5, 0.5)),
                 success=True,
             ),
         ),
@@ -506,11 +500,7 @@ def test_verifier_includes_assigned_pad_rectangles_in_cross_net_overlap():
                 pad_assignment=individual_assignment,
                 path=((2, 2), (5, 2)),
                 target_cells=frozenset({(5, 26)}),
-                track_cell=(2, 2),
-                lane_cell=(5, 2),
-                offset_um=0.0,
-                offset_axis="x",
-                offset_path=((2.0, 2.0), (5.0, 2.0)),
+                centerline=((2.0, 2.0), (5.0, 2.0)),
                 success=True,
             ),
         ),
@@ -588,11 +578,7 @@ def test_verifier_flags_raw_physical_obstacle_overlap_outside_port_contact():
                 pad_assignment=pad_assignment,
                 path=((2, 2), (5, 2)),
                 target_cells=frozenset({(5, 26)}),
-                track_cell=(2, 2),
-                lane_cell=(5, 2),
-                offset_um=0.0,
-                offset_axis="x",
-                offset_path=((2.0, 2.0), (5.0, 2.0)),
+                centerline=((2.0, 2.0), (5.0, 2.0)),
                 success=True,
             ),
         ),
@@ -924,11 +910,7 @@ def test_pad_wire_metrics_report_detour_for_a_deliberately_jogged_centerline():
                 pad_assignment=pad_assignment,
                 path=((0, 0), (2, 0)),
                 target_cells=frozenset({(0, 2)}),
-                track_cell=None,
-                lane_cell=None,
-                offset_um=0.0,
-                offset_axis="x",
-                offset_path=((0.5, 0.5), (0.5, 2.5), (2.5, 2.5), (2.5, 0.5), (4.5, 0.5)),
+                centerline=((0.5, 0.5), (0.5, 2.5), (2.5, 2.5), (2.5, 0.5), (4.5, 0.5)),
                 success=True,
             ),
         ),
@@ -1720,8 +1702,9 @@ def test_detailed_bundle_router_nests_l_and_z_pad_wires_from_topology():
     """Milestone 2/4: pad wires are an L or a full-grid Z fallback.
 
     Superseded the old "spaced lane offsets" expectation: pad wires no
-    longer carry a per-rank lane offset (``offset_um`` is always 0.0), and a
-    bundle's ranks are nested directly into pad columns instead. This
+    longer carry a per-rank lane offset (every wire is its own single
+    centerline, ``DetailedBundleRoute.centerline``), and a bundle's ranks
+    are nested directly into pad columns instead. This
     exercises a config the milestone-2/4 four benchmark fixtures don't
     (a coarser routing grid, wider pad pitch, zero clearance margin), which
     congests enough that some of this schematic's wires need -- and some do
@@ -1760,8 +1743,6 @@ def test_detailed_bundle_router_nests_l_and_z_pad_wires_from_topology():
         key=lambda route: route.rank,
     )
     assert first_bundle_routes
-    assert all(route.offset_um == 0.0 for route in first_bundle_routes)
-    assert all(route.offset_axis == "x" for route in first_bundle_routes)
     ordered_first_terminal_ids = [
         terminal.id for terminal in result.individual_topology.bundles[0].ordered_terminals
     ]
@@ -1785,7 +1766,6 @@ def test_detailed_bundle_router_nests_l_and_z_pad_wires_from_topology():
     # not all four necessarily find a route; the ones that do must still be
     # real members of the bundle, nested in rank order.
     assert right_bundle_routes
-    assert all(route.offset_um == 0.0 for route in right_bundle_routes)
     ordered_right_terminal_ids = [
         terminal.id for terminal in result.individual_topology.bundles[1].ordered_terminals
     ]
@@ -1808,14 +1788,11 @@ def test_detailed_bundle_router_nests_l_and_z_pad_wires_from_topology():
         )
         assert route.path[0] in source_cells
         assert route.path[-1] in route.target_cells
-        assert route.offset_path
         # A pad wire (L or Z) is now always its own single centerline: no
         # separate lane-track leg exists any more.
-        assert route.bundle_track_path == ()
-        assert route.source_stub_path == route.offset_path
-        assert route.pad_stub_path == route.offset_path
+        assert route.centerline
         assert not set(route.path).intersection(other_terminal_cells)
-        offset_cells = {(round(x - 0.5), round(y - 0.5)) for x, y in route.offset_path}
+        offset_cells = {(round(x - 0.5), round(y - 0.5)) for x, y in route.centerline}
         hard_blocked = set(result.obstacle_map.blocked_cells)
         hard_blocked.update(result.common_bus.tree_cells)
         hard_blocked.update(result.common_bus_escape.path)
@@ -1966,38 +1943,6 @@ def test_show_realized_electrical_metal_in_klayout():
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
-    )
-
-
-def test_local_normal_offset_rotates_through_bundle_bends():
-    path = ((10, 10), (10, 11), (10, 12), (11, 12), (12, 12))
-
-    left_offset = _offset_path_by_local_normals(
-        path,
-        offset_um=20.0,
-        side="left",
-        grid_size_um=10.0,
-    )
-    right_offset = _offset_path_by_local_normals(
-        path,
-        offset_um=20.0,
-        side="right",
-        grid_size_um=10.0,
-    )
-
-    assert left_offset == (
-        (8.5, 10.5),
-        (8.5, 12.5),
-        (8.5, 14.5),
-        (10.5, 14.5),
-        (12.5, 14.5),
-    )
-    assert right_offset == (
-        (12.5, 10.5),
-        (12.5, 12.5),
-        (12.5, 10.5),
-        (10.5, 10.5),
-        (12.5, 10.5),
     )
 
 

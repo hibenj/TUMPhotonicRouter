@@ -613,9 +613,9 @@ def test_pad_wires_do_not_cross_each_other(benchmark_name):
     result = _route_electrical_benchmark(benchmark_name)
     routes = result.detailed_bundle_routes.routes
     for i in range(len(routes)):
-        segments_i = _segments(routes[i].offset_path)
+        segments_i = _segments(routes[i].centerline)
         for j in range(i + 1, len(routes)):
-            segments_j = _segments(routes[j].offset_path)
+            segments_j = _segments(routes[j].centerline)
             for segment_i in segments_i:
                 for segment_j in segments_j:
                     assert not _segments_intersect(segment_i, segment_j), (
@@ -654,10 +654,10 @@ def test_z_fallback_never_crosses_committed_metal():
     when the river construction refuses a bundle, and the guarantee that
     matters is that it can never run into an already-committed river wire."""
 
-    from translation.electrical.bundle_detail_router import (
-        _cells_from_point_path,
-        _wire_reservation_cells_from_point_path,
-        _wire_spacing_radius_cells,
+    from translation.electrical.wire_geometry import (
+        cells_from_point_path,
+        wire_reservation_cells_from_point_path,
+        wire_spacing_radius_cells,
     )
 
     result = _route_electrical_benchmark("heater_s_mod")
@@ -667,14 +667,14 @@ def test_z_fallback_never_crosses_committed_metal():
     fallback_routes = [route for route in detailed.routes if route.construction == "fallback"]
     river_routes = [route for route in detailed.routes if route.construction == "river"]
     assert fallback_routes and river_routes
-    spacing_radius = _wire_spacing_radius_cells(obstacle_map, config)
+    spacing_radius = wire_spacing_radius_cells(obstacle_map, config)
     river_footprint: set = set()
     for route in river_routes:
-        river_footprint |= _wire_reservation_cells_from_point_path(
-            route.offset_path, obstacle_map, config, radius=spacing_radius
+        river_footprint |= wire_reservation_cells_from_point_path(
+            route.centerline, obstacle_map, config, radius=spacing_radius
         )
     for route in fallback_routes:
-        fallback_centerline = set(_cells_from_point_path(route.offset_path))
+        fallback_centerline = set(cells_from_point_path(route.centerline))
         assert not (fallback_centerline & river_footprint), route.terminal.id
 
 
@@ -1788,12 +1788,16 @@ def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
     assert _effective_single_discounted_crossing_per_pair() is False
     monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "1")
     assert (
-        _effective_single_discounted_crossing_per_pair(RoutingConfig.from_environment().crossing_plan)
+        _effective_single_discounted_crossing_per_pair(
+            RoutingConfig.from_environment().crossing_plan
+        )
         is True
     )
     monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "0")
     assert (
-        _effective_single_discounted_crossing_per_pair(RoutingConfig.from_environment().crossing_plan)
+        _effective_single_discounted_crossing_per_pair(
+            RoutingConfig.from_environment().crossing_plan
+        )
         is False
     )
     monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "2")

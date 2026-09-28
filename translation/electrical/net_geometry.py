@@ -294,7 +294,7 @@ def detailed_route_centerline_points(
     route: DetailedBundleRoute,
     obstacle_map: ElectricalObstacleMap,
 ) -> tuple[tuple[float, float], ...]:
-    return tuple(_grid_point_to_um(point, obstacle_map) for point in route.offset_path)
+    return tuple(_grid_point_to_um(point, obstacle_map) for point in route.centerline)
 
 
 def _detailed_route_tagged_rects(
@@ -304,7 +304,7 @@ def _detailed_route_tagged_rects(
 ) -> tuple[TaggedRect, ...]:
     return _terminal_point_route_tagged_rects(
         route.terminal,
-        route.offset_path,
+        route.centerline,
         obstacle_map,
         route_width_um=config.wire_width_um,
         contact_width_um=config.terminal_contact_width_um,
@@ -413,7 +413,7 @@ def _terminal_route_access(
 ) -> Any:
     return _terminal_point_route_access(
         route.terminal,
-        route.offset_path,
+        route.centerline,
         obstacle_map,
         contact_width_um,
         access=_individual_access(obstacle_map, route.terminal),
@@ -581,9 +581,9 @@ def _route_start_um(
     route: DetailedBundleRoute,
     obstacle_map: ElectricalObstacleMap,
 ) -> tuple[float, float] | None:
-    if not route.offset_path:
+    if not route.centerline:
         return None
-    return _grid_point_to_um(route.offset_path[0], obstacle_map)
+    return _grid_point_to_um(route.centerline[0], obstacle_map)
 
 
 def _grid_point_to_um(

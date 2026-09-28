@@ -88,7 +88,7 @@ def realize_electrical_metal(
             _append_terminal_point_route(
                 rects_by_net.setdefault(net_id, []),
                 route.terminal,
-                route.offset_path,
+                route.centerline,
                 obstacle_map,
                 width_um=config.wire_width_um,
                 contact_width_um=config.terminal_contact_width_um,

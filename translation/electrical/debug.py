@@ -403,40 +403,20 @@ def electrical_debug_svg(
             color = _INDIVIDUAL_ROUTE_PALETTE[route.bundle_id % len(_INDIVIDUAL_ROUTE_PALETTE)]
             title = (
                 f"detailed bundle={route.bundle_id} rank={route.rank} "
-                f"lane={route.rank} offset={route.offset_um:.3g}um axis=ordered-bus "
                 f"pad={route.pad_assignment.slot.index if route.pad_assignment is not None else 'none'} "
                 f"terminal={route.terminal.id} start={route.route_start_cell} "
                 f"anchor={route.access_anchor_cell} used_anchor={route.used_access_anchor}"
             )
-            if route.offset_path:
+            if route.centerline:
                 _append_point_polyline(
                     parts,
                     grid.height,
-                    route.offset_path,
+                    route.centerline,
                     stroke=color,
                     stroke_width=0.24,
                     opacity=0.95,
                     title=title,
                 )
-                if route.bundle_track_path:
-                    _append_grid_text(
-                        parts,
-                        grid.height,
-                        route.bundle_track_path[0],
-                        f"L{route.rank}",
-                        font_size=1.35,
-                        fill=color,
-                        opacity=0.65,
-                    )
-                    _append_grid_text(
-                        parts,
-                        grid.height,
-                        route.bundle_track_path[-1],
-                        f"L{route.rank}",
-                        font_size=1.35,
-                        fill=color,
-                        opacity=0.65,
-                    )
             else:
                 _append_route_polyline(
                     parts,

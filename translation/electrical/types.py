@@ -373,16 +373,9 @@ class DetailedBundleRoute:
     pad_assignment: PadAssignment | None
     path: tuple[GridCell, ...]
     target_cells: frozenset[GridCell]
-    track_cell: GridCell | None
-    lane_cell: GridCell | None
-    offset_um: float
-    offset_axis: Literal["x", "y"]
-    offset_path: tuple[GridPoint, ...]
+    centerline: tuple[GridPoint, ...]
     success: bool
     reason: str | None = None
-    source_stub_path: tuple[GridPoint, ...] = ()
-    bundle_track_path: tuple[GridPoint, ...] = ()
-    pad_stub_path: tuple[GridPoint, ...] = ()
     access_anchor_cell: GridCell | None = None
     route_start_cell: GridCell | None = None
     used_access_anchor: bool = False
