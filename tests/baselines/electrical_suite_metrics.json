@@ -113,25 +113,25 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 127,
-      "bus_bend_count": 73,
-      "bus_length_um": 51800.0,
-      "centerline_length_um": 66090.0,
+      "bend_count": 111,
+      "bus_bend_count": 57,
+      "bus_length_um": 31760.0,
+      "centerline_length_um": 46050.0,
       "cross_net_min_spacing_um": 15.0,
       "metal_area_overcount_by_reason_um2": {
-        "bus_stripe_contact": 1000.0,
+        "bus_stripe_contact": 1400.0,
         "pad_contact": 88600.0,
         "terminal_access_join": 5208.749999999995
       },
       "metal_area_overcount_by_source_um2": {
         "bus_escape/pad": 82000.0,
-        "bus_route/bus_stripe": 1000.0,
+        "bus_route/bus_stripe": 1400.0,
         "bus_route/terminal_adapter": 3405.349999999994,
         "pad/route_tail": 6600.0,
         "route_tail/terminal_adapter": 1803.400000000001
       },
-      "metal_area_overcount_ratio": 0.023804732335719194,
-      "metal_area_overcount_um2": 94808.75,
+      "metal_area_overcount_ratio": 0.023734727470845988,
+      "metal_area_overcount_um2": 95208.75,
       "metal_redundant_area_overcount_by_source_um2": {},
       "metal_redundant_area_overcount_um2": 0,
       "net_count": 21,
@@ -360,28 +360,28 @@
         "common_bus": 20,
         "individual": 20
       },
-      "raw_metal_area_um2": 3982769.0,
-      "rect_count": 199,
+      "raw_metal_area_um2": 4011369.0,
+      "rect_count": 201,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_intentional_overlap_pair_count": 72,
+      "same_net_intentional_overlap_pair_count": 90,
       "same_net_intentional_overlap_pair_count_by_reason": {
-        "bus_stripe_contact": 5,
+        "bus_stripe_contact": 7,
         "pad_contact": 23,
-        "terminal_access_join": 44
+        "terminal_access_join": 60
       },
-      "same_net_overlap_pair_count": 72,
+      "same_net_overlap_pair_count": 90,
       "same_net_overlap_pair_count_by_source": {
         "bus_escape/pad": 1,
-        "bus_route/bus_stripe": 5,
-        "bus_route/terminal_adapter": 20,
+        "bus_route/bus_stripe": 7,
+        "bus_route/terminal_adapter": 36,
         "pad/route_tail": 22,
         "route_tail/terminal_adapter": 24
       },
       "same_net_redundant_overlap_pair_count": 0,
       "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 3887960.25,
-      "wire_metal_area_um2": 3336560.2500000005
+      "union_metal_area_um2": 3916160.25,
+      "wire_metal_area_um2": 3364760.2500000005
     },
     "pad_assignment_count": 21,
     "pad_side": "top",
@@ -389,9 +389,9 @@
       "metal_area_overcount_um2": 0.0,
       "net_count": 21,
       "output_polygon_count": 22,
-      "pre_union_rect_count": 243,
-      "raw_metal_area_um2": 3887960.25,
-      "union_metal_area_um2": 3887960.25
+      "pre_union_rect_count": 247,
+      "raw_metal_area_um2": 3916160.25,
+      "union_metal_area_um2": 3916160.25
     },
     "terminal_group_count": 20,
     "verification_error_count": 0,
@@ -408,25 +408,25 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 65,
-      "bus_bend_count": 38,
-      "bus_length_um": 20730.0,
-      "centerline_length_um": 28310.0,
+      "bend_count": 57,
+      "bus_bend_count": 30,
+      "bus_length_um": 9230.0,
+      "centerline_length_um": 16810.0,
       "cross_net_min_spacing_um": 20.0,
       "metal_area_overcount_by_reason_um2": {
-        "bus_stripe_contact": 800.0,
+        "bus_stripe_contact": 1000.0,
         "pad_contact": 85300.0,
         "terminal_access_join": 2813.2500000000027
       },
       "metal_area_overcount_by_source_um2": {
         "bus_escape/pad": 82000.0,
-        "bus_route/bus_stripe": 800.0,
+        "bus_route/bus_stripe": 1000.0,
         "bus_route/terminal_adapter": 1870.8500000000008,
         "pad/route_tail": 3300.0,
         "route_tail/terminal_adapter": 942.4000000000019
       },
-      "metal_area_overcount_ratio": 0.03543594180316637,
-      "metal_area_overcount_um2": 88913.25,
+      "metal_area_overcount_ratio": 0.03512508069487006,
+      "metal_area_overcount_um2": 89113.24999999953,
       "metal_redundant_area_overcount_by_source_um2": {},
       "metal_redundant_area_overcount_um2": 0,
       "net_count": 12,
@@ -565,28 +565,28 @@
         "common_bus": 11,
         "individual": 11
       },
-      "raw_metal_area_um2": 2509126.2,
-      "rect_count": 106,
+      "raw_metal_area_um2": 2537026.1999999997,
+      "rect_count": 107,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_intentional_overlap_pair_count": 39,
+      "same_net_intentional_overlap_pair_count": 48,
       "same_net_intentional_overlap_pair_count_by_reason": {
-        "bus_stripe_contact": 4,
+        "bus_stripe_contact": 5,
         "pad_contact": 12,
-        "terminal_access_join": 23
+        "terminal_access_join": 31
       },
-      "same_net_overlap_pair_count": 39,
+      "same_net_overlap_pair_count": 48,
       "same_net_overlap_pair_count_by_source": {
         "bus_escape/pad": 1,
-        "bus_route/bus_stripe": 4,
-        "bus_route/terminal_adapter": 11,
+        "bus_route/bus_stripe": 5,
+        "bus_route/terminal_adapter": 19,
         "pad/route_tail": 11,
         "route_tail/terminal_adapter": 12
       },
       "same_net_redundant_overlap_pair_count": 0,
       "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 2420212.95,
-      "wire_metal_area_um2": 2081512.95
+      "union_metal_area_um2": 2447912.95,
+      "wire_metal_area_um2": 2109212.9499999997
     },
     "pad_assignment_count": 12,
     "pad_side": "top",
@@ -594,9 +594,9 @@
       "metal_area_overcount_um2": -4.656612873077393e-10,
       "net_count": 12,
       "output_polygon_count": 12,
-      "pre_union_rect_count": 132,
-      "raw_metal_area_um2": 2420212.9499999997,
-      "union_metal_area_um2": 2420212.95
+      "pre_union_rect_count": 134,
+      "raw_metal_area_um2": 2447912.9499999997,
+      "union_metal_area_um2": 2447912.95
     },
     "terminal_group_count": 11,
     "verification_error_count": 0,
@@ -613,25 +613,25 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 140,
-      "bus_bend_count": 79,
-      "bus_length_um": 53470.0,
-      "centerline_length_um": 72400.0,
+      "bend_count": 119,
+      "bus_bend_count": 58,
+      "bus_length_um": 28990.0,
+      "centerline_length_um": 47920.0,
       "cross_net_min_spacing_um": 20.0,
       "metal_area_overcount_by_reason_um2": {
-        "bus_stripe_contact": 800.0,
+        "bus_stripe_contact": 1200.0,
         "pad_contact": 84244.28000000007,
         "terminal_access_join": 5252.802500000002
       },
       "metal_area_overcount_by_source_um2": {
         "bus_escape/pad": 80021.60000000003,
-        "bus_route/bus_stripe": 800.0,
+        "bus_route/bus_stripe": 1200.0,
         "bus_route/terminal_adapter": 3580.5,
         "pad/route_tail": 4222.680000000037,
         "route_tail/terminal_adapter": 1672.3025000000016
       },
-      "metal_area_overcount_ratio": 0.022383037001916642,
-      "metal_area_overcount_um2": 90297.08250000048,
+      "metal_area_overcount_ratio": 0.022271130092136368,
+      "metal_area_overcount_um2": 90697.08250000002,
       "metal_redundant_area_overcount_by_source_um2": {},
       "metal_redundant_area_overcount_um2": 0,
       "net_count": 22,
@@ -870,28 +870,28 @@
         "common_bus": 21,
         "individual": 21
       },
-      "raw_metal_area_um2": 4034174.741,
+      "raw_metal_area_um2": 4072405.9409999996,
       "rect_count": 217,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_intentional_overlap_pair_count": 72,
+      "same_net_intentional_overlap_pair_count": 92,
       "same_net_intentional_overlap_pair_count_by_reason": {
-        "bus_stripe_contact": 4,
+        "bus_stripe_contact": 6,
         "pad_contact": 23,
-        "terminal_access_join": 45
+        "terminal_access_join": 63
       },
-      "same_net_overlap_pair_count": 72,
+      "same_net_overlap_pair_count": 92,
       "same_net_overlap_pair_count_by_source": {
         "bus_escape/pad": 1,
-        "bus_route/bus_stripe": 4,
-        "bus_route/terminal_adapter": 23,
+        "bus_route/bus_stripe": 6,
+        "bus_route/terminal_adapter": 41,
         "pad/route_tail": 22,
         "route_tail/terminal_adapter": 22
       },
       "same_net_redundant_overlap_pair_count": 0,
       "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 3943877.6584999994,
-      "wire_metal_area_um2": 3364121.938499999
+      "union_metal_area_um2": 3981708.8584999996,
+      "wire_metal_area_um2": 3401953.1384999994
     },
     "pad_assignment_count": 22,
     "pad_side": "top",
@@ -900,8 +900,8 @@
       "net_count": 22,
       "output_polygon_count": 23,
       "pre_union_rect_count": 257,
-      "raw_metal_area_um2": 3943877.6584999994,
-      "union_metal_area_um2": 3943877.6584999994
+      "raw_metal_area_um2": 3981708.8584999996,
+      "union_metal_area_um2": 3981708.8584999996
     },
     "terminal_group_count": 21,
     "verification_error_count": 0,

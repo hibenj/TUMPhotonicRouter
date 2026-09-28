@@ -54,6 +54,13 @@ BASELINE_FLOAT_TOLERANCE = 1e-6
 # a fallback (heater_single) and 3 everywhere a Z (river or fallback)
 # exists; pad_channel_height_um dropped with the swap freeing the
 # corridor/channel bundles used to detour through.
+# 2026-09-28 Milestone 3 (common bus column trunks): bus_bend_count and
+# bus_length_um dropped sharply (column trunks join stacked terminals with
+# one stub bend each instead of a BFS branch each); same_net_overlap_pair_count
+# and wire_metal_area_um2 rose a little (a contact lands at every member a
+# trunk passes) and are re-pinned at the new measured value plus ~2% headroom
+# where they were violated or within 10% of the old limit; bus_bend_count_max
+# is re-pinned at the new measured value rounded up to the next multiple of 5.
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -64,12 +71,12 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "pad_channel_height_um_max": 180.0,
     "metal_redundant_area_overcount_um2_max": 1e-6,
     "same_net_duplicate_rect_count_max": 0,
-    "same_net_overlap_pair_count_max": 45,
+    "same_net_overlap_pair_count_max": 49,
     "same_net_redundant_overlap_pair_count_max": 0,
     "pad_wire_max_bend_count_max": 3,
     "pad_wire_detour_total_um_max": 0.0,
-    "bus_bend_count_max": 38,
-    "wire_metal_area_um2_max": 2_082_000.0,
+    "bus_bend_count_max": 30,
+    "wire_metal_area_um2_max": 2_152_000.0,
 }
 DEFAULT_GUARDRAILS = RIPUP_REROUTE_GUARDRAILS
 BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
@@ -87,8 +94,8 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 1,
         "pad_wire_detour_total_um_max": 0.0,
-        "bus_bend_count_max": 2,
-        "wire_metal_area_um2_max": 657_000.0,
+        "bus_bend_count_max": 5,
+        "wire_metal_area_um2_max": 670_000.0,
     },
     "heater_lanes_20": {
         "verification_success": True,
@@ -100,12 +107,12 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "pad_channel_height_um_max": 180.0,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "same_net_duplicate_rect_count_max": 0,
-        "same_net_overlap_pair_count_max": 80,
+        "same_net_overlap_pair_count_max": 92,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
         "pad_wire_detour_total_um_max": 40.0,
-        "bus_bend_count_max": 73,
-        "wire_metal_area_um2_max": 3_337_000.0,
+        "bus_bend_count_max": 60,
+        "wire_metal_area_um2_max": 3_432_000.0,
     },
     "heater_lanes_ripup": RIPUP_REROUTE_GUARDRAILS,
     "heater_s_mod": {
@@ -118,12 +125,12 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "pad_channel_height_um_max": 180.0,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "same_net_duplicate_rect_count_max": 0,
-        "same_net_overlap_pair_count_max": 80,
+        "same_net_overlap_pair_count_max": 94,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
         "pad_wire_detour_total_um_max": 0.0,
-        "bus_bend_count_max": 79,
-        "wire_metal_area_um2_max": 3_365_000.0,
+        "bus_bend_count_max": 60,
+        "wire_metal_area_um2_max": 3_470_000.0,
     },
 }
 
