@@ -42,6 +42,16 @@ def plan_pad_slots(
     bundle-by-bundle using the order induced by the escape corridors. Otherwise
     they fall back to x-coordinate order. The common bus receives one assigned
     slot at the left or right end of the assignment sequence.
+
+    2026-09-28 (eight-row-bundles plan): a bundle's block is anchored so its
+    row-1 pad -- the terminal nearest the pad row, the one the river
+    construction (``river_routing.try_river_route_bundle``) numbers row 1 --
+    lands at or beyond that row's corridor lane c_1, never inward of it
+    (``_interval_preferred_start``, Rule A); rows >= 2 grow outward from
+    there automatically since a pad pitch is wider than a track pitch.
+    ``common_bus_pad_slot_gap`` (Rule B) keeps the bus pad far enough from
+    the sequence of individual pads that its wider escape band cannot
+    overlap a neighbouring individual pad's own metal.
     """
 
     config.validate()
@@ -53,7 +63,7 @@ def plan_pad_slots(
 
     first_assignment_index = config.pad_extra_slots_left
     individual_items = _individual_assignment_items(common_bus, escape_topology)
-    intervals = _pad_intervals(individual_items, obstacle_map, escape_topology)
+    intervals = _pad_intervals(individual_items, obstacle_map, escape_topology, config)
     individual_indices = _assign_interval_indices(intervals, first_assignment_index, config)
     origin_x = _resolve_origin_x(
         intervals,
@@ -182,6 +192,7 @@ def _pad_intervals(
     individual_items: tuple[tuple[ElectricalTerminal, int | None, int | None], ...],
     obstacle_map: ElectricalObstacleMap,
     escape_topology: IndividualEscapeTopologyResult | None,
+    config: ElectricalRoutingConfig,
 ) -> tuple[_PadInterval, ...]:
     if not individual_items:
         return ()
@@ -203,6 +214,7 @@ def _pad_intervals(
                     preferred_x_by_terminal_id,
                     bundle_by_id,
                     obstacle_map,
+                    config,
                 )
             )
             current_items = []
@@ -215,6 +227,7 @@ def _pad_intervals(
                 preferred_x_by_terminal_id,
                 bundle_by_id,
                 obstacle_map,
+                config,
             )
         )
     return tuple(intervals)
@@ -225,18 +238,66 @@ def _make_interval(
     preferred_x_by_terminal_id: dict[str, float],
     bundle_by_id: dict[int, EscapeBundle],
     obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
 ) -> _PadInterval:
     preferred_values = tuple(
         preferred_x_by_terminal_id.get(terminal.id, terminal.center[0]) for terminal, _, _ in items
     )
+    own_column_x_um = _median_float(preferred_values)
     bundle_id = items[0][1] if items else None
     bundle = bundle_by_id.get(bundle_id) if bundle_id is not None else None
     route_side = bundle_route_side(bundle, obstacle_map) if bundle is not None else None
+    # A bundle of more than one terminal already packs its block one pad
+    # pitch (130 um by default) outside its terminal column
+    # (`_interval_preferred_start`'s nested-block formula), well clear of
+    # c_1's much smaller offset (clearance + one track pitch, ~40 um by
+    # default): that formula is untouched. Only a lone terminal's
+    # single-row "bundle" used its own column with no offset at all (Fact
+    # 1 of the eight-row-bundles plan), which is exactly c_1's offset
+    # short; anchoring only this case avoids perturbing every other
+    # bundle's already-adequate placement.
+    preferred_x_um = (
+        _row_one_corridor_x_um(own_column_x_um, route_side, obstacle_map, config)
+        if route_side is not None and len(items) <= 1
+        else own_column_x_um
+    )
     return _PadInterval(
         items=items,
-        preferred_x_um=_median_float(preferred_values),
+        preferred_x_um=preferred_x_um,
         route_side=route_side,
     )
+
+
+def _row_one_corridor_x_um(
+    own_column_x_um: float,
+    route_side: str,
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> float:
+    """Return c_1, the river construction's row-1 corridor lane, in x um.
+
+    2026-09-28 (eight-row-bundles plan, Rule A): mirrors
+    ``river_routing.try_river_route_bundle``'s own c_1 = exit_column +
+    1 * track_pitch, where exit_column = opening_edge + clearance on the
+    exit side. ``pad_slots`` does not scan the obstacle map's open cells
+    the way the river construction does (bundle-wide, across every
+    member's ``terminal_open_cells``); it uses what it already computes
+    for pad placement instead -- ``own_column_x_um``, each member's own
+    escape route's ``exit_cell`` (``_preferred_pad_x_by_terminal_id``),
+    medianed over the bundle. For a column-stacked bundle (the common case
+    this rule fixes) every member's own exit cell sits at essentially the
+    same x as the bundle-wide opening edge the river construction scans
+    for, so adding the same offset (clearance_cells + one track_pitch_cells,
+    on the exit side) reproduces c_1 without a second obstacle-map scan.
+    """
+
+    exit_dx = -1 if route_side == "left" else 1
+    grid_size = obstacle_map.grid.grid_size_um
+    track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
+    track_pitch_cells = max(1, math.ceil(track_pitch_um / grid_size))
+    clearance_cells = max(1, math.ceil(max(config.obstacle_clearance_um, 0.0) / grid_size))
+    offset_cells = exit_dx * (clearance_cells + track_pitch_cells)
+    return own_column_x_um + offset_cells * grid_size
 
 
 def _assign_interval_indices(
@@ -244,6 +305,21 @@ def _assign_interval_indices(
     first_assignment_index: int,
     config: ElectricalRoutingConfig,
 ) -> list[int]:
+    """Assign one contiguous block of slot indices per interval, in order.
+
+    2026-09-28 (eight-row-bundles plan, Rule A): the push below
+    (``start_index = max(shifted_start, previous_end + gap + 1)``) only ever
+    increases an interval's start, so it can only move a "left"-side
+    bundle's row-1 pad inward (row 1 is that bundle's *last* item, at the
+    block's highest index -- see ``_interval_reference_index``); a
+    "right"-side bundle's row 1 is its *first* item, which only moves
+    further outward under this push. When a "left" bundle is pushed this
+    way its row-1 pad can end up inward of c_1 by up to one pad pitch; this
+    is not prevented here (preventing it would mean overlapping the
+    previous interval's pads instead) -- ``river_routing``'s row-1 case
+    absorbs exactly this one inward pad per bundle.
+    """
+
     if not intervals:
         return []
     if config.pad_origin_x_um is not None:
@@ -280,12 +356,28 @@ def _interval_preferred_start(
     nest") is packed entirely on the exit side of the terminal column, one
     slot outward from it, so the terminal nearest the pad row gets the pad
     nearest the terminal column and each terminal further from the pad row
-    gets the next pad column outward. A lone terminal (nothing to nest
-    against) or a terminal with no known exit side keeps the terminal's own
-    column, which gives it a zero-detour wire when the column is free.
+    gets the next pad column outward. That one-pad-pitch offset (130 um by
+    default) already clears c_1, the river construction's row-1 corridor
+    lane (clearance + one track pitch, ~40 um by default), with margin to
+    spare, so a nested multi-terminal block is untouched here.
+
+    2026-09-28 (eight-row-bundles plan, Rule A): a lone terminal (nothing to
+    nest against) is its own single-row "bundle", and used to keep its own
+    column with no offset at all -- short of c_1's own required offset, so
+    the river construction's "pad column is inward of its corridor lane"
+    refusal fired on every one (Fact 1 of the eight-row-bundles plan). A
+    lone terminal with a known exit side is anchored at c_1 instead
+    (``interval.preferred_x_um`` already holds it, see ``_make_interval``);
+    rounding away from the terminal (floor for "left", ceil for "right")
+    keeps it at or beyond c_1 instead of merely nearest it. A terminal with
+    no known exit side (nothing to anchor c_1 from) keeps its own column.
     """
 
     terminal_col_index = round(interval.preferred_x_um / pitch_um)
+    if len(interval.items) <= 1 and interval.route_side is not None:
+        if interval.route_side == "left":
+            return math.floor(interval.preferred_x_um / pitch_um)
+        return math.ceil(interval.preferred_x_um / pitch_um)
     if len(interval.items) <= 1 or interval.route_side is None:
         return round(interval.preferred_x_um / pitch_um - (len(interval.items) - 1) / 2.0)
     if interval.route_side == "left":
@@ -301,9 +393,13 @@ def _interval_reference_index(
 
     Mirrors ``_interval_preferred_start``: for a nested multi-terminal bundle
     the terminal column sits one slot outside the block's inner (nearest)
-    edge rather than at the block's center.
+    edge rather than at the block's center; for an anchored lone terminal
+    (Rule A) its single slot is itself the reference point, since
+    ``interval.preferred_x_um`` is already c_1 in that case.
     """
 
+    if len(interval.items) <= 1 and interval.route_side is not None:
+        return interval_indices[0]
     if len(interval.items) <= 1 or interval.route_side is None:
         return (interval_indices[0] + interval_indices[-1]) / 2.0
     if interval.route_side == "left":
@@ -360,12 +456,41 @@ def _median_float(values: tuple[float, ...]) -> float:
     return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
 
 
+def common_bus_pad_slot_gap(config: ElectricalRoutingConfig) -> int:
+    """Return the empty slots required between the last individual pad and the bus pad.
+
+    2026-09-28 (eight-row-bundles plan, Rule B): the bus pad's escape is
+    realized at ``bus_width_um``, centered on the bus pad slot -- wider than
+    the bus pad's own bondpad rectangle by construction (see
+    ``common_bus_escape_rects``). One default ``pad_empty_slots_between_
+    assignments + 1`` gap (one pad pitch) is not always enough for that
+    band to clear the neighbouring individual pad's own
+    ``bondpad_width_um``-wide metal by ``obstacle_clearance_um``: two slots
+    ``pad_pitch_um`` apart already give ``pad_pitch_um`` of center-to-center
+    separation, so the extra slots beyond that one required is
+    ``ceil((bus_width_um / 2 + bondpad_width_um / 2 + obstacle_clearance_um
+    - pad_pitch_um) / pad_pitch_um)``, at least 0. With the defaults (bus
+    400, individual pad 80, clearance 10, pitch 130) that is
+    ceil((200 + 40 + 10 - 130) / 130) = 1 extra empty slot.
+    """
+
+    required_um = (
+        config.bus_width_um / 2.0
+        + config.bondpad_width_um / 2.0
+        + config.obstacle_clearance_um
+        - config.pad_pitch_um
+    )
+    extra_slots = max(0, math.ceil(required_um / config.pad_pitch_um))
+    return config.pad_empty_slots_between_assignments + 1 + extra_slots
+
+
 def _common_bus_pad_slot_index(
     origin_x: float,
     individual_indices: list[int],
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
 ) -> int:
+    gap = common_bus_pad_slot_gap(config)
     layout_xmin, _, layout_xmax, _ = obstacle_map.layout_bbox
     if config.common_bus_pad_position == "left":
         side_x = layout_xmin - max(
@@ -373,9 +498,7 @@ def _common_bus_pad_slot_index(
             config.common_bus_bondpad_width_um,
         )
         side_index = math.floor((side_x - origin_x) / config.pad_pitch_um)
-        next_sequence_index = min(individual_indices, default=0) - (
-            config.pad_empty_slots_between_assignments + 1
-        )
+        next_sequence_index = min(individual_indices, default=0) - gap
         return min(side_index, next_sequence_index)
 
     side_x = layout_xmax + max(
@@ -383,9 +506,7 @@ def _common_bus_pad_slot_index(
         config.common_bus_bondpad_width_um,
     )
     side_index = math.ceil((side_x - origin_x) / config.pad_pitch_um)
-    next_sequence_index = max(individual_indices, default=-1) + (
-        config.pad_empty_slots_between_assignments + 1
-    )
+    next_sequence_index = max(individual_indices, default=-1) + gap
     return max(side_index, next_sequence_index)
 
 

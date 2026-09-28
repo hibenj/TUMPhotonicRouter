@@ -35,10 +35,15 @@ def test_individual_topology_groups_escape_corridors_before_pad_assignment():
     assert len(topology.routes) == 20
     assert len(topology.failed_routes) == 0
     assert topology.shared_cells
-    # heater_extra_2/heater_extra_3 use their :l terminal here (was :r):
-    # Milestone 4's pad-side consistency swap picked the other terminal for
-    # the bus branch for both, since neither is in a bus column group and
-    # each one's original individual terminal exited away from its pad.
+    # heater_extra_3 uses its :l terminal here (was :r): Milestone 4's
+    # pad-side consistency swap picked the other terminal for its bus
+    # branch, since it is not in a bus column group and its original
+    # individual terminal exited away from its pad. heater_extra_2 would
+    # have qualified the same way, but its original (:r) bus branch is the
+    # one heater_extra_1's branch joins onto (a greedy-tree join, not a bus
+    # column group); swapping it would have stranded heater_extra_1 with no
+    # path to the stripe, so the eight-row-bundles plan's Rule C skips it
+    # and it keeps its original :r terminal on the bus.
     assert [terminal.id for terminal in topology.terminal_order] == [
         "heater_3:l",
         "heater_2:l",
@@ -50,7 +55,7 @@ def test_individual_topology_groups_escape_corridors_before_pad_assignment():
         "heater_post_3:r",
         "heater_extra_0:l",
         "heater_extra_1:l",
-        "heater_extra_2:l",
+        "heater_extra_2:r",
         "heater_extra_3:l",
         "heater_output_3:l",
         "heater_output_2:l",

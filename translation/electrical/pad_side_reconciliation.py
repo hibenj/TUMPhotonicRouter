@@ -153,6 +153,7 @@ def _apply_pad_side_consistency_swap(
     new_selected = dict(common_bus.selected_terminals)
     new_unselected = dict(common_bus.unselected_terminals)
     routes_by_heater_id = {route.heater_id: route for route in common_bus.routes}
+    stripe_cells = set(common_bus.bus.cells)
     swapped_heater_ids: list[str] = []
 
     for heater_id, individual_terminal in common_bus.unselected_terminals.items():
@@ -164,6 +165,38 @@ def _apply_pad_side_consistency_swap(
             continue
         if exit_dx * (pad_column_um - individual_terminal.center[0]) >= 0:
             continue  # exit already points toward the pad's column.
+
+        # 2026-09-28 (eight-row-bundles plan, Rule C): skip a heater whose
+        # current bus branch carries another heater's branch. Every branch
+        # is built by ``shortest_path_to_tree``, a BFS that stops the
+        # instant it reaches any already-in-tree cell, so a route's own
+        # ``path[-1]`` is the one cell where it joins the tree -- either
+        # the stripe, or (this is the "greedy tree" growth the module
+        # docstring describes) some earlier branch, in which case that
+        # earlier branch carries it downstream. Only that join point is
+        # checked, not a whole-path overlap: two independent branches
+        # legitimately share nearby cells along a shared corridor without
+        # either depending on the other, and treating every such overlap
+        # as a carry would block almost every swap. Discarding a branch
+        # that is a real join point would strand the branch that joined it
+        # (common_bus_route_disconnected), so the swap is refused and the
+        # heater keeps its original bus/individual role.
+        candidate_route = routes_by_heater_id.get(heater_id)
+        if candidate_route is not None and candidate_route.path:
+            candidate_cells = set(candidate_route.path)
+            carried_by = next(
+                (
+                    other_heater_id
+                    for other_heater_id, other_route in routes_by_heater_id.items()
+                    if other_heater_id != heater_id
+                    and other_route.path
+                    and other_route.path[-1] not in stripe_cells
+                    and other_route.path[-1] in candidate_cells
+                ),
+                None,
+            )
+            if carried_by is not None:
+                continue  # carried_by's branch joins the tree on this one; see above.
 
         bus_terminal = common_bus.selected_terminals[heater_id]
         forbidden = forbidden_terminal_cells(

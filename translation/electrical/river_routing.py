@@ -69,10 +69,26 @@ def try_river_route_bundle(
     the Manhattan distance (detour 0); the wire collapses to a single L
     when its corridor lane already is its pad column.
 
+    2026-09-28 (eight-row-bundles plan, Rule A): row 1's pad column may be
+    served even when it is inward of c_1 -- ``pad_slots`` anchors a
+    bundle's pad block so row 1's pad lands at or beyond c_1, but a later
+    interval's push rule can still shove that block back inward by up to
+    one pad pitch (only a "left"-side bundle can be pushed this way, since
+    the push only ever increases slot indices). Only row 1 absorbs this:
+    its channel run at h_1 simply reverses direction from c_1 back to p_1
+    (the same four-point centerline construction below, now with p_1 on
+    the inward side of c_1, so it is a Z rather than an L). It crosses no
+    other lane of the bundle because every row j >= 2 has a strictly more
+    outward corridor lane c_j (so its vertical run never enters row 1's
+    inward excursion) and its own channel height h_j != h_1 (so its
+    horizontal run never shares row 1's channel row). Rows >= 2 keep the
+    outward-only rule: the pad-slot nesting only ever lets row 1 be pushed
+    inward.
+
     Returns ``(None, reason)`` if any member has no port access, if a corridor
-    or channel lane ends up off the grid, if a pad column ends up on the
-    wrong side of a corridor lane (breaking monotonicity), or if a wire
-    collides -- checked in two passes: the wire's centerline dilated by the
+    or channel lane ends up off the grid, if a row >= 2 pad column ends up
+    on the wrong side of a corridor lane (breaking monotonicity), or if a
+    wire collides -- checked in two passes: the wire's centerline dilated by the
     obstacle-clearance radius against the obstacle map, every other
     terminal's opening and every other pad; then the wire's bare centerline
     against ``committed_footprint_cells`` (every already-committed wire's
@@ -127,7 +143,7 @@ def try_river_route_bundle(
             return None, f"{terminal.id}'s corridor lane is off the grid"
         pad_cell = _target_cell(target_cells, config)
         p_i = pad_cell[0]
-        if exit_dx * (p_i - c_i) < 0:
+        if exit_dx * (p_i - c_i) < 0 and row_index != 1:
             return None, f"{terminal.id}'s pad column is inward of its corridor lane"
         h_i = _river_channel_lane_y(target_cells, config, row_index, track_pitch_cells)
         if not (0 <= h_i < obstacle_map.grid.height):
@@ -137,6 +153,11 @@ def try_river_route_bundle(
         if config.pad_side == "bottom" and h_i > anchor_cell[1]:
             return None, f"{terminal.id}'s channel lane is above its own terminal row"
 
+        # Row 1's inward case (see the docstring) needs no separate
+        # construction: the same four-point path, with p_i now on the
+        # inward side of c_i, already draws out-to-c_i, up-to-h_i,
+        # back-to-p_i, into-the-pad; count_direction_changes below classes
+        # it "Z" (2-3 bends) on its own.
         centerline = dedupe_points(
             (
                 cell_center(anchor_cell),

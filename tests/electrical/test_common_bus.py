@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from tests.electrical.support import (
     _column_trunk_vertical_cells,
     _dbu_bbox,
@@ -335,6 +337,53 @@ def test_pad_side_reconciliation_swaps_a_lone_heater_and_drops_its_branch_straig
     route = next(route for route in result.common_bus.routes if route.heater_id == "heater_extra_0")
     assert len({cell[0] for cell in route.path}) == 1
     assert route.path[-1] in result.common_bus.bus.cells
+
+
+# Also marked e2e (routes a full 12-mode cascade benchmark end to end,
+# ~6 s): keeps the fast "-m not e2e" suite under its enforced 60 s budget
+# (scripts/test_baseline.sh).
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_swap_skips_a_heater_whose_branch_carries_others(electrical_benchmark_result):
+    """Rule C (eight-row-bundles plan): a heater is skipped by the pad-side
+    consistency swap when another heater's bus branch has joined it (its
+    path's tree-connection cell, ``path[-1]``, lies on the candidate's own
+    path) -- swapping would discard that branch and strand the one that
+    joined it (the ``common_bus_route_disconnected`` bug the eight-row-
+    bundles plan's Fact 3 recorded on ``cascade_16_diagonal``'s
+    ``heater_extra_3``/``heater_extra_4``).
+
+    The plan named ``cascade_16_diagonal`` for this; on the geometry Rules A
+    and B produce there, ``heater_extra_4`` no longer has a pad-side
+    mismatch at all (nothing to swap regardless of Rule C), so this uses
+    ``cascade_12_diagonal`` instead, where the same greedy-tree join between
+    ``heater_extra_3`` and ``heater_extra_4`` still occurs and ``heater_extra_4``
+    is still a swap candidate.
+    """
+
+    result = electrical_benchmark_result("cascade_12_diagonal")
+
+    route_3 = next(
+        route for route in result.common_bus.routes if route.heater_id == "heater_extra_3"
+    )
+    route_4 = next(
+        route for route in result.common_bus.routes if route.heater_id == "heater_extra_4"
+    )
+    # heater_extra_3's branch joins heater_extra_4's: its tree-connection
+    # cell lies on heater_extra_4's own path.
+    assert route_3.path[-1] in set(route_4.path)
+
+    # heater_extra_4 keeps its original bus terminal (":l") instead of being
+    # swapped to ":r" -- swapping would have discarded this branch and
+    # stranded heater_extra_3 (no path left to the stripe).
+    assert result.common_bus.selected_terminals["heater_extra_4"].side_key == "l"
+    assert result.common_bus.unselected_terminals["heater_extra_4"].side_key == "r"
+
+    assert result.verification is not None
+    assert result.verification.success
+    assert "common_bus_route_disconnected" not in {
+        issue.code for issue in result.verification.issues
+    }
 
 
 def test_trim_keeps_the_stripe_under_the_bus_pad(electrical_benchmark_result):
