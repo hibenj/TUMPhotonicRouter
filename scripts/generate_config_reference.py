@@ -51,6 +51,7 @@ from photonic_router import cli as cli_module  # noqa: E402
 from photonic_router import config as config_module  # noqa: E402
 from photonic_router import env_overlay as env_overlay_module  # noqa: E402
 from photonic_router import flow_options as flow_options_module  # noqa: E402
+from translation.electrical import types as electrical_types_module  # noqa: E402
 
 OUTPUT_PATH = REPO_ROOT / "docs" / "CONFIGURATION.md"
 
@@ -68,6 +69,101 @@ SPECIAL_ENV_PATHS: dict[tuple[str, ...], tuple[str, ...]] = {
     ),
     ("router", "search", "long_straight_congestion_weight"): (
         "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT",
+    ),
+}
+
+#: `ElectricalRoutingConfig` (`translation/electrical/types.py`) gives every field a
+#: value but no per-field doc comment or trailing docstring, so `_field_docs` (which
+#: reads exactly those two forms out of `config.py` and `flow_options.py`) finds
+#: nothing for this class. Every description below was written by reading the field's
+#: use across `translation/electrical/*.py` (grep `config.<field>`), not extracted
+#: from source; Task 2 of the 2026-09-28 electrical-docs slice leaves `types.py`
+#: itself out of scope, so the descriptions live here instead of as comments there.
+ELECTRICAL_FIELD_DESCRIPTIONS: dict[str, str] = {
+    "pad_side": (
+        "The side of the die the individual bondpad row sits on. The common bus is "
+        "placed on the opposite side (`bus_side`, a derived property) and escapes "
+        "back to this side."
+    ),
+    "wire_width_um": "Width of one individual pad wire's realized metal.",
+    "bondpad_width_um": "Width (x) of one individual bondpad.",
+    "common_bus_bondpad_width_um": "Width (x) of the common bus's own bondpad.",
+    "common_bus_bondpad_length_um": "Length (y) of the common bus's own bondpad.",
+    "bondpad_length_um": "Length (y) of one individual bondpad.",
+    "bondpad_spacing_um": "Gap left between adjacent individual bondpads.",
+    "pad_pitch_um": (
+        "Center-to-center spacing of the individual pad slot grid; must be at least "
+        "`bondpad_width_um + bondpad_spacing_um`."
+    ),
+    "pad_offset_um": "Extra clearance added around the pad row when sizing the die and the bus.",
+    "pad_access_depth_um": "Depth of the straight access stub routed into a pad from its slot.",
+    "pad_origin_x_um": (
+        "Fixed x origin of the pad slot grid. `None` (default) lets `pad_slots` "
+        "compute an origin from the routed topology instead."
+    ),
+    "pad_empty_slots_between_assignments": (
+        "Minimum number of unused pad slots left between two assigned slots."
+    ),
+    "pad_extra_slots_left": "Extra unassigned pad slots reserved to the left of the first assignment.",
+    "pad_extra_slots_right": "Extra unassigned pad slots reserved to the right of the last assignment.",
+    "common_bus_pad_position": (
+        "Which end of the pad row the common bus's own bondpad slot is placed at."
+    ),
+    "routing_grid_pitch_um": "Cell size of the electrical routing grid (`GridSpec.grid_size_um`).",
+    "metal_layer": "GDS layer the realized wire, bus and contact metal is drawn on.",
+    "pad_marker_layer": (
+        "GDS layer the pad marker rectangles are drawn on, or `None` to skip drawing them."
+    ),
+    "heater_layers": "Layers read back from the layout when rendering the metal snapshot debug SVG.",
+    "metal_obstacle_layers": (
+        "Layers the obstacle extractor treats as pre-existing metal/heater obstacles."
+    ),
+    "obstacle_clearance_um": "Clearance kept between routed metal and every other obstacle.",
+    "terminal_open_radius_um": (
+        "Radius of the disk of grid cells opened around a terminal so a route may "
+        "originate or land there."
+    ),
+    "terminal_contact_width_um": "Minimum width of the rectangle where a wire contacts a terminal port.",
+    "layout_margin_um": "Margin added around the heaters' bounding box when sizing the electrical die.",
+    "bus_offset_um": "Gap between the heaters' bounding box and the near edge of the common bus stripe.",
+    "bus_width_um": "Width of the common bus stripe and its realized metal.",
+    "bus_x_margin_um": (
+        "Extra horizontal margin the common bus stripe and pad-slot grid keep past "
+        "the heaters' bounding box."
+    ),
+    "common_bus_routing_strategy": (
+        "Which `common_bus_router` construction runs first: `local_trunk_then_greedy` "
+        "(column trunks, Milestone 3) or the plain `greedy_tree` BFS."
+    ),
+    "common_bus_terminal_selection": (
+        "Rule choosing, per heater, which of its two terminals joins the common bus: "
+        "`path_cost`, `median_x_biased`, or `local_pair_median_x_biased` (default)."
+    ),
+    "common_bus_median_bias_weight": (
+        "Weight of the median-x bias term in `common_bus_terminal_selection`'s scoring."
+    ),
+    "common_bus_local_pair_y_tolerance_um": (
+        "Maximum y difference for two terminals to be treated as a local same-row pair."
+    ),
+    "common_bus_local_pair_max_gap_um": (
+        "Maximum x gap for two terminals to be treated as a local same-row pair."
+    ),
+    "individual_route_spacing_um": (
+        "Minimum spacing kept between two individual pad wires' realized metal "
+        "(added to `wire_width_um` for the river-routing track pitch)."
+    ),
+    "heater_component_patterns": (
+        "`fnmatch` patterns a placed instance's component name must match to be "
+        "treated as a heater."
+    ),
+    "heater_instance_prefixes": "Instance-name prefixes that mark a placed instance as a heater.",
+    "obstacle_mode": (
+        "How the electrical obstacle map rasterizes geometry: `bounding_boxes` "
+        "(default) or `rasterized_polygons`."
+    ),
+    "clearance_metric": (
+        "Distance metric (`manhattan` or `chebyshev`, default) the obstacle map uses "
+        "for clearance inflation."
     ),
 }
 
@@ -216,6 +312,41 @@ def _cli_flags_by_path() -> dict[tuple[str, ...], str]:
     return flags
 
 
+def _electrical_cli_flags_by_field() -> dict[str, str]:
+    """`ElectricalRoutingConfig` field name -> the command-line flag(s) that fill it.
+
+    Read the same way `_cli_flags_by_path` reads `FlowOptions`, one level deeper:
+    `_flow_options`'s one `ElectricalRoutingConfig(...)` call (nested inside the
+    `electrical=ElectricalOptions(electrical_config=...)` keyword) is found directly,
+    since `_cli_flags_by_path` only walks the outer `FlowOptions(...)` call's two
+    levels (group, then field).
+    """
+    option_strings = _option_strings_by_dest()
+    source = Path(inspect.getsourcefile(cli_module)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    flow_options_fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_flow_options"
+    )
+    call = next(
+        node
+        for node in ast.walk(flow_options_fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ElectricalRoutingConfig"
+    )
+    flags: dict[str, str] = {}
+    for field_keyword in call.keywords:
+        if field_keyword.arg is None:
+            continue
+        dests = _args_attributes(field_keyword.value)
+        rendered = [option_strings[dest] for dest in dests if dest in option_strings]
+        if rendered:
+            flags[field_keyword.arg] = ", ".join(rendered)
+    return flags
+
+
 # --- walking a configuration tree ---------------------------------------
 
 
@@ -359,6 +490,19 @@ def render() -> str:
     routing_leaves = [item for item in routing_items if isinstance(item, Leaf)]
     flow_leaves = [item for item in flow_items if isinstance(item, Leaf)]
 
+    electrical_docs = {
+        ("ElectricalRoutingConfig", name): desc
+        for name, desc in ELECTRICAL_FIELD_DESCRIPTIONS.items()
+    }
+    electrical_items = _walk(electrical_types_module.ElectricalRoutingConfig, (), electrical_docs)
+    electrical_leaves = [item for item in electrical_items if isinstance(item, Leaf)]
+    electrical_cli_flags = _electrical_cli_flags_by_field()
+    electrical_flag_column = {
+        leaf.path: electrical_cli_flags[leaf.name]
+        for leaf in electrical_leaves
+        if leaf.name in electrical_cli_flags
+    }
+
     env_column = {
         path: ", ".join(f"`{name}`" for name in names) for path, names in env_names.items()
     }
@@ -368,6 +512,9 @@ def render() -> str:
 
     with_env = sum(1 for leaf in routing_leaves if leaf.path in env_column)
     with_flag = sum(1 for leaf in flow_leaves if leaf.path in flag_column)
+    electrical_with_flag = sum(
+        1 for leaf in electrical_leaves if leaf.path in electrical_flag_column
+    )
 
     lines: list[str] = [
         "# Configuration reference",
@@ -388,7 +535,10 @@ def render() -> str:
         "  `RouterConfig.to_rust` hands to `rust_backend.PyPhotonicRouter`.",
         "* `FlowOptions` (`python/photonic_router/flow_options.py`) -- the flow-level",
         "  choices: which benchmark, which stages run, which artifacts are written.",
-        "  It is the second argument of `photonic_router.flow.route_benchmark`.",
+        "  It is the second argument of `photonic_router.flow.route_benchmark`. Its",
+        "  `electrical.electrical_config` field is a third dataclass,",
+        "  `ElectricalRoutingConfig` (`translation/electrical/types.py`), 37 fields deep",
+        "  and given its own section below rather than appearing inline.",
         "",
         "Precedence, lowest to highest (`python/photonic_router/config_loading.py`,",
         "`python/photonic_router/cli.py::main`): the dataclass defaults below, then the",
@@ -399,12 +549,17 @@ def render() -> str:
         "field from. A field with no variable and no flag is set programmatically only.",
         "A field of the `router` subtree with an empty description is documented by its",
         "Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.",
-        "See `docs/ARCHITECTURE.md` for how the two trees reach the stages.",
+        "`ElectricalRoutingConfig` has no `PHOTONIC_ROUTER_*` overlay of its own, so its",
+        "section below has a command-line column only, like `FlowOptions`.",
+        "See `docs/ARCHITECTURE.md` for how the trees reach the stages.",
         "",
         (
             f"Totals: {len(routing_leaves)} `RoutingConfig` fields ({with_env} with an "
             f"overlay variable), {len(flow_leaves)} `FlowOptions` fields ({with_flag} "
-            f"with a command-line flag), {len(routing_leaves) + len(flow_leaves)} in total."
+            f"with a command-line flag), {len(electrical_leaves)} "
+            f"`ElectricalRoutingConfig` fields ({electrical_with_flag} with a "
+            f"command-line flag), "
+            f"{len(routing_leaves) + len(flow_leaves) + len(electrical_leaves)} in total."
         ),
         "",
         "## `RoutingConfig` -- the router's settings",
@@ -414,6 +569,44 @@ def render() -> str:
     lines.append("## `FlowOptions` -- the flow-level choices")
     lines.append("")
     lines.extend(_section(flow_items, "command line", flag_column, "FlowOptions"))
+    lines.append("## `ElectricalRoutingConfig` -- the heater-metal routing stage's parameters")
+    lines.append("")
+    lines.append(
+        "Reached through `FlowOptions.electrical.electrical_config` "
+        "(`translation/electrical/types.py`), and from there passed to every stage of "
+        "the electrical pipeline by `route_electrical_heaters` (`docs/ARCHITECTURE.md`, "
+        '"the heater-metal pipeline as stages"). `cli.py::_flow_options` builds one '
+        "`ElectricalRoutingConfig(...)` from seven `--electrical-*` flags; every other "
+        "field is set programmatically only (no flag, no `PHOTONIC_ROUTER_*` overlay "
+        "variable, since `ElectricalRoutingConfig` is not part of the `RoutingConfig` "
+        "tree `ENV_OVERLAY` covers)."
+    )
+    lines.append("")
+    lines.extend(
+        _section(
+            electrical_items,
+            "command line",
+            electrical_flag_column,
+            "ElectricalRoutingConfig",
+        )
+    )
+    lines.append(
+        "`validate()` requires every width, length, pitch and depth field positive "
+        "(`wire_width_um`, `bondpad_width_um`, `bondpad_length_um`, "
+        "`common_bus_bondpad_width_um`, `common_bus_bondpad_length_um`, `pad_pitch_um` "
+        "itself at least `bondpad_width_um + bondpad_spacing_um`, "
+        "`pad_access_depth_um`, `routing_grid_pitch_um`, `terminal_contact_width_um`, "
+        "`bus_width_um`); every offset, margin, clearance, slot count and spacing "
+        "field non-negative (`bondpad_spacing_um`, `pad_offset_um`, "
+        "`pad_empty_slots_between_assignments`, `pad_extra_slots_left`, "
+        "`pad_extra_slots_right`, `obstacle_clearance_um`, `terminal_open_radius_um`, "
+        "`layout_margin_um`, `bus_offset_um`, `common_bus_median_bias_weight`, "
+        "`common_bus_local_pair_y_tolerance_um`, `common_bus_local_pair_max_gap_um`, "
+        "`individual_route_spacing_um`); and each of `pad_side`, "
+        "`common_bus_pad_position`, `common_bus_routing_strategy`, "
+        "`common_bus_terminal_selection`, `obstacle_mode` and `clearance_metric` one "
+        "of its listed `Literal` choices."
+    )
     while lines and lines[-1] == "":
         lines.pop()
     return "\n".join(lines) + "\n"

@@ -24,6 +24,7 @@ import pytest
 from pathlib import Path
 from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+from tests.fixtures.sessions import route_electrical_benchmark_result
 from tests.fixtures.synthetic_layouts import path_length_schematic
 from translation.electrical import (
     DEFAULT_BONDPAD_WIDTH_UM,
@@ -33,7 +34,6 @@ from translation.electrical import (
     DEFAULT_PAD_PITCH_UM,
     DEFAULT_WIRE_WIDTH_UM,
     ElectricalRoutingConfig,
-    route_electrical_heaters,
 )
 from translation.layout_from_schematic import layout_from_schematic
 from translation.photonic_verification import verify_photonic_routing
@@ -536,9 +536,7 @@ def test_routing_flow_routes_heater_electrical_metal_end_to_end():
 
 
 def _route_electrical_benchmark(benchmark_name: str):
-    schematic = load_benchmark(benchmark_name)
-    component = layout_from_schematic(schematic)
-    return route_electrical_heaters(component, schematic, ElectricalRoutingConfig())
+    return route_electrical_benchmark_result(benchmark_name)
 
 
 def _segments(points):

@@ -17,7 +17,14 @@ from uuid import uuid4
 import pytest
 from gdsfactory.component import Component
 
+from photonic_router.flow import load_benchmark
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, _load_rust_backend
+from translation.electrical import (
+    ElectricalRoutingConfig,
+    ElectricalRoutingResult,
+    route_electrical_heaters,
+)
+from translation.layout_from_schematic import layout_from_schematic
 from translation.routing import crossing_plan_stage as crossing_plan_stage_module
 from translation.routing import dispatch as dispatch_module
 from translation.routing import finalize as finalize_module
@@ -180,3 +187,16 @@ class Pipeline:
 
 def pipeline_for_test(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Pipeline:
     return Pipeline(monkeypatch, **overrides)
+
+
+def route_electrical_benchmark_result(benchmark_name: str) -> ElectricalRoutingResult:
+    """Route ``benchmark_name`` through the full electrical pipeline with a
+    default `ElectricalRoutingConfig`.
+
+    Backs the `electrical_benchmark_result` fixture in `tests/conftest.py` and
+    the flow-level electrical tests in `tests/e2e/test_routing_flow_stats.py`.
+    """
+
+    schematic = load_benchmark(benchmark_name)
+    component = layout_from_schematic(schematic)
+    return route_electrical_heaters(component, schematic, ElectricalRoutingConfig())

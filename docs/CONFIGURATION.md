@@ -16,7 +16,10 @@ else does:
   `RouterConfig.to_rust` hands to `rust_backend.PyPhotonicRouter`.
 * `FlowOptions` (`python/photonic_router/flow_options.py`) -- the flow-level
   choices: which benchmark, which stages run, which artifacts are written.
-  It is the second argument of `photonic_router.flow.route_benchmark`.
+  It is the second argument of `photonic_router.flow.route_benchmark`. Its
+  `electrical.electrical_config` field is a third dataclass,
+  `ElectricalRoutingConfig` (`translation/electrical/types.py`), 37 fields deep
+  and given its own section below rather than appearing inline.
 
 Precedence, lowest to highest (`python/photonic_router/config_loading.py`,
 `python/photonic_router/cli.py::main`): the dataclass defaults below, then the
@@ -27,9 +30,11 @@ command-line column names the flag `photonic_router.cli::_flow_options` fills a
 field from. A field with no variable and no flag is set programmatically only.
 A field of the `router` subtree with an empty description is documented by its
 Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
-See `docs/ARCHITECTURE.md` for how the two trees reach the stages.
+`ElectricalRoutingConfig` has no `PHOTONIC_ROUTER_*` overlay of its own, so its
+section below has a command-line column only, like `FlowOptions`.
+See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 85 `RoutingConfig` fields (85 with an overlay variable), 48 `FlowOptions` fields (40 with a command-line flag), 133 in total.
+Totals: 85 `RoutingConfig` fields (85 with an overlay variable), 48 `FlowOptions` fields (40 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 170 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -325,3 +330,53 @@ The optional legacy stats collector filled in place by the stages.
 | --- | --- | --- | --- | --- |
 | `collect_route_stats` | `bool` | `False` | -- | -- |
 | `stats` | `RoutingFlowStats \| None` | `None` | -- | -- |
+
+## `ElectricalRoutingConfig` -- the heater-metal routing stage's parameters
+
+Reached through `FlowOptions.electrical.electrical_config` (`translation/electrical/types.py`), and from there passed to every stage of the electrical pipeline by `route_electrical_heaters` (`docs/ARCHITECTURE.md`, "the heater-metal pipeline as stages"). `cli.py::_flow_options` builds one `ElectricalRoutingConfig(...)` from seven `--electrical-*` flags; every other field is set programmatically only (no flag, no `PHOTONIC_ROUTER_*` overlay variable, since `ElectricalRoutingConfig` is not part of the `RoutingConfig` tree `ENV_OVERLAY` covers).
+
+### `ElectricalRoutingConfig` -- `ElectricalRoutingConfig`
+
+Configuration for the first electrical common-bus routing milestone. ``pad_side`` is the only user-facing side choice. The common bus is placed on the opposite side and later escapes back to the pad side.
+
+| field | type | default | command line | description |
+| --- | --- | --- | --- | --- |
+| `pad_side` | `Side` | `'top'` | `--electrical-pad-side` | The side of the die the individual bondpad row sits on. The common bus is placed on the opposite side (`bus_side`, a derived property) and escapes back to this side. |
+| `wire_width_um` | `float` | `20.0` | `--electrical-wire-width-um` | Width of one individual pad wire's realized metal. |
+| `bondpad_width_um` | `float` | `80.0` | -- | Width (x) of one individual bondpad. |
+| `common_bus_bondpad_width_um` | `float` | `400.0` | -- | Width (x) of the common bus's own bondpad. |
+| `common_bus_bondpad_length_um` | `float` | `400.0` | -- | Length (y) of the common bus's own bondpad. |
+| `bondpad_length_um` | `float` | `300.0` | -- | Length (y) of one individual bondpad. |
+| `bondpad_spacing_um` | `float` | `50.0` | -- | Gap left between adjacent individual bondpads. |
+| `pad_pitch_um` | `float` | `130.0` | `--electrical-pad-pitch-um` | Center-to-center spacing of the individual pad slot grid; must be at least `bondpad_width_um + bondpad_spacing_um`. |
+| `pad_offset_um` | `float` | `40.0` | -- | Extra clearance added around the pad row when sizing the die and the bus. |
+| `pad_access_depth_um` | `float` | `20.0` | -- | Depth of the straight access stub routed into a pad from its slot. |
+| `pad_origin_x_um` | `float \| None` | `None` | -- | Fixed x origin of the pad slot grid. `None` (default) lets `pad_slots` compute an origin from the routed topology instead. |
+| `pad_empty_slots_between_assignments` | `int` | `0` | -- | Minimum number of unused pad slots left between two assigned slots. |
+| `pad_extra_slots_left` | `int` | `0` | -- | Extra unassigned pad slots reserved to the left of the first assignment. |
+| `pad_extra_slots_right` | `int` | `0` | -- | Extra unassigned pad slots reserved to the right of the last assignment. |
+| `common_bus_pad_position` | `Literal['left', 'right']` | `'right'` | -- | Which end of the pad row the common bus's own bondpad slot is placed at. |
+| `routing_grid_pitch_um` | `float` | `10.0` | `--electrical-grid-pitch-um` | Cell size of the electrical routing grid (`GridSpec.grid_size_um`). |
+| `metal_layer` | `Layer` | `(125, 0)` | -- | GDS layer the realized wire, bus and contact metal is drawn on. |
+| `pad_marker_layer` | `Layer \| None` | `(150, 0)` | -- | GDS layer the pad marker rectangles are drawn on, or `None` to skip drawing them. |
+| `heater_layers` | `tuple[Layer, ...]` | `((47, 0),)` | -- | Layers read back from the layout when rendering the metal snapshot debug SVG. |
+| `metal_obstacle_layers` | `tuple[Layer, ...]` | `((47, 0), (45, 0), (49, 0), (125, 0), (44, 0), (43, 0))` | -- | Layers the obstacle extractor treats as pre-existing metal/heater obstacles. |
+| `obstacle_clearance_um` | `float` | `10.0` | `--electrical-obstacle-clearance-um` | Clearance kept between routed metal and every other obstacle. |
+| `terminal_open_radius_um` | `float` | `15.0` | -- | Radius of the disk of grid cells opened around a terminal so a route may originate or land there. |
+| `terminal_contact_width_um` | `float` | `10.0` | `--electrical-terminal-contact-width-um` | Minimum width of the rectangle where a wire contacts a terminal port. |
+| `layout_margin_um` | `float` | `80.0` | -- | Margin added around the heaters' bounding box when sizing the electrical die. |
+| `bus_offset_um` | `float` | `60.0` | -- | Gap between the heaters' bounding box and the near edge of the common bus stripe. |
+| `bus_width_um` | `float` | `400.0` | `--electrical-bus-width-um` | Width of the common bus stripe and its realized metal. |
+| `bus_x_margin_um` | `float` | `80.0` | -- | Extra horizontal margin the common bus stripe and pad-slot grid keep past the heaters' bounding box. |
+| `common_bus_routing_strategy` | `Literal['greedy_tree', 'local_trunk_then_greedy']` | `'local_trunk_then_greedy'` | -- | Which `common_bus_router` construction runs first: `local_trunk_then_greedy` (column trunks, Milestone 3) or the plain `greedy_tree` BFS. |
+| `common_bus_terminal_selection` | `Literal['path_cost', 'median_x_biased', 'local_pair_median_x_biased']` | `'local_pair_median_x_biased'` | -- | Rule choosing, per heater, which of its two terminals joins the common bus: `path_cost`, `median_x_biased`, or `local_pair_median_x_biased` (default). |
+| `common_bus_median_bias_weight` | `float` | `1.0` | -- | Weight of the median-x bias term in `common_bus_terminal_selection`'s scoring. |
+| `common_bus_local_pair_y_tolerance_um` | `float` | `30.0` | -- | Maximum y difference for two terminals to be treated as a local same-row pair. |
+| `common_bus_local_pair_max_gap_um` | `float` | `800.0` | -- | Maximum x gap for two terminals to be treated as a local same-row pair. |
+| `individual_route_spacing_um` | `float` | `20.0` | -- | Minimum spacing kept between two individual pad wires' realized metal (added to `wire_width_um` for the river-routing track pitch). |
+| `heater_component_patterns` | `tuple[str, ...]` | `('straight_heater_metal*',)` | -- | `fnmatch` patterns a placed instance's component name must match to be treated as a heater. |
+| `heater_instance_prefixes` | `tuple[str, ...]` | `('heater',)` | -- | Instance-name prefixes that mark a placed instance as a heater. |
+| `obstacle_mode` | `Literal['bounding_boxes', 'rasterized_polygons']` | `'bounding_boxes'` | -- | How the electrical obstacle map rasterizes geometry: `bounding_boxes` (default) or `rasterized_polygons`. |
+| `clearance_metric` | `Literal['manhattan', 'chebyshev']` | `'chebyshev'` | -- | Distance metric (`manhattan` or `chebyshev`, default) the obstacle map uses for clearance inflation. |
+
+`validate()` requires every width, length, pitch and depth field positive (`wire_width_um`, `bondpad_width_um`, `bondpad_length_um`, `common_bus_bondpad_width_um`, `common_bus_bondpad_length_um`, `pad_pitch_um` itself at least `bondpad_width_um + bondpad_spacing_um`, `pad_access_depth_um`, `routing_grid_pitch_um`, `terminal_contact_width_um`, `bus_width_um`); every offset, margin, clearance, slot count and spacing field non-negative (`bondpad_spacing_um`, `pad_offset_um`, `pad_empty_slots_between_assignments`, `pad_extra_slots_left`, `pad_extra_slots_right`, `obstacle_clearance_um`, `terminal_open_radius_um`, `layout_margin_um`, `bus_offset_um`, `common_bus_median_bias_weight`, `common_bus_local_pair_y_tolerance_um`, `common_bus_local_pair_max_gap_um`, `individual_route_spacing_um`); and each of `pad_side`, `common_bus_pad_position`, `common_bus_routing_strategy`, `common_bus_terminal_selection`, `obstacle_mode` and `clearance_metric` one of its listed `Literal` choices.

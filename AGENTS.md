@@ -250,6 +250,11 @@ RustRouteDebugArtifacts)`, and per phase the Protocols of
 Allows swapping a router, or one phase of it, without touching the other stages;
 `docs/ARCHITECTURE.md` section 3 lists the phases with their types.
 
+The electrical router (`translation/electrical/`) follows the same stage-and-Protocol
+pattern: `route_electrical.py::route_electrical_heaters` is the literal twelve-stage
+sequence, `stages.py` declares one `Protocol` per stage; see `docs/ARCHITECTURE.md`
+section 2's `translation/electrical/` subsection.
+
 ### 3. Grid Discretization & Clearance
 
 Obstacles expanded by **security_margin** (default 20µm) + **clearance** (0.5µm) for routing clearance.
@@ -293,6 +298,8 @@ Line counts are `wc -l` at 2026-09-24; `docs/ARCHITECTURE.md` has the full map.
 | `translation/routing/session.py` | 372 | The nine-phase routing session | Changing the phase sequence |
 | `translation/routing/stages.py` | 207 | One `Protocol` per phase | Changing a phase's contract |
 | `translation/routing/state.py` | 339 | `SessionState`, documented per field | Adding per-run state |
+| `translation/electrical/route_electrical.py` | 214 | The twelve-stage electrical sequence | Adding or reordering an electrical stage |
+| `translation/electrical/stages.py` | 234 | One `Protocol` per electrical stage | Changing an electrical stage's contract |
 | `python/photonic_router/primitive_library.py` | 179 | Component library | Adding primitives, bend config |
 | `src/search/mod.rs` | 128 | The `NetSearch` interface | Adding a search engine |
 | `src/search/astar/kernel.rs` | 1,479 | The A* loop | Algorithm tuning |
@@ -431,4 +438,4 @@ loop ask it.
 
 ---
 
-**Last Updated**: 2026-09-24 (Milestone 7: `docs/ARCHITECTURE.md` and `docs/CONFIGURATION.md`) | **Codebase Version**: 0.1.0 (Rust+Python hybrid)
+**Last Updated**: 2026-09-28 (Electrical Milestone 4: `translation/electrical/` as named stages, `docs/ARCHITECTURE.md` and `docs/CONFIGURATION.md` gain the electrical pipeline) | **Codebase Version**: 0.1.0 (Rust+Python hybrid)

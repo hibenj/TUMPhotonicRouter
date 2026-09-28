@@ -17,11 +17,17 @@ This document is the map. The knobs themselves are in
 `scripts/generate_config_reference.py`); the paper's numbers and their
 provenance are in [`docs/DATE2027_REPRODUCTION.md`](DATE2027_REPRODUCTION.md);
 the restructuring that produced this layout is
-`.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
+`.agent/execplans/2026-09-22-modular-readable-router-restructure.md`; the
+electrical heater-metal pipeline (section 2's `translation/electrical/`
+subsection) was named as stages by
+`.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`'s
+Milestone 4.
 
 **How to read it.** Every claim below names the file it can be checked in.
 Line counts are `wc -l` on the branch `restructure/modular-engine` at
-2026-09-24 (Milestone 6 complete, commit `18530b8`); they are orders of
+2026-09-24 (Milestone 6 complete, commit `18530b8`) for sections 1 and 3-10,
+and at 2026-09-28 (Electrical Milestone 4 slice 4 complete, commit `c71c6a5`)
+for the `translation/electrical/` subsection of section 2; they are orders of
 magnitude, not contracts. Historical file names appear only where a paragraph
 says explicitly that they are historical.
 
@@ -255,11 +261,188 @@ crossing-structure placement), `crossing_structures.py` (248),
 verifier), the three `path_length_*.py` modules (1,068 together),
 `route_order.py` (203, the net orders), `layout_from_schematic.py` (93),
 `route_gds.py` (179, the gdsfactory reference router) and
-`gds_write_options.py` (18). `translation/electrical/` (17 modules, 7,902
-lines) owns the heater-metal routing stack -- terminal extraction, pad slots,
-bus and detail routing, metal realization and its own verification. It shares
-the grid vocabulary with the optical side but has its own router; the optical
-stages must not import it.
+`gds_write_options.py` (18).
+
+### `translation/electrical/` -- the heater-metal pipeline as stages
+
+`translation/electrical/` (28 modules, 9,440 lines) owns the heater-metal
+routing stack: terminal extraction, the common bus, pad planning, detailed
+pad-wire routing, metal realization and its own verification and debug SVGs.
+It shares the grid vocabulary with the optical side but has its own router;
+the optical stages must not import it. `__init__.py` (61 lines) is the public
+re-export surface every caller outside the package imports through. Below,
+in the pipeline order of `route_electrical.py::route_electrical_heaters`:
+
+`route_electrical.py` (214 lines) owns `route_electrical_heaters`, the
+literal twelve-stage sequence, after the pattern of
+`translation/routing/session.py::run` -- one call per stage, each returning
+the frozen product its `stages.py` Protocol names. It decides nothing itself
+beyond the guard that skips a stage when its inputs are not ready (the next
+subsection).
+
+`stages.py` (234 lines) owns the twelve `typing.Protocol` declarations
+(`TerminalExtractor` through `DebugArtifactWriter`), one per stage, after the
+pattern of `translation/routing/stages.py`; its module docstring records
+every place an implementation's real parameter names or defaults differ from
+the stage table below, so the Protocol and the function it types never
+silently drift apart.
+
+`types.py` (486 lines) owns every dataclass the pipeline passes between
+stages: `ElectricalRoutingConfig` (the typed configuration, with its own
+`validate()`), the terminal and port-access types
+(`ElectricalTerminal`, `TerminalPairGroup`, `ElectricalPortAccess`), one
+result type per stage (`ElectricalObstacleMap`, `CommonBusRoutingResult`,
+`PadPlan`, `PadSideReconciliation`, `CommonBusEscapeResult`,
+`IndividualEscapeTopologyResult`, `DetailedBundleRoutingResult`,
+`ElectricalVerificationResult`), and the top-level `ElectricalRoutingResult`.
+No algorithm lives here.
+
+`terminal_extraction.py` (208 lines), stage 1: `extract_heater_terminal_pairs`
+finds heater instances by component-name pattern and instance prefix
+(`config.heater_component_patterns`, `heater_instance_prefixes`) and groups
+each heater's electrical ports into its two interchangeable
+`ElectricalTerminal`s (`TerminalPairGroup`). Must not touch the grid or the
+obstacle map.
+
+`obstacle_extraction.py` (187 lines), stage 2: `build_electrical_obstacle_map`
+builds the layer-filtered electrical grid (reusing
+`photonic_router.static_obstacle_builder`), the die and layout bounding
+boxes, the fixed `BusStripe`, and, through `port_access`, every terminal's
+grid-anchored port access. Must decide obstacles and anchors, never a route.
+
+`port_access.py` (286 lines) owns the terminal-to-grid anchor selection every
+later phase reuses: `build_electrical_port_accesses` /
+`build_terminal_port_access` (one `ElectricalPortAccess` per terminal per
+purpose), `choose_route_start_cell` / `ordered_route_start_cells`
+(`RouteStartChoice`). Knows grid cells and physical points, not routing
+algorithms.
+
+`terminal_contacts.py` (365 lines) owns the physical contact geometry of one
+terminal: `terminal_access_path` (`TerminalAccessPath`, the continuous
+adapter before the gridded route tail), `select_terminal_port_for_side` /
+`select_terminal_contact`, `terminal_contact_bboxes`,
+`terminal_access_keepout_bbox`, `port_contact_bbox`. Pure geometry, no grid
+search.
+
+`common_bus_router.py` (539 lines), stages 3 and 4: `route_common_bus`
+dispatches the column-trunk phase (`column_trunks.py`), then a local-trunk
+phase, then a greedy per-terminal BFS through `bus_search.py`, selecting
+exactly one terminal per heater; `trim_common_bus_to_connections` is the
+public `CommonBusTrimmer`, limiting the realized stripe to its used span. It
+owns the phase order and terminal-selection policy, not cell-level search.
+
+`column_trunks.py` (442 lines) owns the straight column-trunk construction
+(Milestone 3): `route_column_trunks` groups selected bus terminals by column
+and drops one straight vertical trunk with a stub per member beside the
+heater bodies; `straight_drop_to_bus` serves a single swapped terminal
+directly. Falls back to `bus_search`'s BFS when a column is obstructed.
+
+`bus_search.py` (191 lines) owns the grid-search primitives every common-bus
+phase shares: `all_terminal_cells`, `forbidden_terminal_cells`,
+`nearest_terminal_cell`, `axis_path`, `path_hits_blockers`,
+`shortest_path_to_tree` (the BFS to the growing tree). No phase ordering or
+terminal-selection policy lives here.
+
+`individual_topology.py` (609 lines), stage 5:
+`compute_individual_escape_topology` routes every individual (non-bus)
+terminal coarsely toward the pad side, groups them into `EscapeBundle`s
+ordered outward and downward for river routing, and records
+`terminal_order` and `cell_usage`. Feeds `pad_slots`' nesting order and
+`bundle_detail_router`'s river construction.
+
+`pad_slots.py` (503 lines), stage 6: `plan_pad_slots` lays out the one-sided
+pad-pitch grid (one `PadSlot` per index) and assigns every selected bus or
+individual net to a slot (`PadAssignment`), nesting individual assignments
+by the escape-topology bundle order so a lower wire's vertical run never
+crosses an upper wire's horizontal run.
+
+`pad_side_reconciliation.py` (243 lines), stage 7: `reconcile_pad_sides` /
+`_apply_pad_side_consistency_swap` swap a lone heater's bus and individual
+terminal roles when its individual exit points away from its own pad, then
+re-run stages 4 through 6 (trim, topology, pad-slot planning) from the swap;
+a heater with no such mismatch leaves every object unchanged.
+
+`escape_router.py` (246 lines), stage 8: `route_common_bus_escape` is the
+path from the common-bus tree to its assigned pad slot, trying the endpoint
+dogleg first and a BFS to the target cells as the fallback.
+
+`bundle_detail_router.py` (473 lines), stage 9, the dispatcher:
+`route_detailed_bundles` tries the whole-bundle river construction
+(`river_routing.try_river_route_bundle`) for every escape bundle and falls
+back, wire by wire, to the full-grid search
+(`pad_wire_search.route_full_grid_pad_wire`) when the river refuses. Owns
+commit/fail bookkeeping and route ordering, not the geometry of either
+construction.
+
+`river_routing.py` (243 lines) owns `try_river_route_bundle`: routes a whole
+escape bundle at once as nested corridor and channel lanes, each wire a
+monotone L or 3-bend Z (`count_direction_changes`), committed only if every
+wire in the bundle is collision-free.
+
+`pad_wire_search.py` (345 lines) owns the per-wire fallback:
+`route_full_grid_pad_wire` (a reachability check plus the A* stub search
+`search_pad_wire`) routes one pad wire against obstacles, other terminals,
+and already-committed wires.
+
+`wire_geometry.py` (242 lines) owns the grid and wire geometry both pad-wire
+modules share: `wire_reservation_radius_cells` / `wire_spacing_radius_cells`
+(the clearance-versus-spacing distinction Milestone 2's verification fix
+introduced), `dilate_cells`, `cells_from_point_path`, `centerline_points`,
+and the plain grid-segment and cell-center helpers.
+
+`metal_realization.py` (405 lines), stage 10: `realize_electrical_metal`
+turns every routed path (bus, escape, pad wires) plus pads and terminal
+contacts into klayout-merged metal rectangles on `config.metal_layer` (and
+pad markers on `pad_marker_layer`), using `rect_geometry`'s clipping helpers
+and `terminal_contacts.terminal_access_path`.
+
+`rect_geometry.py` (396 lines) owns the rectangle primitives both
+realization and verification use: `wire_rects_for_points` (Manhattan wire
+rectangles, with the `trim_start` end-cap option Milestone 1 added),
+`clip_manhattan_path_at_first_bbox_entry` / `clip_manhattan_path_start_at_bbox`,
+`disjoint_union_rects`, `union_rect_area`, `rect_intersects` /
+`rect_intersection`. No net or realization logic.
+
+`pitch_grid.py` (69 lines) owns the small grid-cell helpers used across the
+package: `bbox_to_grid_cells`, `grid_cell_center_um` (the one copy Milestone
+4 slice 1 folded four private copies into), `disk_cells`, `cells_bbox`.
+
+`net_geometry.py` (595 lines) owns `build_net_geometries`: one
+`NetGeometry` (rectangles tagged with their source, allowed cells and boxes,
+centerlines) per net, shared by `verification.py`'s contracts and
+`metrics.py`'s quality numbers so neither module re-derives geometry from
+the route objects.
+
+`verification.py` (409 lines), stage 11 (the contracts): `verify_electrical_routing`
+and every issue-producing check -- terminal contacts, common-bus
+connectivity and pad contact, cross-net overlap and spacing, raw-obstacle
+overlap, blocked-cell clearance -- as `ElectricalVerificationIssue`s;
+delegates the geometry to `net_geometry` and the numeric summary to
+`metrics.quality_metrics`.
+
+`metrics.py` (545 lines), stage 11 (the metrics): `quality_metrics` is the
+reported numbers that are not pass/fail contracts -- `pad_wire_detour_total_um`,
+`bus_length_um` / `bus_bend_count`, `wire_metal_area_um2`, cross-net
+spacing, the per-wire `pad_wires` table -- plus `min_rect_spacing` and the
+same-net overlap classification the module's docstring says are not the
+verifier's business.
+
+`debug.py` (78 lines), stage 12, the dispatcher: `write_debug_artifacts`
+decides which SVGs to write and returns their paths, delegating the actual
+export to `debug_grid_svg` and `metal_snapshot_svg` -- the contract
+`route_electrical_heaters` used to build inline before Milestone 4 slice 4.
+
+`debug_grid_svg.py` (441 lines) owns `export_electrical_debug_svg` /
+`electrical_debug_svg`: the grid-coordinate debug view (obstacles, terminal
+openings, the bus, the routes).
+
+`metal_snapshot_svg.py` (365 lines) owns
+`export_electrical_metal_snapshot_svg` / `electrical_metal_snapshot_svg`:
+the physical-coordinate snapshot of the realized metal read back off the
+routed layout.
+
+`svg_support.py` (20 lines) owns `_all_port_accesses`, the one helper both
+SVG exporters share.
 
 ### The `routing_flow*.py` modules
 
@@ -273,6 +456,77 @@ helpers, still at the repository root and imported by `photonic_router.flow`:
 `routing_flow_electrical.py` (200), `routing_flow_reporting.py` (551, console
 output and timing formatting), `routing_flow_stats.py` (227, the legacy stats
 collector) and `routing_flow_component_info.py` (24).
+
+### The electrical flow: the twelve stage calls
+
+`route_electrical_heaters` (`translation/electrical/route_electrical.py`) is
+the literal sequence; the types are the Protocols of
+`translation/electrical/stages.py`:
+
+| # | call in `route_electrical.py::route_electrical_heaters` | input | product |
+| --- | --- | --- | --- |
+| 1 | `TerminalExtractor` -- `extract_heater_terminal_pairs(component, schematic, config)` | `(Component, Schematic \| None, ElectricalRoutingConfig \| None)` | `tuple[TerminalPairGroup, ...]` |
+| 2 | `ObstacleMapBuilder` -- `build_electrical_obstacle_map(component, terminal_groups, config)` | `+ terminal_groups` | `ElectricalObstacleMap` |
+| 3 | `CommonBusRouter` -- `route_common_bus(terminal_groups, obstacle_map, config)` | `+ obstacle_map` | `CommonBusRoutingResult` |
+| 4 | `CommonBusTrimmer` -- `trim_common_bus_to_connections(obstacle_map, common_bus, config)` | `+ common_bus` | `(ElectricalObstacleMap, CommonBusRoutingResult)` |
+| 5 | `EscapeTopologyPlanner` -- `compute_individual_escape_topology(obstacle_map, common_bus, config)` | `+ trimmed obstacle_map, common_bus` | `IndividualEscapeTopologyResult` |
+| 6 | `PadPlanner` -- `plan_pad_slots(common_bus, obstacle_map, config, escape_topology)` | `+ escape_topology` | `PadPlan` |
+| 7 | `PadSideReconciler` -- `reconcile_pad_sides(obstacle_map, common_bus, individual_topology, pad_plan, config)` | `+ individual_topology, pad_plan` | `PadSideReconciliation` (re-runs stages 4-6 when it swaps a heater) |
+| 8 | `BusEscapeRouter` -- `route_common_bus_escape(obstacle_map, common_bus, pad_plan, config)` | `+ reconciled pad_plan` | `CommonBusEscapeResult` |
+| 9 | `PadWireRouter` -- `route_detailed_bundles(obstacle_map, common_bus, common_bus_escape, topology, pad_plan, config)` | `+ common_bus_escape` | `DetailedBundleRoutingResult` |
+| 10 | `MetalRealizer` -- `realize_electrical_metal(component, obstacle_map, common_bus, common_bus_escape, detailed_bundle_routes, pad_plan, config)` | `+ detailed_bundle_routes` | `Component` |
+| 11 | `ElectricalVerifier` -- `verify_electrical_routing(obstacle_map, common_bus, common_bus_escape, detailed_bundle_routes, pad_plan, config)` | `+ routed Component` | `ElectricalVerificationResult` |
+| 12 | `DebugArtifactWriter` -- `write_debug_artifacts(debug_dir, debug_prefix, *, obstacle_map=..., ...)` | `+ every object above` | `dict[str, str]` |
+
+Guards: if stage 1 finds
+no heaters, the pipeline returns right after stage 2 with an empty
+`CommonBusRoutingResult` and a plain component copy -- stages 3-12 never run.
+Stages 5 and 6 (`EscapeTopologyPlanner`, `PadPlanner`) run only when
+`common_bus.success` (no `failed_heaters`). Stage 7
+(`PadSideReconciler`) always runs, even with `individual_topology` or
+`pad_plan` still `None`; it returns its four inputs unchanged when no heater
+needs its roles swapped. Stage 8 (`BusEscapeRouter`) runs only once a pad
+plan exists. Stage 9 (`PadWireRouter`) needs a pad plan, a topology and a
+*successful* bus escape. Stage 10 (`MetalRealizer`) runs whenever the common
+bus itself succeeded, independent of the escape or the pad wires. Stage 11
+(`ElectricalVerifier`) runs only once stage 10 produced a component. Stage
+12 (`DebugArtifactWriter`) always runs and accepts a `None` for every object
+a skipped stage never produced.
+
+The entry point is `run_electrical_routing_step`
+(`routing_flow_electrical.py` at the repository root), called from `photonic_router.flow.route_schematic` after path-length
+matching, guarded by `options.electrical.enable_electrical_routing`. That
+flag, and the `ElectricalRoutingConfig` it passes down, are set by
+`--electrical-routing true` on the command line or
+`FlowOptions.electrical.enable_electrical_routing` when calling
+`route_benchmark` directly; `benchmarks/heater_s_mod.py`'s stable block sets
+`--include-heater-obstacles true --electrical-routing true`, so that
+benchmark routes electrically by default. No paper configuration (section 7)
+enables it.
+
+### Checking the electrical result
+
+`scripts/benchmark_electrical.py --suite --check --compare-baseline` runs
+the four deterministic electrical cases --
+`heater_single`, `heater_lanes_20`, `heater_lanes_ripup`, `heater_s_mod` --
+and checks each one's `quality_metrics` (`translation/electrical/metrics.py`)
+against `BENCHMARK_GUARDRAILS`. The guardrail idea (`--check`'s module
+docstring, Decision Log of
+`.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`):
+two zero-tolerance geometry contracts stay pinned at zero
+(`same_net_redundant_overlap_pair_count`, `metal_redundant_area_overcount_um2`)
+plus the unconditional cross-net clearance check
+(`cross_net_min_spacing_um`), and four routing-quality quantities are
+limited instead of the old pad-inventory sizes -- total and per-wire pad-wire
+detour and bend count (`pad_wire_detour_total_um`,
+`pad_wire_max_bend_count`), the common bus's own bend count
+(`bus_bend_count`), and the union area of wire-only metal
+(`wire_metal_area_um2`, bus stripe/branches/escape, individual routes,
+adapters and contacts, deliberately excluding pad markers). `--compare-baseline`
+reports every metric that drifted from the pinned
+`tests/baselines/electrical_suite_metrics.json`; the pin is rewritten with
+`--suite --output tests/baselines/electrical_suite_metrics.json` when a
+milestone changes the numbers on purpose.
 
 
 ## 3. The flow: the literal sequence of stage calls
@@ -479,8 +733,16 @@ cargo fmt            # before testing; cargo fmt --check in review
 .venv/bin/python -m pytest -q tests
 .venv/bin/python -m pytest -q -m "not e2e" tests
 
+# The electrical pipeline's own tests, one module per stage of stages.py
+.venv/bin/python -m pytest -q tests/electrical
+
 # Both suites against the pinned baseline (tests/baselines/test_baseline.txt)
 scripts/test_baseline.sh
+
+# The electrical benchmark suite: four deterministic cases against their
+# guardrails and the pinned baseline (docs/ARCHITECTURE.md section 2,
+# "Checking the electrical result")
+.venv/bin/python scripts/benchmark_electrical.py --suite --check --compare-baseline
 
 # The reproduction gate: the nine smallest paper cells, about two minutes
 scripts/results/gate_short.sh
@@ -510,6 +772,15 @@ cell in two roots and byte-compares their photonic and crossing verification
 reports; the reports carry no timing, so identical bytes mean identical
 verdicts and issue lists (the acceptance of the 2026-09-24 verifier plan, which
 took the verifier's share of the full run from 5,207 s to 140 s).
+`tests/electrical/` holds the electrical pipeline's own tests, one module per
+stage of `translation/electrical/stages.py` (Milestone 4 slice 5 of
+`.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`),
+with fixtures in `tests/fixtures/` after the pattern the optical side already
+follows; it replaces the single `tests/test_electrical_routing.py`.
+`scripts/benchmark_electrical.py --suite --check --compare-baseline` is the
+electrical equivalent of `scripts/results/gate_short.sh`: it is not part of
+`scripts/test_baseline.sh` and has no paper-cell dependency, since no paper
+configuration routes electrically (section 7).
 
 
 ## 9. Removal candidates (Milestone 8)
