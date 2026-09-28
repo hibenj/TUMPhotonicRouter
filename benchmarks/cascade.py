@@ -49,11 +49,51 @@ CASCADE_HEATER_DX_UM = 140.0
 CASCADE_SECOND_MMI_DX_UM = 560.0
 CASCADE_CENTER_Y_STEP_UM = MMI_LOWER_INPUT_OFFSET_Y_UM - MMI_UPPER_INPUT_OFFSET_Y_UM  # -1.25
 
-TOMOGRAPHY_PRE_HEATER_DX_UM = 740.0
-TOMOGRAPHY_FIRST_MMI_DX_UM = 1160.0
-TOMOGRAPHY_POST_HEATER_DX_UM = 1300.0
-TOMOGRAPHY_SECOND_MMI_DX_UM = 1720.0
-TOMOGRAPHY_OUTPUT_GC_DX_UM = 2140.0
+TOMOGRAPHY_PRE_HEATER_MIN_GAP_UM = 740.0
+# Offsets from the tomography pre-heater's own x (not from the last cascade
+# column): the four constants below used to be fixed deltas from the last
+# cascade column (1160, 1300, 1720, 2140 um at the old fixed 740 um gap);
+# kept as deltas from the pre-heater so a wider gap (Rule E, below) carries
+# every later tomography offset with it unchanged.
+TOMOGRAPHY_FIRST_MMI_OFFSET_UM = 420.0
+TOMOGRAPHY_POST_HEATER_OFFSET_UM = 560.0
+TOMOGRAPHY_SECOND_MMI_OFFSET_UM = 980.0
+TOMOGRAPHY_OUTPUT_GC_OFFSET_UM = 1400.0
+
+# The pad pitch the electrical router's pad row uses
+# (`translation.electrical.types.DEFAULT_PAD_PITCH_UM`); not imported here
+# to keep this benchmark module free of a dependency on the electrical
+# router, mirroring every other geometry constant in this file (read off
+# `heater_s_mod` / the router's own defaults, not imported).
+PAD_PITCH_UM = 130.0
+
+
+def _tomography_gap_um(lane_count: int) -> float:
+    """Rule E (eight-row-bundles ExecPlan): the tomography pre-heater gap.
+
+    The pre-heater bundle needs room for ``lane_count`` individual pad
+    columns plus the bus pad plus one spare slot ((lane_count + 2) slots at
+    the pad pitch) between the last cascade heater's committed pad and its
+    own corridor's first lane, or its pad columns land inward of their own
+    corridor lane (the plan's second evidence pass). ``needed_um`` is the
+    plan's own arithmetic (``x_c + 140`` for the last cascade heater, "100 um
+    long", against ``X = x_c + 560`` for the pre-heater column): exits at
+    ``x_c + 240`` and ``X + gap``, so ``gap >= (lane_count + 2) * 130 - 240``.
+    The PDK's actual `straight_heater_metal` electrical ports sit further out
+    (``r_e*`` averages +330.4 um past placement x, ``l_e*`` -10.4 um, not a
+    clean "100 um long" heater), so this formula is *not* a literal exit-to-
+    exit distance; kept anyway because a gap sweep against the real
+    electrical pipeline (`route_electrical_heaters`) confirms it clears the
+    corridor: for N = 12 (lane_count = 6) 780 still fails, 800 (this
+    formula's value) is the first gap that succeeds; for N = 16
+    (lane_count = 8) the tomography-only failures clear between 900 and
+    1040, well under this formula's 1060. Never below the 740 um the 8-mode
+    cascade needs to stay byte-identical to `heater_s_mod` (lane_count = 4
+    there; the formula's own value for that case is 540, well under 740, so
+    `max` leaves it untouched).
+    """
+    needed_um = (lane_count + 2) * PAD_PITCH_UM - 240.0
+    return max(TOMOGRAPHY_PRE_HEATER_MIN_GAP_UM, needed_um)
 
 
 def _validate_n_modes(n_modes: int) -> None:
@@ -152,11 +192,11 @@ def build_cascade_schematic(n_modes: int, layout: Layout) -> Schematic:
     ]
 
     tomography_x = cascade_second_x[cascade_count - 1]
-    tomo_pre_heater_x = tomography_x + TOMOGRAPHY_PRE_HEATER_DX_UM
-    tomo_first_mmi_x = tomography_x + TOMOGRAPHY_FIRST_MMI_DX_UM
-    tomo_post_heater_x = tomography_x + TOMOGRAPHY_POST_HEATER_DX_UM
-    tomo_second_mmi_x = tomography_x + TOMOGRAPHY_SECOND_MMI_DX_UM
-    tomo_output_gc_x = tomography_x + TOMOGRAPHY_OUTPUT_GC_DX_UM
+    tomo_pre_heater_x = tomography_x + _tomography_gap_um(lane_count)
+    tomo_first_mmi_x = tomo_pre_heater_x + TOMOGRAPHY_FIRST_MMI_OFFSET_UM
+    tomo_post_heater_x = tomo_pre_heater_x + TOMOGRAPHY_POST_HEATER_OFFSET_UM
+    tomo_second_mmi_x = tomo_pre_heater_x + TOMOGRAPHY_SECOND_MMI_OFFSET_UM
+    tomo_output_gc_x = tomo_pre_heater_x + TOMOGRAPHY_OUTPUT_GC_OFFSET_UM
 
     def first_mmi(j: int) -> str:
         return f"mmi_extra_{2 * j}"

@@ -31,6 +31,7 @@ from .types import (
     TerminalBusRoute,
     TerminalPairGroup,
 )
+from .wire_geometry import dilate_cells, wire_reservation_radius_cells
 
 
 @dataclass(frozen=True)
@@ -66,11 +67,14 @@ def route_common_bus(
     3. The greedy group-Steiner heuristic below: the existing bus stripe is
        the root tree, and at each step the router evaluates both candidate
        terminals of every still-unconnected heater and commits the globally
-       cheapest path to the current same-net tree. Because every terminal the
-       common bus selects belongs to the same net, a candidate path may pass
-       through the open cells of terminals already selected for the bus (by
-       either earlier phase or an earlier iteration of this one); only
-       terminals not yet selected for the bus remain forbidden ground.
+       cheapest path to the current same-net tree. A candidate path joins
+       the tree beside a terminal, never through it: only its own terminal's
+       open cells are excused from the forbidden set, so a branch cannot run
+       over another selected terminal's pad body (2026-09-28, eight-row-
+       bundles plan, Rule F reverted -- the same-net relaxation the
+       electrical plan's Milestone 3 introduced let a branch cross a
+       neighbouring terminal's opening, an overlap on
+       ``cascade_16_diagonal``).
     """
 
     config.validate()
@@ -79,7 +83,27 @@ def route_common_bus(
     unselected: dict[str, ElectricalTerminal] = {}
     routes: list[TerminalBusRoute] = []
     tree_cells: set[GridCell] = set(obstacle_map.bus.cells)
-    blocked = set(obstacle_map.blocked_cells)
+    # Rule D (2026-09-28, eight-row-bundles plan): every bus construction
+    # below -- the column-trunk phase, the local-trunk phase and the greedy
+    # search -- keeps the wire band clear of raw obstacles, not just the
+    # bare centerline, by dilating the blocked set once here to the wire's
+    # obstacle-clearance reservation radius (`wire_reservation_radius_cells`,
+    # the same radius `pad_side_reconciliation`'s swap already dilates by,
+    # for the same reason: a bare-centerline search can route a 20 um-wide
+    # wire right along an obstacle's edge). Column/local trunks already
+    # excuse a terminal's own open cells via their `allowed` sets, so the
+    # dilation is safe there unchanged; the greedy phase's
+    # `shortest_path_to_tree` has no such excuse mechanism (it treats
+    # `blocked` as flatly impassable off the tree), so each candidate's own
+    # search below subtracts that terminal's own open cells from `blocked`
+    # first, or the dilation could swallow the cells a terminal must leave
+    # from.
+    blocked = dilate_cells(
+        set(obstacle_map.blocked_cells),
+        wire_reservation_radius_cells(obstacle_map, config),
+        obstacle_map.grid.width,
+        obstacle_map.grid.height,
+    )
     all_terminal_cells_set = all_terminal_cells(obstacle_map)
     median_x = _terminal_median_grid_x(terminal_groups, obstacle_map)
     local_target_x_by_group = _local_pair_target_grid_x_by_group(
@@ -121,12 +145,23 @@ def route_common_bus(
                 forbidden = forbidden_terminal_cells(
                     obstacle_map,
                     all_terminal_cells_set,
-                    allowed_terminal_ids={terminal.id} | {t.id for t in selected.values()},
+                    allowed_terminal_ids={terminal.id},
                 )
+                # A terminal's own open cells sit right against its heater's
+                # geometry, so the obstacle-clearance dilation above can
+                # swallow some of them; excuse this terminal's own open
+                # cells (and its access anchor) from `blocked` for its own
+                # search, or the dilated cells could trap it inside its own
+                # port-open zone before it ever reaches another blocked-free
+                # cell.
+                own_open = set(terminal_open_cells(obstacle_map, terminal.id))
+                own_anchor = terminal_access_anchor_cell(obstacle_map, terminal.id)
+                if own_anchor is not None:
+                    own_open.add(own_anchor)
                 path = shortest_path_to_tree(
                     terminal,
                     tree_cells=frozenset(tree_cells),
-                    blocked=blocked,
+                    blocked=blocked.difference(own_open) if own_open else blocked,
                     forbidden=forbidden,
                     obstacle_map=obstacle_map,
                 )

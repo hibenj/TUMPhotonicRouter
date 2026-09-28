@@ -69,12 +69,13 @@ def try_river_route_bundle(
     the Manhattan distance (detour 0); the wire collapses to a single L
     when its corridor lane already is its pad column.
 
-    2026-09-28 (eight-row-bundles plan, Rule A): row 1's pad column may be
+    2026-09-28 (eight-row-bundles plan, Rule A'): row 1's pad column may be
     served even when it is inward of c_1 -- ``pad_slots`` anchors a
-    bundle's pad block so row 1's pad lands at or beyond c_1, but a later
-    interval's push rule can still shove that block back inward by up to
-    one pad pitch (only a "left"-side bundle can be pushed this way, since
-    the push only ever increases slot indices). Only row 1 absorbs this:
+    bundle's pad block, in physical space, so row 1's pad lands at or beyond
+    c_1, but a later interval's push rule can still shove that block back
+    inward by up to one pad pitch (only a "left"-side bundle can be pushed
+    this way, since the push only ever increases slot indices). Only row 1
+    absorbs this:
     its channel run at h_1 simply reverses direction from c_1 back to p_1
     (the same four-point centerline construction below, now with p_1 on
     the inward side of c_1, so it is a Z rather than an L). It crosses no

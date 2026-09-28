@@ -95,6 +95,20 @@ BASELINE_FLOAT_TOLERANCE = 1e-6
 # on heater_lanes_20, adding one bend to the bus (bus_bend_count 20 -> 21,
 # re-pinned at the next multiple of 5). No suite case's zero-tolerance
 # guardrail or verification success was affected.
+# 2026-09-28 (eight-row bundles plan, Milestone 1 third slice, Rule A' and
+# Rule F reverted): Rule A' replaces the single-terminal special case above
+# with a second pass that anchors every interval's row-1 pad (single- or
+# multi-terminal) at its exact physical corridor lane c_1 once the comb's
+# origin is resolved, instead of the coarse column-index approximation; on
+# heater_lanes_ripup this moves heater_extra_0's escape onto the river's
+# row-1 inward-absorption Z (0 -> 20 um detour, 1 -> 3 bends), violating the
+# zero-detour pin that case still carried -- pad_wire_detour_total_um_max
+# re-pinned to the measured 20.0 (matching heater_s_mod's existing pin for
+# the same construction). Rule F reverted (the greedy common-bus phase's
+# forbidden set drops the same-net relaxation Milestone 3 added, since it
+# let a branch cross a neighbouring selected terminal's open cells): no
+# effect on any suite case's guardrails, since none of the four cases has a
+# greedy branch that used another terminal's opening.
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -108,7 +122,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "same_net_overlap_pair_count_max": 49,
     "same_net_redundant_overlap_pair_count_max": 0,
     "pad_wire_max_bend_count_max": 3,
-    "pad_wire_detour_total_um_max": 0.0,
+    "pad_wire_detour_total_um_max": 20.0,
     "bus_bend_count_max": 10,
     "wire_metal_area_um2_max": 2_047_000.0,
 }
