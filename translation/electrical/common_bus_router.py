@@ -200,8 +200,17 @@ def trim_common_bus_to_connections(
     obstacle_map: ElectricalObstacleMap,
     common_bus: CommonBusRoutingResult,
     config: ElectricalRoutingConfig,
+    *,
+    keep_span_to_x_um: float | None = None,
 ) -> tuple[ElectricalObstacleMap, CommonBusRoutingResult]:
-    """Limit realized/debug bus stripe to the span touched by routed terminals."""
+    """Limit realized/debug bus stripe to the span touched by routed terminals.
+
+    ``keep_span_to_x_um``, when given, widens the trimmed span to include
+    that x (plus the same half overlap already applied to the branch span),
+    so the stripe reaches under a pad column beyond every branch -- the
+    common-bus pad slot's centre x, so its escape can rise straight out of
+    the stripe instead of doglegging in from a branch-only span.
+    """
 
     if not common_bus.routes:
         return obstacle_map, common_bus
@@ -220,10 +229,15 @@ def trim_common_bus_to_connections(
         config.wire_width_um / 2.0,
     )
     _, bus_ymin, _, bus_ymax = obstacle_map.bus.bbox
+    trimmed_min_x_um = min_x_um - half_overlap_um
+    trimmed_max_x_um = max_x_um + half_overlap_um
+    if keep_span_to_x_um is not None:
+        trimmed_min_x_um = min(trimmed_min_x_um, keep_span_to_x_um - half_overlap_um)
+        trimmed_max_x_um = max(trimmed_max_x_um, keep_span_to_x_um + half_overlap_um)
     trimmed_bbox = (
-        min_x_um - half_overlap_um,
+        trimmed_min_x_um,
         bus_ymin,
-        max_x_um + half_overlap_um,
+        trimmed_max_x_um,
         bus_ymax,
     )
     trimmed_bus_cells = bbox_to_grid_cells(trimmed_bbox, obstacle_map.grid)

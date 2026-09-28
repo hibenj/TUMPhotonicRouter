@@ -109,10 +109,12 @@ def test_common_bus_rail_and_pad_escape_use_bus_width_only():
     first_y = escape_path[0][1]
     horizontal_prefix = [cell for cell in escape_path if cell[1] == first_y]
     assert len(horizontal_prefix) > 1
-    if config.common_bus_pad_position == "right":
-        assert horizontal_prefix[-1][0] > horizontal_prefix[0][0]
-    else:
-        assert horizontal_prefix[-1][0] < horizontal_prefix[0][0]
+    # Milestone 1 part 2 (eight-row bundles plan): the bus trim now reaches
+    # under the bus pad slot's own column (below), so the escape's starting
+    # dogleg is at most a one-grid-cell correction -- not the multi-cell
+    # directional run toward the pad this test used to require -- rather
+    # than genuinely walking back through the stripe.
+    assert abs(horizontal_prefix[-1][0] - horizontal_prefix[0][0]) <= 1
     bus_connection_cells = {
         cell
         for route in result.common_bus.routes
@@ -124,8 +126,12 @@ def test_common_bus_rail_and_pad_escape_use_bus_width_only():
     grid_pitch = result.obstacle_map.grid.grid_size_um
     connection_xs = [origin_x + (cell[0] + 0.5) * grid_pitch for cell in bus_connection_cells]
     half_overlap_um = max(grid_pitch / 2.0, config.wire_width_um / 2.0)
+    bus_pad_slot_x_um = bus_assignment.slot.center[0]
     assert result.common_bus.bus.bbox[0] == pytest.approx(min(connection_xs) - half_overlap_um)
-    assert result.common_bus.bus.bbox[2] == pytest.approx(max(connection_xs) + half_overlap_um)
+    assert result.common_bus.bus.bbox[2] == pytest.approx(
+        max(max(connection_xs) + half_overlap_um, bus_pad_slot_x_um + half_overlap_um)
+    )
+    assert result.common_bus.bus.bbox[0] <= bus_pad_slot_x_um <= result.common_bus.bus.bbox[2]
     bus_route_segments = [tagged.bbox for tagged in tagged_rects if tagged.source == "bus_route"]
     assert bus_route_segments
     for xmin, ymin, xmax, ymax in bus_route_segments:

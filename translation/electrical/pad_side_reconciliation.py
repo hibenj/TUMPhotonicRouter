@@ -35,12 +35,21 @@ def reconcile_pad_sides(
     individual_topology: IndividualEscapeTopologyResult | None,
     pad_plan: PadPlan | None,
     config: ElectricalRoutingConfig,
+    keep_span_to_x_um: float | None = None,
 ) -> PadSideReconciliation:
     """Swap a lone heater's roles when its individual exit points away from its pad.
 
     Recomputes the bus trim, escape topology and pad plan from the swap so the
     later stages see a consistent set of objects; a run with no mismatch
-    returns every input unchanged.
+    returns every input unchanged. ``keep_span_to_x_um``, when given, is
+    passed into the internal re-trim so the stripe still reaches under the
+    bus pad slot's column after a swap; because the swap can itself shift
+    which slot the common bus lands on (the recomputed pad plan below may
+    disagree with the pre-swap ``keep_span_to_x_um``), the trim runs a
+    second time with the freshly recomputed plan's own bus pad slot x once
+    that plan exists, the same one-more-trim pattern
+    ``route_electrical_heaters`` uses after its own first ``plan_pad_slots``
+    call.
     """
 
     if common_bus.success and individual_topology is not None and pad_plan is not None:
@@ -51,11 +60,28 @@ def reconcile_pad_sides(
                 obstacle_map,
                 common_bus,
                 config,
+                keep_span_to_x_um=keep_span_to_x_um,
             )
             individual_topology = compute_individual_escape_topology(
                 obstacle_map, common_bus, config
             )
             pad_plan = plan_pad_slots(common_bus, obstacle_map, config, individual_topology)
+            fresh_bus_pad_slot_x_um = (
+                pad_plan.common_bus_assignment.slot.center[0]
+                if pad_plan.common_bus_assignment is not None
+                else None
+            )
+            if fresh_bus_pad_slot_x_um is not None and fresh_bus_pad_slot_x_um != keep_span_to_x_um:
+                obstacle_map, common_bus = trim_common_bus_to_connections(
+                    obstacle_map,
+                    common_bus,
+                    config,
+                    keep_span_to_x_um=fresh_bus_pad_slot_x_um,
+                )
+                individual_topology = compute_individual_escape_topology(
+                    obstacle_map, common_bus, config
+                )
+                pad_plan = plan_pad_slots(common_bus, obstacle_map, config, individual_topology)
             return PadSideReconciliation(
                 obstacle_map=obstacle_map,
                 common_bus=common_bus,

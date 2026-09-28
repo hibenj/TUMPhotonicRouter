@@ -16,8 +16,13 @@ each returning the frozen product its ``stages.py`` Protocol names:
        -> IndividualEscapeTopologyResult
     6  PadPlanner             pad_slots.plan_pad_slots
        -> PadPlan
+    6b CommonBusTrimmer       common_bus_router.trim_common_bus_to_connections
+       (re-run, once the pad plan exists, with keep_span_to_x_um set to the
+       bus pad slot's centre x so the stripe reaches under the bus pad)
+       -> tuple[ElectricalObstacleMap, CommonBusRoutingResult]
     7  PadSideReconciler      pad_side_reconciliation.reconcile_pad_sides
-       -> PadSideReconciliation (re-runs stages 4-6 when it swaps a heater)
+       -> PadSideReconciliation (re-runs stages 4-6 when it swaps a heater,
+          passing the same keep_span_to_x_um into its internal re-trim)
     8  BusEscapeRouter        escape_router.route_common_bus_escape
        -> CommonBusEscapeResult
     9  PadWireRouter          bundle_detail_router.route_detailed_bundles
@@ -120,14 +125,31 @@ def route_electrical_heaters(
         if common_bus.success
         else None
     )
+    # Stage 6b: CommonBusTrimmer, re-run now that the bus pad slot is known,
+    # so the stripe is widened to reach under that slot's column (the escape
+    # then rises straight out of the stripe instead of doglegging in).
+    bus_pad_slot_x_um = (
+        pad_plan.common_bus_assignment.slot.center[0]
+        if pad_plan is not None and pad_plan.common_bus_assignment is not None
+        else None
+    )
+    if bus_pad_slot_x_um is not None:
+        obstacle_map, common_bus = trim_common_bus_to_connections(
+            obstacle_map,
+            common_bus,
+            config,
+            keep_span_to_x_um=bus_pad_slot_x_um,
+        )
     # Stage 7: PadSideReconciler; re-runs stages 4-6 internally when a heater
-    # is swapped, otherwise returns the four objects unchanged.
+    # is swapped, otherwise returns the four objects unchanged. Passed the
+    # same bus pad slot x so a swap-triggered re-trim keeps it too.
     reconciliation = reconcile_pad_sides(
         obstacle_map,
         common_bus,
         individual_topology,
         pad_plan,
         config,
+        bus_pad_slot_x_um,
     )
     obstacle_map = reconciliation.obstacle_map
     common_bus = reconciliation.common_bus

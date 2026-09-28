@@ -70,7 +70,10 @@ class ElectricalRoutingConfig:
     common_bus_median_bias_weight: float = 1.0
     common_bus_local_pair_y_tolerance_um: float = 30.0
     common_bus_local_pair_max_gap_um: float = 800.0
-    individual_route_spacing_um: float = 20.0
+    # equal to obstacle_clearance_um, the clearance the verifier enforces
+    # between nets; the requirements allow 5 um between wires; a 30 um track
+    # pitch lets eight lanes fit in 240 um.
+    individual_route_spacing_um: float = 10.0
     heater_component_patterns: tuple[str, ...] = ("straight_heater_metal*",)
     heater_instance_prefixes: tuple[str, ...] = ("heater",)
     obstacle_mode: Literal["bounding_boxes", "rasterized_polygons"] = "bounding_boxes"

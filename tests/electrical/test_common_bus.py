@@ -335,3 +335,38 @@ def test_pad_side_reconciliation_swaps_a_lone_heater_and_drops_its_branch_straig
     route = next(route for route in result.common_bus.routes if route.heater_id == "heater_extra_0")
     assert len({cell[0] for cell in route.path}) == 1
     assert route.path[-1] in result.common_bus.bus.cells
+
+
+def test_trim_keeps_the_stripe_under_the_bus_pad(electrical_benchmark_result):
+    """Milestone 1 part 2 (eight-row bundles plan): ``route_electrical_heaters``
+    re-runs ``trim_common_bus_to_connections`` once the pad plan exists, with
+    ``keep_span_to_x_um`` set to the common-bus pad slot's centre x, so the
+    trimmed stripe reaches under that pad instead of stopping at the last
+    branch -- the escape then rises out of the stripe next to its own pad
+    column instead of doglegging in from further away.
+
+    The escape still lands one grid cell (routing_grid_pitch_um, 10 um) off
+    dead-straight here: ``_choose_dogleg_target`` picks the horizontal
+    midpoint of the pad's target-cell column range, and the stripe's
+    half-overlap widening (also one grid cell in this configuration) can
+    land the stripe's own endpoint on the adjacent cell instead of that
+    exact midpoint column. That is a residual quantization gap in
+    ``escape_router``, not a corridor conflict: the corner sits right next
+    to the bus, and the rest of the run to the pad is a straight vertical.
+    """
+
+    result = electrical_benchmark_result("heater_s_mod")
+
+    pad_plan = result.pad_plan
+    assert pad_plan is not None
+    common_bus_assignment = pad_plan.common_bus_assignment
+    assert common_bus_assignment is not None
+    bus_pad_slot_x_um = common_bus_assignment.slot.center[0]
+
+    bus_min_x_um, _, bus_max_x_um, _ = result.common_bus.bus.bbox
+    assert bus_min_x_um <= bus_pad_slot_x_um <= bus_max_x_um
+
+    escape = result.common_bus_escape
+    assert escape is not None
+    assert escape.success
+    assert _path_direction_changes(escape.path) <= 1

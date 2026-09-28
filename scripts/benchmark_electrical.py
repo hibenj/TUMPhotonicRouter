@@ -67,6 +67,18 @@ BASELINE_FLOAT_TOLERANCE = 1e-6
 # and bends (heater_s_mod read 58 bends / 28990 um, truly 21 / 8260). The bus
 # limits are re-pinned on the per-branch values: one stub bend per trunk
 # member plus the escape's bend.
+# 2026-09-28 (eight-row bundles plan, Milestone 1): individual_route_spacing_um's
+# default dropped from 20 um to 10 um (equal to obstacle_clearance_um, the
+# verifier's cross-net clearance; the requirements allow 5 um between wires),
+# so cross_net_min_spacing_um drops to 10 um wherever it was pitch-bound, and
+# bus_length_um / wire_metal_area_um2 / pad_channel_height_um drop with the
+# tighter lanes and the common-bus trim now reaching under the bus pad slot
+# (Milestone 1 part 2). No case's zero-tolerance or routing-quantity
+# guardrail was violated by the drop; wire_metal_area_um2_max and
+# same_net_overlap_pair_count_max are re-pinned at the new measured value
+# plus ~2% on every case that landed within 10% of its old limit, and
+# pad_channel_height_um_max is re-pinned at the new measured value rounded
+# up to the next 10 um on every case where it dropped.
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -74,7 +86,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "failed_detailed_route_count_max": 0,
     "detailed_route_count_min": 11,
     "pad_assignment_count_min": 12,
-    "pad_channel_height_um_max": 180.0,
+    "pad_channel_height_um_max": 140.0,
     "metal_redundant_area_overcount_um2_max": 1e-6,
     "same_net_duplicate_rect_count_max": 0,
     "same_net_overlap_pair_count_max": 49,
@@ -82,7 +94,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "pad_wire_max_bend_count_max": 3,
     "pad_wire_detour_total_um_max": 0.0,
     "bus_bend_count_max": 10,
-    "wire_metal_area_um2_max": 2_152_000.0,
+    "wire_metal_area_um2_max": 2_047_000.0,
 }
 DEFAULT_GUARDRAILS = RIPUP_REROUTE_GUARDRAILS
 BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
@@ -93,7 +105,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "failed_detailed_route_count_max": 0,
         "detailed_route_count_min": 1,
         "pad_assignment_count_min": 2,
-        "pad_channel_height_um_max": 65.0,
+        "pad_channel_height_um_max": 60.0,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "same_net_duplicate_rect_count_max": 0,
         "same_net_overlap_pair_count_max": 10,
@@ -110,15 +122,15 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "failed_detailed_route_count_max": 0,
         "detailed_route_count_min": 20,
         "pad_assignment_count_min": 21,
-        "pad_channel_height_um_max": 180.0,
+        "pad_channel_height_um_max": 140.0,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "same_net_duplicate_rect_count_max": 0,
-        "same_net_overlap_pair_count_max": 92,
+        "same_net_overlap_pair_count_max": 93,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
         "pad_wire_detour_total_um_max": 40.0,
         "bus_bend_count_max": 20,
-        "wire_metal_area_um2_max": 3_432_000.0,
+        "wire_metal_area_um2_max": 3_331_000.0,
     },
     "heater_lanes_ripup": RIPUP_REROUTE_GUARDRAILS,
     "heater_s_mod": {
@@ -128,15 +140,15 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "failed_detailed_route_count_max": 0,
         "detailed_route_count_min": 21,
         "pad_assignment_count_min": 22,
-        "pad_channel_height_um_max": 180.0,
+        "pad_channel_height_um_max": 140.0,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "same_net_duplicate_rect_count_max": 0,
-        "same_net_overlap_pair_count_max": 94,
+        "same_net_overlap_pair_count_max": 96,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
         "pad_wire_detour_total_um_max": 0.0,
         "bus_bend_count_max": 25,
-        "wire_metal_area_um2_max": 3_470_000.0,
+        "wire_metal_area_um2_max": 3_444_000.0,
     },
 }
 

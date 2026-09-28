@@ -373,7 +373,7 @@ Configuration for the first electrical common-bus routing milestone. ``pad_side`
 | `common_bus_median_bias_weight` | `float` | `1.0` | -- | Weight of the median-x bias term in `common_bus_terminal_selection`'s scoring. |
 | `common_bus_local_pair_y_tolerance_um` | `float` | `30.0` | -- | Maximum y difference for two terminals to be treated as a local same-row pair. |
 | `common_bus_local_pair_max_gap_um` | `float` | `800.0` | -- | Maximum x gap for two terminals to be treated as a local same-row pair. |
-| `individual_route_spacing_um` | `float` | `20.0` | -- | Minimum spacing kept between two individual pad wires' realized metal (added to `wire_width_um` for the river-routing track pitch). |
+| `individual_route_spacing_um` | `float` | `10.0` | -- | Minimum spacing kept between two individual pad wires' realized metal (added to `wire_width_um` for the river-routing track pitch). Default equals `obstacle_clearance_um`, the clearance the verifier enforces between nets; the requirements allow 5 um between wires, so a 30 um track pitch lets eight lanes fit in 240 um. |
 | `heater_component_patterns` | `tuple[str, ...]` | `('straight_heater_metal*',)` | -- | `fnmatch` patterns a placed instance's component name must match to be treated as a heater. |
 | `heater_instance_prefixes` | `tuple[str, ...]` | `('heater',)` | -- | Instance-name prefixes that mark a placed instance as a heater. |
 | `obstacle_mode` | `Literal['bounding_boxes', 'rasterized_polygons']` | `'bounding_boxes'` | -- | How the electrical obstacle map rasterizes geometry: `bounding_boxes` (default) or `rasterized_polygons`. |

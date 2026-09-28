@@ -157,7 +157,10 @@ ELECTRICAL_FIELD_DESCRIPTIONS: dict[str, str] = {
     ),
     "individual_route_spacing_um": (
         "Minimum spacing kept between two individual pad wires' realized metal "
-        "(added to `wire_width_um` for the river-routing track pitch)."
+        "(added to `wire_width_um` for the river-routing track pitch). Default "
+        "equals `obstacle_clearance_um`, the clearance the verifier enforces "
+        "between nets; the requirements allow 5 um between wires, so a 30 um "
+        "track pitch lets eight lanes fit in 240 um."
     ),
     "heater_component_patterns": (
         "`fnmatch` patterns a placed instance's component name must match to be "

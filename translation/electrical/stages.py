@@ -109,13 +109,20 @@ class CommonBusRouter(Protocol):
 
 
 class CommonBusTrimmer(Protocol):
-    """Stage 4: limit the realized/debug bus stripe to the span actually used."""
+    """Stage 4: limit the realized/debug bus stripe to the span actually used.
+
+    ``keep_span_to_x_um`` (keyword-only, default ``None``) widens the
+    trimmed span to include that x, so a second call after the pad plan
+    exists can keep the stripe reaching under the bus pad slot's column.
+    """
 
     def __call__(
         self,
         obstacle_map: ElectricalObstacleMap,
         common_bus: CommonBusRoutingResult,
         config: ElectricalRoutingConfig,
+        *,
+        keep_span_to_x_um: float | None = None,
     ) -> tuple[ElectricalObstacleMap, CommonBusRoutingResult]: ...
 
 
@@ -147,7 +154,12 @@ class PadPlanner(Protocol):
 
 
 class PadSideReconciler(Protocol):
-    """Stage 7: swap a lone heater's roles when its exit points away from its pad."""
+    """Stage 7: swap a lone heater's roles when its exit points away from its pad.
+
+    ``keep_span_to_x_um`` (default ``None``) is threaded into the internal
+    re-trim (``trim_common_bus_to_connections``) so a swap-triggered
+    recompute keeps the stripe reaching under the bus pad slot's column too.
+    """
 
     def __call__(
         self,
@@ -156,6 +168,7 @@ class PadSideReconciler(Protocol):
         individual_topology: IndividualEscapeTopologyResult | None,
         pad_plan: PadPlan | None,
         config: ElectricalRoutingConfig,
+        keep_span_to_x_um: float | None = None,
     ) -> PadSideReconciliation: ...
 
 
