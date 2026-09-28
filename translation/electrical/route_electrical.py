@@ -9,18 +9,18 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 from .bundle_detail_router import (
-    _dilate_cells,
-    _wire_reservation_radius_cells,
+    dilate_cells,
     route_detailed_bundles,
+    wire_reservation_radius_cells,
 )
 from .common_bus_router import (
-    _all_terminal_cells,
-    _forbidden_terminal_cells,
-    _route_uses_access_anchor,
-    _shortest_path_to_tree,
-    _terminal_access_anchor_cell,
+    all_terminal_cells,
+    forbidden_terminal_cells,
     route_common_bus,
+    route_uses_access_anchor,
+    shortest_path_to_tree,
     straight_drop_to_bus,
+    terminal_access_anchor_cell,
 )
 from .debug import export_electrical_debug_svg, export_electrical_metal_snapshot_svg
 from .escape_router import route_common_bus_escape
@@ -28,7 +28,7 @@ from .individual_topology import compute_individual_escape_topology
 from .metal_realization import realize_electrical_metal
 from .obstacle_extraction import build_electrical_obstacle_map
 from .pad_slots import plan_pad_slots
-from .pitch_grid import bbox_to_grid_cells
+from .pitch_grid import bbox_to_grid_cells, grid_cell_center_um
 from .terminal_extraction import extract_heater_terminal_pairs
 from .types import (
     BusStripe,
@@ -39,6 +39,7 @@ from .types import (
     GridCell,
     PadPlan,
     TerminalBusRoute,
+    terminal_exit_dx,
 )
 from .verification import verify_electrical_routing
 
@@ -238,16 +239,16 @@ def _apply_pad_side_consistency_swap(
         for assignment in pad_plan.assignments
         if assignment.kind == "individual" and assignment.terminal is not None
     }
-    all_terminal_cells = _all_terminal_cells(obstacle_map)
-    # Dilated by the branch wire's own reservation radius: _shortest_path_to_tree
+    all_terminal_cells_set = all_terminal_cells(obstacle_map)
+    # Dilated by the branch wire's own reservation radius: shortest_path_to_tree
     # only checks the bare centerline against `blocked`, and the branch is
     # realized with untrimmed bend corners (trim_route_tail_bends=False), so a
     # bend placed right at an obstacle's edge can still draw metal that clips
     # it. The router's own route_common_bus loop never hit this because no
     # bend it chose ever landed that close; a swap-driven reroute is not
     # guaranteed the same luck.
-    reservation_radius = _wire_reservation_radius_cells(obstacle_map, config)
-    blocked = _dilate_cells(
+    reservation_radius = wire_reservation_radius_cells(obstacle_map, config)
+    blocked = dilate_cells(
         set(obstacle_map.blocked_cells),
         reservation_radius,
         obstacle_map.grid.width,
@@ -262,7 +263,7 @@ def _apply_pad_side_consistency_swap(
     for heater_id, individual_terminal in common_bus.unselected_terminals.items():
         if heater_id in grouped_heater_ids:
             continue
-        exit_dx = _terminal_side_exit_dx(individual_terminal.side_key)
+        exit_dx = terminal_exit_dx(individual_terminal.side_key)
         pad_column_um = pad_column_um_by_terminal_id.get(individual_terminal.id)
         if exit_dx == 0 or pad_column_um is None:
             continue
@@ -270,9 +271,9 @@ def _apply_pad_side_consistency_swap(
             continue  # exit already points toward the pad's column.
 
         bus_terminal = common_bus.selected_terminals[heater_id]
-        forbidden = _forbidden_terminal_cells(
+        forbidden = forbidden_terminal_cells(
             obstacle_map,
-            all_terminal_cells,
+            all_terminal_cells_set,
             allowed_terminal_ids={individual_terminal.id},
         )
         tree_without_own = frozenset(
@@ -288,7 +289,7 @@ def _apply_pad_side_consistency_swap(
             blocked=set(obstacle_map.blocked_cells),
         )
         if new_path is None:
-            new_path = _shortest_path_to_tree(
+            new_path = shortest_path_to_tree(
                 individual_terminal,
                 tree_cells=tree_without_own,
                 blocked=blocked,
@@ -305,9 +306,9 @@ def _apply_pad_side_consistency_swap(
             terminal=individual_terminal,
             path=new_path,
             cost=max(0, len(new_path) - 1),
-            access_anchor_cell=_terminal_access_anchor_cell(obstacle_map, individual_terminal.id),
+            access_anchor_cell=terminal_access_anchor_cell(obstacle_map, individual_terminal.id),
             route_start_cell=new_path[0] if new_path else None,
-            used_access_anchor=_route_uses_access_anchor(
+            used_access_anchor=route_uses_access_anchor(
                 obstacle_map, individual_terminal.id, new_path
             ),
         )
@@ -372,16 +373,6 @@ def _bus_column_group_heater_ids(
     }
 
 
-def _terminal_side_exit_dx(side_key: str) -> int:
-    """Return -1/+1 for a terminal's ``l``/``r`` exit side, 0 if unknown."""
-
-    if side_key == "l":
-        return -1
-    if side_key == "r":
-        return 1
-    return 0
-
-
 def _trim_common_bus_to_connections(
     obstacle_map: ElectricalObstacleMap,
     common_bus: CommonBusRoutingResult,
@@ -399,8 +390,8 @@ def _trim_common_bus_to_connections(
     if not connection_cells:
         return obstacle_map, common_bus
 
-    min_x_um = min(_grid_cell_center_um(cell, obstacle_map)[0] for cell in connection_cells)
-    max_x_um = max(_grid_cell_center_um(cell, obstacle_map)[0] for cell in connection_cells)
+    min_x_um = min(grid_cell_center_um(cell, obstacle_map.grid)[0] for cell in connection_cells)
+    max_x_um = max(grid_cell_center_um(cell, obstacle_map.grid)[0] for cell in connection_cells)
     half_overlap_um = max(
         obstacle_map.grid.grid_size_um / 2.0,
         config.wire_width_um / 2.0,
@@ -428,16 +419,3 @@ def _trim_common_bus_to_connections(
         tree_cells=frozenset(trimmed_tree_cells),
     )
     return trimmed_obstacle_map, trimmed_common_bus
-
-
-def _grid_cell_center_um(
-    cell: GridCell,
-    obstacle_map: ElectricalObstacleMap,
-) -> tuple[float, float]:
-    x, y = cell
-    grid = obstacle_map.grid
-    origin_x, origin_y = grid.origin
-    return (
-        origin_x + (x + 0.5) * grid.grid_size_um,
-        origin_y + (y + 0.5) * grid.grid_size_um,
-    )

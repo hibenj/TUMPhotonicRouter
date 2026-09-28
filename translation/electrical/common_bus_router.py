@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from statistics import median
-from typing import Any, Iterable, cast
+from typing import Iterable, cast
 
 from photonic_router.static_obstacle_builder import physical_to_grid
 
+from .pitch_grid import grid_cell_center_um
 from .port_access import choose_route_start_cell, ordered_route_start_cells
 from .types import (
     BBox,
@@ -19,6 +20,7 @@ from .types import (
     GridCell,
     TerminalBusRoute,
     TerminalPairGroup,
+    terminal_exit_dx,
 )
 
 
@@ -69,7 +71,7 @@ def route_common_bus(
     routes: list[TerminalBusRoute] = []
     tree_cells: set[GridCell] = set(obstacle_map.bus.cells)
     blocked = set(obstacle_map.blocked_cells)
-    all_terminal_cells = _all_terminal_cells(obstacle_map)
+    all_terminal_cells_set = all_terminal_cells(obstacle_map)
     median_x = _terminal_median_grid_x(terminal_groups, obstacle_map)
     local_target_x_by_group = _local_pair_target_grid_x_by_group(
         terminal_groups,
@@ -107,12 +109,12 @@ def route_common_bus(
         candidates: list[_CandidatePath] = []
         for group in remaining.values():
             for terminal in group.terminals:
-                forbidden = _forbidden_terminal_cells(
+                forbidden = forbidden_terminal_cells(
                     obstacle_map,
-                    all_terminal_cells,
+                    all_terminal_cells_set,
                     allowed_terminal_ids={terminal.id} | {t.id for t in selected.values()},
                 )
-                path = _shortest_path_to_tree(
+                path = shortest_path_to_tree(
                     terminal,
                     tree_cells=frozenset(tree_cells),
                     blocked=blocked,
@@ -159,12 +161,12 @@ def route_common_bus(
                 terminal=best.terminal,
                 path=best_path,
                 cost=best.cost,
-                access_anchor_cell=_terminal_access_anchor_cell(
+                access_anchor_cell=terminal_access_anchor_cell(
                     obstacle_map,
                     best.terminal.id,
                 ),
                 route_start_cell=best_path[0] if best_path else None,
-                used_access_anchor=_route_uses_access_anchor(
+                used_access_anchor=route_uses_access_anchor(
                     obstacle_map,
                     best.terminal.id,
                     best_path,
@@ -233,7 +235,7 @@ def _route_column_trunks(
     if not terminal_cluster:
         return
 
-    all_terminal_cells = _all_terminal_cells(obstacle_map)
+    all_terminal_cells_set = all_terminal_cells(obstacle_map)
     bus_side = obstacle_map.bus.side
 
     picks: dict[str, tuple[ElectricalTerminal, int]] = {}
@@ -267,18 +269,17 @@ def _route_column_trunks(
         members.sort(key=lambda item: item[2][1], reverse=(bus_side == "bottom"))
 
         side_keys = {terminal.side_key for _, terminal, _ in members}
-        if side_keys == {"l"}:
-            exit_dx = -1
-        elif side_keys == {"r"}:
-            exit_dx = 1
-        else:
+        if len(side_keys) != 1:
+            continue
+        exit_dx = terminal_exit_dx(next(iter(side_keys)))
+        if exit_dx == 0:
             continue
 
         allowed_cells: set[GridCell] = set()
         for _, terminal, anchor in members:
             allowed_cells.update(_terminal_open_cells(obstacle_map, terminal.id))
             allowed_cells.add(anchor)
-        forbidden_cells = all_terminal_cells.difference(allowed_cells)
+        forbidden_cells = all_terminal_cells_set.difference(allowed_cells)
 
         start_index = 0
         resolution: (
@@ -293,7 +294,7 @@ def _route_column_trunks(
                 forbidden_cells=forbidden_cells,
                 blocked=blocked,
                 tree_cells=tree_cells,
-                all_terminal_cells=all_terminal_cells,
+                all_terminal_cells=all_terminal_cells_set,
                 obstacle_map=obstacle_map,
                 config=config,
             )
@@ -327,12 +328,12 @@ def _route_column_trunks(
                     terminal=terminal,
                     path=path,
                     cost=max(0, len(path) - 1),
-                    access_anchor_cell=_terminal_access_anchor_cell(
+                    access_anchor_cell=terminal_access_anchor_cell(
                         obstacle_map,
                         terminal.id,
                     ),
                     route_start_cell=path[0] if path else None,
-                    used_access_anchor=_route_uses_access_anchor(
+                    used_access_anchor=route_uses_access_anchor(
                         obstacle_map,
                         terminal.id,
                         path,
@@ -378,7 +379,7 @@ def _find_legal_column_trunk(
     member_stub_forbidden: dict[str, frozenset[GridCell]] = {}
     for heater_id, terminal, _ in members:
         own_open = set(_terminal_open_cells(obstacle_map, terminal.id))
-        own_anchor = _terminal_access_anchor_cell(obstacle_map, terminal.id)
+        own_anchor = terminal_access_anchor_cell(obstacle_map, terminal.id)
         if own_anchor is not None:
             own_open.add(own_anchor)
         member_stub_allowed[heater_id] = frozenset(own_open)
@@ -420,11 +421,11 @@ def _find_legal_column_trunk(
             key=lambda cell: (abs(cell[1] - nearest_member_y), cell[1]),
         )
 
-        _, top_center_y = _grid_cell_center_um(top_junction, grid)
+        _, top_center_y = grid_cell_center_um(top_junction, grid)
         stripe_edge_um = bus.bbox[3] if bus_side == "bottom" else bus.bbox[1]
         band_y0 = min(top_center_y, stripe_edge_um)
         band_y1 = max(top_center_y, stripe_edge_um)
-        center_x, _ = _grid_cell_center_um((column, 0), grid)
+        center_x, _ = grid_cell_center_um((column, 0), grid)
         band_bbox = (center_x - half_band, band_y0, center_x + half_band, band_y1)
         if _wire_band_hits_raw_obstacles(band_bbox, raw_obstacle_bboxes):
             continue
@@ -465,10 +466,10 @@ def straight_drop_to_bus(
     access = obstacle_map.common_bus_port_accesses.get(terminal.id)
     if access is None:
         return None
-    exit_dx = {"l": -1, "r": 1}.get(terminal.side_key, 0)
+    exit_dx = terminal_exit_dx(terminal.side_key)
     if exit_dx == 0:
         return None
-    all_terminal_cells = _all_terminal_cells(obstacle_map)
+    all_terminal_cells_set = all_terminal_cells(obstacle_map)
     allowed_cells = set(_terminal_open_cells(obstacle_map, terminal.id))
     allowed_cells.add(access.anchor_cell)
     resolution = _find_legal_column_trunk(
@@ -476,10 +477,10 @@ def straight_drop_to_bus(
         access.anchor_cell[0],
         exit_dx,
         allowed_cells=allowed_cells,
-        forbidden_cells=all_terminal_cells.difference(allowed_cells),
+        forbidden_cells=all_terminal_cells_set.difference(allowed_cells),
         blocked=blocked,
         tree_cells=set(tree_cells),
-        all_terminal_cells=all_terminal_cells,
+        all_terminal_cells=all_terminal_cells_set,
         obstacle_map=obstacle_map,
         config=config,
     )
@@ -489,15 +490,6 @@ def straight_drop_to_bus(
     stub = stubs[terminal.heater_id]
     vertical = _axis_path(junctions[terminal.heater_id], stripe_entry)
     return tuple(dict.fromkeys((*stub, *vertical)))
-
-
-def _grid_cell_center_um(cell: GridCell, grid: Any) -> tuple[float, float]:
-    origin_x, origin_y = grid.origin
-    grid_size = grid.grid_size_um
-    return (
-        origin_x + (cell[0] + 0.5) * grid_size,
-        origin_y + (cell[1] + 0.5) * grid_size,
-    )
 
 
 def _wire_band_hits_raw_obstacles(
@@ -662,12 +654,12 @@ def _route_local_trunks(
                     terminal=terminal,
                     path=path,
                     cost=max(0, len(path) - 1),
-                    access_anchor_cell=_terminal_access_anchor_cell(
+                    access_anchor_cell=terminal_access_anchor_cell(
                         obstacle_map,
                         terminal.id,
                     ),
                     route_start_cell=path[0] if path else None,
-                    used_access_anchor=_route_uses_access_anchor(
+                    used_access_anchor=route_uses_access_anchor(
                         obstacle_map,
                         terminal.id,
                         path,
@@ -724,7 +716,7 @@ def _build_local_trunk_pair_routes(
 ) -> tuple[tuple[TerminalPairGroup, ElectricalTerminal, tuple[GridCell, ...]], ...] | None:
     terminal_routes: list[tuple[TerminalPairGroup, ElectricalTerminal, tuple[GridCell, ...]]] = []
     arm_endpoints: list[GridCell] = []
-    all_terminal_cells = _all_terminal_cells(obstacle_map)
+    all_terminal_cells_set = all_terminal_cells(obstacle_map)
     for group in group_pair:
         terminal = min(
             group.terminals,
@@ -744,10 +736,10 @@ def _build_local_trunk_pair_routes(
         trunk_cell = (target_grid_x, start_y)
         arm = _axis_path(start, trunk_cell)
         allowed_terminal_cells = set(_terminal_open_cells(obstacle_map, terminal.id))
-        access_anchor = _terminal_access_anchor_cell(obstacle_map, terminal.id)
+        access_anchor = terminal_access_anchor_cell(obstacle_map, terminal.id)
         if access_anchor is not None:
             allowed_terminal_cells.add(access_anchor)
-        forbidden = set(all_terminal_cells).difference(allowed_terminal_cells)
+        forbidden = set(all_terminal_cells_set).difference(allowed_terminal_cells)
         if _path_hits_blockers(
             arm,
             blocked,
@@ -759,7 +751,7 @@ def _build_local_trunk_pair_routes(
         arm_endpoints.append(trunk_cell)
 
     trunk_y_values = [cell[1] for cell in arm_endpoints]
-    tree_targets = tree_cells.difference(all_terminal_cells) or tree_cells
+    tree_targets = tree_cells.difference(all_terminal_cells_set) or tree_cells
     target_tree_cell = min(tree_targets, key=lambda cell: (abs(cell[0] - target_grid_x), cell[1]))
     trunk_bus_cell = (target_grid_x, target_tree_cell[1])
     trunk_y_values.append(trunk_bus_cell[1])
@@ -770,7 +762,7 @@ def _build_local_trunk_pair_routes(
         trunk,
         blocked,
         allowed=set(arm_endpoints),
-        forbidden=set(all_terminal_cells).difference(arm_endpoints),
+        forbidden=set(all_terminal_cells_set).difference(arm_endpoints),
     ):
         return None
     connector = _axis_path(trunk_bus_cell, target_tree_cell)
@@ -778,7 +770,7 @@ def _build_local_trunk_pair_routes(
         connector,
         blocked,
         allowed=set(tree_cells),
-        forbidden=set(all_terminal_cells),
+        forbidden=set(all_terminal_cells_set),
     ):
         return None
 
@@ -949,7 +941,7 @@ def _candidate_distance_to_target_x(
     return abs(float(grid_x) - target_x)
 
 
-def _all_terminal_cells(obstacle_map: ElectricalObstacleMap) -> frozenset[GridCell]:
+def all_terminal_cells(obstacle_map: ElectricalObstacleMap) -> frozenset[GridCell]:
     cells: set[GridCell] = set()
     terminal_open_cells = (
         obstacle_map.common_bus_terminal_open_cells or obstacle_map.terminal_open_cells
@@ -959,7 +951,7 @@ def _all_terminal_cells(obstacle_map: ElectricalObstacleMap) -> frozenset[GridCe
     return frozenset(cells)
 
 
-def _forbidden_terminal_cells(
+def forbidden_terminal_cells(
     obstacle_map: ElectricalObstacleMap,
     all_terminal_cells: frozenset[GridCell],
     *,
@@ -971,7 +963,7 @@ def _forbidden_terminal_cells(
     return frozenset(all_terminal_cells.difference(allowed))
 
 
-def _shortest_path_to_tree(
+def shortest_path_to_tree(
     terminal: ElectricalTerminal,
     *,
     tree_cells: frozenset[GridCell],
@@ -1065,7 +1057,7 @@ def _terminal_open_cells(
     return obstacle_map.terminal_open_cells.get(terminal_id, frozenset())
 
 
-def _terminal_access_anchor_cell(
+def terminal_access_anchor_cell(
     obstacle_map: ElectricalObstacleMap,
     terminal_id: str,
 ) -> GridCell | None:
@@ -1080,10 +1072,10 @@ def _terminal_access(
     return obstacle_map.common_bus_port_accesses.get(terminal_id)
 
 
-def _route_uses_access_anchor(
+def route_uses_access_anchor(
     obstacle_map: ElectricalObstacleMap,
     terminal_id: str,
     path: tuple[GridCell, ...],
 ) -> bool:
-    anchor = _terminal_access_anchor_cell(obstacle_map, terminal_id)
+    anchor = terminal_access_anchor_cell(obstacle_map, terminal_id)
     return bool(path) and anchor is not None and path[0] == anchor

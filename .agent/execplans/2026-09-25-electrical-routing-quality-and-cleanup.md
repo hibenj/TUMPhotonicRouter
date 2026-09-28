@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. This document must be maintained in accordance with `.agent/PLANS.md`.
 
-Status: **2026-09-28 -- Milestones 2 and 3 implemented and verified (river-routed pad wires; bus column trunks beside the heater bodies with one stub per terminal: `heater_s_mod` bus bends 79 -> 58, bus length 53.5 -> 29.0 mm); one open owner item (forced pad origin far from the bundles, Decision Log 2026-09-28). Milestone 4 (named stages, tests, cleanup) next.**
+Status: **2026-09-28 -- Milestones 2 and 3 done and owner-reviewed (the lone heater's missing bus connection found by the owner and fixed, fb15e4a); Milestone 4 (named stages, tests, module cleanup) in progress, slice 1 (dead code, duplicated helpers, public cross-module names) running.**
 
 
 ## Purpose / Big Picture
@@ -104,6 +104,14 @@ Acceptance: `bus_bend_count` on `heater_s_mod` at most the number of heaters plu
 Goal: the electrical router reads as the photonic one does after the restructure: a pipeline of stages with typed inputs and outputs, no module above about 600 lines, `verification.py` split into contracts and metrics, `debug.py` and the SVG writers separated from the routing, every stage with a test file, `docs/ARCHITECTURE.md` gaining a section on the electrical pipeline and `docs/CONFIGURATION.md` covering `ElectricalRoutingConfig`.
 
 Work: stage by stage, behaviour-preserving (the suite's metrics and the per-wire table identical before and after each slice, checked by the baseline comparison), following the restructure plan's method: slice, verifier packet, independent check, commit.
+
+Slices (2026-09-28, lead), each gated by `scripts/benchmark_electrical.py --suite --check --compare-baseline` with zero drift and the full test baseline:
+1. Dead code and duplicates: the lane-era functions of `bundle_detail_router` (marked "removed in Milestone 4") and their exclusive helpers plus their tests; one `grid_cell_center_um` in `pitch_grid` for the three private copies; one `terminal_exit_dx` for the four side-key mappings; the private names `route_electrical` imports from `common_bus_router` and `bundle_detail_router` made public.
+2. `verification.py` (1,527) split into the contracts (`verification.py`: issues) and the metrics (`metrics.py`: `_quality_metrics` and the per-wire table), with the net-geometry construction they share in its own module.
+3. `bundle_detail_router.py` split into the bundle dispatcher, the river construction, and the grid search (A* plus reachability); `common_bus_router.py` split into the column trunks and the search phases (local trunks, greedy); lane-era fields of `DetailedBundleRoute` (`lane_cell`, `track_cell`, `offset_um`, `offset_axis`, `source_stub_path`, `bundle_track_path`, `pad_stub_path`) removed with their readers.
+4. `route_electrical.py` as the literal stage sequence: the swap, trim and re-topology extracted into a named stage; one `Protocol` per stage in `stages.py` after the pattern of `translation/routing/stages.py`; `debug.py` (844) split into the SVG writers.
+5. Tests per stage: `tests/test_electrical_routing.py` (2,139 lines, 45 tests) split into one file per stage under `tests/electrical/`, fixtures in `tests/fixtures/`.
+6. Docs: `docs/ARCHITECTURE.md` section on the electrical pipeline, `docs/CONFIGURATION.md` covering `ElectricalRoutingConfig`; `ElectricalRoutingConfig.validate` decision on zero clearance (Decision Log 2026-09-28).
 
 Acceptance: metrics baseline identical to the Milestone 3 pin; module sizes; tests per stage; docs.
 

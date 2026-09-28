@@ -8,7 +8,7 @@ import math
 from typing import Any
 
 from .pad_slots import pad_access_bbox
-from .pitch_grid import bbox_to_grid_cells
+from .pitch_grid import bbox_to_grid_cells, grid_cell_center_um
 from .rect_geometry import (
     clip_manhattan_path_at_first_bbox_entry,
     clip_manhattan_path_start_at_bbox,
@@ -277,7 +277,7 @@ def _common_bus_allowed_cells(
                 obstacle_map,
                 config.terminal_contact_width_um,
                 route_start_um=(
-                    _grid_cell_center_um(route.path[0], obstacle_map) if route.path else None
+                    grid_cell_center_um(route.path[0], obstacle_map.grid) if route.path else None
                 ),
                 access=_common_bus_access(obstacle_map, route.terminal),
             )
@@ -347,12 +347,12 @@ def _common_bus_centerline_points(
     """One polyline per bus branch, plus the escape's."""
 
     polylines = [
-        tuple(_grid_cell_center_um(cell, obstacle_map) for cell in route.path)
+        tuple(grid_cell_center_um(cell, obstacle_map.grid) for cell in route.path)
         for route in common_bus.routes
     ]
     if common_bus_escape is not None and common_bus_escape.success:
         polylines.append(
-            tuple(_grid_cell_center_um(cell, obstacle_map) for cell in common_bus_escape.path)
+            tuple(grid_cell_center_um(cell, obstacle_map.grid) for cell in common_bus_escape.path)
         )
     return tuple(polylines)
 
@@ -1123,13 +1123,6 @@ def _terminal_contact_cells(
         terminal_access.contact_bbox,
         obstacle_map.grid,
     )
-
-
-def _grid_cell_center_um(
-    cell: GridCell,
-    obstacle_map: ElectricalObstacleMap,
-) -> tuple[float, float]:
-    return _grid_point_to_um((cell[0] + 0.5, cell[1] + 0.5), obstacle_map)
 
 
 def _tagged_point_wire_rects(

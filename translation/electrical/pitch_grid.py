@@ -30,6 +30,16 @@ def bbox_to_grid_cells(bbox: BBox, grid: GridSpec) -> frozenset[GridCell]:
     )
 
 
+def grid_cell_center_um(cell: GridCell, grid: GridSpec) -> tuple[float, float]:
+    """Return a grid cell's center in physical (um) coordinates."""
+
+    x, y = cell
+    return (
+        grid.origin[0] + (x + 0.5) * grid.grid_size_um,
+        grid.origin[1] + (y + 0.5) * grid.grid_size_um,
+    )
+
+
 def disk_cells(
     center: tuple[float, float], radius_um: float, grid: GridSpec
 ) -> frozenset[GridCell]:

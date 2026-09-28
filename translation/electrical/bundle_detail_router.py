@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from heapq import heappop, heappush
-from typing import Literal, cast
+from typing import Literal
 
 from .individual_topology import bundle_route_side
 from .metal_realization import common_bus_escape_rects
@@ -28,6 +28,7 @@ from .types import (
     IndividualEscapeTopologyResult,
     PadAssignment,
     PadPlan,
+    terminal_exit_dx,
 )
 
 Axis = Literal["x", "y"]
@@ -402,59 +403,6 @@ def _detailed_route_sort_key(
     return (route.bundle_id, route.rank, route.terminal.id)
 
 
-# Unused since Milestone 2 (the shelf ranks it computed fed
-# _individual_pad_lane_point, itself unused); removed in Milestone 4.
-def _pad_lane_rank_maps(
-    pad_plan: PadPlan,
-    config: ElectricalRoutingConfig,
-) -> tuple[dict[int, int], dict[int, int]]:
-    individual_assignments = tuple(
-        assignment for assignment in pad_plan.assignments if assignment.kind == "individual"
-    )
-    if not individual_assignments:
-        return {}, {}
-    if config.pad_origin_x_um is not None:
-        rank_by_slot = {
-            assignment.slot.index: rank
-            for rank, assignment in enumerate(
-                sorted(individual_assignments, key=lambda assignment: assignment.slot.index)
-            )
-        }
-        count_by_slot = {
-            assignment.slot.index: len(individual_assignments)
-            for assignment in individual_assignments
-        }
-        return rank_by_slot, count_by_slot
-
-    grouped_assignments: dict[tuple[str, int], list[PadAssignment]] = {}
-    fallback_group_id = 0
-    for assignment in individual_assignments:
-        if assignment.topology_bundle_id is None:
-            group_key = ("fallback", fallback_group_id)
-            fallback_group_id += 1
-        else:
-            group_key = ("bundle", assignment.topology_bundle_id)
-        grouped_assignments.setdefault(group_key, []).append(assignment)
-
-    rank_by_slot: dict[int, int] = {}
-    count_by_slot: dict[int, int] = {}
-    for assignments in grouped_assignments.values():
-        ordered = sorted(
-            assignments,
-            key=lambda assignment: (
-                assignment.topology_rank
-                if assignment.topology_rank is not None
-                else assignment.slot.index,
-                assignment.slot.index,
-            ),
-        )
-        group_count = len(ordered)
-        for rank, assignment in enumerate(ordered):
-            rank_by_slot[assignment.slot.index] = rank
-            count_by_slot[assignment.slot.index] = group_count
-    return rank_by_slot, count_by_slot
-
-
 def _detail_failure_reason(
     terminal: ElectricalTerminal,
     assignment: PadAssignment | None,
@@ -582,7 +530,7 @@ def _try_river_route_bundle(
         open_xs = [access.anchor_cell[0] for access in terminal_accesses]
     opening_edge = max(open_xs) if exit_dx > 0 else min(open_xs)
     exit_column = opening_edge + exit_dx * clearance_cells
-    obstacle_radius = _wire_reservation_radius_cells(obstacle_map, config)
+    obstacle_radius = wire_reservation_radius_cells(obstacle_map, config)
 
     wires: list[
         tuple[
@@ -711,11 +659,7 @@ def _terminal_exit_direction_x(terminal_access: ElectricalPortAccess) -> int:
     """Return -1/+1 for a terminal's ``:l``/``:r`` exit side, 0 if unknown."""
 
     side_key = terminal_access.terminal_id.rsplit(":", 1)[-1]
-    if side_key == "l":
-        return -1
-    if side_key == "r":
-        return 1
-    return 0
+    return terminal_exit_dx(side_key)
 
 
 def _exit_facing_port_name(
@@ -800,8 +744,8 @@ def _route_full_grid_pad_wire(
 
     exit_dx = _terminal_exit_direction_x(terminal_access)
     forced_first_direction = (exit_dx, 0) if exit_dx != 0 else None
-    obstacle_radius = _wire_reservation_radius_cells(obstacle_map, config)
-    blocked = _dilate_cells(
+    obstacle_radius = wire_reservation_radius_cells(obstacle_map, config)
+    blocked = dilate_cells(
         raw_blocked_cells, obstacle_radius, obstacle_map.grid.width, obstacle_map.grid.height
     )
     blocked.update(committed_footprint_cells)
@@ -881,7 +825,7 @@ def _pad_reachable(
     return False
 
 
-def _dilate_cells(
+def dilate_cells(
     cells: set[GridCell],
     radius: int,
     width: int,
@@ -899,169 +843,6 @@ def _dilate_cells(
                 if _in_bounds(cell, width, height):
                     dilated.add(cell)
     return dilated
-
-
-# Unused since Milestone 2 (L-shaped pad wires with a full-grid A* fallback
-# replaced the lane/shelf pad-wire construction below); removed in
-# Milestone 4. Kept for now so the diff stays reviewable.
-def _individual_pad_lane_point(
-    target_cells: frozenset[GridCell],
-    obstacle_map: ElectricalObstacleMap,
-    config: ElectricalRoutingConfig,
-    *,
-    track_end: tuple[float, float],
-    pad_lane_rank: int,
-    pad_lane_count: int,
-) -> tuple[float, float]:
-    target = _target_cell(target_cells, config)
-    direction_x = 1 if target[0] + 0.5 >= track_end[0] else -1
-    track_pitch_cells = max(
-        1,
-        math.ceil(
-            (config.wire_width_um + config.individual_route_spacing_um)
-            / obstacle_map.grid.grid_size_um
-        ),
-    )
-    if direction_x >= 0:
-        shelf_index = pad_lane_rank + 1
-    else:
-        shelf_index = pad_lane_count - pad_lane_rank
-    if config.pad_side == "top":
-        target_edge_y = min(y for _, y in target_cells)
-        lane_y = target_edge_y - shelf_index * track_pitch_cells
-    else:
-        target_edge_y = max(y for _, y in target_cells)
-        lane_y = target_edge_y + shelf_index * track_pitch_cells
-    lane_y = min(max(0, lane_y), obstacle_map.grid.height - 1)
-    return (target[0] + 0.5, lane_y + 0.5)
-
-
-# Unused since Milestone 2 (the lane offset it stitched together for pad
-# wires is now either a clean L or the full-grid A* fallback); removed in
-# Milestone 4.
-def _route_prefix_to_pad_stub_start(
-    *,
-    source_point: tuple[float, float],
-    bundle_track_path: tuple[tuple[float, float], ...],
-    pad_lane: tuple[float, float],
-    pad_side: str,
-) -> tuple[
-    tuple[tuple[float, float], ...],
-    tuple[tuple[float, float], ...],
-    tuple[tuple[float, float], ...],
-    tuple[float, float],
-]:
-    if not bundle_track_path:
-        source_stub = _manhattan_point_path(source_point, pad_lane)
-        return source_stub, source_stub, (), source_stub[-1]
-
-    attach_point, track_tail = _attach_point_and_tail(
-        source_point,
-        bundle_track_path,
-        pad_side=pad_side,
-    )
-    source_stub = _manhattan_point_path(source_point, attach_point)
-    track_tail = _truncate_track_tail_at_pad_lane(track_tail, pad_lane)
-    pad_stub_start = track_tail[-1] if track_tail else attach_point
-    prefix = _dedupe_points((*source_stub, *track_tail[1:]))
-    return prefix, source_stub, track_tail, pad_stub_start
-
-
-def _truncate_track_tail_at_pad_lane(
-    track_tail: tuple[tuple[float, float], ...],
-    pad_lane: tuple[float, float],
-) -> tuple[tuple[float, float], ...]:
-    if len(track_tail) <= 1:
-        return track_tail
-    lane_y = pad_lane[1]
-    truncated: list[tuple[float, float]] = [track_tail[0]]
-    for start, end in zip(track_tail, track_tail[1:]):
-        if _segment_crosses_horizontal_line(start, end, lane_y):
-            branch = _project_horizontal_line_to_segment(start, end, lane_y)
-            if branch != truncated[-1]:
-                truncated.append(branch)
-            return _dedupe_points(tuple(truncated))
-        if end != truncated[-1]:
-            truncated.append(end)
-    return _dedupe_points(tuple(truncated))
-
-
-def _segment_crosses_horizontal_line(
-    start: tuple[float, float],
-    end: tuple[float, float],
-    y: float,
-) -> bool:
-    low_y, high_y = sorted((start[1], end[1]))
-    return low_y <= y <= high_y
-
-
-def _project_horizontal_line_to_segment(
-    start: tuple[float, float],
-    end: tuple[float, float],
-    y: float,
-) -> tuple[float, float]:
-    if start[0] == end[0]:
-        return (start[0], y)
-    if start[1] == end[1]:
-        low_x, high_x = sorted((start[0], end[0]))
-        return (min(max(start[0], low_x), high_x), y)
-    return (start[0], y)
-
-
-# Unused since Milestone 2 (only _route_prefix_to_pad_stub_start called
-# this); removed in Milestone 4.
-def _attach_point_and_tail(
-    source_point: tuple[float, float],
-    path: tuple[tuple[float, float], ...],
-    *,
-    pad_side: str,
-) -> tuple[tuple[float, float], tuple[tuple[float, float], ...]]:
-    if len(path) == 1:
-        return path[0], path
-
-    best_index = 0
-    best_projection = path[0]
-    best_key: tuple[float, float, int] | None = None
-    for index, (start, end) in enumerate(zip(path, path[1:])):
-        projection = _project_point_to_axis_segment(source_point, start, end)
-        distance = abs(source_point[0] - projection[0]) + abs(source_point[1] - projection[1])
-        pad_direction_score = -projection[1] if pad_side == "top" else projection[1]
-        key = (distance, pad_direction_score, index)
-        if best_key is None or key < best_key:
-            best_key = key
-            best_index = index
-            best_projection = projection
-
-    tail = _dedupe_points((best_projection, *path[best_index + 1 :]))
-    return best_projection, tail
-
-
-def _project_point_to_axis_segment(
-    point: tuple[float, float],
-    start: tuple[float, float],
-    end: tuple[float, float],
-) -> tuple[float, float]:
-    if start[0] == end[0]:
-        low_y, high_y = sorted((start[1], end[1]))
-        return (start[0], min(max(point[1], low_y), high_y))
-    if start[1] == end[1]:
-        low_x, high_x = sorted((start[0], end[0]))
-        return (min(max(point[0], low_x), high_x), start[1])
-    # Offset paths should be rectilinear. Fall back to the segment start if a
-    # malformed diagonal slips through so the route stays debuggable.
-    return start
-
-
-def _manhattan_point_path(
-    start: tuple[float, float],
-    end: tuple[float, float],
-) -> tuple[tuple[float, float], ...]:
-    if start == end:
-        return (start,)
-    if start[0] == end[0] or start[1] == end[1]:
-        return (start, end)
-    via = (end[0], start[1])
-    return _dedupe_points((start, via, end))
 
 
 def _route_pad_stub_path(
@@ -1270,7 +1051,7 @@ def _wire_reservation_cells_from_point_path(
     """Return ``path``'s centerline dilated by ``radius`` cells (Chebyshev).
 
     ``radius`` is always one of the two reservation radii below, passed
-    explicitly by the caller: ``_wire_reservation_radius_cells`` (the
+    explicitly by the caller: ``wire_reservation_radius_cells`` (the
     obstacle-clearance radius) when checking against the obstacle map, or
     ``_wire_spacing_radius_cells`` (the wire-to-wire radius) when building a
     footprint other wires must stay clear of.
@@ -1287,7 +1068,7 @@ def _wire_reservation_cells_from_point_path(
     return frozenset(cells)
 
 
-def _wire_reservation_radius_cells(
+def wire_reservation_radius_cells(
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
 ) -> int:
@@ -1387,179 +1168,9 @@ def _in_bounds(cell: GridCell, width: int, height: int) -> bool:
     return 0 <= x < width and 0 <= y < height
 
 
-# Unused since Milestone 2 (the lane offset it computed is no longer used
-# for pad wires; DetailedBundleRoute.offset_um is now always 0.0); removed
-# in Milestone 4.
-def _rank_offset_um(
-    rank: int,
-    bundle: EscapeBundle,
-    obstacle_map: ElectricalObstacleMap,
-    track_pitch_um: float,
-) -> float:
-    if bundle.required_tracks <= 1:
-        return 0.0
-    if _bundle_route_side(bundle, obstacle_map) == "left":
-        return -(bundle.required_tracks - 1 - rank) * track_pitch_um
-    return rank * track_pitch_um
-
-
-# Unused since Milestone 2 (pad wires are an L or a full-grid A* fallback,
-# not a lane-offset skeleton); removed in Milestone 4.
-def _realize_ordered_bundle_lanes(
-    skeleton_path: tuple[GridCell, ...],
-    *,
-    lane_count: int,
-    track_pitch_um: float,
-    route_side: str,
-    grid_size_um: float,
-) -> tuple[tuple[tuple[float, float], ...], ...]:
-    """Return lane-preserving bus polylines for a Manhattan skeleton.
-
-    Lane indices are logical, not recomputed from local segment geometry.  The
-    initial segment defines the outward side; at each 90-degree bend the local
-    side flips so the same physical lane remains ordered through the corner.
-    """
-
-    if lane_count <= 0:
-        return ()
-    points = _centerline_points(skeleton_path)
-    if not points:
-        return tuple(() for _ in range(lane_count))
-    if len(points) == 1:
-        return tuple((points[0],) for _ in range(lane_count))
-
-    segments = _manhattan_segments(points)
-    if not segments:
-        return tuple((points[0],) for _ in range(lane_count))
-    track_pitch_cells = track_pitch_um / grid_size_um
-
-    lane_paths: list[tuple[tuple[float, float], ...]] = []
-    for lane_index in range(lane_count):
-        lane_paths.append(
-            _realize_single_ordered_lane(
-                segments,
-                lane_index=lane_index,
-                lane_count=lane_count,
-                route_side=route_side,
-                track_pitch_cells=track_pitch_cells,
-            )
-        )
-    return tuple(lane_paths)
-
-
 def _centerline_points(path: tuple[GridCell, ...]) -> tuple[tuple[float, float], ...]:
     simplified = _simplify_manhattan_path(path)
     return tuple(_cell_center(cell) for cell in simplified)
-
-
-def _manhattan_segments(
-    points: tuple[tuple[float, float], ...],
-) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
-    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    for start, end in zip(points, points[1:]):
-        if start == end:
-            continue
-        if start[0] != end[0] and start[1] != end[1]:
-            raise ValueError("bundle skeleton must be Manhattan")
-        if segments:
-            previous_direction = _point_direction(*segments[-1])
-            current_direction = _point_direction(start, end)
-            if (
-                previous_direction != current_direction
-                and previous_direction != (-current_direction[0], -current_direction[1])
-                and previous_direction[0] != 0
-                and current_direction[0] != 0
-            ):
-                raise ValueError("consecutive horizontal bundle segments are invalid")
-            if (
-                previous_direction != current_direction
-                and previous_direction != (-current_direction[0], -current_direction[1])
-                and previous_direction[1] != 0
-                and current_direction[1] != 0
-            ):
-                raise ValueError("consecutive vertical bundle segments are invalid")
-        segments.append((start, end))
-    return tuple(segments)
-
-
-def _lane_offset_for_direction(
-    direction: tuple[int, int],
-    lane_index: int,
-    *,
-    lane_count: int,
-    route_side: str,
-    track_pitch_cells: float,
-) -> tuple[float, float]:
-    if lane_count <= 1:
-        return (0.0, 0.0)
-    dx, dy = direction
-    if route_side == "left":
-        vertical_x_offset = -(lane_count - 1 - lane_index) * track_pitch_cells
-    else:
-        vertical_x_offset = lane_index * track_pitch_cells
-    if dy != 0:
-        return (vertical_x_offset, 0.0)
-    if dx < 0:
-        return (0.0, vertical_x_offset)
-    if dx > 0:
-        return (0.0, -vertical_x_offset)
-    return (0.0, 0.0)
-
-
-def _realize_single_ordered_lane(
-    segments: tuple[tuple[tuple[float, float], tuple[float, float]], ...],
-    *,
-    lane_index: int,
-    lane_count: int,
-    route_side: str,
-    track_pitch_cells: float,
-) -> tuple[tuple[float, float], ...]:
-    segment_points: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    for start, end in segments:
-        offset = _lane_offset_for_direction(
-            _point_direction(start, end),
-            lane_index,
-            lane_count=lane_count,
-            route_side=route_side,
-            track_pitch_cells=track_pitch_cells,
-        )
-        segment_points.append((_translate_point(start, offset), _translate_point(end, offset)))
-
-    points: list[tuple[float, float]] = [segment_points[0][0]]
-    for index in range(1, len(segment_points)):
-        points.append(
-            _lane_bend_intersection(
-                segment_points[index - 1],
-                segment_points[index],
-            )
-        )
-    points.append(segment_points[-1][1])
-    return _dedupe_points(tuple(points))
-
-
-def _translate_point(
-    point: tuple[float, float],
-    offset: tuple[float, float],
-) -> tuple[float, float]:
-    return (
-        point[0] + offset[0],
-        point[1] + offset[1],
-    )
-
-
-def _lane_bend_intersection(
-    previous_segment: tuple[tuple[float, float], tuple[float, float]],
-    current_segment: tuple[tuple[float, float], tuple[float, float]],
-) -> tuple[float, float]:
-    previous_start, previous_end = previous_segment
-    current_start, current_end = current_segment
-    previous_direction = _point_direction(previous_start, previous_end)
-    current_direction = _point_direction(current_start, current_end)
-    if previous_direction[0] == 0 and current_direction[1] == 0:
-        return (previous_end[0], current_start[1])
-    if previous_direction[1] == 0 and current_direction[0] == 0:
-        return (current_start[0], previous_end[1])
-    return previous_end
 
 
 def _point_direction(
@@ -1573,68 +1184,6 @@ def _point_direction(
     if dy != 0:
         return (0, 1 if dy > 0 else -1)
     return (0, 0)
-
-
-# Unused since Milestone 2 (only _realize_ordered_bundle_lanes called this);
-# removed in Milestone 4.
-def _bundle_skeleton_path(
-    bundle: EscapeBundle,
-    config: ElectricalRoutingConfig,
-) -> tuple[GridCell, ...]:
-    if bundle.shared_cells:
-        cells = bundle.shared_cells
-    else:
-        cells = bundle.cells
-    if not cells:
-        return ()
-    if len(cells) == 1:
-        return tuple(cells)
-    start = _farthest_cell(min(cells), cells)[0]
-    end, parent = _farthest_cell(start, cells)
-    path = _reconstruct_cell_path(parent, end)
-    if not path:
-        return tuple(sorted(cells))
-    if config.pad_side == "top" and path[-1][1] < path[0][1]:
-        path = tuple(reversed(path))
-    elif config.pad_side == "bottom" and path[-1][1] > path[0][1]:
-        path = tuple(reversed(path))
-    return path
-
-
-def _farthest_cell(
-    start: GridCell,
-    cells: frozenset[GridCell],
-) -> tuple[GridCell, dict[GridCell, GridCell | None]]:
-    queue = [start]
-    parent: dict[GridCell, GridCell | None] = {start: None}
-    for current in queue:
-        for neighbor in _grid_neighbors(current):
-            if neighbor not in cells or neighbor in parent:
-                continue
-            parent[neighbor] = current
-            queue.append(neighbor)
-    farthest = max(parent, key=lambda cell: (_manhattan(start, cell), cell))
-    return farthest, parent
-
-
-def _reconstruct_cell_path(
-    parent: dict[GridCell, GridCell | None],
-    end: GridCell,
-) -> tuple[GridCell, ...]:
-    if end not in parent:
-        return ()
-    path: list[GridCell] = []
-    current: GridCell | None = end
-    while current is not None:
-        path.append(current)
-        current = parent[current]
-    path.reverse()
-    return tuple(path)
-
-
-def _grid_neighbors(cell: GridCell) -> tuple[GridCell, GridCell, GridCell, GridCell]:
-    x, y = cell
-    return ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))
 
 
 def _manhattan(a: GridCell, b: GridCell) -> int:
@@ -1750,10 +1299,6 @@ def _segment_normal(start: GridCell, end: GridCell, *, side: str) -> tuple[int, 
     if side == "left":
         return (-dy, dx)
     return (dy, -dx)
-
-
-def _bundle_route_side(bundle: EscapeBundle, obstacle_map: ElectricalObstacleMap) -> RouteSide:
-    return cast(RouteSide, bundle_route_side(bundle, obstacle_map))
 
 
 def _offset_axis(bundle: EscapeBundle) -> Axis:

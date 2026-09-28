@@ -464,3 +464,13 @@ def opposite_side(side: Side) -> Side:
     if side == "bottom":
         return "top"
     raise ValueError("side must be 'top' or 'bottom'")
+
+
+def terminal_exit_dx(side_key: str) -> int:
+    """Return -1/+1 for a terminal's ``l``/``r`` exit side, 0 if unknown."""
+
+    if side_key == "l":
+        return -1
+    if side_key == "r":
+        return 1
+    return 0

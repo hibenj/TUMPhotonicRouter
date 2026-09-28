@@ -9,6 +9,7 @@ from typing import Literal, cast
 
 from photonic_router.static_obstacle_builder import GridSpec, physical_to_grid
 
+from .pitch_grid import grid_cell_center_um
 from .terminal_contacts import (
     port_contact_bbox,
     select_terminal_port_for_side,
@@ -170,7 +171,7 @@ def build_terminal_port_access(
         blocked_cells=blocked_cells,
         grid=grid,
     )
-    anchor_point = _grid_cell_center_um(anchor_cell, grid)
+    anchor_point = grid_cell_center_um(anchor_cell, grid)
     centerline = _dedupe_points(_manhattan_centerline(port_point, anchor_point, side))
     return ElectricalPortAccess(
         terminal_id=terminal.id,
@@ -243,15 +244,6 @@ def _manhattan(a: GridCell, b: GridCell | None) -> int:
     if b is None:
         return 0
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
-
-def _grid_cell_center_um(cell: GridCell, grid: object) -> Point:
-    origin_x, origin_y = getattr(grid, "origin")
-    grid_size = float(getattr(grid, "grid_size_um"))
-    return (
-        float(origin_x) + (cell[0] + 0.5) * grid_size,
-        float(origin_y) + (cell[1] + 0.5) * grid_size,
-    )
 
 
 def _manhattan_centerline(start: Point, end: Point, side: Side) -> tuple[Point, ...]:

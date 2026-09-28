@@ -25,7 +25,6 @@ from translation.electrical import ElectricalRoutingConfig, route_electrical_hea
 from translation.electrical.bundle_detail_router import (
     _offset_path_by_local_normals,
     _pad_stub_step_cost,
-    _realize_ordered_bundle_lanes,
 )
 from translation.electrical.common_bus_router import _terminal_open_cells, route_common_bus
 from translation.electrical.obstacle_extraction import build_electrical_obstacle_map
@@ -2001,79 +2000,6 @@ def test_local_normal_offset_rotates_through_bundle_bends():
         (10.5, 10.5),
         (12.5, 10.5),
     )
-
-
-def test_ordered_bundle_lanes_preserve_vertical_lane_order():
-    lanes = _realize_ordered_bundle_lanes(
-        ((10, 10), (10, 12)),
-        lane_count=4,
-        track_pitch_um=20.0,
-        route_side="right",
-        grid_size_um=10.0,
-    )
-
-    assert [lane[0][0] for lane in lanes] == [10.5, 12.5, 14.5, 16.5]
-    assert [lane[-1][0] for lane in lanes] == [10.5, 12.5, 14.5, 16.5]
-    assert all(lane[0][1] == 10.5 and lane[-1][1] == 12.5 for lane in lanes)
-
-
-def test_ordered_bundle_lanes_preserve_horizontal_lane_order():
-    lanes = _realize_ordered_bundle_lanes(
-        ((10, 10), (12, 10)),
-        lane_count=4,
-        track_pitch_um=20.0,
-        route_side="left",
-        grid_size_um=10.0,
-    )
-
-    assert [lane[0][1] for lane in lanes] == [16.5, 14.5, 12.5, 10.5]
-    assert [lane[-1][1] for lane in lanes] == [16.5, 14.5, 12.5, 10.5]
-    assert all(lane[0][0] == 10.5 and lane[-1][0] == 12.5 for lane in lanes)
-
-
-def test_ordered_bundle_lanes_flip_local_side_at_left_turn():
-    lanes = _realize_ordered_bundle_lanes(
-        ((10, 10), (10, 20), (0, 20)),
-        lane_count=4,
-        track_pitch_um=20.0,
-        route_side="right",
-        grid_size_um=10.0,
-    )
-
-    assert [lane[0][0] for lane in lanes] == [10.5, 12.5, 14.5, 16.5]
-    assert [lane[-1][1] for lane in lanes] == [20.5, 22.5, 24.5, 26.5]
-    assert lanes[3] == ((16.5, 10.5), (16.5, 26.5), (0.5, 26.5))
-
-
-def test_ordered_bundle_lanes_flip_local_side_at_right_turn():
-    lanes = _realize_ordered_bundle_lanes(
-        ((10, 10), (10, 20), (20, 20)),
-        lane_count=4,
-        track_pitch_um=20.0,
-        route_side="right",
-        grid_size_um=10.0,
-    )
-
-    assert [lane[0][0] for lane in lanes] == [10.5, 12.5, 14.5, 16.5]
-    assert [lane[-1][1] for lane in lanes] == [20.5, 18.5, 16.5, 14.5]
-    assert lanes[3] == ((16.5, 10.5), (16.5, 14.5), (20.5, 14.5))
-
-
-def test_ordered_bundle_lanes_preserve_lane_identity_through_multiple_bends():
-    lanes = _realize_ordered_bundle_lanes(
-        ((10, 10), (10, 20), (20, 20), (20, 30), (30, 30)),
-        lane_count=3,
-        track_pitch_um=20.0,
-        route_side="right",
-        grid_size_um=10.0,
-    )
-
-    assert len(lanes) == 3
-    assert [lane[0][0] for lane in lanes] == [10.5, 12.5, 14.5]
-    assert [lane[-1][1] for lane in lanes] == [30.5, 28.5, 26.5]
-    for lane in lanes:
-        for start, end in zip(lane, lane[1:]):
-            assert start[0] == end[0] or start[1] == end[1]
 
 
 def test_common_bus_escape_reaches_assigned_common_bus_pad_slot():
