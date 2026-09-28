@@ -85,7 +85,7 @@ def _result_stub() -> SimpleNamespace:
             "required_cross_net_clearance_um": 10.0,
             "centerline_length_um": 19_390.0,
             "bend_count": 65,
-            "pad_channel_height_um": 180.0,
+            "pad_channel_height_um": 140.0,
             "bus_length_um": 8_000.0,
             "bus_bend_count": 2,
             "wire_metal_area_um2": 400_000.0,
@@ -476,7 +476,7 @@ def test_electrical_benchmark_writes_artifact_bundle(tmp_path):
         "metrics": {
             "centerline_length_um": 19_390.0,
             "bend_count": 65,
-            "pad_channel_height_um": 180.0,
+            "pad_channel_height_um": 140.0,
             "raw_metal_area_um2": 556_778.772,
             "union_metal_area_um2": 549_599.152,
             "metal_area_overcount_um2": 7_179.619999999995,
