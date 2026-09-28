@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import median
 from typing import cast
 
@@ -20,7 +20,9 @@ from .bus_search import (
     terminal_open_cells,
 )
 from .column_trunks import route_column_trunks
+from .pitch_grid import bbox_to_grid_cells, grid_cell_center_um
 from .types import (
+    BusStripe,
     CommonBusRoutingResult,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,
@@ -192,6 +194,54 @@ def route_common_bus(
         tree_cells=frozenset(tree_cells),
         failed_heaters=tuple(sorted(remaining)),
     )
+
+
+def trim_common_bus_to_connections(
+    obstacle_map: ElectricalObstacleMap,
+    common_bus: CommonBusRoutingResult,
+    config: ElectricalRoutingConfig,
+) -> tuple[ElectricalObstacleMap, CommonBusRoutingResult]:
+    """Limit realized/debug bus stripe to the span touched by routed terminals."""
+
+    if not common_bus.routes:
+        return obstacle_map, common_bus
+
+    provisional_bus_cells = obstacle_map.bus.cells
+    connection_cells = {
+        cell for route in common_bus.routes for cell in route.path if cell in provisional_bus_cells
+    }
+    if not connection_cells:
+        return obstacle_map, common_bus
+
+    min_x_um = min(grid_cell_center_um(cell, obstacle_map.grid)[0] for cell in connection_cells)
+    max_x_um = max(grid_cell_center_um(cell, obstacle_map.grid)[0] for cell in connection_cells)
+    half_overlap_um = max(
+        obstacle_map.grid.grid_size_um / 2.0,
+        config.wire_width_um / 2.0,
+    )
+    _, bus_ymin, _, bus_ymax = obstacle_map.bus.bbox
+    trimmed_bbox = (
+        min_x_um - half_overlap_um,
+        bus_ymin,
+        max_x_um + half_overlap_um,
+        bus_ymax,
+    )
+    trimmed_bus_cells = bbox_to_grid_cells(trimmed_bbox, obstacle_map.grid)
+    trimmed_bus = BusStripe(
+        side=obstacle_map.bus.side,
+        bbox=trimmed_bbox,
+        cells=frozenset(trimmed_bus_cells),
+    )
+    trimmed_tree_cells = set(common_bus.tree_cells).difference(provisional_bus_cells) | set(
+        trimmed_bus_cells
+    )
+    trimmed_obstacle_map = replace(obstacle_map, bus=trimmed_bus)
+    trimmed_common_bus = replace(
+        common_bus,
+        bus=trimmed_bus,
+        tree_cells=frozenset(trimmed_tree_cells),
+    )
+    return trimmed_obstacle_map, trimmed_common_bus
 
 
 def _route_local_trunks(
@@ -474,14 +524,6 @@ def _candidate_target_distance(
     else:
         target_x = median_x
     return _candidate_distance_to_target_x(candidate, target_x, obstacle_map)
-
-
-def _candidate_median_distance(
-    candidate: _CandidatePath,
-    median_x: float,
-    obstacle_map: ElectricalObstacleMap,
-) -> float:
-    return _candidate_distance_to_target_x(candidate, median_x, obstacle_map)
 
 
 def _candidate_distance_to_target_x(

@@ -21,12 +21,21 @@ from tests.fixtures.synthetic_layouts import (
     ripup_reroute_heater_schematic as build_ripup_reroute_schematic,
     single_heater_schematic as build_single_heater_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters, stages
+from translation.electrical.bundle_detail_router import route_detailed_bundles
 from translation.electrical.bus_search import terminal_open_cells as _terminal_open_cells
-from translation.electrical.common_bus_router import route_common_bus
+from translation.electrical.common_bus_router import (
+    route_common_bus,
+    trim_common_bus_to_connections,
+)
+from translation.electrical.debug import write_debug_artifacts
+from translation.electrical.escape_router import route_common_bus_escape
+from translation.electrical.individual_topology import compute_individual_escape_topology
+from translation.electrical.metal_realization import realize_electrical_metal
 from translation.electrical.obstacle_extraction import build_electrical_obstacle_map
+from translation.electrical.pad_side_reconciliation import reconcile_pad_sides
 from translation.electrical.pad_wire_search import _pad_stub_step_cost
-from translation.electrical.pad_slots import pad_access_bbox
+from translation.electrical.pad_slots import pad_access_bbox, plan_pad_slots
 from translation.electrical.pitch_grid import disk_cells
 from translation.electrical.port_access import build_terminal_port_access
 from translation.electrical.rect_geometry import clean_rects, union_rect_area, wire_rects_for_points
@@ -2007,3 +2016,43 @@ def test_common_bus_escape_uses_opposite_bus_for_bottom_pad_side():
     assert result.common_bus_escape.success, result.common_bus_escape.reason
     assert result.common_bus_escape.path[0] in result.common_bus.tree_cells
     assert result.common_bus_escape.path[-1] in result.common_bus_escape.target_cells
+
+
+def test_electrical_stage_functions_satisfy_their_protocols() -> None:
+    """Each stage implementation's signature matches its `stages.py` Protocol.
+
+    A static-shape test: binding an implementation to a Protocol-annotated
+    variable is what a type checker (mypy) verifies against the Protocol's
+    `__call__`; this test only asserts every stage is still a plain callable,
+    so a stage accidentally turned into something uncallable is caught even
+    without running mypy.
+    """
+
+    terminal_extractor: stages.TerminalExtractor = extract_heater_terminal_pairs
+    obstacle_map_builder: stages.ObstacleMapBuilder = build_electrical_obstacle_map
+    common_bus_router: stages.CommonBusRouter = route_common_bus
+    common_bus_trimmer: stages.CommonBusTrimmer = trim_common_bus_to_connections
+    escape_topology_planner: stages.EscapeTopologyPlanner = compute_individual_escape_topology
+    pad_planner: stages.PadPlanner = plan_pad_slots
+    pad_side_reconciler: stages.PadSideReconciler = reconcile_pad_sides
+    bus_escape_router: stages.BusEscapeRouter = route_common_bus_escape
+    pad_wire_router: stages.PadWireRouter = route_detailed_bundles
+    metal_realizer: stages.MetalRealizer = realize_electrical_metal
+    electrical_verifier: stages.ElectricalVerifier = verify_electrical_routing
+    debug_artifact_writer: stages.DebugArtifactWriter = write_debug_artifacts
+
+    for stage_fn in (
+        terminal_extractor,
+        obstacle_map_builder,
+        common_bus_router,
+        common_bus_trimmer,
+        escape_topology_planner,
+        pad_planner,
+        pad_side_reconciler,
+        bus_escape_router,
+        pad_wire_router,
+        metal_realizer,
+        electrical_verifier,
+        debug_artifact_writer,
+    ):
+        assert callable(stage_fn)

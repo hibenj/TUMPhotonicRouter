@@ -436,6 +436,23 @@ class ElectricalVerificationResult:
 
 
 @dataclass(frozen=True)
+class PadSideReconciliation:
+    """Stage 7's product: the pipeline objects after the pad-side consistency swap.
+
+    A lone heater whose individual terminal's exit points away from its
+    assigned pad gets its common-bus and individual roles swapped, and the
+    bus trim, escape topology and pad plan are recomputed from the swap; a
+    heater with no such mismatch leaves every field unchanged.
+    """
+
+    obstacle_map: ElectricalObstacleMap
+    common_bus: CommonBusRoutingResult
+    individual_topology: IndividualEscapeTopologyResult | None
+    pad_plan: PadPlan | None
+    swapped_heater_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ElectricalRoutingResult:
     """Electrical routing milestone result payload."""
 
