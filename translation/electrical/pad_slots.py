@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 from .individual_topology import bundle_route_side
 from .types import (
@@ -54,6 +54,19 @@ def plan_pad_slots(
     ``common_bus_pad_slot_gap`` (Rule B) keeps the bus pad far enough from
     the sequence of individual pads that its wider escape band cannot
     overlap a neighbouring individual pad's own metal.
+
+    2026-09-28 (mirrored nesting plan): the anchoring above can still leave
+    row 1's pad inward of c_1 when the push in
+    ``_assign_interval_indices_pass2`` shoves a whole "left"-side block past
+    its own terminal column (the docstring there explains why only that
+    side, and only row 1, can be pushed this way). Each interval's
+    ``PadAssignment.nesting`` records "inward" in that case, "outward"
+    otherwise (``_interval_nesting``); the item order and index order are
+    unchanged either way -- row 1 (the interval's outermost item on its
+    side) already gets that side's highest-index slot by construction, so
+    an inward block's row 1 automatically lands on the block's own most
+    inward slot and row k on its slot nearest the column, which is exactly
+    what ``river_routing``'s mirrored construction needs.
     """
 
     config.validate()
@@ -81,6 +94,9 @@ def plan_pad_slots(
         first_assignment_index,
         obstacle_map,
         config,
+    )
+    individual_nesting = _interval_nesting_list(
+        intervals, individual_indices, origin_x, obstacle_map, config
     )
     common_bus_index = _common_bus_pad_slot_index(
         origin_x,
@@ -122,9 +138,11 @@ def plan_pad_slots(
     )
 
     assignments: list[PadAssignment] = []
-    for assignment_index, (terminal, bundle_id, topology_rank) in zip(
+    for assignment_index, nesting, (terminal, bundle_id, topology_rank) in zip(
         individual_indices,
+        individual_nesting,
         individual_items,
+        strict=True,
     ):
         slot = slot_by_index[assignment_index]
         assignments.append(
@@ -136,6 +154,7 @@ def plan_pad_slots(
                 heater_id=terminal.heater_id,
                 topology_bundle_id=bundle_id,
                 topology_rank=topology_rank,
+                nesting=nesting,
             )
         )
     assignments.append(
@@ -460,6 +479,75 @@ def _row_one_anchored_start(
         last = math.floor((c_1_um - origin_x) / config.pad_pitch_um)
         return last - len(interval.items) + 1
     return math.ceil((c_1_um - origin_x) / config.pad_pitch_um)
+
+
+def _interval_nesting_list(
+    intervals: tuple[_PadInterval, ...],
+    individual_indices: list[int],
+    origin_x: float,
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> list[Literal["outward", "inward"]]:
+    """Return one nesting value per individual item, in ``individual_indices`` order.
+
+    2026-09-28 (mirrored nesting plan): computed once per interval, after
+    pass 2's final push, and broadcast to every item of that interval (a
+    bundle's members always share one nesting -- ``river_routing`` reads it
+    from any one member). See ``_interval_nesting`` for the test.
+    """
+
+    nesting_list: list[Literal["outward", "inward"]] = []
+    item_cursor = 0
+    for interval in intervals:
+        interval_indices = individual_indices[item_cursor : item_cursor + len(interval.items)]
+        item_cursor += len(interval.items)
+        nesting = _interval_nesting(interval, interval_indices, origin_x, obstacle_map, config)
+        nesting_list.extend([nesting] * len(interval.items))
+    return nesting_list
+
+
+def _interval_nesting(
+    interval: _PadInterval,
+    interval_indices: list[int],
+    origin_x: float,
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> Literal["outward", "inward"]:
+    """Return "inward" if this interval's row-1 pad landed inward of c_1.
+
+    2026-09-28 (mirrored nesting plan): row 1 is the interval's first slot
+    on "right", its last slot on "left" (``_make_interval``'s nesting
+    order, the same convention ``_row_one_anchored_start`` uses). Mirrors
+    the check ``river_routing.try_river_route_bundle`` used to make only for
+    row 1 (``exit_dx * (p_i - c_i) < 0``): only a "left"-side block's push
+    in ``_assign_interval_indices_pass2`` can ever move row 1 (that side's
+    *last* item) past c_1, so a "right"-side or side-less interval is
+    always "outward".
+
+    A single-terminal interval is always "outward" too, even when its own
+    (only) pad is inward of its own c_1: that terminal already *is* row 1,
+    river_routing's existing row-1 exception already serves it (the
+    mirrored channel rank, k + 1 - 1 = 1 = the unmirrored rank for k = 1,
+    makes the two nestings compute the identical h_1 for a single-terminal
+    block), and there is no row k to place nearest the column, so labelling
+    it "inward" would carry no behaviour change and only make the label
+    less meaningful.
+    """
+
+    if interval.route_side is None or not interval_indices or len(interval_indices) < 2:
+        return "outward"
+    row_one_index = interval_indices[-1] if interval.route_side == "left" else interval_indices[0]
+    row_one_x_um = origin_x + row_one_index * config.pad_pitch_um
+    c_1_um = _row_one_corridor_x_um(
+        interval.preferred_x_um,
+        interval.route_side,
+        obstacle_map,
+        config,
+    )
+    exit_dx = -1 if interval.route_side == "left" else 1
+    if exit_dx * (row_one_x_um - c_1_um) < 0:
+        return "inward"
+    return "outward"
 
 
 def _resolve_origin_x(

@@ -1,4 +1,20 @@
-"""River-route a whole escape bundle as nested corridor/channel lanes."""
+"""River-route a whole escape bundle as nested corridor/channel lanes.
+
+A bundle's pad block is normally outward of its own row-1 corridor lane c_1
+("outward" nesting: row i's pad grows outward with i); when ``pad_slots``
+can only place it past its own terminal column ("inward" nesting,
+``PadAssignment.nesting``), the same corridor lanes c_i are kept but every
+wire runs to a mirrored channel height h'_i and then inward to its pad, so
+row 1 -- not row k -- reaches the farthest pad. The pad order pad_slots
+guarantees (monotonically outward for "outward", monotonically inward for
+"inward") keeps every row's channel run clear of every other row's pad run
+in the common case, but not always: a row whose own pad straddles far
+outward of its own corridor lane can still widen its channel span enough to
+engulf an inner row's pad-access run (measured on an eight-row inward
+block), so ``try_river_route_bundle`` also checks each new wire's bare
+centerline against every earlier row of the same bundle at runtime and
+falls the whole bundle back rather than trust the geometry alone.
+"""
 
 from __future__ import annotations
 
@@ -84,19 +100,38 @@ def try_river_route_bundle(
     inward excursion) and its own channel height h_j != h_1 (so its
     horizontal run never shares row 1's channel row). Rows >= 2 keep the
     outward-only rule: the pad-slot nesting only ever lets row 1 be pushed
-    inward.
+    inward -- *provided* the bundle's own ``PadAssignment.nesting`` is
+    still "outward" (below).
+
+    2026-09-28 (mirrored nesting plan): when the whole block ends up on the
+    inward side (``nesting == "inward"``, ``pad_slots._interval_nesting``),
+    every row uses the same corridor lanes c_i but a mirrored channel rank
+    k + 1 - i in place of i (``k`` = the bundle size), so row 1 reaches the
+    farthest-inward pad and row k the pad nearest the column -- the order
+    ``pad_slots`` already guarantees for an inward block by construction
+    (see its docstring), needing no reordering here. The "pad column is
+    inward of its corridor lane" refusal below applies only to "outward"
+    nesting: for "inward" nesting every row's pad is expected inward of its
+    own c_i, and a row whose pad happens to still be outward (a block that
+    straddles c_1) is fine too, because the crossing argument only needs
+    the pads' relative order, not each row's own side of its own c_i (see
+    the module docstring).
 
     Returns ``(None, reason)`` if any member has no port access, if a corridor
-    or channel lane ends up off the grid, if a row >= 2 pad column ends up
-    on the wrong side of a corridor lane (breaking monotonicity), or if a
-    wire collides -- checked in two passes: the wire's centerline dilated by the
-    obstacle-clearance radius against the obstacle map, every other
-    terminal's opening and every other pad; then the wire's bare centerline
-    against ``committed_footprint_cells`` (every already-committed wire's
-    centerline, already dilated by the spacing radius when it was
-    committed). The caller falls the whole bundle back to the per-wire
-    full-grid search in that case. Otherwise returns the built wires with
-    the reason left ``None``.
+    or channel lane ends up off the grid, if an "outward"-nesting row >= 2
+    pad column ends up on the wrong side of a corridor lane (breaking
+    monotonicity), or if a wire collides -- checked in three passes: the
+    wire's centerline dilated by the obstacle-clearance radius against the
+    obstacle map, every other terminal's opening and every other pad; then
+    the wire's bare centerline against ``committed_footprint_cells`` (every
+    already-committed wire's centerline, already dilated by the spacing
+    radius when it was committed); then the wire's bare centerline against
+    every earlier row already built in this same bundle (the monotonic pad
+    order the module docstring describes does not, on its own, exclude a
+    straddling row's channel span engulfing an inner row's pad-access run --
+    see the module docstring). The caller falls the whole bundle back to the
+    per-wire full-grid search in that case. Otherwise returns the built
+    wires with the reason left ``None``.
     """
 
     if exit_dx == 0:
@@ -126,6 +161,25 @@ def try_river_route_bundle(
     exit_column = opening_edge + exit_dx * clearance_cells
     obstacle_radius = wire_reservation_radius_cells(obstacle_map, config)
 
+    row_count = len(members)
+    nesting: Literal["outward", "inward"] = members[0][2].nesting
+    # 2026-09-28 (mirrored nesting plan, gap closed): the module docstring's
+    # crossing-freedom argument assumes every row's own pad is on the
+    # nesting's expected side of its own corridor lane; a straddling block
+    # (explicitly allowed -- some rows outward, e.g. the row farthest from
+    # the pad edge in a wide inward block) can break that assumption when
+    # that row's own channel span [min(c_i, p_i), max(c_i, p_i)] grows wide
+    # enough to engulf an inner row's pad-access run, which the monotonic
+    # pad order alone does not exclude (measured: cascade_16_folded's
+    # eight-row "extra" group, row 8 straddles far enough outward that its
+    # channel run crosses row 7's pad-access run -- confirmed by the
+    # verifier as a real ``cross_net_metal_overlap``, not just a shared
+    # grid cell). Checked here at the bare centerline, same as the
+    # committed-footprint check below, over every row already built in
+    # this same bundle; a hit falls the whole bundle back to the per-wire
+    # full-grid search, same as any other refusal.
+    own_bundle_cells: set[GridCell] = set()
+
     wires: list[
         tuple[
             tuple[int, ElectricalTerminal, PadAssignment, EscapeTopologyRoute, frozenset[GridCell]],
@@ -144,9 +198,10 @@ def try_river_route_bundle(
             return None, f"{terminal.id}'s corridor lane is off the grid"
         pad_cell = _target_cell(target_cells, config)
         p_i = pad_cell[0]
-        if exit_dx * (p_i - c_i) < 0 and row_index != 1:
+        if nesting == "outward" and exit_dx * (p_i - c_i) < 0 and row_index != 1:
             return None, f"{terminal.id}'s pad column is inward of its corridor lane"
-        h_i = _river_channel_lane_y(target_cells, config, row_index, track_pitch_cells)
+        channel_rank = row_index if nesting == "outward" else row_count + 1 - row_index
+        h_i = _river_channel_lane_y(target_cells, config, channel_rank, track_pitch_cells)
         if not (0 <= h_i < obstacle_map.grid.height):
             return None, f"{terminal.id}'s channel lane is off the grid"
         if config.pad_side == "top" and h_i < anchor_cell[1]:
@@ -190,19 +245,17 @@ def try_river_route_bundle(
                 None,
                 f"{terminal.id}'s river wire is too close to a committed wire at row {row_index}",
             )
+        bare_cells = set(cells_from_point_path(centerline))
+        if bare_cells & own_bundle_cells:
+            return (
+                None,
+                f"{terminal.id}'s river wire crosses another row of its own bundle",
+            )
+        own_bundle_cells.update(bare_cells)
 
         bends = count_direction_changes(centerline)
         shape: Literal["L", "Z"] = "L" if bends <= 1 else "Z"
         wires.append((member, centerline, shape))
-        # Not folded into member_hard_blocked or committed_footprint_cells:
-        # c_i increasing and h_i decreasing with row_index already keeps
-        # every wire clear of every other wire in this same bundle (the
-        # crossing test on the construction checks this); the obstacle
-        # radius here is sized for the obstacle clearance, not the (usually
-        # smaller) track pitch two parallel lanes of the same bundle are
-        # deliberately spaced by, so checking a wire against its own
-        # bundle's other rows would produce false collisions at the pitch
-        # boundary.
 
     return wires, None
 
@@ -221,17 +274,23 @@ def _target_cell(target_cells: frozenset[GridCell], config: ElectricalRoutingCon
 def _river_channel_lane_y(
     target_cells: frozenset[GridCell],
     config: ElectricalRoutingConfig,
-    row_index: int,
+    channel_rank: int,
     track_pitch_cells: int,
 ) -> int:
-    """Channel lane height h_i = pad access row -+ row_index * track pitch.
+    """Channel lane height h = pad access row -+ channel_rank * track pitch.
 
     Same shelf arithmetic as ``_individual_pad_lane_point``'s
     ``target_edge_y +- shelf_index * track_pitch_cells``, applied directly
-    by row index (1 = nearest the pad row) since the river construction
-    already knows row order unambiguously, instead of going through that
-    function's lane-rank/lane-count/direction_x indirection (built for a
-    different caller that did not know row order in advance).
+    by rank (1 = nearest the pad row) since the river construction already
+    knows row order unambiguously, instead of going through that function's
+    lane-rank/lane-count/direction_x indirection (built for a different
+    caller that did not know row order in advance).
+
+    2026-09-28 (mirrored nesting plan): the caller passes ``row_index``
+    itself for "outward" nesting's h_i, or the mirrored rank
+    ``row_count + 1 - row_index`` for "inward" nesting's h'_i -- this
+    function only ever computes "rank-th shelf from the pad edge", unaware
+    of which row that rank belongs to.
 
     Not clamped to the grid: the caller (``try_river_route_bundle``) refuses
     a lane that ends up off the grid instead of silently sharing a lane with
@@ -240,9 +299,9 @@ def _river_channel_lane_y(
 
     if config.pad_side == "top":
         target_edge_y = min(y for _, y in target_cells)
-        return target_edge_y - row_index * track_pitch_cells
+        return target_edge_y - channel_rank * track_pitch_cells
     target_edge_y = max(y for _, y in target_cells)
-    return target_edge_y + row_index * track_pitch_cells
+    return target_edge_y + channel_rank * track_pitch_cells
 
 
 def count_direction_changes(points: tuple[GridPoint, ...]) -> int:

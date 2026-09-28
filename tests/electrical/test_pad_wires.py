@@ -26,6 +26,7 @@ from translation.electrical.types import (
     PadAssignment,
     PadSlot,
 )
+from translation.electrical.wire_geometry import cells_from_point_path
 from translation.layout_from_schematic import layout_from_schematic
 
 
@@ -295,3 +296,113 @@ def test_eight_row_bundles_are_river_routed_on_cascade_16_folded(electrical_benc
     }
     core_heater_ids = {f"heater_{i}" for i in range(8)} | {f"heater_post_{i}" for i in range(8)}
     assert not (failed_heater_ids & core_heater_ids)
+
+
+# Also marked e2e (routes a full 12-mode cascade benchmark end to end):
+# keeps the fast "-m not e2e" suite under its enforced 60 s budget
+# (scripts/test_baseline.sh).
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_inward_block_is_river_routed_with_mirrored_nesting(electrical_benchmark_result):
+    """Mirrored-nesting plan: an inward-pushed 2-row block river-routes cleanly.
+
+    Two discrepancies from the plan's own "measured" case (``cascade_16_folded``
+    bundle 3, ``heater_extra_1:l``/``heater_extra_2:l``), both verified
+    directly against an unmodified checkout of the commit this plan starts
+    from:
+
+    1. Its actual refusal there is not "pad column is inward of its
+       corridor lane" (row 2) but a plain wire collision at row 1 -- row 1
+       (``heater_extra_1``) is processed first in the per-row loop, and its
+       own centerline (identical corridor lane and pad column, only the
+       channel height differs between the mirrored and unmirrored
+       constructions, and both heights cross the same rectangle) collides
+       with ``heater_extra_0:r``'s own, unrelated, pre-existing full-grid
+       fallback wire (bundle 2, itself a plain "collides at row 1" refusal,
+       byte-identical with or without this change). That is a separate bug
+       outside this plan's scope, not something mirrored nesting fixes;
+       ``cascade_16_folded`` is unchanged by this plan (still the one
+       cascade that does not verify clean, for that same pre-existing
+       reason).
+    2. The exact same 2-terminal pattern (``heater_extra_1``/``2``) on
+       ``cascade_12_folded`` *is* a genuine "row 1 pushed inward of c_1"
+       case, and demonstrates the fix cleanly: mirrored nesting there
+       computes different (correctly swapped) channel heights than the old,
+       unmirrored construction, both wires still land as valid, non-crossing
+       Z's, and the bundle keeps its "river" construction (no fallback).
+
+    A third discrepancy surfaced during implementation, not by the plan: an
+    *eight*-row inward block (``cascade_16_folded`` bundle 9 -- and
+    ``cascade_12_folded`` bundle 7, six rows) straddles far enough that the
+    module docstring's monotonic-pad-order argument alone does not exclude
+    a crossing; the verifier caught it as a real ``cross_net_metal_overlap``
+    before ``try_river_route_bundle`` gained the same-bundle bare-centerline
+    check its docstring now describes. Both those wider bundles now
+    correctly refuse and fall back instead (checked in
+    ``test_eight_row_bundles_are_river_routed_on_cascade_16_folded`` and the
+    suite/cascade gate that neither fallback drops a wire).
+    """
+
+    result = electrical_benchmark_result("cascade_12_folded")
+    assert result.verification is not None
+    assert result.verification.success
+
+    fallback_reasons = result.detailed_bundle_routes.bundle_fallback_reasons
+    assert 3 not in fallback_reasons
+
+    bundle3_routes = sorted(
+        (route for route in result.detailed_bundle_routes.routes if route.bundle_id == 3),
+        key=lambda route: route.rank,
+    )
+    assert len(bundle3_routes) == 2
+    assert all(route.construction == "river" for route in bundle3_routes)
+    assert all(route.shape == "Z" for route in bundle3_routes)
+
+    assignments_by_terminal_id = {
+        assignment.terminal.id: assignment
+        for assignment in result.pad_plan.assignments
+        if assignment.terminal is not None
+    }
+    assert all(
+        assignments_by_terminal_id[route.terminal.id].nesting == "inward"
+        for route in bundle3_routes
+    )
+
+    # No two of the bundle's wires cross: the same cell-path intersection
+    # test the codebase already uses for terminal/pad openings, applied
+    # pairwise between every wire's own grid-cell centerline.
+    path_cells = [frozenset(cells_from_point_path(route.centerline)) for route in bundle3_routes]
+    for i in range(len(path_cells)):
+        for j in range(i + 1, len(path_cells)):
+            assert not path_cells[i] & path_cells[j], (
+                bundle3_routes[i].terminal.id,
+                bundle3_routes[j].terminal.id,
+            )
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_suite_cases_have_no_inward_blocks(electrical_benchmark_result):
+    """Mirrored-nesting plan: the four suite cases keep every block outward.
+
+    ``heater_single``, ``heater_lanes_20``, ``heater_lanes_ripup`` and
+    ``heater_s_mod`` have no bundle whose row-1 pad is ever pushed inward of
+    its corridor lane c_1 today, so ``pad_slots._interval_nesting`` must not
+    start marking any of their assignments "inward" -- their placement must
+    not change.
+    """
+
+    for benchmark_name in (
+        "heater_single",
+        "heater_lanes_20",
+        "heater_lanes_ripup",
+        "heater_s_mod",
+    ):
+        result = electrical_benchmark_result(benchmark_name)
+        assert result.pad_plan is not None
+        inward = [
+            assignment.terminal.id
+            for assignment in result.pad_plan.assignments
+            if assignment.kind == "individual" and assignment.nesting == "inward"
+        ]
+        assert not inward, f"{benchmark_name} has inward pad blocks: {inward}"
