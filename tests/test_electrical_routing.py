@@ -49,13 +49,12 @@ from translation.electrical.types import (
     PadSlot,
     TerminalBusRoute,
 )
-from translation.electrical.verification import verify_electrical_routing
-from translation.electrical.verification import (
-    _bend_count,
+from translation.electrical.metrics import _bend_count, _polyline_length
+from translation.electrical.net_geometry import (
     _common_bus_tagged_rects,
-    _detailed_route_centerline_points,
-    _polyline_length,
+    detailed_route_centerline_points as _detailed_route_centerline_points,
 )
+from translation.electrical.verification import verify_electrical_routing
 from translation.layout_from_schematic import layout_from_schematic
 
 

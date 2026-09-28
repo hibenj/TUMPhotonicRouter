@@ -98,11 +98,7 @@ def clean_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
     """Normalize and compact an equivalent same-net rectangle set."""
 
     normalized = sorted(
-        {
-            normalized_rect
-            for rect in rects
-            if (normalized_rect := _normalize_rect(rect)) is not None
-        }
+        {normalized_rect for rect in rects if (normalized_rect := normalize_rect(rect)) is not None}
     )
     without_contained = _drop_contained_rects(tuple(normalized))
     return _drop_union_redundant_rects(without_contained)
@@ -158,11 +154,32 @@ def rect_area(rect: BBox) -> float:
     return max(0.0, rect[2] - rect[0]) * max(0.0, rect[3] - rect[1])
 
 
+def rect_intersects(left: BBox, right: BBox) -> bool:
+    return not (
+        left[2] < right[0] or right[2] < left[0] or left[3] < right[1] or right[3] < left[1]
+    )
+
+
+def rect_intersection(left: BBox, right: BBox) -> BBox | None:
+    if not rect_intersects(left, right):
+        return None
+    return (
+        max(left[0], right[0]),
+        max(left[1], right[1]),
+        min(left[2], right[2]),
+        min(left[3], right[3]),
+    )
+
+
+def rect_is_covered_by_any(rect: BBox, covers: tuple[BBox, ...]) -> bool:
+    return any(rect_contains(cover, rect) for cover in covers)
+
+
 def union_rect_area(rects: Iterable[BBox]) -> float:
     """Return the exact area of the union of axis-aligned rectangles."""
 
     normalized = tuple(
-        normalized_rect for rect in rects if (normalized_rect := _normalize_rect(rect)) is not None
+        normalized_rect for rect in rects if (normalized_rect := normalize_rect(rect)) is not None
     )
     if not normalized:
         return 0.0
@@ -184,7 +201,7 @@ def _drop_contained_rects(rects: tuple[BBox, ...]) -> tuple[BBox, ...]:
     kept: list[BBox] = []
     for index, rect in enumerate(rects):
         if any(
-            other_index != index and _rect_contains(other, rect)
+            other_index != index and rect_contains(other, rect)
             for other_index, other in enumerate(rects)
         ):
             continue
@@ -312,7 +329,7 @@ def _point_rect(point: Point, half_width: float) -> BBox:
     )
 
 
-def _normalize_rect(rect: BBox) -> BBox | None:
+def normalize_rect(rect: BBox) -> BBox | None:
     xmin, ymin, xmax, ymax = rect
     if xmax < xmin:
         xmin, xmax = xmax, xmin
@@ -324,13 +341,13 @@ def _normalize_rect(rect: BBox) -> BBox | None:
 
 
 def _normalize_non_degenerate_rect(rect: BBox) -> BBox:
-    normalized = _normalize_rect(rect)
+    normalized = normalize_rect(rect)
     if normalized is None:
         raise ValueError("Expected a non-degenerate rectangle")
     return normalized
 
 
-def _rect_contains(outer: BBox, inner: BBox) -> bool:
+def rect_contains(outer: BBox, inner: BBox) -> bool:
     return (
         outer[0] <= inner[0]
         and outer[1] <= inner[1]
