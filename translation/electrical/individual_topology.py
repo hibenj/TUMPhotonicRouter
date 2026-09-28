@@ -451,6 +451,19 @@ def _ordered_terminals_for_bundle(
     )
 
 
+def bundle_route_side(
+    bundle: EscapeBundle,
+    obstacle_map: ElectricalObstacleMap,
+) -> str:
+    """Return which side ("left"/"right") of the terminal column a bundle escapes to.
+
+    Shared by pad assignment (nested pad columns) and detailed routing (lane
+    offsets), so both stages agree on which direction is "outward" for a bundle.
+    """
+
+    return _bundle_route_side_from_routes(bundle.routes, bundle.exit_interval, obstacle_map)
+
+
 def _bundle_route_side_from_routes(
     routes: tuple[EscapeTopologyRoute, ...],
     exit_interval: tuple[int, int],

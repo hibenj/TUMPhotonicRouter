@@ -47,7 +47,13 @@ BASELINE_FLOAT_TOLERANCE = 1e-6
 # individual route tails, terminal adapters and contacts -- everything
 # except pad markers). These four are pinned to today's measured values,
 # rounded up to a round number; they tighten as later milestones straighten
-# the wires and the bus.
+# the wires and the bus. 2026-09-25 Milestone 2 (river routing + the
+# pad-side swap): pad_wire_detour_total_um is 0 on every case except
+# heater_lanes_20 (two fallback wires carry 20 um each; every river wire
+# is 0 by construction); pad_wire_max_bend_count is 1 where no case forces
+# a fallback (heater_single) and 3 everywhere a Z (river or fallback)
+# exists; pad_channel_height_um dropped with the swap freeing the
+# corridor/channel bundles used to detour through.
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -55,15 +61,15 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "failed_detailed_route_count_max": 0,
     "detailed_route_count_min": 11,
     "pad_assignment_count_min": 12,
-    "pad_channel_height_um_max": 220.0,
+    "pad_channel_height_um_max": 180.0,
     "metal_redundant_area_overcount_um2_max": 1e-6,
     "same_net_duplicate_rect_count_max": 0,
-    "same_net_overlap_pair_count_max": 80,
+    "same_net_overlap_pair_count_max": 45,
     "same_net_redundant_overlap_pair_count_max": 0,
     "pad_wire_max_bend_count_max": 3,
-    "pad_wire_detour_total_um_max": 220.0,
+    "pad_wire_detour_total_um_max": 0.0,
     "bus_bend_count_max": 38,
-    "wire_metal_area_um2_max": 2_037_000.0,
+    "wire_metal_area_um2_max": 2_082_000.0,
 }
 DEFAULT_GUARDRAILS = RIPUP_REROUTE_GUARDRAILS
 BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
@@ -74,12 +80,12 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "failed_detailed_route_count_max": 0,
         "detailed_route_count_min": 1,
         "pad_assignment_count_min": 2,
-        "pad_channel_height_um_max": 100.0,
+        "pad_channel_height_um_max": 65.0,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "same_net_duplicate_rect_count_max": 0,
         "same_net_overlap_pair_count_max": 10,
         "same_net_redundant_overlap_pair_count_max": 0,
-        "pad_wire_max_bend_count_max": 0,
+        "pad_wire_max_bend_count_max": 1,
         "pad_wire_detour_total_um_max": 0.0,
         "bus_bend_count_max": 2,
         "wire_metal_area_um2_max": 657_000.0,
@@ -91,15 +97,15 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "failed_detailed_route_count_max": 0,
         "detailed_route_count_min": 20,
         "pad_assignment_count_min": 21,
-        "pad_channel_height_um_max": 220.0,
+        "pad_channel_height_um_max": 180.0,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "same_net_duplicate_rect_count_max": 0,
-        "same_net_overlap_pair_count_max": 130,
+        "same_net_overlap_pair_count_max": 80,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
-        "pad_wire_detour_total_um_max": 740.0,
-        "bus_bend_count_max": 75,
-        "wire_metal_area_um2_max": 3_293_000.0,
+        "pad_wire_detour_total_um_max": 40.0,
+        "bus_bend_count_max": 73,
+        "wire_metal_area_um2_max": 3_337_000.0,
     },
     "heater_lanes_ripup": RIPUP_REROUTE_GUARDRAILS,
     "heater_s_mod": {
@@ -109,15 +115,15 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "failed_detailed_route_count_max": 0,
         "detailed_route_count_min": 21,
         "pad_assignment_count_min": 22,
-        "pad_channel_height_um_max": 220.0,
+        "pad_channel_height_um_max": 180.0,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "same_net_duplicate_rect_count_max": 0,
-        "same_net_overlap_pair_count_max": 130,
+        "same_net_overlap_pair_count_max": 80,
         "same_net_redundant_overlap_pair_count_max": 0,
-        "pad_wire_max_bend_count_max": 4,
-        "pad_wire_detour_total_um_max": 940.0,
+        "pad_wire_max_bend_count_max": 3,
+        "pad_wire_detour_total_um_max": 0.0,
         "bus_bend_count_max": 79,
-        "wire_metal_area_um2_max": 3_308_000.0,
+        "wire_metal_area_um2_max": 3_365_000.0,
     },
 }
 

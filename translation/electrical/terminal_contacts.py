@@ -207,7 +207,39 @@ def _trim_route_points_inside_terminal(
             break
     else:
         return route_points_um[-1:] if route_points_um else ()
-    return route_points_um[first_outside_index:]
+    tail = route_points_um[first_outside_index:]
+    if first_outside_index == 0:
+        return tail
+    # A sparse route (few vertices, for example a two-point L centerline) may
+    # have its whole first segment start inside the keepout and end well past
+    # it: keep only the outside portion of that segment (a real route-tail
+    # rectangle) instead of dropping it entirely into the adapter, which would
+    # otherwise stretch the adapter all the way to the next vertex.
+    boundary = _keepout_boundary_crossing(
+        route_points_um[first_outside_index - 1],
+        tail[0],
+        keepout,
+    )
+    if boundary is not None and boundary != tail[0]:
+        return (boundary, *tail)
+    return tail
+
+
+def _keepout_boundary_crossing(
+    inside: Point,
+    outside: Point,
+    bbox: BBox,
+) -> Point | None:
+    """Return where a Manhattan segment leaves ``bbox``, or None if unclear."""
+
+    x0, y0 = inside
+    x1, y1 = outside
+    xmin, ymin, xmax, ymax = bbox
+    if x0 == x1 and ymin <= y0 <= ymax:
+        return (x0, ymax) if y1 > y0 else (x0, ymin)
+    if y0 == y1 and xmin <= x0 <= xmax:
+        return (xmax, y0) if x1 > x0 else (xmin, y0)
+    return None
 
 
 def _port_anchor_point(

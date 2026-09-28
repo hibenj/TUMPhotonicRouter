@@ -386,6 +386,9 @@ class DetailedBundleRoute:
     access_anchor_cell: GridCell | None = None
     route_start_cell: GridCell | None = None
     used_access_anchor: bool = False
+    shape: Literal["L", "Z"] = "Z"
+    contact_port_name: str | None = None
+    construction: Literal["river", "fallback"] = "river"
 
     @property
     def cost(self) -> int:
@@ -401,6 +404,7 @@ class DetailedBundleRoutingResult:
     committed_cells: frozenset[GridCell]
     cell_usage: dict[GridCell, int] = field(default_factory=dict)
     track_pitch_cells: int = 1
+    bundle_fallback_reasons: dict[int, str] = field(default_factory=dict)
 
     @property
     def success(self) -> bool:

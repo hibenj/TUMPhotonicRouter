@@ -33,6 +33,7 @@ from translation.electrical import (
     DEFAULT_PAD_PITCH_UM,
     DEFAULT_WIRE_WIDTH_UM,
     ElectricalRoutingConfig,
+    route_electrical_heaters,
 )
 from translation.layout_from_schematic import layout_from_schematic
 from translation.photonic_verification import verify_photonic_routing
@@ -532,6 +533,149 @@ def test_routing_flow_routes_heater_electrical_metal_end_to_end():
     assert summary["config"]["pad_marker_layer"] == (150, 0)
     assert routed.get_polygons(by="tuple").get((125, 0), [])
     assert routed.get_polygons(by="tuple").get((150, 0), [])
+
+
+def _route_electrical_benchmark(benchmark_name: str):
+    schematic = load_benchmark(benchmark_name)
+    component = layout_from_schematic(schematic)
+    return route_electrical_heaters(component, schematic, ElectricalRoutingConfig())
+
+
+def _segments(points):
+    return tuple(zip(points, points[1:], strict=False))
+
+
+def _segments_intersect(first, second) -> bool:
+    (x1, y1), (x2, y2) = first
+    (x3, y3), (x4, y4) = second
+    if x1 == x2 and x3 == x4:
+        if x1 != x3:
+            return False
+        low1, high1 = sorted((y1, y2))
+        low2, high2 = sorted((y3, y4))
+        return not (high1 < low2 or high2 < low1)
+    if y1 == y2 and y3 == y4:
+        if y1 != y3:
+            return False
+        low1, high1 = sorted((x1, x2))
+        low2, high2 = sorted((x3, x4))
+        return not (high1 < low2 or high2 < low1)
+    if x1 == x2 and y3 == y4:
+        low_y, high_y = sorted((y1, y2))
+        low_x, high_x = sorted((x3, x4))
+        return low_x <= x1 <= high_x and low_y <= y3 <= high_y
+    if y1 == y2 and x3 == x4:
+        low_x, high_x = sorted((x1, x2))
+        low_y, high_y = sorted((y3, y4))
+        return low_y <= y1 <= high_y and low_x <= x3 <= high_x
+    return False
+
+
+@pytest.mark.parametrize(
+    "benchmark_name",
+    ["heater_single", "heater_lanes_20", "heater_lanes_ripup", "heater_s_mod"],
+)
+def test_pad_wires_route_clean_on_every_benchmark_fixture(benchmark_name):
+    """Milestone 2 (river routing + the pad-side swap): on each of the four
+    electrical benchmark fixtures, every individual pad wire routes; every L
+    wire has zero detour and at most one bend; every wire (river or
+    fallback) has at most three bends; a river wire always has zero detour
+    by construction, and a fallback wire may carry some (reported, not
+    asserted zero, since the guardrail bounds the total instead).
+    """
+
+    result = _route_electrical_benchmark(benchmark_name)
+    detailed = result.detailed_bundle_routes
+    assert detailed is not None
+    assert detailed.failed_routes == ()
+    assert result.verification is not None
+    assert result.verification.success, result.verification.issues
+
+    pad_wires = result.verification.metrics["pad_wires"]
+    assert len(pad_wires) == len(detailed.routes)
+    for wire in pad_wires:
+        assert wire["bend_count"] <= 3
+        if wire["shape"] == "L":
+            assert wire["bend_count"] <= 1
+            assert wire["detour_um"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "benchmark_name",
+    ["heater_single", "heater_lanes_20", "heater_lanes_ripup", "heater_s_mod"],
+)
+def test_pad_wires_do_not_cross_each_other(benchmark_name):
+    """No two pad-wire centerlines cross, on any of the four fixtures --
+    the river construction's nesting (corridor lanes outward, channel lanes
+    downward with row order) is designed to guarantee this; checked here by
+    exhaustive segment intersection over every pair of routed wires."""
+
+    result = _route_electrical_benchmark(benchmark_name)
+    routes = result.detailed_bundle_routes.routes
+    for i in range(len(routes)):
+        segments_i = _segments(routes[i].offset_path)
+        for j in range(i + 1, len(routes)):
+            segments_j = _segments(routes[j].offset_path)
+            for segment_i in segments_i:
+                for segment_j in segments_j:
+                    assert not _segments_intersect(segment_i, segment_j), (
+                        routes[i].terminal.id,
+                        routes[j].terminal.id,
+                    )
+
+
+def test_bundle_falls_back_when_a_bundle_member_cannot_river_route():
+    """heater_extra_0 on heater_s_mod is the fixture already known to force
+    the per-wire fallback (its assigned pad column lies inward of where its
+    corridor lane would be, so the river construction refuses it before any
+    collision check even runs); this pins that a fallback bundle still
+    routes successfully and is reported as "fallback", not "river"."""
+
+    result = _route_electrical_benchmark("heater_s_mod")
+    detailed = result.detailed_bundle_routes
+    assert detailed.bundle_fallback_reasons
+    fallback_bundle_ids = set(detailed.bundle_fallback_reasons)
+    fallback_routes = [route for route in detailed.routes if route.bundle_id in fallback_bundle_ids]
+    assert fallback_routes
+    assert all(route.construction == "fallback" for route in fallback_routes)
+    assert all(route.success for route in fallback_routes)
+    river_routes = [
+        route for route in detailed.routes if route.bundle_id not in fallback_bundle_ids
+    ]
+    assert river_routes
+    assert all(route.construction == "river" for route in river_routes)
+
+
+def test_z_fallback_never_crosses_committed_metal():
+    """Every fallback wire keeps the wire spacing from every river wire on
+    heater_s_mod: a river wire's committed footprint (its centerline dilated
+    by the spacing radius, exactly what commit() reserves) never contains a
+    cell of a fallback wire's bare centerline. The fallback is only reached
+    when the river construction refuses a bundle, and the guarantee that
+    matters is that it can never run into an already-committed river wire."""
+
+    from translation.electrical.bundle_detail_router import (
+        _cells_from_point_path,
+        _wire_reservation_cells_from_point_path,
+        _wire_spacing_radius_cells,
+    )
+
+    result = _route_electrical_benchmark("heater_s_mod")
+    obstacle_map = result.obstacle_map
+    config = ElectricalRoutingConfig()
+    detailed = result.detailed_bundle_routes
+    fallback_routes = [route for route in detailed.routes if route.construction == "fallback"]
+    river_routes = [route for route in detailed.routes if route.construction == "river"]
+    assert fallback_routes and river_routes
+    spacing_radius = _wire_spacing_radius_cells(obstacle_map, config)
+    river_footprint: set = set()
+    for route in river_routes:
+        river_footprint |= _wire_reservation_cells_from_point_path(
+            route.offset_path, obstacle_map, config, radius=spacing_radius
+        )
+    for route in fallback_routes:
+        fallback_centerline = set(_cells_from_point_path(route.offset_path))
+        assert not (fallback_centerline & river_footprint), route.terminal.id
 
 
 def test_debug_svg_selector_parses_boolean_and_all_modes():

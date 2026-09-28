@@ -740,6 +740,7 @@ def _pad_wire_metrics(
                     "bend_count": _bend_count(centerline),
                     "manhattan_um": manhattan_um,
                     "detour_um": detour_um,
+                    "shape": route.shape,
                 }
             )
     pad_wires.sort(key=lambda entry: str(entry["terminal_id"]))
@@ -899,6 +900,7 @@ def _detailed_route_tagged_rects(
         contact_width_um=config.terminal_contact_width_um,
         route_source="route_tail",
         access=_individual_access(obstacle_map, route.terminal),
+        preferred_port_name=route.contact_port_name,
     )
 
 
@@ -955,6 +957,7 @@ def _terminal_point_route_tagged_rects(
     *,
     route_source: str,
     access: ElectricalPortAccess | None = None,
+    preferred_port_name: str | None = None,
 ) -> tuple[_TaggedRect, ...]:
     return _terminal_access_tagged_rects(
         _terminal_point_route_access(
@@ -963,6 +966,7 @@ def _terminal_point_route_tagged_rects(
             obstacle_map,
             contact_width_um,
             access=access,
+            preferred_port_name=preferred_port_name,
         ),
         route_width_um,
         route_source=route_source,
@@ -1003,6 +1007,7 @@ def _terminal_route_access(
         obstacle_map,
         contact_width_um,
         access=_individual_access(obstacle_map, route.terminal),
+        preferred_port_name=route.contact_port_name,
     )
 
 
@@ -1013,13 +1018,19 @@ def _terminal_point_route_access(
     width_um: float,
     *,
     access: ElectricalPortAccess | None = None,
+    preferred_port_name: str | None = None,
 ) -> Any:
     points_um = tuple(_grid_point_to_um(point, obstacle_map) for point in points_grid)
+    resolved_port_name = (
+        preferred_port_name
+        if preferred_port_name is not None
+        else (access.port_name if access is not None else None)
+    )
     return terminal_access_path(
         terminal,
         points_um,
         fallback_width_um=width_um,
-        preferred_port_name=access.port_name if access is not None else None,
+        preferred_port_name=resolved_port_name,
     )
 
 
@@ -1043,6 +1054,7 @@ def _terminal_access_tagged_rects(
             width_um,
             route_source,
             trim_bends=route_source != "bus_route",
+            trim_start=route_source == "route_tail",
         )
     )
     return tuple(rects)

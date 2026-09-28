@@ -72,18 +72,9 @@ def realize_electrical_metal(
             access=_common_bus_access(obstacle_map, route.terminal),
         )
 
-    if (
-        common_bus_escape is not None
-        and common_bus_escape.success
-        and len(common_bus_escape.path) > 1
-    ):
-        _append_grid_wire_path(
-            rects_by_net["common_bus"],
-            common_bus_escape.path,
-            obstacle_map,
-            width_um=config.bus_width_um,
-            start_clip_bbox=common_bus.bus.bbox,
-        )
+    rects_by_net["common_bus"].extend(
+        common_bus_escape_rects(common_bus, common_bus_escape, obstacle_map, config)
+    )
 
     if detailed_bundle_routes is not None:
         for route in detailed_bundle_routes.routes:
@@ -103,6 +94,7 @@ def realize_electrical_metal(
                 contact_width_um=config.terminal_contact_width_um,
                 trim_route_tail_bends=True,
                 access=_individual_access(obstacle_map, route.terminal),
+                preferred_port_name=route.contact_port_name,
             )
 
     pad_marker_rects: list[BBox] = []
@@ -191,6 +183,7 @@ def _append_terminal_point_route(
     contact_width_um: float,
     trim_route_tail_bends: bool,
     access: ElectricalPortAccess | None = None,
+    preferred_port_name: str | None = None,
 ) -> None:
     points = tuple(_grid_point_to_um(point, obstacle_map) for point in points_grid)
     _append_terminal_um_route(
@@ -200,7 +193,9 @@ def _append_terminal_point_route(
         width_um=width_um,
         contact_width_um=contact_width_um,
         trim_route_tail_bends=trim_route_tail_bends,
+        trim_route_tail_start=True,
         access=access,
+        preferred_port_name=preferred_port_name,
     )
 
 
@@ -212,15 +207,34 @@ def _append_terminal_um_route(
     width_um: float,
     contact_width_um: float,
     trim_route_tail_bends: bool,
+    trim_route_tail_start: bool = False,
     access: ElectricalPortAccess | None = None,
+    preferred_port_name: str | None = None,
 ) -> None:
-    """Draw a physical-port adapter and only the usable snapped route tail."""
+    """Draw a physical-port adapter and only the usable snapped route tail.
 
+    ``trim_route_tail_start`` drops the tail's leading half-width end cap: the
+    tail always starts at the port-anchored grid cell, a boundary of the
+    terminal's own opened region rather than a genuine open terminus, so the
+    cap would otherwise extend back over the terminal's own metal (see
+    ``rect_geometry.wire_rects_for_points``'s ``trim_start``).
+
+    ``preferred_port_name``, when given, overrides the port chosen from
+    ``access`` -- an L-shaped route lands on the physical port that faces its
+    own exit direction rather than the (typically perpendicular) port used to
+    anchor the route to the routing grid, so the adapter is a straight join.
+    """
+
+    resolved_port_name = (
+        preferred_port_name
+        if preferred_port_name is not None
+        else (access.port_name if access is not None else None)
+    )
     access = terminal_access_path(
         terminal,
         route_points_um,
         fallback_width_um=contact_width_um,
-        preferred_port_name=access.port_name if access is not None else None,
+        preferred_port_name=resolved_port_name,
     )
     _append_rect(rects, access.contact_bbox)
     _append_um_wire_path(
@@ -233,6 +247,7 @@ def _append_terminal_um_route(
         access.route_tail_points,
         width_um=width_um,
         trim_bends=trim_route_tail_bends,
+        trim_start=trim_route_tail_start,
     )
 
 
@@ -248,6 +263,40 @@ def _individual_access(
     terminal: ElectricalTerminal,
 ) -> ElectricalPortAccess | None:
     return obstacle_map.individual_port_accesses.get(terminal.id)
+
+
+def common_bus_escape_rects(
+    common_bus: CommonBusRoutingResult,
+    common_bus_escape: CommonBusEscapeResult | None,
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> tuple[BBox, ...]:
+    """Return the common bus escape's realized metal rectangles.
+
+    Exactly the rectangles ``realize_electrical_metal`` draws for the escape:
+    empty when the escape is absent, unsuccessful, or its path has fewer than
+    two cells; otherwise the escape's grid wire path realized at
+    ``config.bus_width_um``, clipped to leave the common bus's own bbox.
+    Shared with ``bundle_detail_router`` so a pad wire's collision check sees
+    exactly the metal that gets drawn here, not just the escape's narrow
+    centerline.
+    """
+
+    if (
+        common_bus_escape is None
+        or not common_bus_escape.success
+        or len(common_bus_escape.path) <= 1
+    ):
+        return ()
+    rects: RectList = []
+    _append_grid_wire_path(
+        rects,
+        common_bus_escape.path,
+        obstacle_map,
+        width_um=config.bus_width_um,
+        start_clip_bbox=common_bus.bus.bbox,
+    )
+    return tuple(rects)
 
 
 def _append_grid_wire_path(

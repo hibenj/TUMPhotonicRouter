@@ -5,11 +5,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from .individual_topology import bundle_route_side
 from .types import (
     CommonBusRoutingResult,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,
     ElectricalTerminal,
+    EscapeBundle,
     IndividualEscapeTopologyResult,
     PadAssignment,
     PadPlan,
@@ -23,6 +25,7 @@ from .pitch_grid import bbox_to_grid_cells
 class _PadInterval:
     items: tuple[tuple[ElectricalTerminal, int | None, int | None], ...]
     preferred_x_um: float
+    route_side: str | None = None
 
 
 def plan_pad_slots(
@@ -183,29 +186,57 @@ def _pad_intervals(
     if not individual_items:
         return ()
     preferred_x_by_terminal_id = _preferred_pad_x_by_terminal_id(obstacle_map, escape_topology)
+    bundle_by_id = (
+        {bundle.bundle_id: bundle for bundle in escape_topology.bundles}
+        if escape_topology is not None
+        else {}
+    )
     intervals: list[_PadInterval] = []
     current_items: list[tuple[ElectricalTerminal, int | None, int | None]] = []
     current_bundle_id: int | None | object = object()
     for item in individual_items:
         terminal, bundle_id, _ = item
         if current_items and bundle_id != current_bundle_id:
-            intervals.append(_make_interval(tuple(current_items), preferred_x_by_terminal_id))
+            intervals.append(
+                _make_interval(
+                    tuple(current_items),
+                    preferred_x_by_terminal_id,
+                    bundle_by_id,
+                    obstacle_map,
+                )
+            )
             current_items = []
         current_items.append(item)
         current_bundle_id = bundle_id
     if current_items:
-        intervals.append(_make_interval(tuple(current_items), preferred_x_by_terminal_id))
+        intervals.append(
+            _make_interval(
+                tuple(current_items),
+                preferred_x_by_terminal_id,
+                bundle_by_id,
+                obstacle_map,
+            )
+        )
     return tuple(intervals)
 
 
 def _make_interval(
     items: tuple[tuple[ElectricalTerminal, int | None, int | None], ...],
     preferred_x_by_terminal_id: dict[str, float],
+    bundle_by_id: dict[int, EscapeBundle],
+    obstacle_map: ElectricalObstacleMap,
 ) -> _PadInterval:
     preferred_values = tuple(
         preferred_x_by_terminal_id.get(terminal.id, terminal.center[0]) for terminal, _, _ in items
     )
-    return _PadInterval(items=items, preferred_x_um=_median_float(preferred_values))
+    bundle_id = items[0][1] if items else None
+    bundle = bundle_by_id.get(bundle_id) if bundle_id is not None else None
+    route_side = bundle_route_side(bundle, obstacle_map) if bundle is not None else None
+    return _PadInterval(
+        items=items,
+        preferred_x_um=_median_float(preferred_values),
+        route_side=route_side,
+    )
 
 
 def _assign_interval_indices(
@@ -223,8 +254,7 @@ def _assign_interval_indices(
         ]
 
     preferred_starts = [
-        round(interval.preferred_x_um / config.pad_pitch_um - (len(interval.items) - 1) / 2.0)
-        for interval in intervals
+        _interval_preferred_start(interval, config.pad_pitch_um) for interval in intervals
     ]
     min_preferred_start = min(preferred_starts)
     previous_end = first_assignment_index - 1 - config.pad_empty_slots_between_assignments
@@ -238,6 +268,47 @@ def _assign_interval_indices(
         assigned_indices.extend(range(start_index, start_index + len(interval.items)))
         previous_end = start_index + len(interval.items) - 1
     return assigned_indices
+
+
+def _interval_preferred_start(
+    interval: _PadInterval,
+    pitch_um: float,
+) -> int:
+    """Return the desired first slot index for one bundle's pad block.
+
+    A bundle whose terminals share a column and exit to the same side ("L's
+    nest") is packed entirely on the exit side of the terminal column, one
+    slot outward from it, so the terminal nearest the pad row gets the pad
+    nearest the terminal column and each terminal further from the pad row
+    gets the next pad column outward. A lone terminal (nothing to nest
+    against) or a terminal with no known exit side keeps the terminal's own
+    column, which gives it a zero-detour wire when the column is free.
+    """
+
+    terminal_col_index = round(interval.preferred_x_um / pitch_um)
+    if len(interval.items) <= 1 or interval.route_side is None:
+        return round(interval.preferred_x_um / pitch_um - (len(interval.items) - 1) / 2.0)
+    if interval.route_side == "left":
+        return terminal_col_index - len(interval.items)
+    return terminal_col_index + 1
+
+
+def _interval_reference_index(
+    interval: _PadInterval,
+    interval_indices: list[int],
+) -> float:
+    """Return the abstract index that ``interval.preferred_x_um`` should map to.
+
+    Mirrors ``_interval_preferred_start``: for a nested multi-terminal bundle
+    the terminal column sits one slot outside the block's inner (nearest)
+    edge rather than at the block's center.
+    """
+
+    if len(interval.items) <= 1 or interval.route_side is None:
+        return (interval_indices[0] + interval_indices[-1]) / 2.0
+    if interval.route_side == "left":
+        return interval_indices[-1] + 1
+    return interval_indices[0] - 1
 
 
 def _resolve_origin_x(
@@ -258,10 +329,8 @@ def _resolve_origin_x(
         item_cursor += len(interval.items)
         if not interval_indices:
             continue
-        interval_center_index = (interval_indices[0] + interval_indices[-1]) / 2.0
-        desired_origins.append(
-            interval.preferred_x_um - interval_center_index * config.pad_pitch_um
-        )
+        reference_index = _interval_reference_index(interval, interval_indices)
+        desired_origins.append(interval.preferred_x_um - reference_index * config.pad_pitch_um)
     return _median_float(tuple(desired_origins))
 
 
