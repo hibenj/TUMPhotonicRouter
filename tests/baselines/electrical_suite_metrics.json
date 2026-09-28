@@ -1,5 +1,12 @@
 [
   {
+    "artifacts": {
+      "common_bus_svg": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_single/electrical/heater_single_common_bus.svg",
+      "gds": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_single/heater_single_electrical.gds",
+      "metal_snapshot_svg": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_single/electrical/heater_single_metal_snapshot.svg",
+      "summary_json": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_single/heater_single_summary.json",
+      "summary_md": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_single/heater_single_summary.md"
+    },
     "benchmark": "heater_single",
     "common_bus_escape_success": true,
     "common_bus_success": true,
@@ -8,10 +15,10 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 3,
-      "bus_bend_count": 2,
-      "bus_length_um": 1750.0,
-      "centerline_length_um": 1830.0,
+      "bend_count": 2,
+      "bus_bend_count": 1,
+      "bus_length_um": 1540.0,
+      "centerline_length_um": 1620.0,
       "cross_net_min_spacing_um": 152.47299999999996,
       "metal_area_overcount_by_reason_um2": {
         "bus_stripe_contact": 200.0,
@@ -105,6 +112,13 @@
     "verification_warning_count": 0
   },
   {
+    "artifacts": {
+      "common_bus_svg": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_20/electrical/heater_lanes_20_common_bus.svg",
+      "gds": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_20/heater_lanes_20_electrical.gds",
+      "metal_snapshot_svg": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_20/electrical/heater_lanes_20_metal_snapshot.svg",
+      "summary_json": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_20/heater_lanes_20_summary.json",
+      "summary_md": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_20/heater_lanes_20_summary.md"
+    },
     "benchmark": "heater_lanes_20",
     "common_bus_escape_success": true,
     "common_bus_success": true,
@@ -113,25 +127,25 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 111,
-      "bus_bend_count": 57,
-      "bus_length_um": 31760.0,
-      "centerline_length_um": 46050.0,
+      "bend_count": 73,
+      "bus_bend_count": 19,
+      "bus_length_um": 7630.0,
+      "centerline_length_um": 21920.0,
       "cross_net_min_spacing_um": 15.0,
       "metal_area_overcount_by_reason_um2": {
-        "bus_stripe_contact": 1400.0,
+        "bus_stripe_contact": 1600.0,
         "pad_contact": 88600.0,
         "terminal_access_join": 5208.749999999995
       },
       "metal_area_overcount_by_source_um2": {
         "bus_escape/pad": 82000.0,
-        "bus_route/bus_stripe": 1400.0,
+        "bus_route/bus_stripe": 1600.0,
         "bus_route/terminal_adapter": 3405.349999999994,
         "pad/route_tail": 6600.0,
         "route_tail/terminal_adapter": 1803.400000000001
       },
-      "metal_area_overcount_ratio": 0.023734727470845988,
-      "metal_area_overcount_um2": 95208.75,
+      "metal_area_overcount_ratio": 0.02376740323082484,
+      "metal_area_overcount_um2": 95408.75,
       "metal_redundant_area_overcount_by_source_um2": {},
       "metal_redundant_area_overcount_um2": 0,
       "net_count": 21,
@@ -360,38 +374,38 @@
         "common_bus": 20,
         "individual": 20
       },
-      "raw_metal_area_um2": 4011369.0,
-      "rect_count": 201,
+      "raw_metal_area_um2": 4014269.0,
+      "rect_count": 200,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_intentional_overlap_pair_count": 90,
+      "same_net_intentional_overlap_pair_count": 91,
       "same_net_intentional_overlap_pair_count_by_reason": {
-        "bus_stripe_contact": 7,
+        "bus_stripe_contact": 8,
         "pad_contact": 23,
         "terminal_access_join": 60
       },
-      "same_net_overlap_pair_count": 90,
+      "same_net_overlap_pair_count": 91,
       "same_net_overlap_pair_count_by_source": {
         "bus_escape/pad": 1,
-        "bus_route/bus_stripe": 7,
+        "bus_route/bus_stripe": 8,
         "bus_route/terminal_adapter": 36,
         "pad/route_tail": 22,
         "route_tail/terminal_adapter": 24
       },
       "same_net_redundant_overlap_pair_count": 0,
       "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 3916160.25,
-      "wire_metal_area_um2": 3364760.2500000005
+      "union_metal_area_um2": 3918860.25,
+      "wire_metal_area_um2": 3367460.2500000005
     },
     "pad_assignment_count": 21,
     "pad_side": "top",
     "realization_metrics": {
       "metal_area_overcount_um2": 0.0,
       "net_count": 21,
-      "output_polygon_count": 22,
+      "output_polygon_count": 21,
       "pre_union_rect_count": 247,
-      "raw_metal_area_um2": 3916160.25,
-      "union_metal_area_um2": 3916160.25
+      "raw_metal_area_um2": 3918860.25,
+      "union_metal_area_um2": 3918860.25
     },
     "terminal_group_count": 20,
     "verification_error_count": 0,
@@ -400,6 +414,13 @@
     "verification_warning_count": 0
   },
   {
+    "artifacts": {
+      "common_bus_svg": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_ripup/electrical/heater_lanes_ripup_common_bus.svg",
+      "gds": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_ripup/heater_lanes_ripup_electrical.gds",
+      "metal_snapshot_svg": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_ripup/electrical/heater_lanes_ripup_metal_snapshot.svg",
+      "summary_json": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_ripup/heater_lanes_ripup_summary.json",
+      "summary_md": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_lanes_ripup/heater_lanes_ripup_summary.md"
+    },
     "benchmark": "heater_lanes_ripup",
     "common_bus_escape_success": true,
     "common_bus_success": true,
@@ -408,10 +429,10 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 57,
-      "bus_bend_count": 30,
-      "bus_length_um": 9230.0,
-      "centerline_length_um": 16810.0,
+      "bend_count": 36,
+      "bus_bend_count": 9,
+      "bus_length_um": 4770.0,
+      "centerline_length_um": 12350.0,
       "cross_net_min_spacing_um": 20.0,
       "metal_area_overcount_by_reason_um2": {
         "bus_stripe_contact": 1000.0,
@@ -605,6 +626,13 @@
     "verification_warning_count": 0
   },
   {
+    "artifacts": {
+      "common_bus_svg": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_s_mod/electrical/heater_s_mod_common_bus.svg",
+      "gds": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_s_mod/heater_s_mod_electrical.gds",
+      "metal_snapshot_svg": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_s_mod/electrical/heater_s_mod_metal_snapshot.svg",
+      "summary_json": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_s_mod/heater_s_mod_summary.json",
+      "summary_md": "/tmp/claude-1000/-home-benjamin-Documents-Repositories-working-TUMPhotonicRouter/a304ec03-c42b-42ac-b169-ff749c8d2cec/scratchpad/suite_pin/heater_s_mod/heater_s_mod_summary.md"
+    },
     "benchmark": "heater_s_mod",
     "common_bus_escape_success": true,
     "common_bus_success": true,
@@ -613,25 +641,25 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 119,
-      "bus_bend_count": 58,
-      "bus_length_um": 28990.0,
-      "centerline_length_um": 47920.0,
+      "bend_count": 82,
+      "bus_bend_count": 21,
+      "bus_length_um": 8260.0,
+      "centerline_length_um": 27190.0,
       "cross_net_min_spacing_um": 20.0,
       "metal_area_overcount_by_reason_um2": {
-        "bus_stripe_contact": 1200.0,
+        "bus_stripe_contact": 1400.0,
         "pad_contact": 84244.28000000007,
         "terminal_access_join": 5252.802500000002
       },
       "metal_area_overcount_by_source_um2": {
         "bus_escape/pad": 80021.60000000003,
-        "bus_route/bus_stripe": 1200.0,
+        "bus_route/bus_stripe": 1400.0,
         "bus_route/terminal_adapter": 3580.5,
         "pad/route_tail": 4222.680000000037,
         "route_tail/terminal_adapter": 1672.3025000000016
       },
-      "metal_area_overcount_ratio": 0.022271130092136368,
-      "metal_area_overcount_um2": 90697.08250000002,
+      "metal_area_overcount_ratio": 0.02228357973897497,
+      "metal_area_overcount_um2": 90897.08250000002,
       "metal_redundant_area_overcount_by_source_um2": {},
       "metal_redundant_area_overcount_um2": 0,
       "net_count": 22,
@@ -870,38 +898,38 @@
         "common_bus": 21,
         "individual": 21
       },
-      "raw_metal_area_um2": 4072405.9409999996,
-      "rect_count": 217,
+      "raw_metal_area_um2": 4079105.9409999996,
+      "rect_count": 216,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
-      "same_net_intentional_overlap_pair_count": 92,
+      "same_net_intentional_overlap_pair_count": 93,
       "same_net_intentional_overlap_pair_count_by_reason": {
-        "bus_stripe_contact": 6,
+        "bus_stripe_contact": 7,
         "pad_contact": 23,
         "terminal_access_join": 63
       },
-      "same_net_overlap_pair_count": 92,
+      "same_net_overlap_pair_count": 93,
       "same_net_overlap_pair_count_by_source": {
         "bus_escape/pad": 1,
-        "bus_route/bus_stripe": 6,
+        "bus_route/bus_stripe": 7,
         "bus_route/terminal_adapter": 41,
         "pad/route_tail": 22,
         "route_tail/terminal_adapter": 22
       },
       "same_net_redundant_overlap_pair_count": 0,
       "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 3981708.8584999996,
-      "wire_metal_area_um2": 3401953.1384999994
+      "union_metal_area_um2": 3988208.8584999996,
+      "wire_metal_area_um2": 3408453.1384999994
     },
     "pad_assignment_count": 22,
     "pad_side": "top",
     "realization_metrics": {
       "metal_area_overcount_um2": 0.0,
       "net_count": 22,
-      "output_polygon_count": 23,
+      "output_polygon_count": 22,
       "pre_union_rect_count": 257,
-      "raw_metal_area_um2": 3981708.8584999996,
-      "union_metal_area_um2": 3981708.8584999996
+      "raw_metal_area_um2": 3988208.8584999996,
+      "union_metal_area_um2": 3988208.8584999996
     },
     "terminal_group_count": 21,
     "verification_error_count": 0,

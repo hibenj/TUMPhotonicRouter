@@ -43,7 +43,10 @@ class _NetGeometry:
     rect_sources: tuple[str, ...]
     allowed_cells: frozenset[GridCell]
     allowed_physical_bboxes: tuple[BBox, ...] = ()
-    centerline_points_um: tuple[tuple[float, float], ...] = ()
+    #: One polyline per routed branch (the bus: one per terminal branch plus
+    #: the escape; an individual net: its one wire), so lengths and bend
+    #: counts never include jumps between branches.
+    centerline_polylines_um: tuple[tuple[tuple[float, float], ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -125,10 +128,11 @@ def verify_electrical_routing(
                 obstacle_map,
                 config,
             ),
-            centerline_points_um=common_bus_route_points,
+            centerline_polylines_um=common_bus_route_points,
         )
     )
     _verify_common_bus_terminal_contacts(issues, common_bus, common_bus_rects)
+    _verify_common_bus_connectivity(issues, common_bus)
     _verify_common_bus_pad_contact(issues, common_bus_escape, common_bus_rects, config)
 
     if detailed_bundle_routes is not None:
@@ -173,9 +177,8 @@ def verify_electrical_routing(
                     rect_sources=tuple(tagged.source for tagged in route_tagged_rects),
                     allowed_cells=frozenset(allowed_cells),
                     allowed_physical_bboxes=(access.contact_bbox,),
-                    centerline_points_um=_detailed_route_centerline_points(
-                        route,
-                        obstacle_map,
+                    centerline_polylines_um=(
+                        _detailed_route_centerline_points(route, obstacle_map),
                     ),
                 )
             )
@@ -340,13 +343,18 @@ def _common_bus_centerline_points(
     common_bus: CommonBusRoutingResult,
     common_bus_escape: CommonBusEscapeResult | None,
     obstacle_map: ElectricalObstacleMap,
-) -> tuple[tuple[float, float], ...]:
-    points: list[tuple[float, float]] = []
-    for route in common_bus.routes:
-        points.extend(_grid_cell_center_um(cell, obstacle_map) for cell in route.path)
+) -> tuple[tuple[tuple[float, float], ...], ...]:
+    """One polyline per bus branch, plus the escape's."""
+
+    polylines = [
+        tuple(_grid_cell_center_um(cell, obstacle_map) for cell in route.path)
+        for route in common_bus.routes
+    ]
     if common_bus_escape is not None and common_bus_escape.success:
-        points.extend(_grid_cell_center_um(cell, obstacle_map) for cell in common_bus_escape.path)
-    return tuple(points)
+        polylines.append(
+            tuple(_grid_cell_center_um(cell, obstacle_map) for cell in common_bus_escape.path)
+        )
+    return tuple(polylines)
 
 
 def _detailed_route_centerline_points(
@@ -368,6 +376,49 @@ def _verify_common_bus_terminal_contacts(
             common_bus_rects,
             net_id="common_bus",
             route=route,
+        )
+
+
+def _verify_common_bus_connectivity(
+    issues: list[ElectricalVerificationIssue],
+    common_bus: CommonBusRoutingResult,
+) -> None:
+    """Every bus branch must reach the stripe, directly or through other branches.
+
+    The router's tree cells may include cells of branches that were later
+    replaced (the pad-side swap), while realization draws only the final
+    routes; a branch that ends on such a cell is metal that reaches nothing.
+    Branches are accepted transitively: a branch whose cells touch the stripe
+    or an already accepted branch is connected.
+    """
+
+    connected = set(common_bus.bus.cells)
+    pending = list(common_bus.routes)
+    progress = True
+    while pending and progress:
+        progress = False
+        still_pending: list[TerminalBusRoute] = []
+        for route in pending:
+            if any(cell in connected for cell in route.path):
+                connected.update(route.path)
+                progress = True
+            else:
+                still_pending.append(route)
+        pending = still_pending
+    for route in pending:
+        issues.append(
+            ElectricalVerificationIssue(
+                code="common_bus_route_disconnected",
+                message=(
+                    f"Common-bus branch of {route.terminal.id} reaches neither the bus "
+                    "stripe nor another branch."
+                ),
+                net_id="common_bus",
+                details={
+                    "terminal_id": route.terminal.id,
+                    "route_end_cell": route.path[-1] if route.path else None,
+                },
+            )
         )
 
 
@@ -649,12 +700,8 @@ def _quality_metrics(
         (net for net in net_geometries if net.net_id == "common_bus"),
         None,
     )
-    bus_length_um = (
-        _polyline_length(common_bus_net.centerline_points_um) if common_bus_net is not None else 0.0
-    )
-    bus_bend_count = (
-        _bend_count(common_bus_net.centerline_points_um) if common_bus_net is not None else 0
-    )
+    bus_length_um = _net_centerline_length(common_bus_net) if common_bus_net is not None else 0.0
+    bus_bend_count = _net_bend_count(common_bus_net) if common_bus_net is not None else 0
     wire_metal_area_um2, pad_metal_area_um2 = _wire_and_pad_metal_area(net_geometries)
     return {
         "net_count": len(net_geometries),
@@ -687,10 +734,8 @@ def _quality_metrics(
         ),
         "cross_net_min_spacing_um": min_spacing,
         "required_cross_net_clearance_um": max(0.0, config.obstacle_clearance_um),
-        "centerline_length_um": sum(
-            _polyline_length(net.centerline_points_um) for net in net_geometries
-        ),
-        "bend_count": sum(_bend_count(net.centerline_points_um) for net in net_geometries),
+        "centerline_length_um": sum(_net_centerline_length(net) for net in net_geometries),
+        "bend_count": sum(_net_bend_count(net) for net in net_geometries),
         "pad_channel_height_um": _pad_channel_height_um(
             pad_plan,
             obstacle_map,
@@ -1377,6 +1422,14 @@ def _intentional_overlap_reason(source_pair: tuple[str, str]) -> str:
     if source_pair[0] == source_pair[1]:
         return "same_source_wire_join"
     return "same_net_join"
+
+
+def _net_centerline_length(net: _NetGeometry) -> float:
+    return sum(_polyline_length(polyline) for polyline in net.centerline_polylines_um)
+
+
+def _net_bend_count(net: _NetGeometry) -> int:
+    return sum(_bend_count(polyline) for polyline in net.centerline_polylines_um)
 
 
 def _polyline_length(points: tuple[tuple[float, float], ...]) -> float:

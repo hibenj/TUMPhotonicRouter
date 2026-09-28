@@ -20,6 +20,7 @@ from .common_bus_router import (
     _shortest_path_to_tree,
     _terminal_access_anchor_cell,
     route_common_bus,
+    straight_drop_to_bus,
 )
 from .debug import export_electrical_debug_svg, export_electrical_metal_snapshot_svg
 from .escape_router import route_common_bus_escape
@@ -274,13 +275,26 @@ def _apply_pad_side_consistency_swap(
             all_terminal_cells,
             allowed_terminal_ids={individual_terminal.id},
         )
-        new_path = _shortest_path_to_tree(
-            individual_terminal,
-            tree_cells=frozenset(common_bus.tree_cells),
-            blocked=blocked,
-            forbidden=forbidden,
-            obstacle_map=obstacle_map,
+        tree_without_own = frozenset(
+            _bus_tree_cells_excluding(common_bus, routes_by_heater_id, heater_id)
         )
+        # A straight drop to the stripe first (the branch a lone heater is
+        # meant to have); the greedy search only when no drop column is legal.
+        new_path = straight_drop_to_bus(
+            individual_terminal,
+            obstacle_map,
+            config,
+            tree_cells=tree_without_own,
+            blocked=set(obstacle_map.blocked_cells),
+        )
+        if new_path is None:
+            new_path = _shortest_path_to_tree(
+                individual_terminal,
+                tree_cells=tree_without_own,
+                blocked=blocked,
+                forbidden=forbidden,
+                obstacle_map=obstacle_map,
+            )
         if new_path is None:
             continue
 
@@ -302,9 +316,9 @@ def _apply_pad_side_consistency_swap(
     if not swapped_heater_ids:
         return None
 
-    new_tree_cells = set(common_bus.tree_cells)
-    for heater_id in swapped_heater_ids:
-        new_tree_cells.update(routes_by_heater_id[heater_id].path)
+    new_tree_cells = set(common_bus.bus.cells)
+    for route in routes_by_heater_id.values():
+        new_tree_cells.update(route.path)
 
     return replace(
         common_bus,
@@ -313,6 +327,26 @@ def _apply_pad_side_consistency_swap(
         routes=tuple(routes_by_heater_id[route.heater_id] for route in common_bus.routes),
         tree_cells=frozenset(new_tree_cells),
     )
+
+
+def _bus_tree_cells_excluding(
+    common_bus: CommonBusRoutingResult,
+    routes_by_heater_id: dict[str, TerminalBusRoute],
+    excluded_heater_id: str,
+) -> set[GridCell]:
+    """Return the bus stripe plus every branch's cells except one heater's own.
+
+    A swapped terminal searches for the tree without the branch it replaces:
+    ``common_bus.tree_cells`` still holds that branch's cells, but only the
+    final routes are realized, so a new branch landing on the discarded one
+    would be metal that reaches nothing.
+    """
+
+    cells = set(common_bus.bus.cells)
+    for heater_id, route in routes_by_heater_id.items():
+        if heater_id != excluded_heater_id:
+            cells.update(route.path)
+    return cells
 
 
 def _bus_column_group_heater_ids(

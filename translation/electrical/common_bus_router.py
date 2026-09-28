@@ -443,6 +443,54 @@ def _find_legal_column_trunk(
     return None
 
 
+def straight_drop_to_bus(
+    terminal: ElectricalTerminal,
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+    *,
+    tree_cells: frozenset[GridCell],
+    blocked: set[GridCell],
+) -> tuple[GridCell, ...] | None:
+    """Return a straight branch from ``terminal`` to the bus stripe, or None.
+
+    The single-terminal case of the column trunk: a stub from the terminal's
+    open cell nearest the drop column, then one vertical run to the stripe,
+    in the first legal column outward from the terminal's exit side (the same
+    legality rules as ``_find_legal_column_trunk``). Used for a lone heater
+    whose bus terminal was chosen after the bus tree was built (the pad-side
+    swap), where the greedy search would otherwise join the nearest branch
+    sideways.
+    """
+
+    access = obstacle_map.common_bus_port_accesses.get(terminal.id)
+    if access is None:
+        return None
+    exit_dx = {"l": -1, "r": 1}.get(terminal.side_key, 0)
+    if exit_dx == 0:
+        return None
+    all_terminal_cells = _all_terminal_cells(obstacle_map)
+    allowed_cells = set(_terminal_open_cells(obstacle_map, terminal.id))
+    allowed_cells.add(access.anchor_cell)
+    resolution = _find_legal_column_trunk(
+        [(terminal.heater_id, terminal, access.anchor_cell)],
+        access.anchor_cell[0],
+        exit_dx,
+        allowed_cells=allowed_cells,
+        forbidden_cells=all_terminal_cells.difference(allowed_cells),
+        blocked=blocked,
+        tree_cells=set(tree_cells),
+        all_terminal_cells=all_terminal_cells,
+        obstacle_map=obstacle_map,
+        config=config,
+    )
+    if resolution is None:
+        return None
+    _column, stripe_entry, stubs, junctions = resolution
+    stub = stubs[terminal.heater_id]
+    vertical = _axis_path(junctions[terminal.heater_id], stripe_entry)
+    return tuple(dict.fromkeys((*stub, *vertical)))
+
+
 def _grid_cell_center_um(cell: GridCell, grid: Any) -> tuple[float, float]:
     origin_x, origin_y = grid.origin
     grid_size = grid.grid_size_um

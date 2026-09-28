@@ -1165,6 +1165,58 @@ def test_common_bus_column_trunks_serve_stacked_terminals_with_one_stub_bend_eac
     assert result.common_bus.selected_terminals["heater_post_0"].side_key == "l"
 
 
+def test_common_bus_verification_reports_a_branch_that_reaches_nothing():
+    """A branch ending on a cell of a discarded branch is metal that reaches
+    nothing; the verifier must say so, transitively accepting branches that
+    reach the stripe through other branches."""
+
+    from translation.electrical.verification import _verify_common_bus_connectivity
+
+    def terminal(identifier: str, heater_id: str, x: float) -> ElectricalTerminal:
+        return ElectricalTerminal(
+            id=identifier,
+            heater_id=heater_id,
+            side_key=identifier.rsplit(":", 1)[-1],
+            center=(x, 100.0),
+            bbox=(x - 5.0, 95.0, x + 5.0, 105.0),
+            ports=(),
+        )
+
+    stripe = BusStripe(
+        side="bottom", bbox=(0.0, 0.0, 200.0, 10.0), cells=frozenset({(x, 0) for x in range(20)})
+    )
+    first = terminal("h0:l", "h0", 40.0)
+    second = terminal("h1:l", "h1", 80.0)
+    third = terminal("h2:l", "h2", 120.0)
+    routes = (
+        TerminalBusRoute(
+            heater_id="h0",
+            terminal=first,
+            path=((4, 5), (4, 4), (4, 3), (4, 2), (4, 1), (4, 0)),
+            cost=5,
+        ),
+        TerminalBusRoute(
+            heater_id="h1", terminal=second, path=((8, 5), (7, 5), (6, 5), (5, 5), (4, 5)), cost=4
+        ),
+        TerminalBusRoute(heater_id="h2", terminal=third, path=((12, 5), (12, 4), (12, 3)), cost=2),
+    )
+    common_bus = CommonBusRoutingResult(
+        bus_side="bottom",
+        bus=stripe,
+        selected_terminals={"h0": first, "h1": second, "h2": third},
+        unselected_terminals={},
+        routes=routes,
+        tree_cells=frozenset(stripe.cells | {cell for route in routes for cell in route.path}),
+    )
+
+    issues: list = []
+    _verify_common_bus_connectivity(issues, common_bus)
+
+    assert [issue.code for issue in issues] == ["common_bus_route_disconnected"]
+    assert issues[0].details["terminal_id"] == "h2:l"
+    assert issues[0].details["route_end_cell"] == (12, 3)
+
+
 def test_common_bus_column_trunk_falls_back_below_an_obstacle():
     schematic = build_multi_heater_schematic()
     component = layout_from_schematic(schematic)

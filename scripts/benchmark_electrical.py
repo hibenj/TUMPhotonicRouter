@@ -61,6 +61,12 @@ BASELINE_FLOAT_TOLERANCE = 1e-6
 # trunk passes) and are re-pinned at the new measured value plus ~2% headroom
 # where they were violated or within 10% of the old limit; bus_bend_count_max
 # is re-pinned at the new measured value rounded up to the next multiple of 5.
+# 2026-09-28 (later): bus_bend_count and bus_length_um are now sums over the
+# bus branches and the escape (one polyline each); before, the branches were
+# concatenated into one polyline and the jumps between them counted as length
+# and bends (heater_s_mod read 58 bends / 28990 um, truly 21 / 8260). The bus
+# limits are re-pinned on the per-branch values: one stub bend per trunk
+# member plus the escape's bend.
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -75,7 +81,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "same_net_redundant_overlap_pair_count_max": 0,
     "pad_wire_max_bend_count_max": 3,
     "pad_wire_detour_total_um_max": 0.0,
-    "bus_bend_count_max": 30,
+    "bus_bend_count_max": 10,
     "wire_metal_area_um2_max": 2_152_000.0,
 }
 DEFAULT_GUARDRAILS = RIPUP_REROUTE_GUARDRAILS
@@ -111,7 +117,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
         "pad_wire_detour_total_um_max": 40.0,
-        "bus_bend_count_max": 60,
+        "bus_bend_count_max": 20,
         "wire_metal_area_um2_max": 3_432_000.0,
     },
     "heater_lanes_ripup": RIPUP_REROUTE_GUARDRAILS,
@@ -129,7 +135,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
         "pad_wire_detour_total_um_max": 0.0,
-        "bus_bend_count_max": 60,
+        "bus_bend_count_max": 25,
         "wire_metal_area_um2_max": 3_470_000.0,
     },
 }
