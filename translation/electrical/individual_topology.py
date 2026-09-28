@@ -15,6 +15,7 @@ from .types import (
     EscapeTopologyRoute,
     GridCell,
     IndividualEscapeTopologyResult,
+    terminal_exit_dx,
 )
 
 Axis = Literal["x", "y"]
@@ -469,6 +470,26 @@ def _bundle_route_side_from_routes(
     exit_interval: tuple[int, int],
     obstacle_map: ElectricalObstacleMap,
 ) -> str:
+    """Return "left"/"right": the ports decide, the topology only breaks ties.
+
+    2026-09-28 (rule G, eight-row-bundles plan): when every member terminal
+    of the bundle shares the same physical exit side (``side_key`` "l" or
+    "r", via ``terminal_exit_dx``), that side is authoritative -- a bundle
+    exits on its ports' side regardless of which way its (possibly
+    misleading, e.g. a lone heater whose escape topology route happened to
+    run leftward) escape-topology route ran. Only when the side keys are
+    mixed or unknown does this fall back to comparing the escape topology's
+    exit-interval midpoint against the terminal column's x, as before.
+    """
+
+    side_dxs = {terminal_exit_dx(route.terminal.side_key) for route in routes}
+    if len(side_dxs) == 1:
+        (dx,) = side_dxs
+        if dx == -1:
+            return "left"
+        if dx == 1:
+            return "right"
+
     terminal_grid_x = _median(
         tuple(_terminal_grid_x(route.terminal, obstacle_map) for route in routes)
     )

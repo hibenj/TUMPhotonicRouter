@@ -623,13 +623,13 @@ def test_pad_wires_do_not_cross_each_other(benchmark_name):
 
 
 def test_bundle_falls_back_when_a_bundle_member_cannot_river_route():
-    """heater_extra_0 on heater_s_mod is the fixture already known to force
-    the per-wire fallback (its assigned pad column lies inward of where its
-    corridor lane would be, so the river construction refuses it before any
-    collision check even runs); this pins that a fallback bundle still
-    routes successfully and is reported as "fallback", not "river"."""
+    """cascade_12_folded is the fixture known to force the per-wire fallback
+    (its six-row tomography block straddles its corridor lane and the river
+    construction refuses it); since rule G of 2026-09-28 every bundle of
+    heater_s_mod river-routes. This pins that a fallback bundle still routes
+    successfully and is reported as "fallback", not "river"."""
 
-    result = _route_electrical_benchmark("heater_s_mod")
+    result = _route_electrical_benchmark("cascade_12_folded")
     detailed = result.detailed_bundle_routes
     assert detailed.bundle_fallback_reasons
     fallback_bundle_ids = set(detailed.bundle_fallback_reasons)
@@ -646,7 +646,7 @@ def test_bundle_falls_back_when_a_bundle_member_cannot_river_route():
 
 def test_z_fallback_never_crosses_committed_metal():
     """Every fallback wire keeps the wire spacing from every river wire on
-    heater_s_mod: a river wire's committed footprint (its centerline dilated
+    cascade_12_folded (heater_s_mod has no fallback since rule G): a river wire's committed footprint (its centerline dilated
     by the spacing radius, exactly what commit() reserves) never contains a
     cell of a fallback wire's bare centerline. The fallback is only reached
     when the river construction refuses a bundle, and the guarantee that
@@ -658,7 +658,7 @@ def test_z_fallback_never_crosses_committed_metal():
         wire_spacing_radius_cells,
     )
 
-    result = _route_electrical_benchmark("heater_s_mod")
+    result = _route_electrical_benchmark("cascade_12_folded")
     obstacle_map = result.obstacle_map
     config = ElectricalRoutingConfig()
     detailed = result.detailed_bundle_routes

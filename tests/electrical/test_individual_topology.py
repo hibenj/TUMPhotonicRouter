@@ -6,10 +6,13 @@ corridors, grouped into bundles, before pad assignment.
 
 from __future__ import annotations
 
+from tests.fixtures.sessions import route_electrical_benchmark_result
 from tests.fixtures.synthetic_layouts import (
     multi_heater_schematic as build_multi_heater_schematic,
 )
 from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from translation.electrical.individual_topology import bundle_route_side
+from translation.electrical.types import terminal_exit_dx
 from translation.layout_from_schematic import layout_from_schematic
 
 
@@ -126,3 +129,40 @@ def test_individual_topology_groups_escape_corridors_before_pad_assignment():
         terminal.id for terminal in right_bundle.ordered_terminals
     ]
     assert [assignment.slot.index for assignment in right_bundle_assignments] == [4, 5, 6, 7]
+
+
+def test_bundle_route_side_follows_the_ports():
+    """Rule G (2026-09-28, eight-row-bundles plan): a bundle whose member
+    terminals all exit the same physical side (``side_key`` "l"/"r") takes
+    that side, regardless of where the coarse escape-topology route
+    happened to run. Only a bundle with mixed or unknown side keys falls
+    back to the exit-interval comparison.
+
+    Checked on ``cascade_16_folded``, which has the lone heater
+    ``heater_extra_0:r`` (bundle 2) whose escape-topology route ran
+    leftward although its port -- and its pad -- are on the right; before
+    Rule G, ``bundle_route_side`` returned "left" for it.
+    """
+
+    result = route_electrical_benchmark_result("cascade_16_folded")
+    assert result.individual_topology is not None
+    topology = result.individual_topology
+    obstacle_map = result.obstacle_map
+
+    side_by_bundle_id: dict[int, str] = {}
+    for bundle in topology.bundles:
+        side_keys = {terminal.side_key for terminal in bundle.ordered_terminals}
+        route_side = bundle_route_side(bundle, obstacle_map)
+        side_by_bundle_id[bundle.bundle_id] = route_side
+        if len(side_keys) != 1:
+            continue
+        (side_key,) = side_keys
+        expected_side = "left" if terminal_exit_dx(side_key) < 0 else "right"
+        assert route_side == expected_side, (bundle.bundle_id, side_keys, route_side)
+
+    lone_heater_bundle = next(
+        bundle
+        for bundle in topology.bundles
+        if [terminal.id for terminal in bundle.ordered_terminals] == ["heater_extra_0:r"]
+    )
+    assert side_by_bundle_id[lone_heater_bundle.bundle_id] == "right"

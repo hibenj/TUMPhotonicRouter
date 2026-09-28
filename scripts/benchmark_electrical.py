@@ -109,6 +109,23 @@ BASELINE_FLOAT_TOLERANCE = 1e-6
 # let a branch cross a neighbouring selected terminal's open cells): no
 # effect on any suite case's guardrails, since none of the four cases has a
 # greedy branch that used another terminal's opening.
+# 2026-09-28 (eight-row bundles plan, Rule G): bundle_route_side now follows
+# a bundle's own ports (side_key "l"/"r") instead of the escape topology's
+# exit-interval comparison whenever every member shares one side; it only
+# breaks ties on a mixed/unknown-side bundle as before. On heater_lanes_ripup
+# this flips heater_extra_0/1/2's individual terminal from ":l" to their own
+# ":r" ports (the pad-side swap in stage 7 reads the corrected pad column):
+# heater_extra_0 now takes a zero-detour L (was the fallback's 20 um Z on the
+# wrong-side guess) while heater_extra_1 and heater_extra_2 now each take the
+# river's row-1 inward-absorption Z (20 um and 40 um detour). Net
+# pad_wire_detour_total_um rises from the measured 20.0 to the measured 60.0;
+# pad_wire_max_bend_count unchanged (still 3, the case's existing pin). No
+# other suite case's guardrails moved (heater_single, heater_lanes_20 and
+# heater_s_mod stay within their existing pins; only their unguarded
+# pad_wires/metal-area baseline entries drift, re-pinned below). No case's
+# zero-tolerance guardrail (verification_success/error/warning counts,
+# failed_detailed_route_count, the two redundant-overlap checks) or
+# verification success was affected.
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -122,7 +139,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "same_net_overlap_pair_count_max": 49,
     "same_net_redundant_overlap_pair_count_max": 0,
     "pad_wire_max_bend_count_max": 3,
-    "pad_wire_detour_total_um_max": 20.0,
+    "pad_wire_detour_total_um_max": 60.0,
     "bus_bend_count_max": 10,
     "wire_metal_area_um2_max": 2_047_000.0,
 }
