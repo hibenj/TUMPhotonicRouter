@@ -23,7 +23,7 @@ def test_detailed_bundle_router_nests_l_and_z_pad_wires_from_topology():
     centerline, ``DetailedBundleRoute.centerline``), and a bundle's ranks
     are nested directly into pad columns instead. This
     exercises a config the milestone-2/4 four benchmark fixtures don't
-    (a coarser routing grid, wider pad pitch, zero clearance margin), which
+    (a coarser routing grid, wider pad pitch, tight clearance margin), which
     congests enough that some of this schematic's wires need -- and some do
     not find -- a Z fallback; the four benchmark fixtures are covered by
     the fixture-specific tests below instead, so this only asserts the
@@ -39,7 +39,7 @@ def test_detailed_bundle_router_nests_l_and_z_pad_wires_from_topology():
         pad_pitch_um=150.0,
         pad_origin_x_um=0.0,
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
         wire_width_um=20.0,
         individual_route_spacing_um=20.0,

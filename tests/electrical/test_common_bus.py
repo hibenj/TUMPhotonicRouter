@@ -41,7 +41,7 @@ def test_common_bus_router_selects_exactly_one_terminal_per_heater(tmp_path):
     config = ElectricalRoutingConfig(
         pad_side="top",
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
     )
 
@@ -105,7 +105,7 @@ def test_common_bus_terminal_selection_prefers_local_same_row_pair_midpoint():
     config = ElectricalRoutingConfig(
         pad_side="top",
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
         common_bus_terminal_selection="local_pair_median_x_biased",
     )
@@ -146,7 +146,7 @@ def test_common_bus_column_trunks_serve_stacked_terminals_with_one_stub_bend_eac
     config = ElectricalRoutingConfig(
         pad_side="top",
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
     )
 

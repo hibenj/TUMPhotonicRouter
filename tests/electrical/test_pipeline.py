@@ -7,6 +7,8 @@ heater terminals, and that every stage implementation still matches its
 
 from __future__ import annotations
 
+import pytest
+
 from tests.electrical.support import _polygon_bboxes_by_layer
 from tests.fixtures.synthetic_layouts import (
     path_length_schematic as build_heaterless_schematic,
@@ -98,3 +100,13 @@ def test_electrical_stage_functions_satisfy_their_protocols() -> None:
         debug_artifact_writer,
     ):
         assert callable(stage_fn)
+
+
+def test_config_rejects_zero_obstacle_clearance() -> None:
+    """`obstacle_clearance_um == 0` lets metal touch an obstacle, which the
+    verifier reports as a short; `validate()` requires a positive clearance
+    (ExecPlan Decision Log, 2026-09-28).
+    """
+
+    with pytest.raises(ValueError, match="obstacle_clearance_um must be positive"):
+        ElectricalRoutingConfig(obstacle_clearance_um=0.0).validate()

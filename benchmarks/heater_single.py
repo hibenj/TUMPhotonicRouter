@@ -15,6 +15,13 @@ the heater a plausible home, and the electrical router reads nothing from them
 everything else from the built layout's metal geometry). The placement is
 deliberately generous in x so the electrical router has a free channel above
 and below the optical row.
+
+Known limit (2026-09-28): `python -m photonic_router route heater_single`
+does not complete, because the optical router finds no path for the second
+net (`gc_1,o1 -> mmi_0,o1`: static blockers surround the MMI's input port at
+this spacing) and never has since the file was written. The electrical suite
+does not need the optical routes; the three larger heater benchmarks route
+both ways.
 """
 
 from gdsfactory.gpdk import get_generic_pdk

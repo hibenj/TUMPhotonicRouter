@@ -24,7 +24,7 @@ def test_common_bus_escape_reaches_assigned_common_bus_pad_slot():
         pad_pitch_um=150.0,
         pad_origin_x_um=0.0,
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
     )
 
@@ -64,7 +64,7 @@ def test_common_bus_escape_uses_opposite_bus_for_bottom_pad_side():
         pad_pitch_um=150.0,
         pad_origin_x_um=0.0,
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
     )
 

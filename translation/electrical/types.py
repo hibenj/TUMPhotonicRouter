@@ -105,7 +105,12 @@ class ElectricalRoutingConfig:
             raise ValueError("common_bus_pad_position must be 'left' or 'right'")
         if self.routing_grid_pitch_um <= 0:
             raise ValueError("routing_grid_pitch_um must be positive")
-        if self.obstacle_clearance_um < 0 or self.terminal_open_radius_um < 0:
+        if self.obstacle_clearance_um <= 0:
+            raise ValueError(
+                "obstacle_clearance_um must be positive (metal that touches an "
+                "obstacle is a short; the verifier rejects touching)"
+            )
+        if self.terminal_open_radius_um < 0:
             raise ValueError("clearances must be non-negative")
         if self.terminal_contact_width_um <= 0:
             raise ValueError("terminal_contact_width_um must be positive")

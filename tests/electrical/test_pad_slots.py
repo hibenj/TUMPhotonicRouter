@@ -30,7 +30,7 @@ def test_pad_plan_assigns_slots_without_realizing_geometry():
         pad_pitch_um=150.0,
         pad_origin_x_um=0.0,
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
     )
 
@@ -65,7 +65,7 @@ def test_pad_access_is_only_on_chip_facing_pad_edge():
         pad_origin_x_um=0.0,
         pad_access_depth_um=20.0,
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
     )
     bottom_config = ElectricalRoutingConfig(
@@ -74,7 +74,7 @@ def test_pad_access_is_only_on_chip_facing_pad_edge():
         pad_origin_x_um=0.0,
         pad_access_depth_um=20.0,
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
     )
 
@@ -124,7 +124,7 @@ def test_top_pad_offset_moves_pad_row_further_from_layout():
             pad_origin_x_um=0.0,
             pad_offset_um=40.0,
             routing_grid_pitch_um=20.0,
-            obstacle_clearance_um=0.0,
+            obstacle_clearance_um=10.0,
             terminal_open_radius_um=20.0,
         ),
     )
@@ -137,7 +137,7 @@ def test_top_pad_offset_moves_pad_row_further_from_layout():
             pad_origin_x_um=0.0,
             pad_offset_um=200.0,
             routing_grid_pitch_um=20.0,
-            obstacle_clearance_um=0.0,
+            obstacle_clearance_um=10.0,
             terminal_open_radius_um=20.0,
         ),
     )
@@ -167,7 +167,7 @@ def test_pad_plan_allows_empty_pitch_slots_and_keeps_individual_order():
         pad_extra_slots_left=1,
         pad_extra_slots_right=1,
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
     )
 
@@ -205,7 +205,7 @@ def test_auto_pad_origin_compacts_row_toward_escape_topology():
         pad_side="top",
         pad_pitch_um=150.0,
         routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=0.0,
+        obstacle_clearance_um=10.0,
         terminal_open_radius_um=20.0,
         wire_width_um=20.0,
         individual_route_spacing_um=20.0,
@@ -236,16 +236,12 @@ def test_auto_pad_origin_compacts_row_toward_escape_topology():
     # no legal approach; on HEAD the wire clipped the escape undetected
     # (recorded in the ExecPlan, Milestone 2).
     assert automatic_failed_terminal_ids == {"heater_final_3:r"}
-    forced_cross_net_overlaps = [
-        issue for issue in forced.verification.issues if issue.code == "cross_net_metal_overlap"
-    ]
-    # at obstacle_clearance_um=0 the reservation radius lets metal touch a
-    # neighbouring pad edge to edge but never overlap; pads forced to origin
-    # 0 lie far left of every bundle, the river construction refuses them and
-    # the per-wire fallback serves only part of them (ExecPlan, Milestone 2).
-    for issue in forced_cross_net_overlaps:
-        for x0, y0, x1, y1 in issue.details["sample_overlaps"]:
-            assert x0 == x1 or y0 == y1
+    # pads forced to origin 0 lie far left of every bundle; the river
+    # construction refuses them and the per-wire fallback serves only part
+    # of them (ExecPlan, Milestone 2), but at a positive clearance no wire
+    # is allowed to touch another net's metal, so there is no overlap issue
+    # at all.
+    assert not any(issue.code == "cross_net_metal_overlap" for issue in forced.verification.issues)
     assert any(issue.code == "failed_detailed_route" for issue in forced.verification.issues)
     assert (
         automatic.verification.metrics["pad_channel_height_um"]
@@ -327,7 +323,7 @@ def test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps():
             pad_pitch_um=150.0,
             pad_origin_x_um=None,
             routing_grid_pitch_um=20.0,
-            obstacle_clearance_um=0.0,
+            obstacle_clearance_um=10.0,
             terminal_open_radius_um=20.0,
             wire_width_um=20.0,
             individual_route_spacing_um=20.0,

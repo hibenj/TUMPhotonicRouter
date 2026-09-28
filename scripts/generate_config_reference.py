@@ -99,7 +99,10 @@ ELECTRICAL_FIELD_DESCRIPTIONS: dict[str, str] = {
     "pad_access_depth_um": "Depth of the straight access stub routed into a pad from its slot.",
     "pad_origin_x_um": (
         "Fixed x origin of the pad slot grid. `None` (default) lets `pad_slots` "
-        "compute an origin from the routed topology instead."
+        "compute an origin from the routed topology instead. The automatic origin "
+        "places the pad row over the bundles; a forced origin far from every "
+        "bundle's exit side is outside the river-routing design and is served "
+        "only partially by the per-wire fallback."
     ),
     "pad_empty_slots_between_assignments": (
         "Minimum number of unused pad slots left between two assigned slots."
@@ -118,7 +121,11 @@ ELECTRICAL_FIELD_DESCRIPTIONS: dict[str, str] = {
     "metal_obstacle_layers": (
         "Layers the obstacle extractor treats as pre-existing metal/heater obstacles."
     ),
-    "obstacle_clearance_um": "Clearance kept between routed metal and every other obstacle.",
+    "obstacle_clearance_um": (
+        "Clearance kept between routed metal and every other obstacle. Must be "
+        "positive: metal that touches an obstacle is a short, and the verifier "
+        "rejects touching."
+    ),
     "terminal_open_radius_um": (
         "Radius of the disk of grid cells opened around a terminal so a route may "
         "originate or land there."
@@ -596,10 +603,12 @@ def render() -> str:
         "`common_bus_bondpad_width_um`, `common_bus_bondpad_length_um`, `pad_pitch_um` "
         "itself at least `bondpad_width_um + bondpad_spacing_um`, "
         "`pad_access_depth_um`, `routing_grid_pitch_um`, `terminal_contact_width_um`, "
-        "`bus_width_um`); every offset, margin, clearance, slot count and spacing "
-        "field non-negative (`bondpad_spacing_um`, `pad_offset_um`, "
+        "`bus_width_um`); `obstacle_clearance_um` positive as well (metal that "
+        "touches an obstacle is a short; the verifier rejects touching); every "
+        "other offset, margin, clearance, slot count and spacing field "
+        "non-negative (`bondpad_spacing_um`, `pad_offset_um`, "
         "`pad_empty_slots_between_assignments`, `pad_extra_slots_left`, "
-        "`pad_extra_slots_right`, `obstacle_clearance_um`, `terminal_open_radius_um`, "
+        "`pad_extra_slots_right`, `terminal_open_radius_um`, "
         "`layout_margin_um`, `bus_offset_um`, `common_bus_median_bias_weight`, "
         "`common_bus_local_pair_y_tolerance_um`, `common_bus_local_pair_max_gap_um`, "
         "`individual_route_spacing_um`); and each of `pad_side`, "
