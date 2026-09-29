@@ -64,6 +64,12 @@ class RoutingFlowStats:
     electrical_pad_assignments: int = 0
     electrical_detailed_routes: int = 0
     electrical_failed_detailed_routes: int = 0
+    electrical_verification_success: bool | None = None
+    verification_error_count: int | None = None
+    verification_warning_count: int | None = None
+    path_length_groups: int | None = None
+    path_length_groups_over_tolerance: int | None = None
+    meander_inserted_um: float | None = None
     route_attempt_records: list[dict[str, object]] = field(default_factory=list)
     step_times_s: dict[str, float] = field(default_factory=dict)
 
@@ -129,6 +135,12 @@ class RoutingFlowStats:
             "electrical_pad_assignments": self.electrical_pad_assignments,
             "electrical_detailed_routes": self.electrical_detailed_routes,
             "electrical_failed_detailed_routes": self.electrical_failed_detailed_routes,
+            "electrical_verification_success": self.electrical_verification_success,
+            "verification_error_count": self.verification_error_count,
+            "verification_warning_count": self.verification_warning_count,
+            "path_length_groups": self.path_length_groups,
+            "path_length_groups_over_tolerance": self.path_length_groups_over_tolerance,
+            "meander_inserted_um": self.meander_inserted_um,
             "route_attempt_records": list(self.route_attempt_records),
             "step_times_s": dict(self.step_times_s),
         }
@@ -225,3 +237,50 @@ def populate_route_stats(
     stats.commit_prepare_time_s = float(route_summary.commit_prepare_time_us) / 1_000_000.0
     stats.commit_time_s = float(route_summary.commit_time_us) / 1_000_000.0
     stats.route_attempt_records = route_attempt_records
+
+
+def format_flow_summary_line(stats: "RoutingFlowStats | None") -> str:
+    """One fixed, grep-able line per flow run (`SUMMARY key=value ...`).
+
+    Every value a reader or an agent needs to judge a run without parsing the
+    stage output: nets and route failures, the photonic verifier's counts,
+    path-length matching, the inserted meander length, the electrical step's
+    counts and verdict, and the wall time. A field the run did not produce
+    prints as `-` (a stage skipped), never as a guessed zero.
+    """
+
+    if stats is None:
+        return "SUMMARY stats=off"
+
+    def cell(value: object, digits: int | None = None) -> str:
+        if value is None:
+            return "-"
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if isinstance(value, float) and digits is not None:
+            return f"{value:.{digits}f}"
+        return str(value)
+
+    fields = (
+        ("benchmark", cell(stats.benchmark_name)),
+        ("nets", cell(stats.net_count)),
+        ("route_failures", cell(stats.route_failures)),
+        ("verifier_errors", cell(stats.verification_error_count)),
+        ("verifier_warnings", cell(stats.verification_warning_count)),
+        ("plm_groups", cell(stats.path_length_groups)),
+        ("plm_over_tolerance", cell(stats.path_length_groups_over_tolerance)),
+        ("meander_inserted_um", cell(stats.meander_inserted_um, 1)),
+        ("electrical_heaters", cell(stats.electrical_terminal_groups or None)),
+        ("electrical_pads", cell(stats.electrical_pad_assignments or None)),
+        (
+            "electrical_failed_wires",
+            cell(
+                stats.electrical_failed_detailed_routes
+                if stats.electrical_terminal_groups
+                else None
+            ),
+        ),
+        ("electrical_ok", cell(stats.electrical_verification_success)),
+        ("total_s", cell(stats.total_time_s, 1)),
+    )
+    return "SUMMARY " + " ".join(f"{key}={value}" for key, value in fields)

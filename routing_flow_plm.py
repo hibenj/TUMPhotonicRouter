@@ -8,6 +8,7 @@ def attach_and_report_path_length_matching(
     routed_layout: Component,
     route_result: object,
     debug_meanders: bool,
+    stats: object | None = None,
 ) -> None:
     """Attach PLM metadata to the layout and print the existing PLM summary."""
     if route_result.path_length_analysis_info is None:
@@ -40,6 +41,9 @@ def attach_and_report_path_length_matching(
             ),
             default=0.0,
         )
+        if stats is not None:
+            stats.path_length_groups = len(group_diagnostics)
+            stats.path_length_groups_over_tolerance = int(groups_over_tolerance)
         print(
             "      - Path-length groups: "
             f"{len(group_diagnostics)} group(s), "
@@ -50,6 +54,10 @@ def attach_and_report_path_length_matching(
         _report_path_length_node_timings(route_result.path_length_analysis_info)
     if meander_report_info is not None:
         _report_meander_insertion(meander_report_info, debug_meanders=debug_meanders)
+        if stats is not None:
+            stats.meander_inserted_um = float(
+                meander_report_info.get("total_inserted_extra_length_um", 0.0)
+            )
 
 
 def _report_path_length_node_timings(path_length_analysis_info: dict[object, object]) -> None:

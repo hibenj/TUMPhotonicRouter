@@ -50,6 +50,13 @@ Exactly one of the three paper configurations runs at a time; contributions
 never leak into the baseline defaults. `--debug-svgs <selector>` writes SVGs
 for visual debugging only; do not produce them by default.
 
+Every run ends with one grep-able line, `SUMMARY benchmark=... nets=...
+route_failures=... verifier_errors=... plm_over_tolerance=...
+meander_inserted_um=... electrical_ok=... total_s=...`; read that before the
+stage output. Before a merge to `main`, run the saved workflow
+`/merge-review` (one reviewer per changed file, findings adversarially
+verified, then ranked).
+
 ## Build, test, gate
 
 Linux: `docs/ARCHITECTURE.md` section 8 has the exact commands (toolchain and

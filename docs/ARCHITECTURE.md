@@ -783,6 +783,22 @@ electrical equivalent of `scripts/results/gate_short.sh`: it is not part of
 configuration routes electrically (section 7).
 
 
+### The SUMMARY line and the merge review (2026-09-29)
+
+Every `route` run ends with one fixed line, `SUMMARY benchmark=... nets=...
+route_failures=... verifier_errors=... verifier_warnings=... plm_groups=...
+plm_over_tolerance=... meander_inserted_um=... electrical_heaters=...
+electrical_pads=... electrical_failed_wires=... electrical_ok=... total_s=...`
+(`routing_flow_stats.format_flow_summary_line`; a stage that did not run
+prints `-`). The stages fill the `RoutingFlowStats` record the flow creates
+for every run; per-route search counters are collected only with
+`collect_route_stats`, which the legacy `run_routing_flow` turns on when a
+caller hands in its own record. The saved workflow
+`.claude/workflows/merge-review.js` (`/merge-review`, optional `base`)
+reviews every file changed against `main` with one reviewer each, has two
+independent verifiers try to refute every finding, and returns one ranked
+list; it is the review step before a merge.
+
 ## 9. Removal candidates (Milestone 8)
 
 The repository owner decided every candidate on 2026-09-24 (all removals as

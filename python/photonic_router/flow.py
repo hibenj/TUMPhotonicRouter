@@ -42,7 +42,6 @@ from photonic_router.flow_options import (
 )
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from routing_flow_config import (
-    DebugSvgSelector,
     SCRIPT_ALLOW_45_DEGREE_TURNS,
     SCRIPT_BEND_RADIUS_UM,
     SCRIPT_CHIP_ADD_X_UM,
@@ -54,6 +53,7 @@ from routing_flow_config import (
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
     SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
+    DebugSvgSelector,
     build_optical_routing_stage_config,
     build_static_obstacle_config,
     debug_artifact_routing_options,
@@ -70,6 +70,7 @@ from routing_flow_reporting import (
 )
 from routing_flow_stats import (
     RoutingFlowStats,
+    format_flow_summary_line,
     populate_route_stats,
     record_initial_route_stats,
 )
@@ -188,7 +189,8 @@ def _print_flow_header(benchmark_name: str) -> None:
     print(f"{'=' * 60}")
 
 
-def _print_flow_footer() -> None:
+def _print_flow_footer(stats: RoutingFlowStats | None = None) -> None:
+    print(format_flow_summary_line(stats))
     print(f"\n{'=' * 60}\n")
 
 
@@ -268,6 +270,10 @@ def route_benchmark(config: RoutingConfig, options: FlowOptions) -> Component:
     routing stage in `route_schematic`.
     """
     benchmark_name = options.loading.benchmark_name
+    if options.stats.stats is None:
+        # Every run ends with the SUMMARY line, so every run has a stats
+        # record; per-route collection stays behind `collect_route_stats`.
+        options = replace(options, stats=replace(options.stats, stats=RoutingFlowStats()))
     stats = options.stats.stats
     debug_svgs, _show_klayout = resolve_legacy_display_options(
         debug_svgs=options.debug.debug_svgs,
@@ -306,14 +312,12 @@ def route_benchmark(config: RoutingConfig, options: FlowOptions) -> Component:
         total = time.perf_counter() - t_flow_start
         stats.total_time_s = float(total)
 
-    _print_flow_footer()
+    _print_flow_footer(stats)
 
     return routed_layout
 
 
-def route_schematic(
-    schematic: Schematic, config: RoutingConfig, options: FlowOptions
-) -> Component:
+def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOptions) -> Component:
     """Route one already-loaded schematic: every stage after the load.
 
     Keep the body below as the stage outline; detailed behavior belongs in the
@@ -519,6 +523,7 @@ def route_schematic(
         write_gds_on_photonic_verification_failure=(
             config.write_gds_on_photonic_verification_failure
         ),
+        stats=stats,
     )
     if debug.debug_timing:
         # Performance pass 2026-09-03 (P5): the non-routing phases were an
@@ -530,6 +535,7 @@ def route_schematic(
         routed_layout=routed_layout,
         route_result=route_result,
         debug_meanders=debug.debug_meanders,
+        stats=stats,
     )
     if debug.debug_timing:
         print(
@@ -802,6 +808,11 @@ def run_routing_flow(
                 show_routed=show_routed,
                 show_unrouted=show_unrouted,
             ),
-            stats=StatsOptions(collect_route_stats=collect_route_stats, stats=stats),
+            # A caller who hands in a stats record wants it filled, so the
+            # legacy entry implies per-route collection; `route_benchmark`'s
+            # own record (for the SUMMARY line) does not.
+            stats=StatsOptions(
+                collect_route_stats=collect_route_stats or stats is not None, stats=stats
+            ),
         ),
     )

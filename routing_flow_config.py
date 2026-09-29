@@ -262,6 +262,6 @@ def build_optical_routing_stage_config(
         debug_meanders=debug_meanders,
         verbose_routes=verbose_routes,
         debug_svgs_enabled=debug_svgs_enabled,
-        collect_route_stats=collect_route_stats or stats is not None,
+        collect_route_stats=collect_route_stats,
         collect_attempt_diagnostics=collect_attempt_diagnostics,
     )

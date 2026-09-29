@@ -56,6 +56,7 @@ def run_electrical_routing_step(
         stats.electrical_failed_detailed_routes = int(
             electrical_summary["failed_detailed_route_count"]
         )
+        stats.electrical_verification_success = electrical_summary.get("verification_success")
     electrical_layout = current_electrical_result.routed_component
     copy_component_info(routed_layout, electrical_layout)
     component_info(electrical_layout)["electrical_routing"] = electrical_summary

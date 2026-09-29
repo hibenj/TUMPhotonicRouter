@@ -29,6 +29,7 @@ def verify_and_attach_photonic_reports(
     debug_stop_after_route_index: int | None,
     extra_report_metadata: Mapping[str, object] | None = None,
     write_gds_on_photonic_verification_failure: bool = False,
+    stats: object | None = None,
 ) -> None:
     """Run crossing and photonic final-geometry gates and attach report metadata.
 
@@ -109,6 +110,9 @@ def verify_and_attach_photonic_reports(
         status_metadata=verification_status,
     )
     routed_info["photonic_verification"] = photonic_report
+    if stats is not None:
+        stats.verification_error_count = int(getattr(photonic_verification, "error_count", 0))
+        stats.verification_warning_count = int(getattr(photonic_verification, "warning_count", 0))
     print(f"      - Photonic verification JSON: {photonic_report['path']}")
     if photonic_verification.success:
         return
