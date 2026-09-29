@@ -294,6 +294,33 @@ everything else to cheaper-model subagents.** Division of labor:
   observations, and the report format. Pointing the subagent at the
   active ExecPlan plus a delta brief is the normal shape.
 
+**Refined 2026-09-29 by repository-owner direction, after reading the
+2026 guidance of Anthropic and OpenAI on subagents and workflows (sources in
+`.agent/REPOSITORY_STATE.md`, entry of 2026-09-29):** the budget is no longer
+scarce and only Claude is used (no Codex). The division of labor becomes:
+
+- The lead does dependent, sequential and small steps itself. A lane is for
+  bounded, independent work whose output would flood the lead's context: a
+  reproduction run, a measurement, a fully specified implementation slice
+  that touches several files. Several independent rules go into one lane
+  brief, not one lane per rule.
+- Pure code lookups go to the built-in `Explore` agent (no `AGENTS.md`, no
+  git status loaded), not to an evidence lane; an evidence lane is for work
+  that has to *run* something.
+- Model overrides are no longer required for cost; a lane runs on the model
+  its definition names or the session's model.
+- Dynamic workflows (`Workflow` tool, `use a workflow` / `ultracode`) are the
+  tool for fan-out jobs with cross-checking: the review before a merge to
+  `main` (one reviewer per changed file, findings adversarially verified),
+  repository-wide audits, "fix until the check passes" loops over many
+  cases. Routine slices stay orchestrator plus lanes.
+- One session per ExecPlan. `.agent/REPOSITORY_STATE.md` is the handoff; a
+  new plan starts in a new session.
+- The rest of the delegation lessons stand: fully specified briefs, verify a
+  lane's claims by re-running the decisive command, stop a lane that does not
+  converge in two attempts, never let a lane make or fabricate an owner
+  decision, and stop on a brief-versus-reality discrepancy.
+
 Two standing lane definitions exist as project agents under
 `.claude/agents/` and should be preferred over ad-hoc `general-purpose`
 spawns, because they carry the guardrails below in their own system
