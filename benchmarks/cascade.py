@@ -8,6 +8,10 @@ cascade) to any even mode count >= 4, in two layouts:
   route), as in `heater_s_mod`.
 - "diagonal": one cascade MZI per column, keeping the folded layout's
   1000 um column pitch.
+- "compact": the diagonal at the smallest column pitch that routes clean
+  (`COMPACT_COLUMN_PITCH_UM`, measured by the sweep recorded in
+  `.agent/execplans/2026-10-05-compact-diagonal-cascades.md`); every
+  layout takes an explicit `column_pitch_um` too.
 
 Topology: state preparation (`N/2` lanes, each MMI, phase shifter, MMI,
 phase shifter), a chain of `N-3` cascade MZIs each on the next mode pair
@@ -29,7 +33,7 @@ from typing import Literal
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
-Layout = Literal["folded", "diagonal"]
+Layout = Literal["folded", "diagonal", "compact"]
 
 # --- geometry constants (all um), read off `heater_s_mod` -----------------
 GC_PITCH_UM = 127.0
@@ -45,6 +49,16 @@ POST_HEATER_X_UM = 820.0
 CASCADE_COLUMN0_X_UM = 1340.0
 CASCADE_COLUMN_BASE_X_UM = 2200.0
 CASCADE_COLUMN_PITCH_UM = 1000.0
+# The compact diagonal's column pitch, pinned by the sweep of 2026-10-05
+# (compact-diagonal ExecPlan, Milestone 1): the 8-, 12- and 16-mode
+# cascades all route clean with the stable configuration down to 610 um
+# and all fail at 600 um at the same optical spot (the mode net from
+# `mmi_b_2.o4` into MZI 3's lower input finds no route through the gap
+# between MZI 2's second MMI and MZI 3's first MMI, which share a row);
+# 620 um is pinned instead of 610 because the last 10 um cost extra
+# path-length matching (16 modes: 29.0 -> 31.8 mm of inserted meander, 12
+# modes: 15.6 -> 16.9 mm) and 610 sits on the cliff.
+COMPACT_COLUMN_PITCH_UM = 620.0
 CASCADE_HEATER_DX_UM = 140.0
 CASCADE_SECOND_MMI_DX_UM = 560.0
 CASCADE_CENTER_Y_STEP_UM = MMI_LOWER_INPUT_OFFSET_Y_UM - MMI_UPPER_INPUT_OFFSET_Y_UM  # -1.25
@@ -141,22 +155,42 @@ def _column_of(mzi_index: int, layout: Layout) -> int:
     return mzi_index
 
 
-def _column_x(column: int) -> float:
+def _column_x(column: int, column_pitch_um: float) -> float:
+    """x of cascade column `column`: column 0 and the base of column 1 are
+    fixed, every later column one pitch further."""
     if column == 0:
         return CASCADE_COLUMN0_X_UM
-    return CASCADE_COLUMN_BASE_X_UM + (column - 1) * CASCADE_COLUMN_PITCH_UM
+    return CASCADE_COLUMN_BASE_X_UM + (column - 1) * column_pitch_um
 
 
-def build_cascade_schematic(n_modes: int, layout: Layout) -> Schematic:
+def default_column_pitch_um(layout: Layout) -> float:
+    """The layout's column pitch: the fold's 1000 um for folded and diagonal,
+    the sweep's value for compact."""
+    return COMPACT_COLUMN_PITCH_UM if layout == "compact" else CASCADE_COLUMN_PITCH_UM
+
+
+def build_cascade_schematic(
+    n_modes: int,
+    layout: Layout,
+    *,
+    column_pitch_um: float | None = None,
+) -> Schematic:
     """Build the N-mode cascade benchmark (state prep, cascade MZIs, tomography).
 
     `n_modes` must be even and >= 4. `layout` is "folded" (the handcrafted
-    fold, the twin of `heater_s_mod` for `n_modes == 8`) or "diagonal" (one
-    cascade MZI per column, same column pitch).
+    fold, the twin of `heater_s_mod` for `n_modes == 8`), "diagonal" (one
+    cascade MZI per column, the fold's column pitch) or "compact" (the
+    diagonal at `COMPACT_COLUMN_PITCH_UM`). `column_pitch_um` overrides the
+    layout's pitch (the distance between consecutive cascade columns from
+    column 1 on; column 0 and column 1 stay where they are).
     """
     _validate_n_modes(n_modes)
-    if layout not in ("folded", "diagonal"):
-        raise ValueError(f"layout must be 'folded' or 'diagonal'. Got {layout!r}.")
+    if layout not in ("folded", "diagonal", "compact"):
+        raise ValueError(f"layout must be 'folded', 'diagonal' or 'compact'. Got {layout!r}.")
+    if column_pitch_um is None:
+        column_pitch_um = default_column_pitch_um(layout)
+    if column_pitch_um <= 0:
+        raise ValueError(f"column_pitch_um must be positive. Got {column_pitch_um}.")
 
     pdk = get_generic_pdk()
     pdk.activate()
@@ -174,7 +208,7 @@ def build_cascade_schematic(n_modes: int, layout: Layout) -> Schematic:
     lane_centers_y = [(gc_y[2 * k] + gc_y[2 * k + 1]) / 2 for k in range(lane_count)]
 
     cascade_column = [_column_of(j, layout) for j in range(cascade_count)]
-    cascade_first_x = [_column_x(col) for col in cascade_column]
+    cascade_first_x = [_column_x(col, column_pitch_um) for col in cascade_column]
     cascade_heater_x = [x + CASCADE_HEATER_DX_UM for x in cascade_first_x]
     cascade_second_x = [x + CASCADE_SECOND_MMI_DX_UM for x in cascade_first_x]
 

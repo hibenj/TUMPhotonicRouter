@@ -353,37 +353,64 @@ def test_swap_skips_a_heater_whose_branch_carries_others(electrical_benchmark_re
     bundles plan's Fact 3 recorded on ``cascade_16_diagonal``'s
     ``heater_extra_3``/``heater_extra_4``).
 
-    The plan named ``cascade_16_diagonal`` for this; on the geometry Rules A
-    and B produce there, ``heater_extra_4`` no longer has a pad-side
-    mismatch at all (nothing to swap regardless of Rule C), so this uses
-    ``cascade_12_diagonal`` instead, where the same greedy-tree join between
-    ``heater_extra_3`` and ``heater_extra_4`` still occurs and ``heater_extra_4``
-    is still a swap candidate.
+    Since the straight-drop phase of 2026-10-05 (compact-diagonal plan) no
+    benchmark produces such a greedy join any more -- every lone cascade
+    heater drops straight to the stripe -- so the rule is exercised on the
+    real ``cascade_12_diagonal`` objects with two edits: ``heater_extra_4``'s
+    individual pad is moved to the far side of its terminal (a pad-side
+    mismatch, so the heater is a swap candidate: without a carry the swap
+    happens), and ``heater_extra_3``'s branch is made to join
+    ``heater_extra_4``'s path (with the carry the swap is refused).
     """
 
+    from dataclasses import replace
+
+    from translation.electrical.pad_side_reconciliation import (
+        _apply_pad_side_consistency_swap,
+    )
+
     result = electrical_benchmark_result("cascade_12_diagonal")
+    config = ElectricalRoutingConfig()
+    common_bus = result.common_bus
+    obstacle_map = result.obstacle_map
+    heater_id = "heater_extra_4"
+    individual = common_bus.unselected_terminals[heater_id]
+    exit_dx = 1 if individual.side_key == "r" else -1
 
-    route_3 = next(
-        route for route in result.common_bus.routes if route.heater_id == "heater_extra_3"
+    assignments = []
+    for assignment in result.pad_plan.assignments:
+        if assignment.kind == "individual" and assignment.terminal.id == individual.id:
+            slot = assignment.slot
+            far_x = individual.center[0] - exit_dx * 500.0
+            half_width = (slot.bbox[2] - slot.bbox[0]) / 2.0
+            slot = replace(
+                slot,
+                center=(far_x, slot.center[1]),
+                bbox=(far_x - half_width, slot.bbox[1], far_x + half_width, slot.bbox[3]),
+            )
+            assignment = replace(assignment, slot=slot)
+        assignments.append(assignment)
+    mismatched_plan = replace(result.pad_plan, assignments=tuple(assignments))
+
+    # without a carry: the mismatch is real and the heater is swapped
+    swapped = _apply_pad_side_consistency_swap(obstacle_map, common_bus, mismatched_plan, config)
+    assert swapped is not None and heater_id in swapped[1]
+
+    # with a carry: heater_extra_3's branch joins heater_extra_4's path, so
+    # heater_extra_4 keeps its bus terminal
+    routes_by_heater_id = {route.heater_id: route for route in common_bus.routes}
+    route_4 = routes_by_heater_id[heater_id]
+    route_3 = routes_by_heater_id["heater_extra_3"]
+    join_cell = route_4.path[len(route_4.path) // 2]
+    carried = replace(route_3, path=(*route_3.path[:-1], join_cell))
+    carrying_bus = replace(
+        common_bus,
+        routes=tuple(
+            carried if route.heater_id == "heater_extra_3" else route for route in common_bus.routes
+        ),
     )
-    route_4 = next(
-        route for route in result.common_bus.routes if route.heater_id == "heater_extra_4"
-    )
-    # heater_extra_3's branch joins heater_extra_4's: its tree-connection
-    # cell lies on heater_extra_4's own path.
-    assert route_3.path[-1] in set(route_4.path)
-
-    # heater_extra_4 keeps its original bus terminal (":l") instead of being
-    # swapped to ":r" -- swapping would have discarded this branch and
-    # stranded heater_extra_3 (no path left to the stripe).
-    assert result.common_bus.selected_terminals["heater_extra_4"].side_key == "l"
-    assert result.common_bus.unselected_terminals["heater_extra_4"].side_key == "r"
-
-    assert result.verification is not None
-    assert result.verification.success
-    assert "common_bus_route_disconnected" not in {
-        issue.code for issue in result.verification.issues
-    }
+    swapped = _apply_pad_side_consistency_swap(obstacle_map, carrying_bus, mismatched_plan, config)
+    assert swapped is None or heater_id not in swapped[1]
 
 
 def test_trim_keeps_the_stripe_under_the_bus_pad(electrical_benchmark_result):

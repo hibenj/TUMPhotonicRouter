@@ -40,7 +40,8 @@ PyO3 as `photonic_router._rust`), path lengths are matched, and heater metal is
 routed electrically (`translation/electrical/`). Benchmarks are Python modules
 in `benchmarks/` with a `build_schematic()` and optional
 `STABLE_ROUTING_FLAGS`; `heater_s_mod` is the 8-mode cascade, `cascade_*` the
-generated 8, 12 and 16-mode cascades, folded and diagonal.
+generated 8, 12 and 16-mode cascades, folded, diagonal and compact (the
+diagonal at the smallest column pitch that routes clean).
 
 ```
 python -m photonic_router route <benchmark> [--configuration baseline|contribution1|contribution2]

@@ -324,18 +324,24 @@ adapter before the gridded route tail), `select_terminal_port_for_side` /
 `terminal_access_keepout_bbox`, `port_contact_bbox`. Pure geometry, no grid
 search.
 
-`common_bus_router.py` (539 lines), stages 3 and 4: `route_common_bus`
+`common_bus_router.py` (about 600 lines), stages 3 and 4: `route_common_bus`
 dispatches the column-trunk phase (`column_trunks.py`), then a local-trunk
-phase, then a greedy per-terminal BFS through `bus_search.py`, selecting
-exactly one terminal per heater; `trim_common_bus_to_connections` is the
-public `CommonBusTrimmer`, limiting the realized stripe to its used span. It
-owns the phase order and terminal-selection policy, not cell-level search.
+phase, then the straight drops of every heater left over (phase 2b,
+`_route_lone_straight_drops`, 2026-10-05: a lone heater drops straight to
+the stripe from whichever terminal has a legal column before the greedy
+search can join it sideways to a neighbour's branch), then a greedy
+per-terminal BFS through `bus_search.py`, selecting exactly one terminal per
+heater; `trim_common_bus_to_connections` is the public `CommonBusTrimmer`,
+limiting the realized stripe to its used span (to the outer edge of the
+escape's band under the bus pad). It owns the phase order and
+terminal-selection policy, not cell-level search.
 
 `column_trunks.py` (442 lines) owns the straight column-trunk construction
 (Milestone 3): `route_column_trunks` groups selected bus terminals by column
 and drops one straight vertical trunk with a stub per member beside the
-heater bodies; `straight_drop_to_bus` serves a single swapped terminal
-directly. Falls back to `bus_search`'s BFS when a column is obstructed.
+heater bodies; `straight_drop_to_bus` is the single-terminal case (every
+lone heater in phase 2b, and a swapped terminal). Falls back to
+`bus_search`'s BFS when a column is obstructed.
 
 `bus_search.py` (191 lines) owns the grid-search primitives every common-bus
 phase shares: `all_terminal_cells`, `forbidden_terminal_cells`,

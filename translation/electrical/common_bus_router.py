@@ -19,7 +19,7 @@ from .bus_search import (
     terminal_access_anchor_cell,
     terminal_open_cells,
 )
-from .column_trunks import route_column_trunks
+from .column_trunks import route_column_trunks, straight_drop_to_bus
 from .pitch_grid import bbox_to_grid_cells, grid_cell_center_um
 from .types import (
     BusStripe,
@@ -64,6 +64,18 @@ def route_common_bus(
     2. Local trunks (``_route_local_trunks``, only under
        ``common_bus_routing_strategy == "local_trunk_then_greedy"``): same-row
        heater pairs get a short two-armed trunk to a shared midpoint column.
+    2b. Straight drops (``_route_lone_straight_drops``, 2026-10-05,
+       compact-diagonal plan): every heater left over -- alone in its
+       column and in its row, the cascade MZIs of a diagonal layout -- drops
+       straight to the stripe from whichever of its terminals has a legal
+       column (``column_trunks.straight_drop_to_bus``, the single-terminal
+       column trunk with the same legality rules), before the greedy search
+       can join it sideways to a neighbour's branch. Measured on the
+       16-mode diagonal at a 900 um column pitch: the neighbour's trunk lay
+       880 um away and the stripe 900 um, so the greedy search ran a branch
+       along the heater's own row whose port adapter covered the via
+       squares of the port cluster (a raw-obstacle overlap); the straight
+       drop three columns outward is legal there.
     3. The greedy group-Steiner heuristic below: the existing bus stripe is
        the root tree, and at each step the router evaluates both candidate
        terminals of every still-unconnected heater and commits the globally
@@ -137,6 +149,16 @@ def route_common_bus(
             config,
             local_target_x_by_group,
         )
+    _route_lone_straight_drops(
+        remaining,
+        selected,
+        unselected,
+        routes,
+        tree_cells,
+        blocked,
+        obstacle_map,
+        config,
+    )
 
     while remaining:
         candidates: list[_CandidatePath] = []
@@ -294,6 +316,62 @@ def trim_common_bus_to_connections(
         tree_cells=frozenset(trimmed_tree_cells),
     )
     return trimmed_obstacle_map, trimmed_common_bus
+
+
+def _route_lone_straight_drops(
+    remaining: dict[str, TerminalPairGroup],
+    selected: dict[str, ElectricalTerminal],
+    unselected: dict[str, ElectricalTerminal],
+    routes: list[TerminalBusRoute],
+    tree_cells: set[GridCell],
+    blocked: set[GridCell],
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> None:
+    """Phase 2b: every remaining heater drops straight to the stripe if it legally can.
+
+    For each heater still in ``remaining`` (deterministic order by id), both
+    terminals are tried with ``straight_drop_to_bus``; the shorter legal
+    drop wins (ties: side key, then id). A heater with no legal drop stays
+    in ``remaining`` for the greedy phase.
+    """
+
+    for heater_id in sorted(remaining):
+        group = remaining[heater_id]
+        best: tuple[tuple[int, str, str], ElectricalTerminal, tuple[GridCell, ...]] | None = None
+        for terminal in group.terminals:
+            path = straight_drop_to_bus(
+                terminal,
+                obstacle_map,
+                config,
+                tree_cells=frozenset(tree_cells),
+                blocked=blocked,
+            )
+            if path is None:
+                continue
+            key = (len(path), terminal.side_key, terminal.id)
+            if best is None or key < best[0]:
+                best = (key, terminal, path)
+        if best is None:
+            continue
+        _, terminal, path = best
+        selected[heater_id] = terminal
+        unselected[heater_id] = (
+            group.terminal_b if group.terminal_a.id == terminal.id else group.terminal_a
+        )
+        routes.append(
+            TerminalBusRoute(
+                heater_id=heater_id,
+                terminal=terminal,
+                path=path,
+                cost=max(0, len(path) - 1),
+                access_anchor_cell=terminal_access_anchor_cell(obstacle_map, terminal.id),
+                route_start_cell=path[0] if path else None,
+                used_access_anchor=route_uses_access_anchor(obstacle_map, terminal.id, path),
+            )
+        )
+        tree_cells.update(path)
+        remaining.pop(heater_id)
 
 
 def _route_local_trunks(

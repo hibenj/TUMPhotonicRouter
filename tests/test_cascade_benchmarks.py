@@ -1,5 +1,5 @@
 """Tests for the parametric cascade benchmark builder (`benchmarks/cascade.py`)
-and its six generated modules `benchmarks/cascade_{8,12,16}_{folded,diagonal}.py`.
+and its nine generated modules `benchmarks/cascade_{8,12,16}_{folded,diagonal,compact}.py`.
 
 These tests only build schematics (and, for the largest module, an unrouted
 layout); none of them route waveguides, so they follow the same
@@ -28,6 +28,9 @@ CASCADE_MODULES: tuple[tuple[str, int, str], ...] = (
     ("cascade_12_diagonal", 12, "diagonal"),
     ("cascade_16_folded", 16, "folded"),
     ("cascade_16_diagonal", 16, "diagonal"),
+    ("cascade_8_compact", 8, "compact"),
+    ("cascade_12_compact", 12, "compact"),
+    ("cascade_16_compact", 16, "compact"),
 )
 
 
@@ -128,6 +131,58 @@ def test_diagonal_differs_only_in_x(n_modes: int):
         is_input_or_lane = name.startswith(lane_prefixes) and not name.startswith("heater_extra_")
         if is_input_or_lane:
             assert folded_placement.x == pytest.approx(diagonal_placement.x), name
+
+
+@pytest.mark.parametrize("n_modes", (8, 12, 16))
+def test_compact_differs_from_diagonal_only_in_the_cascade_column_pitch(n_modes: int):
+    """Compact-diagonal plan (2026-10-05): "compact" is the diagonal at a
+    smaller column pitch. Same instances, nets and y; column 0 and column 1
+    (x 1,340 and 2,200) and everything before them unchanged; cascade
+    column c >= 2 and everything after the cascade (the tomography and the
+    output couplers) shifted left by (c - 1) times the pitch difference,
+    the tomography by (last column - 1) times it.
+    """
+
+    diagonal = cascade.build_cascade_schematic(n_modes, "diagonal")
+    compact = cascade.build_cascade_schematic(n_modes, "compact")
+    pitch_difference = cascade.CASCADE_COLUMN_PITCH_UM - cascade.COMPACT_COLUMN_PITCH_UM
+    assert pitch_difference >= 0.0
+
+    assert set(diagonal.netlist.instances) == set(compact.netlist.instances)
+    assert _net_pairs(diagonal) == _net_pairs(compact)
+
+    cascade_count = n_modes - 3
+    last_column = cascade_count - 1
+    for name in diagonal.netlist.instances:
+        d = diagonal.placements[name]
+        c = compact.placements[name]
+        assert d.y == pytest.approx(c.y), name
+        assert d.rotation == pytest.approx(c.rotation), name
+        assert d.mirror == c.mirror, name
+        if name.startswith("heater_extra_"):
+            index = int(name.removeprefix("heater_extra_"))
+            column = index if index < cascade_count else last_column
+        elif name.startswith("mmi_extra_"):
+            index = int(name.removeprefix("mmi_extra_"))
+            column = index // 2 if index < 2 * cascade_count else last_column
+        elif name.startswith("gc_out_"):
+            column = last_column
+        else:
+            column = 0
+        expected_shift = max(0, column - 1) * pitch_difference
+        assert d.x - c.x == pytest.approx(expected_shift), name
+
+
+def test_explicit_column_pitch_overrides_the_layout_default():
+    wide = cascade.build_cascade_schematic(8, "diagonal", column_pitch_um=1200.0)
+    default = cascade.build_cascade_schematic(8, "diagonal")
+    # MZI 2 sits in column 2, one pitch beyond column 1
+    assert wide.placements["mmi_extra_4"].x - default.placements["mmi_extra_4"].x == pytest.approx(
+        200.0
+    )
+    assert wide.placements["mmi_extra_2"].x == pytest.approx(default.placements["mmi_extra_2"].x)
+    with pytest.raises(ValueError):
+        cascade.build_cascade_schematic(8, "diagonal", column_pitch_um=0.0)
 
 
 def test_layout_from_schematic_builds():
