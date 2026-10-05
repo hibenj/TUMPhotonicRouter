@@ -126,6 +126,25 @@ BASELINE_FLOAT_TOLERANCE = 1e-6
 # zero-tolerance guardrail (verification_success/error/warning counts,
 # failed_detailed_route_count, the two redundant-overlap checks) or
 # verification success was affected.
+# 2026-10-05 (pad-choice plan): the individual pads are assigned to the
+# wires in corridor-lane order by the minimum sum of horizontal runs
+# (pad_slots.assign_pad_slots), so a multi-row bundle gets its pads on both
+# sides of its lane band instead of one block on its exit side, and the
+# channel is sized from the resulting track count plus the lowest track's
+# reservation radius over the layout. On every suite case
+# pad_channel_height_um drops from 140 to 90 um (heater_single: 50 to 60,
+# the radius headroom), centerline_length_um and wire_metal_area_um2 drop,
+# every wire channel-routes, verification stays clean. pad_wire_detour_total_um
+# rises on every case (heater_s_mod 0 -> 860, heater_lanes_20 40 -> 940,
+# heater_lanes_ripup 60 -> 620, heater_single 0 -> 20) by the metric's
+# definition, not by longer wires: detour_um is the wire's length minus the
+# Manhattan distance from its port to its pad, and a pad inward of the
+# wire's lane counts the lane excursion twice although the wire is no longer
+# than with the same pad outward of the lane (the lane is forced by the row;
+# the pad choice plan's Surprises). pad_wire_detour_total_um_max is re-pinned
+# at the measured value rounded up to the next 100 um on the three cases it
+# was violated on; pad_channel_height_um_max on heater_single at 70 (measured
+# 60 plus floating-point noise). No zero-tolerance guardrail moved.
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -139,7 +158,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "same_net_overlap_pair_count_max": 49,
     "same_net_redundant_overlap_pair_count_max": 0,
     "pad_wire_max_bend_count_max": 3,
-    "pad_wire_detour_total_um_max": 60.0,
+    "pad_wire_detour_total_um_max": 700.0,
     "bus_bend_count_max": 10,
     "wire_metal_area_um2_max": 2_047_000.0,
 }
@@ -152,7 +171,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "failed_detailed_route_count_max": 0,
         "detailed_route_count_min": 1,
         "pad_assignment_count_min": 2,
-        "pad_channel_height_um_max": 60.0,
+        "pad_channel_height_um_max": 70.0,
         "metal_redundant_area_overcount_um2_max": 1e-6,
         "same_net_duplicate_rect_count_max": 0,
         "same_net_overlap_pair_count_max": 10,
@@ -175,7 +194,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "same_net_overlap_pair_count_max": 93,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
-        "pad_wire_detour_total_um_max": 40.0,
+        "pad_wire_detour_total_um_max": 1_000.0,
         "bus_bend_count_max": 25,
         "wire_metal_area_um2_max": 3_331_000.0,
     },
@@ -193,7 +212,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "same_net_overlap_pair_count_max": 96,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
-        "pad_wire_detour_total_um_max": 20.0,
+        "pad_wire_detour_total_um_max": 900.0,
         "bus_bend_count_max": 25,
         "wire_metal_area_um2_max": 3_444_000.0,
     },

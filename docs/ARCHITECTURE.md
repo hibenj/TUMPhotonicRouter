@@ -350,13 +350,26 @@ ordered by row (row 1 the terminal nearest the pad row), and records
 `terminal_order` and `cell_usage`. Feeds `pad_slots`' block order and the
 channel router's row order.
 
-`pad_slots.py` (764 lines), stage 6: `plan_pad_slots` lays out the one-sided
-pad-pitch grid (one `PadSlot` per index) and assigns every selected bus or
-individual net to a slot (`PadAssignment`), one contiguous block per escape
-bundle anchored outward of the bundle's row-1 corridor lane, and sizes the
-channel between the layout and the pad row from the channel router's own
-track count (`_pad_channel_track_count` runs `river_routing.assign_tracks`
-on the same lanes and pad columns the router will build).
+`pad_slots.py` (about 600 lines), stage 6: `plan_pad_slots` lays out the
+one-sided pad-pitch grid (one `PadSlot` per index) and assigns every selected
+bus or individual net to a slot (`PadAssignment`). The individual pads are
+chosen to minimize the routing (pad-choice plan, 2026-10-05): every terminal's
+corridor lane is computed as the channel router will build it
+(`_lane_by_terminal_id`, through `river_routing.bundle_opening_edge` and
+`corridor_lane_column`), the pads are assigned to the wires in lane order,
+one per slot, minimizing the sum of the horizontal runs between lane and pad
+column (`assign_pad_slots`, an exact dynamic programme; the lane order is
+forced, since out-of-order pads always make runs cross on the one metal
+layer), and the pad row's origin is chosen by the same measure over one pitch
+of offsets (`assign_pad_slots_with_origin`). A multi-row bundle therefore
+gets its pads on both sides of its lane band. The channel between the layout
+and the pad row is sized from the channel router's own track count on those
+lanes and pad columns (`_pad_channel_track_count` runs
+`river_routing.assign_tracks`), plus the lowest track's reservation radius
+over the layout's top row (`_required_pad_channel_offset_um`). The bus pad
+keeps the configured end of the row with its escape gap
+(`common_bus_pad_slot_gap`); a forced `pad_origin_x_um` keeps the owner's
+sequential placement.
 
 `pad_side_reconciliation.py` (243 lines), stage 7: `reconcile_pad_sides` /
 `_apply_pad_side_consistency_swap` swap a lone heater's bus and individual

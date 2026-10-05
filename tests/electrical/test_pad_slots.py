@@ -6,6 +6,8 @@ slots, both forced and automatic pad-row placement.
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 
 from tests.fixtures.synthetic_layouts import (
@@ -326,11 +328,19 @@ def test_auto_pad_channel_height_uses_the_channel_routers_track_count(monkeypatc
     assert result.detailed_bundle_routes.bundle_fallback_reasons == {}
     assert track_counts, "expected the channel router to assign tracks"
 
+    from translation.electrical.wire_geometry import wire_reservation_radius_cells
+
     individual_route_count = len(result.detailed_bundle_routes.routes)
     router_track_count = track_counts[-1]
     track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
-    channel_height_um = router_track_count * track_pitch_um + config.wire_width_um
-    global_channel_height_um = individual_route_count * track_pitch_um + config.wire_width_um
+    # one track pitch per track, plus the lowest track's reservation radius
+    # and one cell of rounding above the layout's top row
+    # (``pad_slots._required_pad_channel_offset_um``)
+    headroom_um = (
+        wire_reservation_radius_cells(result.obstacle_map, config) + 1
+    ) * result.obstacle_map.grid.grid_size_um
+    channel_height_um = router_track_count * track_pitch_um + headroom_um
+    global_channel_height_um = individual_route_count * track_pitch_um + headroom_um
 
     assert result.verification.metrics["pad_channel_height_um"] == pytest.approx(channel_height_um)
     assert channel_height_um < global_channel_height_um
@@ -341,54 +351,65 @@ def test_auto_pad_channel_height_uses_the_channel_routers_track_count(monkeypatc
     assert result.verification.metrics["centerline_length_um"] < 30_000.0
 
 
-def test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps():
+def test_auto_pad_assignment_is_monotone_in_the_lanes_and_centered_on_each_bundle():
+    """Pad-choice plan (2026-10-05): every individual pad follows its wire's
+    corridor lane in order (pads strictly increasing with lanes, over all
+    bundles), and a multi-row bundle gets its pads on both sides of its lane
+    band -- half on each side for an even row count -- instead of one block
+    on its exit side.
+    """
+
+    import translation.electrical.river_routing as rr
+
+    captured: list = []
+    original = rr.assign_tracks
+
+    def spy(wires, pitch_cells):
+        captured.append(list(wires))
+        return original(wires, pitch_cells)
+
     schematic = build_multi_heater_schematic()
     component = layout_from_schematic(schematic)
-    result = route_electrical_heaters(
-        component,
-        schematic,
-        ElectricalRoutingConfig(
-            pad_side="top",
-            pad_pitch_um=150.0,
-            pad_origin_x_um=None,
-            routing_grid_pitch_um=20.0,
-            obstacle_clearance_um=10.0,
-            terminal_open_radius_um=20.0,
-            wire_width_um=20.0,
-            individual_route_spacing_um=20.0,
-        ),
-    )
-
-    individual_assignments = [
-        assignment for assignment in result.pad_plan.assignments if assignment.kind == "individual"
-    ]
-    assignments_by_bundle = {}
-    for assignment in individual_assignments:
-        assignments_by_bundle.setdefault(assignment.topology_bundle_id, []).append(assignment)
-
-    for bundle in result.individual_topology.bundles:
-        bundle_assignments = assignments_by_bundle[bundle.bundle_id]
-        slot_indices = [assignment.slot.index for assignment in bundle_assignments]
-        assert slot_indices == list(
-            range(slot_indices[0], slot_indices[0] + bundle.required_tracks)
+    rr.assign_tracks = spy
+    try:
+        result = route_electrical_heaters(
+            component,
+            schematic,
+            ElectricalRoutingConfig(
+                pad_side="top",
+                pad_pitch_um=150.0,
+                pad_origin_x_um=None,
+                routing_grid_pitch_um=20.0,
+                obstacle_clearance_um=10.0,
+                terminal_open_radius_um=20.0,
+                wire_width_um=20.0,
+                individual_route_spacing_um=20.0,
+            ),
         )
-        assert [assignment.topology_rank for assignment in bundle_assignments] == list(
-            range(bundle.required_tracks)
-        )
+    finally:
+        rr.assign_tracks = original
 
-    bundle_starts = [
-        assignments_by_bundle[bundle.bundle_id][0].slot.index
-        for bundle in result.individual_topology.bundles
-    ]
-    bundle_ends = [
-        assignments_by_bundle[bundle.bundle_id][-1].slot.index
-        for bundle in result.individual_topology.bundles
-    ]
-    assert bundle_starts == sorted(bundle_starts)
-    assert any(
-        next_start > previous_end + 1
-        for previous_end, next_start in zip(bundle_ends, bundle_starts[1:])
-    )
+    assert result.verification is not None
+    assert result.verification.success, result.verification.issues
+    assert result.detailed_bundle_routes.bundle_fallback_reasons == {}
+    wires = captured[-1]
+    by_lane = sorted(wires, key=lambda wire: wire.c)
+    pads = [wire.p for wire in by_lane]
+    assert pads == sorted(pads) and len(set(pads)) == len(pads)
+
+    bundle_by_terminal_id = {
+        assignment.terminal.id: assignment.topology_bundle_id
+        for assignment in result.pad_plan.assignments
+        if assignment.kind == "individual"
+    }
+    wires_by_bundle: dict = {}
+    for wire in wires:
+        wires_by_bundle.setdefault(bundle_by_terminal_id[wire.wire_id], []).append(wire)
+    multi_row = [group for group in wires_by_bundle.values() if len(group) >= 4]
+    assert multi_row
+    for group in multi_row:
+        inward = sum(1 for wire in group if (wire.p - wire.c) * (group[0].p - group[0].c) < 0)
+        assert 0 < inward < len(group), [(wire.wire_id, wire.c, wire.p) for wire in group]
 
 
 # Also marked e2e (routes a full 16-mode cascade benchmark end to end,
@@ -396,52 +417,39 @@ def test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps():
 # (scripts/test_baseline.sh).
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_pad_intervals_start_outward_of_the_first_corridor_lane(electrical_benchmark_result):
-    """Rule A (eight-row-bundles plan): every escape bundle's row i pad
-    column satisfies the channel router's own corridor-lane assignment
-    (``exit_dx * (p_i - c_i) >= 0``, ``river_routing.assign_corridor_lanes``)
-    at or beyond its corridor lane c_i -- except possibly row 1, which the
-    interval push rule can still shove inward by up to one pad pitch
-    (``pad_slots._assign_interval_indices``); the channel router's global
-    track assignment (not a per-bundle nesting rule any more) absorbs that
-    case, so it is excluded here. ``cascade_16_diagonal`` exercises 13
-    escape bundles, none of which needs that exception at any row beyond 1.
+def test_every_cascade_wire_channel_routes_with_short_runs(electrical_benchmark_result):
+    """Pad-choice plan (2026-10-05): with the pads assigned in lane order by
+    the minimum run sum, no wire of ``cascade_16_diagonal`` (seventeen
+    escape bundles, up to eight rows) falls back, every horizontal run is at
+    most four pad pitches (measured 390 um; the one-sided blocks had 800 um),
+    and the channel holds four tracks (measured; the blocks needed ten).
     """
 
-    import translation.electrical.bundle_detail_router as bdr
-    from translation.electrical.river_routing import assign_corridor_lanes
+    import translation.electrical.river_routing as rr
 
-    captures = []
-    orig_route_bundles_as_channels = bdr.route_bundles_as_channels
+    captured: list = []
+    original = rr.assign_tracks
 
-    def spy(bundle_entries, obstacle_map, config, *rest):
-        captures.append((bundle_entries, obstacle_map, config))
-        return orig_route_bundles_as_channels(bundle_entries, obstacle_map, config, *rest)
+    def spy(wires, pitch_cells):
+        placed, unplaced = original(wires, pitch_cells)
+        captured.append((list(wires), placed, unplaced))
+        return placed, unplaced
 
-    bdr.route_bundles_as_channels = spy
+    rr.assign_tracks = spy
     try:
-        electrical_benchmark_result("cascade_16_diagonal")
+        result = electrical_benchmark_result("cascade_16_diagonal")
     finally:
-        bdr.route_bundles_as_channels = orig_route_bundles_as_channels
+        rr.assign_tracks = original
 
-    assert captures, "expected at least one escape bundle to reach the channel router"
-    checked_rows = 0
-    for bundle_entries, obstacle_map, config in captures:
-        for exit_dx, members in bundle_entries:
-            if not members:
-                continue
-            wires, _reason = assign_corridor_lanes(members, exit_dx, obstacle_map, config)
-            if wires is None:
-                continue
-            for row_index, wire in enumerate(wires, 1):
-                if row_index == 1:
-                    continue
-                checked_rows += 1
-                assert exit_dx * (wire.p - wire.c) >= 0, (
-                    f"{wire.wire_id} row {row_index} pad column {wire.p} is inward of "
-                    f"its corridor lane {wire.c}"
-                )
-    assert checked_rows > 0
+    assert result.verification is not None
+    assert result.verification.success, result.verification.issues
+    assert result.detailed_bundle_routes.bundle_fallback_reasons == {}
+    wires, placed, unplaced = captured[-1]
+    assert unplaced == []
+    grid_size = result.obstacle_map.grid.grid_size_um
+    config = ElectricalRoutingConfig()
+    assert max(abs(wire.c - wire.p) for wire in wires) * grid_size <= 4 * config.pad_pitch_um
+    assert max(placed.values()) == 4
 
 
 def test_bus_pad_keeps_escape_clear_of_individual_pads(electrical_benchmark_result):
@@ -466,7 +474,10 @@ def test_bus_pad_keeps_escape_clear_of_individual_pads(electrical_benchmark_resu
     bus_assignment = pad_plan.common_bus_assignment
     assert bus_assignment is not None
 
-    assert bus_assignment.slot.index - max(individual_indices) == common_bus_pad_slot_gap(config)
+    # at least the escape gap: the bus pad also keeps the layout's own edge
+    # margin (``_common_bus_pad_slot_index``), which wins once the pad row is
+    # compact (pad-choice plan, 2026-10-05)
+    assert bus_assignment.slot.index - max(individual_indices) >= common_bus_pad_slot_gap(config)
 
     escape_rects = common_bus_escape_rects(
         result.common_bus, result.common_bus_escape, result.obstacle_map, config
@@ -484,3 +495,93 @@ def test_bus_pad_keeps_escape_clear_of_individual_pads(electrical_benchmark_resu
             f"{assignment.terminal.id if assignment.terminal else assignment.net_id}'s pad "
             "overlaps the bus escape's realized band"
         )
+
+
+# --- assign_pad_slots: pure unit tests on synthetic lane sets (pad-choice
+# plan, 2026-10-05). Lanes and slots are bare grid-cell columns; no obstacle
+# map, no benchmark.
+
+
+def test_assign_pad_slots_centers_an_eight_row_bundle_on_its_lane_band():
+    """The measured cascade_16_folded bundle: eight lanes three cells apart
+    (a 30 um track pitch on a 10 um grid) against a thirteen-cell pad pitch.
+    The minimum run sum puts four pads on each side of the lane band and no
+    run longer than 400 um (40 cells); the old one-sided block had 810 um.
+    """
+
+    from translation.electrical.pad_slots import assign_pad_slots
+
+    lanes = [652 + 3 * i for i in range(8)]
+    slots = [500 + 13 * k for k in range(40)]
+
+    indices = assign_pad_slots(lanes, slots)
+
+    assert indices == sorted(indices) and len(set(indices)) == 8
+    runs = [slots[k] - lane for lane, k in zip(lanes, indices, strict=True)]
+    assert sum(1 for run in runs if run < 0) == 4
+    assert sum(1 for run in runs if run > 0) == 4
+    assert max(abs(run) for run in runs) <= 40
+    # the measured optimum on cascade_16_folded's bundle: 1,600 um of runs
+    assert sum(abs(run) for run in runs) == 160
+
+
+def test_assign_pad_slots_keeps_two_facing_bundles_in_lane_order():
+    """A right-exiting bundle (lanes 100..106) and a left-exiting one
+    (lanes 200..206) share the slots between them: all pads strictly
+    increasing with the lanes, none of the second bundle's pads left of any
+    of the first's.
+    """
+
+    from translation.electrical.pad_slots import assign_pad_slots
+
+    lanes = [100, 103, 106, 200, 203, 206]
+    slots = [0 + 13 * k for k in range(30)]
+
+    indices = assign_pad_slots(lanes, slots)
+
+    assert indices == sorted(indices) and len(set(indices)) == 6
+    assert slots[indices[2]] < slots[indices[3]]
+    assert all(abs(slots[k] - lane) <= 26 for lane, k in zip(lanes, indices, strict=True))
+
+
+def test_assign_pad_slots_honours_the_empty_slot_gap_and_refuses_too_few_slots():
+    from translation.electrical.pad_slots import assign_pad_slots
+
+    lanes = [10, 11, 12]
+    slots = [13 * k for k in range(10)]
+
+    indices = assign_pad_slots(lanes, slots, gap_slots=1)
+
+    assert all(b - a >= 2 for a, b in pairwise(indices))
+    with pytest.raises(ValueError):
+        assign_pad_slots(lanes, slots[:4], gap_slots=1)
+
+
+def test_assign_pad_slots_with_origin_finds_the_offset_that_lands_pads_on_lanes():
+    """Lanes exactly one pad pitch apart: some origin offset puts every pad
+    on its lane (run sum 0); the origin search finds it, and the first
+    assigned index is the configured left margin.
+    """
+
+    from translation.electrical.pad_slots import assign_pad_slots_with_origin
+
+    schematic = build_single_heater_schematic()
+    component = layout_from_schematic(schematic)
+    config = ElectricalRoutingConfig(pad_side="top", pad_pitch_um=130.0, pad_extra_slots_left=2)
+    result = route_electrical_heaters(component, schematic, config)
+    obstacle_map = result.obstacle_map
+    grid_size = obstacle_map.grid.grid_size_um
+    pitch_cells = round(130.0 / grid_size)
+
+    lanes = [7 + pitch_cells * i for i in range(5)]
+    origin_x_um, indices = assign_pad_slots_with_origin(lanes, obstacle_map, config)
+
+    assert indices == [2, 3, 4, 5, 6]
+    # the pad column as the channel router reads it: the slot's access cells'
+    # center column (the same chain ``assign_pad_slots_with_origin`` uses)
+    from translation.electrical.pad_slots import _make_slot, pad_access_cells
+    from translation.electrical.river_routing import pad_column_cell
+
+    for lane, index in zip(lanes, indices, strict=True):
+        slot = _make_slot(index, origin_x_um, obstacle_map, config, config.pad_offset_um)
+        assert pad_column_cell(pad_access_cells(slot, obstacle_map, config), config)[0] == lane

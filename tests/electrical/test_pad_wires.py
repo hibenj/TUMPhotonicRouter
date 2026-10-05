@@ -327,12 +327,20 @@ def test_cascade_16_folded_routes_its_lone_heater_and_neighbour_bundle_clean(
 # (scripts/test_baseline.sh).
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_heater_s_mod_every_wire_river_routes_with_zero_detour(electrical_benchmark_result):
+def test_heater_s_mod_every_wire_channel_routes_on_two_tracks(electrical_benchmark_result):
     """``heater_s_mod``'s bundles nest cleanly under the joint track
     assignment (its old per-bundle "inward"/"outward" mirrored nesting was a
-    special case of this, not a separate rule): every wire is "river" and
-    every wire's detour is 0 (each one is a monotone L or a single-bend-pair
-    Z through its own shared track, never a full-grid search).
+    special case of this, not a separate rule): every wire is "river" (each
+    one a monotone L or a single-bend-pair Z through its own shared track,
+    never a full-grid search), and with the pads chosen in lane order
+    (pad-choice plan, 2026-10-05) the whole case needs two tracks: a channel
+    of 90 um (two 30 um track pitches plus the lowest track's three-cell
+    headroom over the layout), measured, where the one-sided pad blocks
+    needed four tracks and 140 um. The old
+    zero-detour pin is gone with the blocks: ``detour_um`` is measured
+    against the Manhattan distance from port to pad, and a pad inward of
+    the wire's lane counts as a detour by that definition although the wire
+    is shorter than any one-sided alternative (plan's Surprises).
     """
 
     result = electrical_benchmark_result("heater_s_mod")
@@ -340,7 +348,6 @@ def test_heater_s_mod_every_wire_river_routes_with_zero_detour(electrical_benchm
     assert result.verification is not None
     assert result.verification.success, result.verification.issues
     detailed = result.detailed_bundle_routes
-    assert detailed.failed_routes == ()
     assert detailed.bundle_fallback_reasons == {}
     assert all(route.construction == "river" for route in detailed.routes)
-    assert result.verification.metrics["pad_wire_detour_total_um"] == 0.0
+    assert result.verification.metrics["pad_channel_height_um"] == pytest.approx(90.0)
