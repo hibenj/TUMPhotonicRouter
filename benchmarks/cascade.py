@@ -10,8 +10,10 @@ cascade) to any even mode count >= 4, in two layouts:
   1000 um column pitch.
 - "compact": the diagonal at the smallest column pitch that routes clean
   (`COMPACT_COLUMN_PITCH_UM`, measured by the sweep recorded in
-  `.agent/execplans/2026-10-05-compact-diagonal-cascades.md`); every
-  layout takes an explicit `column_pitch_um` too.
+  `.agent/execplans/2026-10-05-compact-diagonal-cascades.md`).
+- "folded_compact": the fold at the smallest column pitch that routes
+  clean (`FOLDED_COMPACT_COLUMN_PITCH_UM`, same plan, Milestone 3).
+  Every layout takes an explicit `column_pitch_um` too.
 
 Topology: state preparation (`N/2` lanes, each MMI, phase shifter, MMI,
 phase shifter), a chain of `N-3` cascade MZIs each on the next mode pair
@@ -33,7 +35,7 @@ from typing import Literal
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
-Layout = Literal["folded", "diagonal", "compact"]
+Layout = Literal["folded", "diagonal", "compact", "folded_compact"]
 
 # --- geometry constants (all um), read off `heater_s_mod` -----------------
 GC_PITCH_UM = 127.0
@@ -59,6 +61,13 @@ CASCADE_COLUMN_PITCH_UM = 1000.0
 # path-length matching (16 modes: 29.0 -> 31.8 mm of inserted meander, 12
 # modes: 15.6 -> 16.9 mm) and 610 sits on the cliff.
 COMPACT_COLUMN_PITCH_UM = 620.0
+# The fold's compact column pitch (compact-diagonal ExecPlan, Milestone 3,
+# 2026-10-05): the folded 8-, 12- and 16-mode cascades route clean down to
+# 750 / 610 / 660 um (8 modes to 700 once the verifier's spacing check got
+# its tolerance); 16 modes fail at 650 um because the path-length matching
+# can no longer place its meanders, 12 modes at 600 um at the optical spot
+# of the diagonal. 700 um keeps 40 um over the meander limit.
+FOLDED_COMPACT_COLUMN_PITCH_UM = 700.0
 CASCADE_HEATER_DX_UM = 140.0
 CASCADE_SECOND_MMI_DX_UM = 560.0
 CASCADE_CENTER_Y_STEP_UM = MMI_LOWER_INPUT_OFFSET_Y_UM - MMI_UPPER_INPUT_OFFSET_Y_UM  # -1.25
@@ -150,7 +159,7 @@ def internal_delays_um(n_modes: int) -> dict[str, float | str]:
 
 def _column_of(mzi_index: int, layout: Layout) -> int:
     """Cascade column holding MZI `mzi_index`."""
-    if layout == "folded":
+    if layout in ("folded", "folded_compact"):
         return 0 if mzi_index == 0 else (mzi_index + 1) // 2
     return mzi_index
 
@@ -165,8 +174,12 @@ def _column_x(column: int, column_pitch_um: float) -> float:
 
 def default_column_pitch_um(layout: Layout) -> float:
     """The layout's column pitch: the fold's 1000 um for folded and diagonal,
-    the sweep's value for compact."""
-    return COMPACT_COLUMN_PITCH_UM if layout == "compact" else CASCADE_COLUMN_PITCH_UM
+    the sweeps' values for compact and folded_compact."""
+    if layout == "compact":
+        return COMPACT_COLUMN_PITCH_UM
+    if layout == "folded_compact":
+        return FOLDED_COMPACT_COLUMN_PITCH_UM
+    return CASCADE_COLUMN_PITCH_UM
 
 
 def build_cascade_schematic(
@@ -179,14 +192,17 @@ def build_cascade_schematic(
 
     `n_modes` must be even and >= 4. `layout` is "folded" (the handcrafted
     fold, the twin of `heater_s_mod` for `n_modes == 8`), "diagonal" (one
-    cascade MZI per column, the fold's column pitch) or "compact" (the
-    diagonal at `COMPACT_COLUMN_PITCH_UM`). `column_pitch_um` overrides the
+    cascade MZI per column, the fold's column pitch), "compact" (the
+    diagonal at `COMPACT_COLUMN_PITCH_UM`) or "folded_compact" (the fold at
+    `FOLDED_COMPACT_COLUMN_PITCH_UM`). `column_pitch_um` overrides the
     layout's pitch (the distance between consecutive cascade columns from
     column 1 on; column 0 and column 1 stay where they are).
     """
     _validate_n_modes(n_modes)
-    if layout not in ("folded", "diagonal", "compact"):
-        raise ValueError(f"layout must be 'folded', 'diagonal' or 'compact'. Got {layout!r}.")
+    if layout not in ("folded", "diagonal", "compact", "folded_compact"):
+        raise ValueError(
+            f"layout must be 'folded', 'diagonal', 'compact' or 'folded_compact'. Got {layout!r}."
+        )
     if column_pitch_um is None:
         column_pitch_um = default_column_pitch_um(layout)
     if column_pitch_um <= 0:

@@ -1,5 +1,6 @@
 """Tests for the parametric cascade benchmark builder (`benchmarks/cascade.py`)
-and its nine generated modules `benchmarks/cascade_{8,12,16}_{folded,diagonal,compact}.py`.
+and its twelve generated modules
+`benchmarks/cascade_{8,12,16}_{folded,diagonal,compact,folded_compact}.py`.
 
 These tests only build schematics (and, for the largest module, an unrouted
 layout); none of them route waveguides, so they follow the same
@@ -31,6 +32,9 @@ CASCADE_MODULES: tuple[tuple[str, int, str], ...] = (
     ("cascade_8_compact", 8, "compact"),
     ("cascade_12_compact", 12, "compact"),
     ("cascade_16_compact", 16, "compact"),
+    ("cascade_8_folded_compact", 8, "folded_compact"),
+    ("cascade_12_folded_compact", 12, "folded_compact"),
+    ("cascade_16_folded_compact", 16, "folded_compact"),
 )
 
 
@@ -134,25 +138,35 @@ def test_diagonal_differs_only_in_x(n_modes: int):
 
 
 @pytest.mark.parametrize("n_modes", (8, 12, 16))
-def test_compact_differs_from_diagonal_only_in_the_cascade_column_pitch(n_modes: int):
-    """Compact-diagonal plan (2026-10-05): "compact" is the diagonal at a
-    smaller column pitch. Same instances, nets and y; column 0 and column 1
-    (x 1,340 and 2,200) and everything before them unchanged; cascade
-    column c >= 2 and everything after the cascade (the tomography and the
-    output couplers) shifted left by (c - 1) times the pitch difference,
-    the tomography by (last column - 1) times it.
+@pytest.mark.parametrize(
+    "wide_layout,compact_layout,compact_pitch_um",
+    (
+        ("diagonal", "compact", cascade.COMPACT_COLUMN_PITCH_UM),
+        ("folded", "folded_compact", cascade.FOLDED_COMPACT_COLUMN_PITCH_UM),
+    ),
+)
+def test_compact_differs_from_its_wide_layout_only_in_the_cascade_column_pitch(
+    n_modes: int, wide_layout: str, compact_layout: str, compact_pitch_um: float
+):
+    """Compact-diagonal plan (2026-10-05): "compact" is the diagonal and
+    "folded_compact" the fold at a smaller column pitch. Same instances,
+    nets and y; column 0 and column 1 (x 1,340 and 2,200) and everything
+    before them unchanged; cascade column c >= 2 and everything after the
+    cascade (the tomography and the output couplers) shifted left by
+    (c - 1) times the pitch difference, the tomography by (last column - 1)
+    times it.
     """
 
-    diagonal = cascade.build_cascade_schematic(n_modes, "diagonal")
-    compact = cascade.build_cascade_schematic(n_modes, "compact")
-    pitch_difference = cascade.CASCADE_COLUMN_PITCH_UM - cascade.COMPACT_COLUMN_PITCH_UM
+    diagonal = cascade.build_cascade_schematic(n_modes, wide_layout)
+    compact = cascade.build_cascade_schematic(n_modes, compact_layout)
+    pitch_difference = cascade.CASCADE_COLUMN_PITCH_UM - compact_pitch_um
     assert pitch_difference >= 0.0
 
     assert set(diagonal.netlist.instances) == set(compact.netlist.instances)
     assert _net_pairs(diagonal) == _net_pairs(compact)
 
     cascade_count = n_modes - 3
-    last_column = cascade_count - 1
+    last_column = cascade._column_of(cascade_count - 1, wide_layout)
     for name in diagonal.netlist.instances:
         d = diagonal.placements[name]
         c = compact.placements[name]
@@ -161,10 +175,17 @@ def test_compact_differs_from_diagonal_only_in_the_cascade_column_pitch(n_modes:
         assert d.mirror == c.mirror, name
         if name.startswith("heater_extra_"):
             index = int(name.removeprefix("heater_extra_"))
-            column = index if index < cascade_count else last_column
+            if index < cascade_count:
+                column = cascade._column_of(index, wide_layout)
+            else:
+                column = last_column
         elif name.startswith("mmi_extra_"):
             index = int(name.removeprefix("mmi_extra_"))
-            column = index // 2 if index < 2 * cascade_count else last_column
+            column = (
+                cascade._column_of(index // 2, wide_layout)
+                if index < 2 * cascade_count
+                else last_column
+            )
         elif name.startswith("gc_out_"):
             column = last_column
         else:

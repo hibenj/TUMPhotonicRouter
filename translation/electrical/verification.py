@@ -26,6 +26,10 @@ from .types import (
     TerminalBusRoute,
 )
 
+#: Floating-point slack for the cross-net spacing check, in um (see
+#: ``_verify_cross_net_spacing``).
+SPACING_TOLERANCE_UM = 1e-6
+
 
 def verify_electrical_routing(
     obstacle_map: ElectricalObstacleMap,
@@ -372,7 +376,13 @@ def _verify_cross_net_spacing(
             min_spacing = min_rect_spacing(left.rects, right.rects)
             if min_spacing is None or min_spacing <= 0.0:
                 continue
-            if min_spacing >= required_clearance:
+            # Metal exactly at the required clearance is legal; the rect
+            # coordinates come from grid-cell arithmetic in floating point,
+            # so a spacing of 9.999999999999545 um against a 10 um
+            # clearance is 10 um (measured on the folded cascades at a
+            # 740 um column pitch, 2026-10-05). The tolerance is far below
+            # the 1 nm database unit.
+            if min_spacing >= required_clearance - SPACING_TOLERANCE_UM:
                 continue
             issues.append(
                 ElectricalVerificationIssue(

@@ -361,3 +361,37 @@ def test_common_bus_verification_reports_a_branch_that_reaches_nothing():
     assert [issue.code for issue in issues] == ["common_bus_route_disconnected"]
     assert issues[0].details["terminal_id"] == "h2:l"
     assert issues[0].details["route_end_cell"] == (12, 3)
+
+
+def test_cross_net_spacing_accepts_metal_exactly_at_the_required_clearance():
+    """Two nets whose rectangles sit exactly ``obstacle_clearance_um`` apart
+    are legal, also when the gap carries floating-point noise (measured
+    9.999999999999545 um against 10 um on the folded cascades at a 740 um
+    column pitch, 2026-10-05); a gap one nanometre too small is an issue.
+    """
+
+    from translation.electrical.net_geometry import NetGeometry
+    from translation.electrical.verification import _verify_cross_net_spacing
+
+    config = ElectricalRoutingConfig(obstacle_clearance_um=10.0)
+
+    def net(net_id: str, rect: tuple[float, float, float, float]) -> NetGeometry:
+        return NetGeometry(
+            net_id=net_id,
+            rects=(rect,),
+            rect_sources=("route_tail",),
+            allowed_cells=frozenset(),
+        )
+
+    left = net("individual:a", (0.0, 0.0, 20.0, 20.0))
+    exact = net("individual:b", (30.0, 0.0, 50.0, 20.0))
+    noisy = net("individual:c", (29.999999999999545, 0.0, 50.0, 20.0))
+    too_close = net("individual:d", (29.999, 0.0, 50.0, 20.0))
+
+    issues: list = []
+    _verify_cross_net_spacing(issues, [left, exact], config)
+    _verify_cross_net_spacing(issues, [left, noisy], config)
+    assert issues == []
+
+    _verify_cross_net_spacing(issues, [left, too_close], config)
+    assert [issue.code for issue in issues] == ["cross_net_metal_spacing"]
