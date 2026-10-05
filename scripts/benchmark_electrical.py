@@ -158,6 +158,16 @@ BASELINE_FLOAT_TOLERANCE = 1e-6
 # redundant overlap. wire_metal_area_um2_max re-pinned at the measured value plus ~2%
 # on every case (heater_single was violated, the other three within 10% of
 # their old limits, the standing convention).
+# 2026-10-05 (owner decision, detour redefined): pad_wire detour_um is now
+# a wire's length minus the monotone path through its own corridor lane
+# (stub from the port to the lane, run from the lane to the pad column,
+# vertical from the port to the pad; metrics._lane_path_length), no longer
+# length minus the endpoint Manhattan distance, which counted an inward
+# pad's forced lane excursion as a detour. Every channel-routed wire reads
+# 0; only a fallback wire's extra wiggle counts, and no suite case has a
+# fallback wire. pad_wire_detour_total_um_max re-pinned at the measured 0
+# on every case (the tightest pin the metric allows); pad_wires entries
+# carry the new lane_path_um field in the baseline.
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -171,7 +181,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "same_net_overlap_pair_count_max": 49,
     "same_net_redundant_overlap_pair_count_max": 0,
     "pad_wire_max_bend_count_max": 3,
-    "pad_wire_detour_total_um_max": 700.0,
+    "pad_wire_detour_total_um_max": 0.0,
     "bus_bend_count_max": 10,
     "wire_metal_area_um2_max": 2_081_000.0,
 }
@@ -190,7 +200,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "same_net_overlap_pair_count_max": 10,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
-        "pad_wire_detour_total_um_max": 40.0,
+        "pad_wire_detour_total_um_max": 0.0,
         "bus_bend_count_max": 5,
         "wire_metal_area_um2_max": 694_000.0,
     },
@@ -207,7 +217,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "same_net_overlap_pair_count_max": 93,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
-        "pad_wire_detour_total_um_max": 1_000.0,
+        "pad_wire_detour_total_um_max": 0.0,
         "bus_bend_count_max": 25,
         "wire_metal_area_um2_max": 3_334_000.0,
     },
@@ -225,7 +235,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "same_net_overlap_pair_count_max": 96,
         "same_net_redundant_overlap_pair_count_max": 0,
         "pad_wire_max_bend_count_max": 3,
-        "pad_wire_detour_total_um_max": 900.0,
+        "pad_wire_detour_total_um_max": 0.0,
         "bus_bend_count_max": 25,
         "wire_metal_area_um2_max": 3_385_000.0,
     },

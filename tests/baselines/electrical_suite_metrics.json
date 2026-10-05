@@ -2,92 +2,50 @@
   {
     "baseline_violations": [
       {
-        "actual": 3,
+        "actual": 0.0,
         "benchmark": "heater_single",
-        "expected": 4,
-        "name": "metrics.bend_count",
+        "expected": 20.0,
+        "name": "metrics.pad_wire_detour_total_um",
         "operator": "~=",
         "tolerance": 1e-06
       },
       {
-        "actual": 0,
+        "actual": 0.0,
         "benchmark": "heater_single",
-        "expected": 1,
-        "name": "metrics.bus_bend_count",
+        "expected": 20.0,
+        "name": "metrics.pad_wire_max_detour_um",
         "operator": "~=",
         "tolerance": 1e-06
       },
       {
-        "actual": 560.0,
+        "actual": [
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_0",
+            "lane_path_um": 140.0,
+            "length_um": 140.0,
+            "manhattan_um": 120.0,
+            "net_id": "individual:heater_0",
+            "shape": "Z",
+            "terminal_id": "heater_0:r"
+          }
+        ],
         "benchmark": "heater_single",
-        "expected": 570.0,
-        "name": "metrics.bus_length_um",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 700.0,
-        "benchmark": "heater_single",
-        "expected": 710.0,
-        "name": "metrics.centerline_length_um",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 0.09284703663027952,
-        "benchmark": "heater_single",
-        "expected": 0.1017987695167163,
-        "name": "metrics.metal_area_overcount_ratio",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 864269.14,
-        "benchmark": "heater_single",
-        "expected": 788269.14,
-        "name": "metrics.raw_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 784024.3114999998,
-        "benchmark": "heater_single",
-        "expected": 708024.3114999998,
-        "name": "metrics.union_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 679826.9915,
-        "benchmark": "heater_single",
-        "expected": 603826.9915,
-        "name": "metrics.wire_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 13,
-        "benchmark": "heater_single",
-        "expected": 14,
-        "name": "realization_metrics.pre_union_rect_count",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 784024.3115,
-        "benchmark": "heater_single",
-        "expected": 708024.3115,
-        "name": "realization_metrics.raw_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 784024.3114999998,
-        "benchmark": "heater_single",
-        "expected": 708024.3114999998,
-        "name": "realization_metrics.union_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
+        "expected": [
+          {
+            "bend_count": 3,
+            "detour_um": 20.0,
+            "heater_id": "heater_0",
+            "length_um": 140.0,
+            "manhattan_um": 120.0,
+            "net_id": "individual:heater_0",
+            "shape": "Z",
+            "terminal_id": "heater_0:r"
+          }
+        ],
+        "name": "metrics.pad_wires",
+        "operator": "=="
       }
     ],
     "benchmark": "heater_single",
@@ -122,14 +80,15 @@
       "net_count": 2,
       "pad_channel_height_um": 60.000000000000014,
       "pad_metal_area_um2": 183999.99999999997,
-      "pad_wire_detour_total_um": 20.0,
+      "pad_wire_detour_total_um": 0.0,
       "pad_wire_max_bend_count": 3,
-      "pad_wire_max_detour_um": 20.0,
+      "pad_wire_max_detour_um": 0.0,
       "pad_wires": [
         {
           "bend_count": 3,
-          "detour_um": 20.0,
+          "detour_um": 0.0,
           "heater_id": "heater_0",
+          "lane_path_um": 140.0,
           "length_um": 140.0,
           "manhattan_um": 120.0,
           "net_id": "individual:heater_0",
@@ -197,92 +156,449 @@
   {
     "baseline_violations": [
       {
-        "actual": 80,
+        "actual": 0.0,
         "benchmark": "heater_lanes_20",
-        "expected": 81,
-        "name": "metrics.bend_count",
+        "expected": 940.0,
+        "name": "metrics.pad_wire_detour_total_um",
         "operator": "~=",
         "tolerance": 1e-06
       },
       {
-        "actual": 20,
+        "actual": 0.0,
         "benchmark": "heater_lanes_20",
-        "expected": 21,
-        "name": "metrics.bus_bend_count",
+        "expected": 180.0,
+        "name": "metrics.pad_wire_max_detour_um",
         "operator": "~=",
         "tolerance": 1e-06
       },
       {
-        "actual": 7670.0,
+        "actual": [
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_0",
+            "lane_path_um": 350.0,
+            "length_um": 350.0,
+            "manhattan_um": 230.0,
+            "net_id": "individual:heater_0",
+            "shape": "Z",
+            "terminal_id": "heater_0:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_1",
+            "lane_path_um": 450.0,
+            "length_um": 450.0,
+            "manhattan_um": 270.0,
+            "net_id": "individual:heater_1",
+            "shape": "Z",
+            "terminal_id": "heater_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_2",
+            "lane_path_um": 570.0,
+            "length_um": 570.0,
+            "manhattan_um": 570.0,
+            "net_id": "individual:heater_2",
+            "shape": "Z",
+            "terminal_id": "heater_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_3",
+            "lane_path_um": 850.0,
+            "length_um": 850.0,
+            "manhattan_um": 850.0,
+            "net_id": "individual:heater_3",
+            "shape": "Z",
+            "terminal_id": "heater_3:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_0",
+            "lane_path_um": 300.0,
+            "length_um": 300.0,
+            "manhattan_um": 240.0,
+            "net_id": "individual:heater_extra_0",
+            "shape": "Z",
+            "terminal_id": "heater_extra_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_1",
+            "lane_path_um": 450.0,
+            "length_um": 450.0,
+            "manhattan_um": 450.0,
+            "net_id": "individual:heater_extra_1",
+            "shape": "Z",
+            "terminal_id": "heater_extra_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_2",
+            "lane_path_um": 420.0,
+            "length_um": 420.0,
+            "manhattan_um": 420.0,
+            "net_id": "individual:heater_extra_2",
+            "shape": "Z",
+            "terminal_id": "heater_extra_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_3",
+            "lane_path_um": 600.0,
+            "length_um": 600.0,
+            "manhattan_um": 600.0,
+            "net_id": "individual:heater_extra_3",
+            "shape": "Z",
+            "terminal_id": "heater_extra_3:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_final_0",
+            "lane_path_um": 300.0,
+            "length_um": 300.0,
+            "manhattan_um": 180.0,
+            "net_id": "individual:heater_final_0",
+            "shape": "Z",
+            "terminal_id": "heater_final_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_final_1",
+            "lane_path_um": 400.0,
+            "length_um": 400.0,
+            "manhattan_um": 320.0,
+            "net_id": "individual:heater_final_1",
+            "shape": "Z",
+            "terminal_id": "heater_final_1:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_final_2",
+            "lane_path_um": 620.0,
+            "length_um": 620.0,
+            "manhattan_um": 620.0,
+            "net_id": "individual:heater_final_2",
+            "shape": "Z",
+            "terminal_id": "heater_final_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_final_3",
+            "lane_path_um": 900.0,
+            "length_um": 900.0,
+            "manhattan_um": 900.0,
+            "net_id": "individual:heater_final_3",
+            "shape": "Z",
+            "terminal_id": "heater_final_3:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_output_0",
+            "lane_path_um": 290.0,
+            "length_um": 290.0,
+            "manhattan_um": 170.0,
+            "net_id": "individual:heater_output_0",
+            "shape": "Z",
+            "terminal_id": "heater_output_0:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_output_1",
+            "lane_path_um": 370.0,
+            "length_um": 370.0,
+            "manhattan_um": 350.0,
+            "net_id": "individual:heater_output_1",
+            "shape": "Z",
+            "terminal_id": "heater_output_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_output_2",
+            "lane_path_um": 630.0,
+            "length_um": 630.0,
+            "manhattan_um": 630.0,
+            "net_id": "individual:heater_output_2",
+            "shape": "Z",
+            "terminal_id": "heater_output_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_output_3",
+            "lane_path_um": 930.0,
+            "length_um": 930.0,
+            "manhattan_um": 930.0,
+            "net_id": "individual:heater_output_3",
+            "shape": "Z",
+            "terminal_id": "heater_output_3:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_0",
+            "lane_path_um": 320.0,
+            "length_um": 320.0,
+            "manhattan_um": 200.0,
+            "net_id": "individual:heater_post_0",
+            "shape": "Z",
+            "terminal_id": "heater_post_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_1",
+            "lane_path_um": 420.0,
+            "length_um": 420.0,
+            "manhattan_um": 300.0,
+            "net_id": "individual:heater_post_1",
+            "shape": "Z",
+            "terminal_id": "heater_post_1:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_2",
+            "lane_path_um": 600.0,
+            "length_um": 600.0,
+            "manhattan_um": 600.0,
+            "net_id": "individual:heater_post_2",
+            "shape": "Z",
+            "terminal_id": "heater_post_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_3",
+            "lane_path_um": 880.0,
+            "length_um": 880.0,
+            "manhattan_um": 880.0,
+            "net_id": "individual:heater_post_3",
+            "shape": "Z",
+            "terminal_id": "heater_post_3:r"
+          }
+        ],
         "benchmark": "heater_lanes_20",
-        "expected": 7680.0,
-        "name": "metrics.bus_length_um",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 18320.0,
-        "benchmark": "heater_lanes_20",
-        "expected": 18330.0,
-        "name": "metrics.centerline_length_um",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 0.024143740834835874,
-        "benchmark": "heater_lanes_20",
-        "expected": 0.024621766110272513,
-        "name": "metrics.metal_area_overcount_ratio",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3914550.8,
-        "benchmark": "heater_lanes_20",
-        "expected": 3838550.8,
-        "name": "metrics.raw_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3820038.9000000004,
-        "benchmark": "heater_lanes_20",
-        "expected": 3744038.9000000004,
-        "name": "metrics.union_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3268038.9000000004,
-        "benchmark": "heater_lanes_20",
-        "expected": 3192038.9000000004,
-        "name": "metrics.wire_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 252,
-        "benchmark": "heater_lanes_20",
-        "expected": 253,
-        "name": "realization_metrics.pre_union_rect_count",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3820038.9,
-        "benchmark": "heater_lanes_20",
-        "expected": 3744038.9,
-        "name": "realization_metrics.raw_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3820038.9000000004,
-        "benchmark": "heater_lanes_20",
-        "expected": 3744038.9000000004,
-        "name": "realization_metrics.union_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
+        "expected": [
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_0",
+            "length_um": 350.0,
+            "manhattan_um": 230.0,
+            "net_id": "individual:heater_0",
+            "shape": "Z",
+            "terminal_id": "heater_0:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 180.0,
+            "heater_id": "heater_1",
+            "length_um": 450.0,
+            "manhattan_um": 270.0,
+            "net_id": "individual:heater_1",
+            "shape": "Z",
+            "terminal_id": "heater_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_2",
+            "length_um": 570.0,
+            "manhattan_um": 570.0,
+            "net_id": "individual:heater_2",
+            "shape": "Z",
+            "terminal_id": "heater_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_3",
+            "length_um": 850.0,
+            "manhattan_um": 850.0,
+            "net_id": "individual:heater_3",
+            "shape": "Z",
+            "terminal_id": "heater_3:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 60.0,
+            "heater_id": "heater_extra_0",
+            "length_um": 300.0,
+            "manhattan_um": 240.0,
+            "net_id": "individual:heater_extra_0",
+            "shape": "Z",
+            "terminal_id": "heater_extra_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_1",
+            "length_um": 450.0,
+            "manhattan_um": 450.0,
+            "net_id": "individual:heater_extra_1",
+            "shape": "Z",
+            "terminal_id": "heater_extra_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_2",
+            "length_um": 420.0,
+            "manhattan_um": 420.0,
+            "net_id": "individual:heater_extra_2",
+            "shape": "Z",
+            "terminal_id": "heater_extra_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_3",
+            "length_um": 600.0,
+            "manhattan_um": 600.0,
+            "net_id": "individual:heater_extra_3",
+            "shape": "Z",
+            "terminal_id": "heater_extra_3:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_final_0",
+            "length_um": 300.0,
+            "manhattan_um": 180.0,
+            "net_id": "individual:heater_final_0",
+            "shape": "Z",
+            "terminal_id": "heater_final_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 80.0,
+            "heater_id": "heater_final_1",
+            "length_um": 400.0,
+            "manhattan_um": 320.0,
+            "net_id": "individual:heater_final_1",
+            "shape": "Z",
+            "terminal_id": "heater_final_1:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_final_2",
+            "length_um": 620.0,
+            "manhattan_um": 620.0,
+            "net_id": "individual:heater_final_2",
+            "shape": "Z",
+            "terminal_id": "heater_final_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_final_3",
+            "length_um": 900.0,
+            "manhattan_um": 900.0,
+            "net_id": "individual:heater_final_3",
+            "shape": "Z",
+            "terminal_id": "heater_final_3:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_output_0",
+            "length_um": 290.0,
+            "manhattan_um": 170.0,
+            "net_id": "individual:heater_output_0",
+            "shape": "Z",
+            "terminal_id": "heater_output_0:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 20.0,
+            "heater_id": "heater_output_1",
+            "length_um": 370.0,
+            "manhattan_um": 350.0,
+            "net_id": "individual:heater_output_1",
+            "shape": "Z",
+            "terminal_id": "heater_output_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_output_2",
+            "length_um": 630.0,
+            "manhattan_um": 630.0,
+            "net_id": "individual:heater_output_2",
+            "shape": "Z",
+            "terminal_id": "heater_output_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_output_3",
+            "length_um": 930.0,
+            "manhattan_um": 930.0,
+            "net_id": "individual:heater_output_3",
+            "shape": "Z",
+            "terminal_id": "heater_output_3:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_post_0",
+            "length_um": 320.0,
+            "manhattan_um": 200.0,
+            "net_id": "individual:heater_post_0",
+            "shape": "Z",
+            "terminal_id": "heater_post_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_post_1",
+            "length_um": 420.0,
+            "manhattan_um": 300.0,
+            "net_id": "individual:heater_post_1",
+            "shape": "Z",
+            "terminal_id": "heater_post_1:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_2",
+            "length_um": 600.0,
+            "manhattan_um": 600.0,
+            "net_id": "individual:heater_post_2",
+            "shape": "Z",
+            "terminal_id": "heater_post_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_3",
+            "length_um": 880.0,
+            "manhattan_um": 880.0,
+            "net_id": "individual:heater_post_3",
+            "shape": "Z",
+            "terminal_id": "heater_post_3:r"
+          }
+        ],
+        "name": "metrics.pad_wires",
+        "operator": "=="
       }
     ],
     "benchmark": "heater_lanes_20",
@@ -317,14 +633,15 @@
       "net_count": 21,
       "pad_channel_height_um": 90.0,
       "pad_metal_area_um2": 640000.0,
-      "pad_wire_detour_total_um": 940.0,
+      "pad_wire_detour_total_um": 0.0,
       "pad_wire_max_bend_count": 3,
-      "pad_wire_max_detour_um": 180.0,
+      "pad_wire_max_detour_um": 0.0,
       "pad_wires": [
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_0",
+          "lane_path_um": 350.0,
           "length_um": 350.0,
           "manhattan_um": 230.0,
           "net_id": "individual:heater_0",
@@ -333,8 +650,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 180.0,
+          "detour_um": 0.0,
           "heater_id": "heater_1",
+          "lane_path_um": 450.0,
           "length_um": 450.0,
           "manhattan_um": 270.0,
           "net_id": "individual:heater_1",
@@ -345,6 +663,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_2",
+          "lane_path_um": 570.0,
           "length_um": 570.0,
           "manhattan_um": 570.0,
           "net_id": "individual:heater_2",
@@ -355,6 +674,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_3",
+          "lane_path_um": 850.0,
           "length_um": 850.0,
           "manhattan_um": 850.0,
           "net_id": "individual:heater_3",
@@ -363,8 +683,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 60.0,
+          "detour_um": 0.0,
           "heater_id": "heater_extra_0",
+          "lane_path_um": 300.0,
           "length_um": 300.0,
           "manhattan_um": 240.0,
           "net_id": "individual:heater_extra_0",
@@ -375,6 +696,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_1",
+          "lane_path_um": 450.0,
           "length_um": 450.0,
           "manhattan_um": 450.0,
           "net_id": "individual:heater_extra_1",
@@ -385,6 +707,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_2",
+          "lane_path_um": 420.0,
           "length_um": 420.0,
           "manhattan_um": 420.0,
           "net_id": "individual:heater_extra_2",
@@ -395,6 +718,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_3",
+          "lane_path_um": 600.0,
           "length_um": 600.0,
           "manhattan_um": 600.0,
           "net_id": "individual:heater_extra_3",
@@ -403,8 +727,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_final_0",
+          "lane_path_um": 300.0,
           "length_um": 300.0,
           "manhattan_um": 180.0,
           "net_id": "individual:heater_final_0",
@@ -413,8 +738,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 80.0,
+          "detour_um": 0.0,
           "heater_id": "heater_final_1",
+          "lane_path_um": 400.0,
           "length_um": 400.0,
           "manhattan_um": 320.0,
           "net_id": "individual:heater_final_1",
@@ -425,6 +751,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_final_2",
+          "lane_path_um": 620.0,
           "length_um": 620.0,
           "manhattan_um": 620.0,
           "net_id": "individual:heater_final_2",
@@ -435,6 +762,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_final_3",
+          "lane_path_um": 900.0,
           "length_um": 900.0,
           "manhattan_um": 900.0,
           "net_id": "individual:heater_final_3",
@@ -443,8 +771,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_output_0",
+          "lane_path_um": 290.0,
           "length_um": 290.0,
           "manhattan_um": 170.0,
           "net_id": "individual:heater_output_0",
@@ -453,8 +782,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 20.0,
+          "detour_um": 0.0,
           "heater_id": "heater_output_1",
+          "lane_path_um": 370.0,
           "length_um": 370.0,
           "manhattan_um": 350.0,
           "net_id": "individual:heater_output_1",
@@ -465,6 +795,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_output_2",
+          "lane_path_um": 630.0,
           "length_um": 630.0,
           "manhattan_um": 630.0,
           "net_id": "individual:heater_output_2",
@@ -475,6 +806,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_output_3",
+          "lane_path_um": 930.0,
           "length_um": 930.0,
           "manhattan_um": 930.0,
           "net_id": "individual:heater_output_3",
@@ -483,8 +815,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_post_0",
+          "lane_path_um": 320.0,
           "length_um": 320.0,
           "manhattan_um": 200.0,
           "net_id": "individual:heater_post_0",
@@ -493,8 +826,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_post_1",
+          "lane_path_um": 420.0,
           "length_um": 420.0,
           "manhattan_um": 300.0,
           "net_id": "individual:heater_post_1",
@@ -505,6 +839,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_post_2",
+          "lane_path_um": 600.0,
           "length_um": 600.0,
           "manhattan_um": 600.0,
           "net_id": "individual:heater_post_2",
@@ -515,6 +850,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_post_3",
+          "lane_path_um": 880.0,
           "length_um": 880.0,
           "manhattan_um": 880.0,
           "net_id": "individual:heater_post_3",
@@ -582,92 +918,260 @@
   {
     "baseline_violations": [
       {
-        "actual": 37,
+        "actual": 0.0,
         "benchmark": "heater_lanes_ripup",
-        "expected": 38,
-        "name": "metrics.bend_count",
+        "expected": 620.0,
+        "name": "metrics.pad_wire_detour_total_um",
         "operator": "~=",
         "tolerance": 1e-06
       },
       {
-        "actual": 8,
+        "actual": 0.0,
         "benchmark": "heater_lanes_ripup",
-        "expected": 9,
-        "name": "metrics.bus_bend_count",
+        "expected": 160.0,
+        "name": "metrics.pad_wire_max_detour_um",
         "operator": "~=",
         "tolerance": 1e-06
       },
       {
-        "actual": 3520.0,
+        "actual": [
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_0",
+            "lane_path_um": 340.0,
+            "length_um": 340.0,
+            "manhattan_um": 220.0,
+            "net_id": "individual:heater_0",
+            "shape": "Z",
+            "terminal_id": "heater_0:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_1",
+            "lane_path_um": 440.0,
+            "length_um": 440.0,
+            "manhattan_um": 280.0,
+            "net_id": "individual:heater_1",
+            "shape": "Z",
+            "terminal_id": "heater_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_2",
+            "lane_path_um": 580.0,
+            "length_um": 580.0,
+            "manhattan_um": 580.0,
+            "net_id": "individual:heater_2",
+            "shape": "Z",
+            "terminal_id": "heater_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_3",
+            "lane_path_um": 860.0,
+            "length_um": 860.0,
+            "manhattan_um": 860.0,
+            "net_id": "individual:heater_3",
+            "shape": "Z",
+            "terminal_id": "heater_3:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_0",
+            "lane_path_um": 310.0,
+            "length_um": 310.0,
+            "manhattan_um": 230.0,
+            "net_id": "individual:heater_extra_0",
+            "shape": "Z",
+            "terminal_id": "heater_extra_0:r"
+          },
+          {
+            "bend_count": 1,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_1",
+            "lane_path_um": 410.0,
+            "length_um": 410.0,
+            "manhattan_um": 410.0,
+            "net_id": "individual:heater_extra_1",
+            "shape": "L",
+            "terminal_id": "heater_extra_1:r"
+          },
+          {
+            "bend_count": 1,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_2",
+            "lane_path_um": 450.0,
+            "length_um": 450.0,
+            "manhattan_um": 450.0,
+            "net_id": "individual:heater_extra_2",
+            "shape": "L",
+            "terminal_id": "heater_extra_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_0",
+            "lane_path_um": 330.0,
+            "length_um": 330.0,
+            "manhattan_um": 210.0,
+            "net_id": "individual:heater_post_0",
+            "shape": "Z",
+            "terminal_id": "heater_post_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_1",
+            "lane_path_um": 430.0,
+            "length_um": 430.0,
+            "manhattan_um": 290.0,
+            "net_id": "individual:heater_post_1",
+            "shape": "Z",
+            "terminal_id": "heater_post_1:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_2",
+            "lane_path_um": 590.0,
+            "length_um": 590.0,
+            "manhattan_um": 590.0,
+            "net_id": "individual:heater_post_2",
+            "shape": "Z",
+            "terminal_id": "heater_post_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_3",
+            "lane_path_um": 870.0,
+            "length_um": 870.0,
+            "manhattan_um": 870.0,
+            "net_id": "individual:heater_post_3",
+            "shape": "Z",
+            "terminal_id": "heater_post_3:r"
+          }
+        ],
         "benchmark": "heater_lanes_ripup",
-        "expected": 3530.0,
-        "name": "metrics.bus_length_um",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 9130.0,
-        "benchmark": "heater_lanes_ripup",
-        "expected": 9140.0,
-        "name": "metrics.centerline_length_um",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 0.036110657013556806,
-        "benchmark": "heater_lanes_ripup",
-        "expected": 0.03725815166057901,
-        "name": "metrics.metal_area_overcount_ratio",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 2467653.8,
-        "benchmark": "heater_lanes_ripup",
-        "expected": 2391653.8,
-        "name": "metrics.raw_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 2378545.1999999997,
-        "benchmark": "heater_lanes_ripup",
-        "expected": 2302545.1999999997,
-        "name": "metrics.union_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 2039845.2,
-        "benchmark": "heater_lanes_ripup",
-        "expected": 1963845.2,
-        "name": "metrics.wire_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 136,
-        "benchmark": "heater_lanes_ripup",
-        "expected": 137,
-        "name": "realization_metrics.pre_union_rect_count",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 2378545.2,
-        "benchmark": "heater_lanes_ripup",
-        "expected": 2302545.2,
-        "name": "realization_metrics.raw_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 2378545.1999999997,
-        "benchmark": "heater_lanes_ripup",
-        "expected": 2302545.1999999997,
-        "name": "realization_metrics.union_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
+        "expected": [
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_0",
+            "length_um": 340.0,
+            "manhattan_um": 220.0,
+            "net_id": "individual:heater_0",
+            "shape": "Z",
+            "terminal_id": "heater_0:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 160.0,
+            "heater_id": "heater_1",
+            "length_um": 440.0,
+            "manhattan_um": 280.0,
+            "net_id": "individual:heater_1",
+            "shape": "Z",
+            "terminal_id": "heater_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_2",
+            "length_um": 580.0,
+            "manhattan_um": 580.0,
+            "net_id": "individual:heater_2",
+            "shape": "Z",
+            "terminal_id": "heater_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_3",
+            "length_um": 860.0,
+            "manhattan_um": 860.0,
+            "net_id": "individual:heater_3",
+            "shape": "Z",
+            "terminal_id": "heater_3:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 80.0,
+            "heater_id": "heater_extra_0",
+            "length_um": 310.0,
+            "manhattan_um": 230.0,
+            "net_id": "individual:heater_extra_0",
+            "shape": "Z",
+            "terminal_id": "heater_extra_0:r"
+          },
+          {
+            "bend_count": 1,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_1",
+            "length_um": 410.0,
+            "manhattan_um": 410.0,
+            "net_id": "individual:heater_extra_1",
+            "shape": "L",
+            "terminal_id": "heater_extra_1:r"
+          },
+          {
+            "bend_count": 1,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_2",
+            "length_um": 450.0,
+            "manhattan_um": 450.0,
+            "net_id": "individual:heater_extra_2",
+            "shape": "L",
+            "terminal_id": "heater_extra_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_post_0",
+            "length_um": 330.0,
+            "manhattan_um": 210.0,
+            "net_id": "individual:heater_post_0",
+            "shape": "Z",
+            "terminal_id": "heater_post_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 140.0,
+            "heater_id": "heater_post_1",
+            "length_um": 430.0,
+            "manhattan_um": 290.0,
+            "net_id": "individual:heater_post_1",
+            "shape": "Z",
+            "terminal_id": "heater_post_1:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_2",
+            "length_um": 590.0,
+            "manhattan_um": 590.0,
+            "net_id": "individual:heater_post_2",
+            "shape": "Z",
+            "terminal_id": "heater_post_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_3",
+            "length_um": 870.0,
+            "manhattan_um": 870.0,
+            "net_id": "individual:heater_post_3",
+            "shape": "Z",
+            "terminal_id": "heater_post_3:r"
+          }
+        ],
+        "name": "metrics.pad_wires",
+        "operator": "=="
       }
     ],
     "benchmark": "heater_lanes_ripup",
@@ -702,14 +1206,15 @@
       "net_count": 12,
       "pad_channel_height_um": 90.0,
       "pad_metal_area_um2": 424000.0,
-      "pad_wire_detour_total_um": 620.0,
+      "pad_wire_detour_total_um": 0.0,
       "pad_wire_max_bend_count": 3,
-      "pad_wire_max_detour_um": 160.0,
+      "pad_wire_max_detour_um": 0.0,
       "pad_wires": [
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_0",
+          "lane_path_um": 340.0,
           "length_um": 340.0,
           "manhattan_um": 220.0,
           "net_id": "individual:heater_0",
@@ -718,8 +1223,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 160.0,
+          "detour_um": 0.0,
           "heater_id": "heater_1",
+          "lane_path_um": 440.0,
           "length_um": 440.0,
           "manhattan_um": 280.0,
           "net_id": "individual:heater_1",
@@ -730,6 +1236,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_2",
+          "lane_path_um": 580.0,
           "length_um": 580.0,
           "manhattan_um": 580.0,
           "net_id": "individual:heater_2",
@@ -740,6 +1247,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_3",
+          "lane_path_um": 860.0,
           "length_um": 860.0,
           "manhattan_um": 860.0,
           "net_id": "individual:heater_3",
@@ -748,8 +1256,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 80.0,
+          "detour_um": 0.0,
           "heater_id": "heater_extra_0",
+          "lane_path_um": 310.0,
           "length_um": 310.0,
           "manhattan_um": 230.0,
           "net_id": "individual:heater_extra_0",
@@ -760,6 +1269,7 @@
           "bend_count": 1,
           "detour_um": 0.0,
           "heater_id": "heater_extra_1",
+          "lane_path_um": 410.0,
           "length_um": 410.0,
           "manhattan_um": 410.0,
           "net_id": "individual:heater_extra_1",
@@ -770,6 +1280,7 @@
           "bend_count": 1,
           "detour_um": 0.0,
           "heater_id": "heater_extra_2",
+          "lane_path_um": 450.0,
           "length_um": 450.0,
           "manhattan_um": 450.0,
           "net_id": "individual:heater_extra_2",
@@ -778,8 +1289,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_post_0",
+          "lane_path_um": 330.0,
           "length_um": 330.0,
           "manhattan_um": 210.0,
           "net_id": "individual:heater_post_0",
@@ -788,8 +1300,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 140.0,
+          "detour_um": 0.0,
           "heater_id": "heater_post_1",
+          "lane_path_um": 430.0,
           "length_um": 430.0,
           "manhattan_um": 290.0,
           "net_id": "individual:heater_post_1",
@@ -800,6 +1313,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_post_2",
+          "lane_path_um": 590.0,
           "length_um": 590.0,
           "manhattan_um": 590.0,
           "net_id": "individual:heater_post_2",
@@ -810,6 +1324,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_post_3",
+          "lane_path_um": 870.0,
           "length_um": 870.0,
           "manhattan_um": 870.0,
           "net_id": "individual:heater_post_3",
@@ -877,92 +1392,470 @@
   {
     "baseline_violations": [
       {
-        "actual": 79,
+        "actual": 0.0,
         "benchmark": "heater_s_mod",
-        "expected": 80,
-        "name": "metrics.bend_count",
+        "expected": 860.0,
+        "name": "metrics.pad_wire_detour_total_um",
         "operator": "~=",
         "tolerance": 1e-06
       },
       {
-        "actual": 20,
+        "actual": 0.0,
         "benchmark": "heater_s_mod",
-        "expected": 21,
-        "name": "metrics.bus_bend_count",
+        "expected": 180.0,
+        "name": "metrics.pad_wire_max_detour_um",
         "operator": "~=",
         "tolerance": 1e-06
       },
       {
-        "actual": 6840.0,
+        "actual": [
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_0",
+            "lane_path_um": 290.0,
+            "length_um": 290.0,
+            "manhattan_um": 170.0,
+            "net_id": "individual:heater_0",
+            "shape": "Z",
+            "terminal_id": "heater_0:l"
+          },
+          {
+            "bend_count": 1,
+            "detour_um": 0.0,
+            "heater_id": "heater_1",
+            "lane_path_um": 470.0,
+            "length_um": 470.0,
+            "manhattan_um": 470.0,
+            "net_id": "individual:heater_1",
+            "shape": "L",
+            "terminal_id": "heater_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_2",
+            "lane_path_um": 840.0,
+            "length_um": 840.0,
+            "manhattan_um": 840.0,
+            "net_id": "individual:heater_2",
+            "shape": "Z",
+            "terminal_id": "heater_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_3",
+            "lane_path_um": 1230.0,
+            "length_um": 1230.0,
+            "manhattan_um": 1230.0,
+            "net_id": "individual:heater_3",
+            "shape": "Z",
+            "terminal_id": "heater_3:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_0",
+            "lane_path_um": 420.0,
+            "length_um": 420.0,
+            "manhattan_um": 420.0,
+            "net_id": "individual:heater_extra_0",
+            "shape": "Z",
+            "terminal_id": "heater_extra_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_10",
+            "lane_path_um": 550.0,
+            "length_um": 550.0,
+            "manhattan_um": 390.0,
+            "net_id": "individual:heater_extra_10",
+            "shape": "Z",
+            "terminal_id": "heater_extra_10:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_11",
+            "lane_path_um": 780.0,
+            "length_um": 780.0,
+            "manhattan_um": 780.0,
+            "net_id": "individual:heater_extra_11",
+            "shape": "Z",
+            "terminal_id": "heater_extra_11:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_12",
+            "lane_path_um": 1150.0,
+            "length_um": 1150.0,
+            "manhattan_um": 1150.0,
+            "net_id": "individual:heater_extra_12",
+            "shape": "Z",
+            "terminal_id": "heater_extra_12:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_1",
+            "lane_path_um": 490.0,
+            "length_um": 490.0,
+            "manhattan_um": 470.0,
+            "net_id": "individual:heater_extra_1",
+            "shape": "Z",
+            "terminal_id": "heater_extra_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_2",
+            "lane_path_um": 760.0,
+            "length_um": 760.0,
+            "manhattan_um": 760.0,
+            "net_id": "individual:heater_extra_2",
+            "shape": "Z",
+            "terminal_id": "heater_extra_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_3",
+            "lane_path_um": 740.0,
+            "length_um": 740.0,
+            "manhattan_um": 720.0,
+            "net_id": "individual:heater_extra_3",
+            "shape": "Z",
+            "terminal_id": "heater_extra_3:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_4",
+            "lane_path_um": 1010.0,
+            "length_um": 1010.0,
+            "manhattan_um": 1010.0,
+            "net_id": "individual:heater_extra_4",
+            "shape": "Z",
+            "terminal_id": "heater_extra_4:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_5",
+            "lane_path_um": 370.0,
+            "length_um": 370.0,
+            "manhattan_um": 250.0,
+            "net_id": "individual:heater_extra_5",
+            "shape": "Z",
+            "terminal_id": "heater_extra_5:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_6",
+            "lane_path_um": 570.0,
+            "length_um": 570.0,
+            "manhattan_um": 390.0,
+            "net_id": "individual:heater_extra_6",
+            "shape": "Z",
+            "terminal_id": "heater_extra_6:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_7",
+            "lane_path_um": 760.0,
+            "length_um": 760.0,
+            "manhattan_um": 760.0,
+            "net_id": "individual:heater_extra_7",
+            "shape": "Z",
+            "terminal_id": "heater_extra_7:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_8",
+            "lane_path_um": 1130.0,
+            "length_um": 1130.0,
+            "manhattan_um": 1130.0,
+            "net_id": "individual:heater_extra_8",
+            "shape": "Z",
+            "terminal_id": "heater_extra_8:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_9",
+            "lane_path_um": 350.0,
+            "length_um": 350.0,
+            "manhattan_um": 230.0,
+            "net_id": "individual:heater_extra_9",
+            "shape": "Z",
+            "terminal_id": "heater_extra_9:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_0",
+            "lane_path_um": 270.0,
+            "length_um": 270.0,
+            "manhattan_um": 150.0,
+            "net_id": "individual:heater_post_0",
+            "shape": "Z",
+            "terminal_id": "heater_post_0:r"
+          },
+          {
+            "bend_count": 1,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_1",
+            "lane_path_um": 470.0,
+            "length_um": 470.0,
+            "manhattan_um": 470.0,
+            "net_id": "individual:heater_post_1",
+            "shape": "L",
+            "terminal_id": "heater_post_1:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_2",
+            "lane_path_um": 860.0,
+            "length_um": 860.0,
+            "manhattan_um": 860.0,
+            "net_id": "individual:heater_post_2",
+            "shape": "Z",
+            "terminal_id": "heater_post_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_3",
+            "lane_path_um": 1230.0,
+            "length_um": 1230.0,
+            "manhattan_um": 1230.0,
+            "net_id": "individual:heater_post_3",
+            "shape": "Z",
+            "terminal_id": "heater_post_3:r"
+          }
+        ],
         "benchmark": "heater_s_mod",
-        "expected": 6850.0,
-        "name": "metrics.bus_length_um",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 21580.0,
-        "benchmark": "heater_s_mod",
-        "expected": 21590.0,
-        "name": "metrics.centerline_length_um",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 0.02278760149654809,
-        "benchmark": "heater_s_mod",
-        "expected": 0.023230161608479828,
-        "name": "metrics.metal_area_overcount_ratio",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3989271.1399999997,
-        "benchmark": "heater_s_mod",
-        "expected": 3913271.1399999997,
-        "name": "metrics.raw_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3898365.2189999996,
-        "benchmark": "heater_s_mod",
-        "expected": 3822365.2189999996,
-        "name": "metrics.union_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3318609.4989999994,
-        "benchmark": "heater_s_mod",
-        "expected": 3242609.4989999994,
-        "name": "metrics.wire_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 256,
-        "benchmark": "heater_s_mod",
-        "expected": 257,
-        "name": "realization_metrics.pre_union_rect_count",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3898365.2189999996,
-        "benchmark": "heater_s_mod",
-        "expected": 3822365.2189999996,
-        "name": "realization_metrics.raw_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
-      },
-      {
-        "actual": 3898365.2189999996,
-        "benchmark": "heater_s_mod",
-        "expected": 3822365.2189999996,
-        "name": "realization_metrics.union_metal_area_um2",
-        "operator": "~=",
-        "tolerance": 1e-06
+        "expected": [
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_0",
+            "length_um": 290.0,
+            "manhattan_um": 170.0,
+            "net_id": "individual:heater_0",
+            "shape": "Z",
+            "terminal_id": "heater_0:l"
+          },
+          {
+            "bend_count": 1,
+            "detour_um": 0.0,
+            "heater_id": "heater_1",
+            "length_um": 470.0,
+            "manhattan_um": 470.0,
+            "net_id": "individual:heater_1",
+            "shape": "L",
+            "terminal_id": "heater_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_2",
+            "length_um": 840.0,
+            "manhattan_um": 840.0,
+            "net_id": "individual:heater_2",
+            "shape": "Z",
+            "terminal_id": "heater_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_3",
+            "length_um": 1230.0,
+            "manhattan_um": 1230.0,
+            "net_id": "individual:heater_3",
+            "shape": "Z",
+            "terminal_id": "heater_3:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_0",
+            "length_um": 420.0,
+            "manhattan_um": 420.0,
+            "net_id": "individual:heater_extra_0",
+            "shape": "Z",
+            "terminal_id": "heater_extra_0:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 160.0,
+            "heater_id": "heater_extra_10",
+            "length_um": 550.0,
+            "manhattan_um": 390.0,
+            "net_id": "individual:heater_extra_10",
+            "shape": "Z",
+            "terminal_id": "heater_extra_10:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_11",
+            "length_um": 780.0,
+            "manhattan_um": 780.0,
+            "net_id": "individual:heater_extra_11",
+            "shape": "Z",
+            "terminal_id": "heater_extra_11:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_12",
+            "length_um": 1150.0,
+            "manhattan_um": 1150.0,
+            "net_id": "individual:heater_extra_12",
+            "shape": "Z",
+            "terminal_id": "heater_extra_12:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 20.0,
+            "heater_id": "heater_extra_1",
+            "length_um": 490.0,
+            "manhattan_um": 470.0,
+            "net_id": "individual:heater_extra_1",
+            "shape": "Z",
+            "terminal_id": "heater_extra_1:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_2",
+            "length_um": 760.0,
+            "manhattan_um": 760.0,
+            "net_id": "individual:heater_extra_2",
+            "shape": "Z",
+            "terminal_id": "heater_extra_2:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 20.0,
+            "heater_id": "heater_extra_3",
+            "length_um": 740.0,
+            "manhattan_um": 720.0,
+            "net_id": "individual:heater_extra_3",
+            "shape": "Z",
+            "terminal_id": "heater_extra_3:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_4",
+            "length_um": 1010.0,
+            "manhattan_um": 1010.0,
+            "net_id": "individual:heater_extra_4",
+            "shape": "Z",
+            "terminal_id": "heater_extra_4:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_extra_5",
+            "length_um": 370.0,
+            "manhattan_um": 250.0,
+            "net_id": "individual:heater_extra_5",
+            "shape": "Z",
+            "terminal_id": "heater_extra_5:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 180.0,
+            "heater_id": "heater_extra_6",
+            "length_um": 570.0,
+            "manhattan_um": 390.0,
+            "net_id": "individual:heater_extra_6",
+            "shape": "Z",
+            "terminal_id": "heater_extra_6:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_7",
+            "length_um": 760.0,
+            "manhattan_um": 760.0,
+            "net_id": "individual:heater_extra_7",
+            "shape": "Z",
+            "terminal_id": "heater_extra_7:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_extra_8",
+            "length_um": 1130.0,
+            "manhattan_um": 1130.0,
+            "net_id": "individual:heater_extra_8",
+            "shape": "Z",
+            "terminal_id": "heater_extra_8:l"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_extra_9",
+            "length_um": 350.0,
+            "manhattan_um": 230.0,
+            "net_id": "individual:heater_extra_9",
+            "shape": "Z",
+            "terminal_id": "heater_extra_9:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 120.0,
+            "heater_id": "heater_post_0",
+            "length_um": 270.0,
+            "manhattan_um": 150.0,
+            "net_id": "individual:heater_post_0",
+            "shape": "Z",
+            "terminal_id": "heater_post_0:r"
+          },
+          {
+            "bend_count": 1,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_1",
+            "length_um": 470.0,
+            "manhattan_um": 470.0,
+            "net_id": "individual:heater_post_1",
+            "shape": "L",
+            "terminal_id": "heater_post_1:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_2",
+            "length_um": 860.0,
+            "manhattan_um": 860.0,
+            "net_id": "individual:heater_post_2",
+            "shape": "Z",
+            "terminal_id": "heater_post_2:r"
+          },
+          {
+            "bend_count": 3,
+            "detour_um": 0.0,
+            "heater_id": "heater_post_3",
+            "length_um": 1230.0,
+            "manhattan_um": 1230.0,
+            "net_id": "individual:heater_post_3",
+            "shape": "Z",
+            "terminal_id": "heater_post_3:r"
+          }
+        ],
+        "name": "metrics.pad_wires",
+        "operator": "=="
       }
     ],
     "benchmark": "heater_s_mod",
@@ -997,14 +1890,15 @@
       "net_count": 22,
       "pad_channel_height_um": 89.99999999999994,
       "pad_metal_area_um2": 664000.0,
-      "pad_wire_detour_total_um": 860.0,
+      "pad_wire_detour_total_um": 0.0,
       "pad_wire_max_bend_count": 3,
-      "pad_wire_max_detour_um": 180.0,
+      "pad_wire_max_detour_um": 0.0,
       "pad_wires": [
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_0",
+          "lane_path_um": 290.0,
           "length_um": 290.0,
           "manhattan_um": 170.0,
           "net_id": "individual:heater_0",
@@ -1015,6 +1909,7 @@
           "bend_count": 1,
           "detour_um": 0.0,
           "heater_id": "heater_1",
+          "lane_path_um": 470.0,
           "length_um": 470.0,
           "manhattan_um": 470.0,
           "net_id": "individual:heater_1",
@@ -1025,6 +1920,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_2",
+          "lane_path_um": 840.0,
           "length_um": 840.0,
           "manhattan_um": 840.0,
           "net_id": "individual:heater_2",
@@ -1035,6 +1931,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_3",
+          "lane_path_um": 1230.0,
           "length_um": 1230.0,
           "manhattan_um": 1230.0,
           "net_id": "individual:heater_3",
@@ -1045,6 +1942,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_0",
+          "lane_path_um": 420.0,
           "length_um": 420.0,
           "manhattan_um": 420.0,
           "net_id": "individual:heater_extra_0",
@@ -1053,8 +1951,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 160.0,
+          "detour_um": 0.0,
           "heater_id": "heater_extra_10",
+          "lane_path_um": 550.0,
           "length_um": 550.0,
           "manhattan_um": 390.0,
           "net_id": "individual:heater_extra_10",
@@ -1065,6 +1964,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_11",
+          "lane_path_um": 780.0,
           "length_um": 780.0,
           "manhattan_um": 780.0,
           "net_id": "individual:heater_extra_11",
@@ -1075,6 +1975,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_12",
+          "lane_path_um": 1150.0,
           "length_um": 1150.0,
           "manhattan_um": 1150.0,
           "net_id": "individual:heater_extra_12",
@@ -1083,8 +1984,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 20.0,
+          "detour_um": 0.0,
           "heater_id": "heater_extra_1",
+          "lane_path_um": 490.0,
           "length_um": 490.0,
           "manhattan_um": 470.0,
           "net_id": "individual:heater_extra_1",
@@ -1095,6 +1997,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_2",
+          "lane_path_um": 760.0,
           "length_um": 760.0,
           "manhattan_um": 760.0,
           "net_id": "individual:heater_extra_2",
@@ -1103,8 +2006,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 20.0,
+          "detour_um": 0.0,
           "heater_id": "heater_extra_3",
+          "lane_path_um": 740.0,
           "length_um": 740.0,
           "manhattan_um": 720.0,
           "net_id": "individual:heater_extra_3",
@@ -1115,6 +2019,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_4",
+          "lane_path_um": 1010.0,
           "length_um": 1010.0,
           "manhattan_um": 1010.0,
           "net_id": "individual:heater_extra_4",
@@ -1123,8 +2028,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_extra_5",
+          "lane_path_um": 370.0,
           "length_um": 370.0,
           "manhattan_um": 250.0,
           "net_id": "individual:heater_extra_5",
@@ -1133,8 +2039,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 180.0,
+          "detour_um": 0.0,
           "heater_id": "heater_extra_6",
+          "lane_path_um": 570.0,
           "length_um": 570.0,
           "manhattan_um": 390.0,
           "net_id": "individual:heater_extra_6",
@@ -1145,6 +2052,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_7",
+          "lane_path_um": 760.0,
           "length_um": 760.0,
           "manhattan_um": 760.0,
           "net_id": "individual:heater_extra_7",
@@ -1155,6 +2063,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_extra_8",
+          "lane_path_um": 1130.0,
           "length_um": 1130.0,
           "manhattan_um": 1130.0,
           "net_id": "individual:heater_extra_8",
@@ -1163,8 +2072,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_extra_9",
+          "lane_path_um": 350.0,
           "length_um": 350.0,
           "manhattan_um": 230.0,
           "net_id": "individual:heater_extra_9",
@@ -1173,8 +2083,9 @@
         },
         {
           "bend_count": 3,
-          "detour_um": 120.0,
+          "detour_um": 0.0,
           "heater_id": "heater_post_0",
+          "lane_path_um": 270.0,
           "length_um": 270.0,
           "manhattan_um": 150.0,
           "net_id": "individual:heater_post_0",
@@ -1185,6 +2096,7 @@
           "bend_count": 1,
           "detour_um": 0.0,
           "heater_id": "heater_post_1",
+          "lane_path_um": 470.0,
           "length_um": 470.0,
           "manhattan_um": 470.0,
           "net_id": "individual:heater_post_1",
@@ -1195,6 +2107,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_post_2",
+          "lane_path_um": 860.0,
           "length_um": 860.0,
           "manhattan_um": 860.0,
           "net_id": "individual:heater_post_2",
@@ -1205,6 +2118,7 @@
           "bend_count": 3,
           "detour_um": 0.0,
           "heater_id": "heater_post_3",
+          "lane_path_um": 1230.0,
           "length_um": 1230.0,
           "manhattan_um": 1230.0,
           "net_id": "individual:heater_post_3",

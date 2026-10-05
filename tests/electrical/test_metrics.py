@@ -52,8 +52,13 @@ def test_pad_wire_metrics_report_consistent_length_manhattan_and_bends():
         assert entry["length_um"] == pytest.approx(_polyline_length(centerline))
         assert entry["bend_count"] == _bend_count(centerline)
         assert entry["length_um"] >= entry["manhattan_um"] - 1e-9
-        assert entry["detour_um"] == pytest.approx(entry["length_um"] - entry["manhattan_um"])
+        assert entry["lane_path_um"] >= entry["manhattan_um"] - 1e-9
+        # detour against the monotone path through the wire's own lane
+        # (owner decision 2026-10-05): zero for every channel-routed wire
+        assert entry["detour_um"] == pytest.approx(entry["length_um"] - entry["lane_path_um"])
         assert entry["detour_um"] >= 0.0
+        if route.construction == "river":
+            assert entry["detour_um"] == pytest.approx(0.0)
 
     metrics = result.verification.metrics
     assert metrics["pad_wire_detour_total_um"] == pytest.approx(
@@ -104,7 +109,9 @@ def test_pad_wire_metrics_report_detour_for_a_deliberately_jogged_centerline():
         reason="not relevant for this test",
     )
     # A deliberate up/right/down/right jog: twice the Manhattan distance
-    # between its own endpoints, with three bends.
+    # between its own endpoints, with three bends. Its first vertical segment
+    # is at the port's own x, so the lane path equals the Manhattan distance
+    # and the whole jog is detour.
     detailed_routes = DetailedBundleRoutingResult(
         routes=(
             DetailedBundleRoute(
@@ -143,6 +150,7 @@ def test_pad_wire_metrics_report_detour_for_a_deliberately_jogged_centerline():
     entry = pad_wires[0]
     assert entry["length_um"] == pytest.approx(80.0)
     assert entry["manhattan_um"] == pytest.approx(40.0)
+    assert entry["lane_path_um"] == pytest.approx(40.0)
     assert entry["detour_um"] == pytest.approx(40.0)
     assert entry["bend_count"] == 3
     assert verification.metrics["pad_wire_detour_total_um"] == pytest.approx(40.0)

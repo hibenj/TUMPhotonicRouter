@@ -442,10 +442,12 @@ overlap, blocked-cell clearance -- as `ElectricalVerificationIssue`s;
 delegates the geometry to `net_geometry` and the numeric summary to
 `metrics.quality_metrics`.
 
-`metrics.py` (545 lines), stage 11 (the metrics): `quality_metrics` is the
-reported numbers that are not pass/fail contracts -- `pad_wire_detour_total_um`,
-`bus_length_um` / `bus_bend_count`, `wire_metal_area_um2`, cross-net
-spacing, the per-wire `pad_wires` table -- plus `min_rect_spacing` and the
+`metrics.py` (about 570 lines), stage 11 (the metrics): `quality_metrics` is the
+reported numbers that are not pass/fail contracts -- `pad_wire_detour_total_um`
+(a wire's length minus the monotone path through its own corridor lane:
+stub, run, vertical; zero for every channel-routed wire, owner decision
+2026-10-05), `bus_length_um` / `bus_bend_count`, `wire_metal_area_um2`,
+cross-net spacing, the per-wire `pad_wires` table -- plus `min_rect_spacing` and the
 same-net overlap classification the module's docstring says are not the
 verifier's business.
 

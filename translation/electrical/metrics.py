@@ -142,8 +142,19 @@ def _pad_wire_metrics(
 ) -> dict[str, Any]:
     """Per-wire detour/bend table for every successful detailed bundle route.
 
-    ``detour_um`` is the centerline length minus the Manhattan distance
-    between its endpoints; it is never negative for a Manhattan centerline.
+    ``detour_um`` is the centerline length minus ``lane_path_um``, the
+    length of the monotone path through the wire's own corridor lane: the
+    stub from the port to the lane, the horizontal run from the lane to the
+    pad column, and the vertical distance from the port to the pad (owner
+    decision 2026-10-05, pad-choice plan). The lane is the x of the
+    centerline's first vertical segment (the corridor run the wire rises
+    on); a centerline with no vertical segment has its port's x as the
+    lane, which makes ``lane_path_um`` the Manhattan distance. Every
+    channel-routed wire therefore reads zero (its lane is forced by its row,
+    so a pad inward of the lane is not a detour), and only a fallback
+    wire's extra wiggle counts. ``manhattan_um``, the endpoint Manhattan
+    distance, stays in the table for reference. Never negative for a
+    Manhattan centerline.
     """
 
     pad_wires: list[dict[str, Any]] = []
@@ -152,10 +163,11 @@ def _pad_wire_metrics(
             centerline = detailed_route_centerline_points(route, obstacle_map)
             length_um = _polyline_length(centerline)
             manhattan_um = _endpoint_manhattan_distance(centerline)
-            detour_um = length_um - manhattan_um
+            lane_path_um = _lane_path_length(centerline)
+            detour_um = length_um - lane_path_um
             assert detour_um >= -1e-9, (
                 f"pad wire detour must not be negative: {route.terminal.id} "
-                f"length={length_um} manhattan={manhattan_um}"
+                f"length={length_um} lane_path={lane_path_um}"
             )
             detour_um = max(0.0, detour_um)
             pad_wires.append(
@@ -170,6 +182,7 @@ def _pad_wire_metrics(
                     "length_um": length_um,
                     "bend_count": _bend_count(centerline),
                     "manhattan_um": manhattan_um,
+                    "lane_path_um": lane_path_um,
                     "detour_um": detour_um,
                     "shape": route.shape,
                 }
@@ -192,6 +205,25 @@ def _endpoint_manhattan_distance(
         return 0.0
     start, end = points[0], points[-1]
     return abs(end[0] - start[0]) + abs(end[1] - start[1])
+
+
+def _lane_path_length(points: tuple[tuple[float, float], ...]) -> float:
+    """Return the length of the monotone path through the centerline's corridor lane.
+
+    Port to lane (horizontal stub), lane to pad column (horizontal run),
+    port to pad (vertical); the lane is the x of the first vertical
+    segment, or the port's x when there is none.
+    """
+
+    if len(points) < 2:
+        return 0.0
+    start, end = points[0], points[-1]
+    lane_x = start[0]
+    for a, b in zip(points, points[1:], strict=False):
+        if a[0] == b[0] and a[1] != b[1]:
+            lane_x = a[0]
+            break
+    return abs(lane_x - start[0]) + abs(end[0] - lane_x) + abs(end[1] - start[1])
 
 
 def _wire_and_pad_metal_area(
