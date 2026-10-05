@@ -80,7 +80,11 @@ from translation.crossing_modes import is_guided_mode
 from translation.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_order import default_net_order
-from translation.route_overview_svg import realized_extra_um_by_net, write_routes_overview_svg
+from translation.route_overview_svg import (
+    layout_overview_shapes,
+    realized_extra_um_by_net,
+    write_routes_overview_svg,
+)
 from translation.route_rust import RipupRerouteConfig
 
 
@@ -572,6 +576,7 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
         # on it, the bookkeeping by physical edge) and a legend with the
         # totals and the chip dimensions, next to the per-route SVGs.
         overview_path = Path("build") / "routes" / f"{benchmark_name.lower()}_overview.svg"
+        instances, waveguide_polygons = layout_overview_shapes(optical_result.routed_layout)
         overview = write_routes_overview_svg(
             overview_path,
             benchmark_name=benchmark_name,
@@ -581,6 +586,8 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
             ),
             routable_bbox_um=getattr(debug_artifacts, "routable_bbox_um", None),
             layout_bbox_um=_component_bbox_um(optical_result.routed_layout),
+            instances=instances,
+            waveguide_polygons=waveguide_polygons,
         )
         route_svgs = getattr(debug_artifacts, "route_svgs", None)
         if isinstance(route_svgs, list):

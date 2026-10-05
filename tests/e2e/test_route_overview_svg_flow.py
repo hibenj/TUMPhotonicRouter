@@ -22,7 +22,8 @@ def test_flow_writes_the_routes_overview_with_realized_lengths_and_a_legend():
     overview = Path("build/routes/heater_s_mod_overview.svg")
     assert overview.is_file()
     text = overview.read_text(encoding="utf-8")
-    assert text.count("<polyline") == 81
+    assert text.count("<polygon") == 81  # the routed waveguide polygons, meanders included
+    assert text.count('<g id="instances"') == 1 and "<title>heater_extra_0</title>" in text
     report = layout.info["meander_insertion_report"]
     meander_total = float(report["total_physical_inserted_extra_length_um"])
     assert f"meander length: {meander_total:.1f} um" in text
