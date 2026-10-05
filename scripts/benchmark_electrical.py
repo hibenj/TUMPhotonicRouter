@@ -145,6 +145,19 @@ BASELINE_FLOAT_TOLERANCE = 1e-6
 # at the measured value rounded up to the next 100 um on the three cases it
 # was violated on; pad_channel_height_um_max on heater_single at 70 (measured
 # 60 plus floating-point noise). No zero-tolerance guardrail moved.
+# 2026-10-05 (later, flush bus corner): the stripe is trimmed to the outer
+# edge of the escape's 400 um band under the bus pad (pad centre plus half
+# the bus width) instead of the pad centre plus one half overlap, so the
+# escape rises flush from the stripe's end instead of hanging 190 um past
+# it (the owner's step in the outer corner on the cascade renders). Every
+# suite case gains 190 um of stripe: bus_length_um +190, wire_metal_area_um2
+# +76,000 um2; and the escape now starts in the pad's own column when the
+# stripe covers it (escape_router._endpoint_dogleg_to_targets) instead of
+# walking back from the stripe's end, so bus_bend_count drops by one and
+# bus_length_um by 10 um on every case; verification stays clean, no
+# redundant overlap. wire_metal_area_um2_max re-pinned at the measured value plus ~2%
+# on every case (heater_single was violated, the other three within 10% of
+# their old limits, the standing convention).
 RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "verification_success": True,
     "verification_error_count_max": 0,
@@ -160,7 +173,7 @@ RIPUP_REROUTE_GUARDRAILS: Mapping[str, float | int | bool] = {
     "pad_wire_max_bend_count_max": 3,
     "pad_wire_detour_total_um_max": 700.0,
     "bus_bend_count_max": 10,
-    "wire_metal_area_um2_max": 2_047_000.0,
+    "wire_metal_area_um2_max": 2_081_000.0,
 }
 DEFAULT_GUARDRAILS = RIPUP_REROUTE_GUARDRAILS
 BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
@@ -179,7 +192,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "pad_wire_max_bend_count_max": 3,
         "pad_wire_detour_total_um_max": 40.0,
         "bus_bend_count_max": 5,
-        "wire_metal_area_um2_max": 670_000.0,
+        "wire_metal_area_um2_max": 694_000.0,
     },
     "heater_lanes_20": {
         "verification_success": True,
@@ -196,7 +209,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "pad_wire_max_bend_count_max": 3,
         "pad_wire_detour_total_um_max": 1_000.0,
         "bus_bend_count_max": 25,
-        "wire_metal_area_um2_max": 3_331_000.0,
+        "wire_metal_area_um2_max": 3_334_000.0,
     },
     "heater_lanes_ripup": RIPUP_REROUTE_GUARDRAILS,
     "heater_s_mod": {
@@ -214,7 +227,7 @@ BENCHMARK_GUARDRAILS: Mapping[str, Mapping[str, float | int | bool]] = {
         "pad_wire_max_bend_count_max": 3,
         "pad_wire_detour_total_um_max": 900.0,
         "bus_bend_count_max": 25,
-        "wire_metal_area_um2_max": 3_444_000.0,
+        "wire_metal_area_um2_max": 3_385_000.0,
     },
 }
 

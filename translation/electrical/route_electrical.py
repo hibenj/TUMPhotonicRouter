@@ -18,7 +18,8 @@ each returning the frozen product its ``stages.py`` Protocol names:
        -> PadPlan
     6b CommonBusTrimmer       common_bus_router.trim_common_bus_to_connections
        (re-run, once the pad plan exists, with keep_span_to_x_um set to the
-       bus pad slot's centre x so the stripe reaches under the bus pad)
+       outer edge of the escape's band under the bus pad slot, so the stripe
+       reaches under the bus pad and the escape rises flush from its end)
        -> tuple[ElectricalObstacleMap, CommonBusRoutingResult]
     7  PadSideReconciler      pad_side_reconciliation.reconcile_pad_sides
        -> PadSideReconciliation (re-runs stages 4-6 when it swaps a heater,
@@ -54,7 +55,7 @@ from .individual_topology import compute_individual_escape_topology
 from .metal_realization import realize_electrical_metal
 from .obstacle_extraction import build_electrical_obstacle_map
 from .pad_side_reconciliation import reconcile_pad_sides
-from .pad_slots import plan_pad_slots
+from .pad_slots import common_bus_stripe_reach_x_um, plan_pad_slots
 from .terminal_extraction import extract_heater_terminal_pairs
 from .types import (
     CommonBusRoutingResult,
@@ -126,13 +127,10 @@ def route_electrical_heaters(
         else None
     )
     # Stage 6b: CommonBusTrimmer, re-run now that the bus pad slot is known,
-    # so the stripe is widened to reach under that slot's column (the escape
-    # then rises straight out of the stripe instead of doglegging in).
-    bus_pad_slot_x_um = (
-        pad_plan.common_bus_assignment.slot.center[0]
-        if pad_plan is not None and pad_plan.common_bus_assignment is not None
-        else None
-    )
+    # so the stripe is widened to reach the outer edge of the escape's band
+    # under that slot (the escape then rises straight out of the stripe with
+    # a flush outer corner instead of doglegging in).
+    bus_pad_slot_x_um = common_bus_stripe_reach_x_um(pad_plan, config)
     if bus_pad_slot_x_um is not None:
         obstacle_map, common_bus = trim_common_bus_to_connections(
             obstacle_map,

@@ -221,6 +221,30 @@ def _individual_assignment_items(
     return tuple(items)
 
 
+def common_bus_stripe_reach_x_um(
+    pad_plan: PadPlan | None, config: ElectricalRoutingConfig
+) -> float | None:
+    """Return the x the bus stripe must reach so its escape rises flush from the stripe's end.
+
+    The escape is realized ``bus_width_um`` wide, centred on the bus pad's
+    centre column (the pad centre is snapped to a grid cell centre, and the
+    escape targets that cell). A stripe trimmed only to the pad's centre
+    leaves half the band hanging past the stripe's end, a step in the
+    outer corner (owner's observation on the cascade renders, 2026-10-05);
+    the stripe therefore reaches the band's outer edge: the pad centre plus
+    half the bus width on the side of the row the bus pad sits on
+    (``common_bus_pad_position``). ``None`` without a bus pad.
+    """
+
+    if pad_plan is None or pad_plan.common_bus_assignment is None:
+        return None
+    centre_x_um = pad_plan.common_bus_assignment.slot.center[0]
+    half_band_um = config.bus_width_um / 2.0
+    if config.common_bus_pad_position == "left":
+        return centre_x_um - half_band_um
+    return centre_x_um + half_band_um
+
+
 def common_bus_pad_slot_gap(config: ElectricalRoutingConfig) -> int:
     """Return the empty slots required between the last individual pad and the bus pad.
 

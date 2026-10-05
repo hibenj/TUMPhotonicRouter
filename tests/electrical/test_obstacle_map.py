@@ -108,12 +108,12 @@ def test_common_bus_rail_and_pad_escape_use_bus_width_only():
     assert escape_path[0] in result.common_bus.bus.cells
     first_y = escape_path[0][1]
     horizontal_prefix = [cell for cell in escape_path if cell[1] == first_y]
-    assert len(horizontal_prefix) > 1
-    # Milestone 1 part 2 (eight-row bundles plan): the bus trim now reaches
-    # under the bus pad slot's own column (below), so the escape's starting
-    # dogleg is at most a one-grid-cell correction -- not the multi-cell
-    # directional run toward the pad this test used to require -- rather
-    # than genuinely walking back through the stripe.
+    assert horizontal_prefix
+    # Milestone 1 part 2 (eight-row bundles plan): the bus trim reaches under
+    # the bus pad slot's own column (below), and since 2026-10-05 the escape
+    # starts in the pad's target column when the stripe covers it, so the
+    # escape rises straight out of the stripe: the horizontal prefix is at
+    # most a one-grid-cell correction, never a walk back through the stripe.
     assert abs(horizontal_prefix[-1][0] - horizontal_prefix[0][0]) <= 1
     bus_connection_cells = {
         cell
@@ -128,8 +128,11 @@ def test_common_bus_rail_and_pad_escape_use_bus_width_only():
     half_overlap_um = max(grid_pitch / 2.0, config.wire_width_um / 2.0)
     bus_pad_slot_x_um = bus_assignment.slot.center[0]
     assert result.common_bus.bus.bbox[0] == pytest.approx(min(connection_xs) - half_overlap_um)
+    # the stripe reaches the outer edge of the escape's band under the bus
+    # pad (pad centre plus half the bus width, 2026-10-05), so the escape
+    # rises flush from the stripe's end
     assert result.common_bus.bus.bbox[2] == pytest.approx(
-        max(max(connection_xs) + half_overlap_um, bus_pad_slot_x_um + half_overlap_um)
+        max(max(connection_xs) + half_overlap_um, bus_pad_slot_x_um + config.bus_width_um / 2.0)
     )
     assert result.common_bus.bus.bbox[0] <= bus_pad_slot_x_um <= result.common_bus.bus.bbox[2]
     bus_route_segments = [tagged.bbox for tagged in tagged_rects if tagged.source == "bus_route"]

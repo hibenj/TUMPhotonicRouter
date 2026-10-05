@@ -1,5 +1,95 @@
 [
   {
+    "baseline_violations": [
+      {
+        "actual": 3,
+        "benchmark": "heater_single",
+        "expected": 4,
+        "name": "metrics.bend_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 0,
+        "benchmark": "heater_single",
+        "expected": 1,
+        "name": "metrics.bus_bend_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 560.0,
+        "benchmark": "heater_single",
+        "expected": 570.0,
+        "name": "metrics.bus_length_um",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 700.0,
+        "benchmark": "heater_single",
+        "expected": 710.0,
+        "name": "metrics.centerline_length_um",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 0.09284703663027952,
+        "benchmark": "heater_single",
+        "expected": 0.1017987695167163,
+        "name": "metrics.metal_area_overcount_ratio",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 864269.14,
+        "benchmark": "heater_single",
+        "expected": 788269.14,
+        "name": "metrics.raw_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 784024.3114999998,
+        "benchmark": "heater_single",
+        "expected": 708024.3114999998,
+        "name": "metrics.union_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 679826.9915,
+        "benchmark": "heater_single",
+        "expected": 603826.9915,
+        "name": "metrics.wire_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 13,
+        "benchmark": "heater_single",
+        "expected": 14,
+        "name": "realization_metrics.pre_union_rect_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 784024.3115,
+        "benchmark": "heater_single",
+        "expected": 708024.3115,
+        "name": "realization_metrics.raw_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 784024.3114999998,
+        "benchmark": "heater_single",
+        "expected": 708024.3114999998,
+        "name": "realization_metrics.union_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      }
+    ],
     "benchmark": "heater_single",
     "common_bus_escape_success": true,
     "common_bus_success": true,
@@ -8,10 +98,10 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 4,
-      "bus_bend_count": 1,
-      "bus_length_um": 570.0,
-      "centerline_length_um": 710.0,
+      "bend_count": 3,
+      "bus_bend_count": 0,
+      "bus_length_um": 560.0,
+      "centerline_length_um": 700.0,
       "cross_net_min_spacing_um": 145.00000000000006,
       "metal_area_overcount_by_reason_um2": {
         "bus_stripe_contact": 200.0,
@@ -25,7 +115,7 @@
         "pad/route_tail": 181.0800000000006,
         "route_tail/terminal_adapter": 71.64850000000024
       },
-      "metal_area_overcount_ratio": 0.1017987695167163,
+      "metal_area_overcount_ratio": 0.09284703663027952,
       "metal_area_overcount_um2": 80244.82850000018,
       "metal_redundant_area_overcount_by_source_um2": {},
       "metal_redundant_area_overcount_um2": 0,
@@ -65,7 +155,7 @@
         "common_bus": 1,
         "individual": 1
       },
-      "raw_metal_area_um2": 788269.14,
+      "raw_metal_area_um2": 864269.14,
       "rect_count": 12,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
@@ -85,8 +175,8 @@
       },
       "same_net_redundant_overlap_pair_count": 0,
       "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 708024.3114999998,
-      "wire_metal_area_um2": 603826.9915
+      "union_metal_area_um2": 784024.3114999998,
+      "wire_metal_area_um2": 679826.9915
     },
     "pad_assignment_count": 2,
     "pad_side": "top",
@@ -94,9 +184,9 @@
       "metal_area_overcount_um2": 1.1641532182693481e-10,
       "net_count": 2,
       "output_polygon_count": 2,
-      "pre_union_rect_count": 14,
-      "raw_metal_area_um2": 708024.3115,
-      "union_metal_area_um2": 708024.3114999998
+      "pre_union_rect_count": 13,
+      "raw_metal_area_um2": 784024.3115,
+      "union_metal_area_um2": 784024.3114999998
     },
     "terminal_group_count": 1,
     "verification_error_count": 0,
@@ -105,6 +195,96 @@
     "verification_warning_count": 0
   },
   {
+    "baseline_violations": [
+      {
+        "actual": 80,
+        "benchmark": "heater_lanes_20",
+        "expected": 81,
+        "name": "metrics.bend_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 20,
+        "benchmark": "heater_lanes_20",
+        "expected": 21,
+        "name": "metrics.bus_bend_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 7670.0,
+        "benchmark": "heater_lanes_20",
+        "expected": 7680.0,
+        "name": "metrics.bus_length_um",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 18320.0,
+        "benchmark": "heater_lanes_20",
+        "expected": 18330.0,
+        "name": "metrics.centerline_length_um",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 0.024143740834835874,
+        "benchmark": "heater_lanes_20",
+        "expected": 0.024621766110272513,
+        "name": "metrics.metal_area_overcount_ratio",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3914550.8,
+        "benchmark": "heater_lanes_20",
+        "expected": 3838550.8,
+        "name": "metrics.raw_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3820038.9000000004,
+        "benchmark": "heater_lanes_20",
+        "expected": 3744038.9000000004,
+        "name": "metrics.union_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3268038.9000000004,
+        "benchmark": "heater_lanes_20",
+        "expected": 3192038.9000000004,
+        "name": "metrics.wire_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 252,
+        "benchmark": "heater_lanes_20",
+        "expected": 253,
+        "name": "realization_metrics.pre_union_rect_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3820038.9,
+        "benchmark": "heater_lanes_20",
+        "expected": 3744038.9,
+        "name": "realization_metrics.raw_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3820038.9000000004,
+        "benchmark": "heater_lanes_20",
+        "expected": 3744038.9000000004,
+        "name": "realization_metrics.union_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      }
+    ],
     "benchmark": "heater_lanes_20",
     "common_bus_escape_success": true,
     "common_bus_success": true,
@@ -113,10 +293,10 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 81,
-      "bus_bend_count": 21,
-      "bus_length_um": 7680.0,
-      "centerline_length_um": 18330.0,
+      "bend_count": 80,
+      "bus_bend_count": 20,
+      "bus_length_um": 7670.0,
+      "centerline_length_um": 18320.0,
       "cross_net_min_spacing_um": 10.0,
       "metal_area_overcount_by_reason_um2": {
         "bus_stripe_contact": 1400.0,
@@ -130,7 +310,7 @@
         "pad/route_tail": 6000.0,
         "route_tail/terminal_adapter": 1705.0
       },
-      "metal_area_overcount_ratio": 0.024621766110272513,
+      "metal_area_overcount_ratio": 0.024143740834835874,
       "metal_area_overcount_um2": 94511.89999999944,
       "metal_redundant_area_overcount_by_source_um2": {},
       "metal_redundant_area_overcount_um2": 0,
@@ -360,7 +540,7 @@
         "common_bus": 20,
         "individual": 20
       },
-      "raw_metal_area_um2": 3838550.8,
+      "raw_metal_area_um2": 3914550.8,
       "rect_count": 205,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
@@ -380,8 +560,8 @@
       },
       "same_net_redundant_overlap_pair_count": 0,
       "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 3744038.9000000004,
-      "wire_metal_area_um2": 3192038.9000000004
+      "union_metal_area_um2": 3820038.9000000004,
+      "wire_metal_area_um2": 3268038.9000000004
     },
     "pad_assignment_count": 21,
     "pad_side": "top",
@@ -389,9 +569,9 @@
       "metal_area_overcount_um2": -4.656612873077393e-10,
       "net_count": 21,
       "output_polygon_count": 21,
-      "pre_union_rect_count": 253,
-      "raw_metal_area_um2": 3744038.9,
-      "union_metal_area_um2": 3744038.9000000004
+      "pre_union_rect_count": 252,
+      "raw_metal_area_um2": 3820038.9,
+      "union_metal_area_um2": 3820038.9000000004
     },
     "terminal_group_count": 20,
     "verification_error_count": 0,
@@ -400,6 +580,96 @@
     "verification_warning_count": 0
   },
   {
+    "baseline_violations": [
+      {
+        "actual": 37,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 38,
+        "name": "metrics.bend_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 8,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 9,
+        "name": "metrics.bus_bend_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3520.0,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 3530.0,
+        "name": "metrics.bus_length_um",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 9130.0,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 9140.0,
+        "name": "metrics.centerline_length_um",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 0.036110657013556806,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 0.03725815166057901,
+        "name": "metrics.metal_area_overcount_ratio",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 2467653.8,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 2391653.8,
+        "name": "metrics.raw_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 2378545.1999999997,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 2302545.1999999997,
+        "name": "metrics.union_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 2039845.2,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 1963845.2,
+        "name": "metrics.wire_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 136,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 137,
+        "name": "realization_metrics.pre_union_rect_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 2378545.2,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 2302545.2,
+        "name": "realization_metrics.raw_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 2378545.1999999997,
+        "benchmark": "heater_lanes_ripup",
+        "expected": 2302545.1999999997,
+        "name": "realization_metrics.union_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      }
+    ],
     "benchmark": "heater_lanes_ripup",
     "common_bus_escape_success": true,
     "common_bus_success": true,
@@ -408,10 +678,10 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 38,
-      "bus_bend_count": 9,
-      "bus_length_um": 3530.0,
-      "centerline_length_um": 9140.0,
+      "bend_count": 37,
+      "bus_bend_count": 8,
+      "bus_length_um": 3520.0,
+      "centerline_length_um": 9130.0,
       "cross_net_min_spacing_um": 10.0,
       "metal_area_overcount_by_reason_um2": {
         "bus_stripe_contact": 1000.0,
@@ -425,7 +695,7 @@
         "pad/route_tail": 3300.0,
         "route_tail/terminal_adapter": 937.75
       },
-      "metal_area_overcount_ratio": 0.03725815166057901,
+      "metal_area_overcount_ratio": 0.036110657013556806,
       "metal_area_overcount_um2": 89108.6000000001,
       "metal_redundant_area_overcount_by_source_um2": {},
       "metal_redundant_area_overcount_um2": 0,
@@ -565,7 +835,7 @@
         "common_bus": 11,
         "individual": 11
       },
-      "raw_metal_area_um2": 2391653.8,
+      "raw_metal_area_um2": 2467653.8,
       "rect_count": 108,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
@@ -585,8 +855,8 @@
       },
       "same_net_redundant_overlap_pair_count": 0,
       "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 2302545.1999999997,
-      "wire_metal_area_um2": 1963845.2
+      "union_metal_area_um2": 2378545.1999999997,
+      "wire_metal_area_um2": 2039845.2
     },
     "pad_assignment_count": 12,
     "pad_side": "top",
@@ -594,9 +864,9 @@
       "metal_area_overcount_um2": 4.656612873077393e-10,
       "net_count": 12,
       "output_polygon_count": 12,
-      "pre_union_rect_count": 137,
-      "raw_metal_area_um2": 2302545.2,
-      "union_metal_area_um2": 2302545.1999999997
+      "pre_union_rect_count": 136,
+      "raw_metal_area_um2": 2378545.2,
+      "union_metal_area_um2": 2378545.1999999997
     },
     "terminal_group_count": 11,
     "verification_error_count": 0,
@@ -605,6 +875,96 @@
     "verification_warning_count": 0
   },
   {
+    "baseline_violations": [
+      {
+        "actual": 79,
+        "benchmark": "heater_s_mod",
+        "expected": 80,
+        "name": "metrics.bend_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 20,
+        "benchmark": "heater_s_mod",
+        "expected": 21,
+        "name": "metrics.bus_bend_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 6840.0,
+        "benchmark": "heater_s_mod",
+        "expected": 6850.0,
+        "name": "metrics.bus_length_um",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 21580.0,
+        "benchmark": "heater_s_mod",
+        "expected": 21590.0,
+        "name": "metrics.centerline_length_um",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 0.02278760149654809,
+        "benchmark": "heater_s_mod",
+        "expected": 0.023230161608479828,
+        "name": "metrics.metal_area_overcount_ratio",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3989271.1399999997,
+        "benchmark": "heater_s_mod",
+        "expected": 3913271.1399999997,
+        "name": "metrics.raw_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3898365.2189999996,
+        "benchmark": "heater_s_mod",
+        "expected": 3822365.2189999996,
+        "name": "metrics.union_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3318609.4989999994,
+        "benchmark": "heater_s_mod",
+        "expected": 3242609.4989999994,
+        "name": "metrics.wire_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 256,
+        "benchmark": "heater_s_mod",
+        "expected": 257,
+        "name": "realization_metrics.pre_union_rect_count",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3898365.2189999996,
+        "benchmark": "heater_s_mod",
+        "expected": 3822365.2189999996,
+        "name": "realization_metrics.raw_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      },
+      {
+        "actual": 3898365.2189999996,
+        "benchmark": "heater_s_mod",
+        "expected": 3822365.2189999996,
+        "name": "realization_metrics.union_metal_area_um2",
+        "operator": "~=",
+        "tolerance": 1e-06
+      }
+    ],
     "benchmark": "heater_s_mod",
     "common_bus_escape_success": true,
     "common_bus_success": true,
@@ -613,10 +973,10 @@
     "guardrail_violations": [],
     "individual_topology_success": true,
     "metrics": {
-      "bend_count": 80,
-      "bus_bend_count": 21,
-      "bus_length_um": 6850.0,
-      "centerline_length_um": 21590.0,
+      "bend_count": 79,
+      "bus_bend_count": 20,
+      "bus_length_um": 6840.0,
+      "centerline_length_um": 21580.0,
       "cross_net_min_spacing_um": 10.0,
       "metal_area_overcount_by_reason_um2": {
         "bus_stripe_contact": 1400.0,
@@ -630,7 +990,7 @@
         "pad/route_tail": 4222.680000000037,
         "route_tail/terminal_adapter": 1681.1410000000014
       },
-      "metal_area_overcount_ratio": 0.023230161608479828,
+      "metal_area_overcount_ratio": 0.02278760149654809,
       "metal_area_overcount_um2": 90905.92100000009,
       "metal_redundant_area_overcount_by_source_um2": {},
       "metal_redundant_area_overcount_um2": 0,
@@ -870,7 +1230,7 @@
         "common_bus": 21,
         "individual": 21
       },
-      "raw_metal_area_um2": 3913271.1399999997,
+      "raw_metal_area_um2": 3989271.1399999997,
       "rect_count": 214,
       "required_cross_net_clearance_um": 10.0,
       "same_net_duplicate_rect_count": 0,
@@ -890,8 +1250,8 @@
       },
       "same_net_redundant_overlap_pair_count": 0,
       "same_net_redundant_overlap_pair_count_by_source": {},
-      "union_metal_area_um2": 3822365.2189999996,
-      "wire_metal_area_um2": 3242609.4989999994
+      "union_metal_area_um2": 3898365.2189999996,
+      "wire_metal_area_um2": 3318609.4989999994
     },
     "pad_assignment_count": 22,
     "pad_side": "top",
@@ -899,9 +1259,9 @@
       "metal_area_overcount_um2": 0.0,
       "net_count": 22,
       "output_polygon_count": 22,
-      "pre_union_rect_count": 257,
-      "raw_metal_area_um2": 3822365.2189999996,
-      "union_metal_area_um2": 3822365.2189999996
+      "pre_union_rect_count": 256,
+      "raw_metal_area_um2": 3898365.2189999996,
+      "union_metal_area_um2": 3898365.2189999996
     },
     "terminal_group_count": 21,
     "verification_error_count": 0,

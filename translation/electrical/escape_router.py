@@ -113,13 +113,21 @@ def _endpoint_dogleg_to_targets(
         if pad_position == "left"
         else max(x for x, _ in common_bus.bus.cells)
     )
-    endpoint_cells = tuple(cell for cell in common_bus.bus.cells if cell[0] == endpoint_x)
     target = _choose_dogleg_target(targets, pad_side)
+    # Start in the target's own column when the stripe reaches under it
+    # (the trim extends the stripe to the escape band's outer edge, so it
+    # does since 2026-10-05): the escape then rises straight out of the
+    # stripe. Otherwise start at the stripe's end nearest the pad and dogleg
+    # from there.
+    start_x = (
+        target[0] if any(cell[0] == target[0] for cell in common_bus.bus.cells) else endpoint_x
+    )
+    start_cells = tuple(cell for cell in common_bus.bus.cells if cell[0] == start_x)
     bus_center_y = (
         min(y for _, y in common_bus.bus.cells) + max(y for _, y in common_bus.bus.cells)
     ) / 2.0
     start = min(
-        endpoint_cells,
+        start_cells,
         key=lambda cell: (abs(cell[1] - bus_center_y), cell[1], cell[0]),
     )
     corner = (target[0], start[1])

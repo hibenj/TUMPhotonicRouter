@@ -14,7 +14,7 @@ from .bus_search import (
 from .column_trunks import straight_drop_to_bus
 from .common_bus_router import trim_common_bus_to_connections
 from .individual_topology import compute_individual_escape_topology
-from .pad_slots import plan_pad_slots
+from .pad_slots import common_bus_stripe_reach_x_um, plan_pad_slots
 from .types import (
     CommonBusRoutingResult,
     ElectricalObstacleMap,
@@ -66,11 +66,7 @@ def reconcile_pad_sides(
                 obstacle_map, common_bus, config
             )
             pad_plan = plan_pad_slots(common_bus, obstacle_map, config, individual_topology)
-            fresh_bus_pad_slot_x_um = (
-                pad_plan.common_bus_assignment.slot.center[0]
-                if pad_plan.common_bus_assignment is not None
-                else None
-            )
+            fresh_bus_pad_slot_x_um = common_bus_stripe_reach_x_um(pad_plan, config)
             if fresh_bus_pad_slot_x_um is not None and fresh_bus_pad_slot_x_um != keep_span_to_x_um:
                 obstacle_map, common_bus = trim_common_bus_to_connections(
                     obstacle_map,

@@ -112,8 +112,9 @@ class CommonBusTrimmer(Protocol):
     """Stage 4: limit the realized/debug bus stripe to the span actually used.
 
     ``keep_span_to_x_um`` (keyword-only, default ``None``) widens the
-    trimmed span to include that x, so a second call after the pad plan
-    exists can keep the stripe reaching under the bus pad slot's column.
+    trimmed span to reach exactly that x, so a second call after the pad
+    plan exists can keep the stripe reaching the outer edge of the escape's
+    band under the bus pad slot (``pad_slots.common_bus_stripe_reach_x_um``).
     """
 
     def __call__(
@@ -158,7 +159,8 @@ class PadSideReconciler(Protocol):
 
     ``keep_span_to_x_um`` (default ``None``) is threaded into the internal
     re-trim (``trim_common_bus_to_connections``) so a swap-triggered
-    recompute keeps the stripe reaching under the bus pad slot's column too.
+    recompute keeps the stripe reaching the escape band's outer edge under
+    the bus pad slot too.
     """
 
     def __call__(

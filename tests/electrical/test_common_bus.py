@@ -389,10 +389,13 @@ def test_swap_skips_a_heater_whose_branch_carries_others(electrical_benchmark_re
 def test_trim_keeps_the_stripe_under_the_bus_pad(electrical_benchmark_result):
     """Milestone 1 part 2 (eight-row bundles plan): ``route_electrical_heaters``
     re-runs ``trim_common_bus_to_connections`` once the pad plan exists, with
-    ``keep_span_to_x_um`` set to the common-bus pad slot's centre x, so the
-    trimmed stripe reaches under that pad instead of stopping at the last
-    branch -- the escape then rises out of the stripe next to its own pad
-    column instead of doglegging in from further away.
+    ``keep_span_to_x_um`` set to the outer edge of the escape's band under
+    the common-bus pad slot (``pad_slots.common_bus_stripe_reach_x_um``,
+    2026-10-05: the pad centre left half the 400 um band hanging past the
+    stripe's end, a step in the outer corner), so the trimmed stripe reaches
+    under that pad instead of stopping at the last branch -- the escape then
+    rises out of the stripe flush with its end instead of doglegging in from
+    further away.
 
     The escape still lands one grid cell (routing_grid_pitch_um, 10 um) off
     dead-straight here: ``_choose_dogleg_target`` picks the horizontal
@@ -418,4 +421,12 @@ def test_trim_keeps_the_stripe_under_the_bus_pad(electrical_benchmark_result):
     escape = result.common_bus_escape
     assert escape is not None
     assert escape.success
+    # the escape's realized band ends flush with the stripe's end: no step
+    # in the outer corner (bus pad on the right by default)
+    from translation.electrical.metal_realization import common_bus_escape_rects
+
+    config = ElectricalRoutingConfig()
+    escape_rects = common_bus_escape_rects(result.common_bus, escape, result.obstacle_map, config)
+    assert escape_rects
+    assert max(rect[2] for rect in escape_rects) == pytest.approx(bus_max_x_um)
     assert _path_direction_changes(escape.path) <= 1
