@@ -42,7 +42,11 @@ in `benchmarks/` with a `build_schematic()` and optional
 `STABLE_ROUTING_FLAGS`; `heater_s_mod` is the 8-mode cascade, `cascade_*` the
 generated 8, 12 and 16-mode cascades, folded, diagonal, compact (the
 diagonal at the smallest column pitch that routes clean) and folded_compact
-(the fold likewise).
+(the fold likewise). The owner's tape-out circuits are rebuilt from their GDS
+with generic components (`translation/gds_circuit_extraction.py`,
+`gds_circuit_rebuild.py`) into the git-ignored package `benchmarks/private/`
+(`private.<name>`); the GDS files and the configurations that name their
+foundry cells never enter the repository.
 
 ```
 python -m photonic_router route <benchmark> [--configuration baseline|contribution1|contribution2]
@@ -96,7 +100,8 @@ Rust tests sit next to their modules.
 ## Adding things
 
 - A benchmark: a module in `benchmarks/` with `build_schematic()`; see
-  `benchmarks/cascade.py` for a parametric builder.
+  `benchmarks/cascade.py` for a parametric builder, or
+  `scripts/extract_private_benchmark.py` to rebuild one from a GDS.
 - A configuration field: both mirrors, `RouterConfig.to_rust`, an overlay
   entry if ad hoc, a `FlowOptions` field and flag if flow-level, then
   regenerate `docs/CONFIGURATION.md`.

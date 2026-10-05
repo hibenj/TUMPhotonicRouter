@@ -24,3 +24,7 @@ dist/
 
 # Archived benchmark runs (scripts/results/run_and_archive.sh); GDS and reports, not versioned
 /results/
+
+# Benchmarks extracted from the owner's confidential tape-out circuits
+# (.agent/execplans/2026-10-05-private-circuits-from-gds.md): never versioned.
+/benchmarks/private/
