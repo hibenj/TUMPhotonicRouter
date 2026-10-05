@@ -2,7 +2,7 @@
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds. This document must be maintained in accordance with `.agent/PLANS.md`.
 
-Status: **2026-09-28 -- COMPLETE: the eight-row bundles route; five of six cascades electrically clean; the sixth is a one-sided pad-row capacity limit put to the owner (two-sided pads, a wider fold, or the diagonal).**
+Status: **2026-09-28 -- COMPLETE: the eight-row bundles route; five of six cascades electrically clean; the sixth is a one-sided pad-row capacity limit put to the owner (two-sided pads, a wider fold, or the diagonal).** Addendum 2026-10-05: the "capacity limit" was superseded by `.agent/execplans/2026-09-29-pad-wire-channel-routing.md` (joint track assignment over all bundles, channel sized from its track count): `cascade_16_folded` verifies clean with every wire channel-routed, the inward nesting (`PadAssignment.nesting`) is deleted, and the owner's decision above is moot.
 
 
 ## Purpose / Big Picture

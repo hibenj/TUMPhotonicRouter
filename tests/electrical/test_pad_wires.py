@@ -2,31 +2,22 @@
 and pad_wire_search.py.
 
 Stage 9 (``PadWireRouter``): routing every individual pad wire as an L, or a
-Z fallback -- the dispatcher and the river/search construction under it.
+Z fallback -- the dispatcher and the channel-routing/search construction
+under it. ``assign_tracks`` (the global track assignment, 2026-09-29 channel
+routing plan) is pure and tested directly on synthetic wire sets below,
+independent of any escape bundle or obstacle map.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
-from tests.electrical.support import _terminal
 from tests.fixtures.synthetic_layouts import (
     multi_heater_schematic as build_multi_heater_schematic,
 )
 from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
 from translation.electrical.pad_wire_search import _pad_stub_step_cost
-from translation.electrical.river_routing import try_river_route_bundle
-from translation.electrical.types import (
-    BusStripe,
-    ElectricalObstacleMap,
-    ElectricalPortAccess,
-    EscapeTopologyRoute,
-    PadAssignment,
-    PadSlot,
-)
-from translation.electrical.wire_geometry import cells_from_point_path
+from translation.electrical.river_routing import ChannelWire, assign_tracks
 from translation.layout_from_schematic import layout_from_schematic
 
 
@@ -175,90 +166,130 @@ def test_pad_stub_cost_penalizes_turns_and_backtracking():
     assert moving_away_from_pad_edge > straight_toward_target
 
 
-def test_river_serves_an_inward_row_one_pad():
-    """Rule A part 2 (eight-row-bundles plan): row 1's pad may be inward of
-    its own corridor lane c_1 -- pad_slots anchors row 1 at or beyond c_1
-    (Rule A part 1), but the interval push rule can still shove a "left"
-    -side bundle's row 1 back inward by up to one pad pitch. The river
-    construction absorbs exactly that instead of refusing the bundle: the
-    same four-point centerline (out to c_1, up to h_1, across, into the
-    pad), which becomes a Z because the crossing run now reverses
-    direction back toward the terminal.
+# --- assign_tracks: pure unit tests on synthetic wire sets (channel routing
+# plan, 2026-09-29). ``assign_tracks`` never reads an obstacle map or a
+# config; every wire is a bare (id, corridor lane c, pad column p, row)
+# tuple, so these are independent of any bundle, benchmark or grid.
+
+
+def test_assign_tracks_places_one_outward_nested_bundle_in_row_order():
+    """A four-row outward-nested bundle: corridor lanes cluster near the
+    exit column (c increasing with row), pad columns cluster near the pad
+    row (p increasing with row, all p > all c) -- row 1's pad column falls
+    inside every other row's span (each row's own corridor lane is closer to
+    the exit, so a later row's span always reaches back across row 1's pad
+    column too), so row 1 must lie above every other row, and so on down
+    the stack: four tracks, row 1 on the highest (nearest the pads).
     """
 
-    grid = SimpleNamespace(width=100, height=100, grid_size_um=1.0, origin=(0.0, 0.0))
-    terminal = _terminal("heater_x:r", (10.5, 10.5))
-    access = ElectricalPortAccess(
-        terminal_id=terminal.id,
-        heater_id=terminal.heater_id,
-        purpose="individual",
-        side="top",
-        port_name="e1",
-        port_point_um=(10.5, 10.5),
-        port_orientation_deg=0.0,
-        port_width_um=4.0,
-        contact_bbox=(8.5, 8.5, 12.5, 12.5),
-        anchor_cell=(10, 10),
-        anchor_point_um=(10.5, 10.5),
-        access_centerline_um=(),
-        opened_cells=frozenset({(10, 10)}),
-        reserved_cells=frozenset(),
-        access_length_um=0.0,
-    )
-    obstacle_map = ElectricalObstacleMap(
-        grid=grid,
-        raw_blocked_cells=frozenset(),
-        blocked_cells=frozenset(),
-        terminal_open_cells={terminal.id: frozenset({(10, 10)})},
-        bus=BusStripe(side="bottom", bbox=(0.0, 0.0, 1.0, 1.0), cells=frozenset()),
-        die_bbox=(0.0, 0.0, 100.0, 100.0),
-        layout_bbox=(0.0, 0.0, 100.0, 100.0),
-        individual_terminal_open_cells={terminal.id: frozenset({(10, 10)})},
-        individual_port_accesses={terminal.id: access},
-    )
-    config = ElectricalRoutingConfig(
-        pad_side="top",
-        wire_width_um=2.0,
-        individual_route_spacing_um=0.0,
-        obstacle_clearance_um=1.0,
-        routing_grid_pitch_um=1.0,
-    )
-    # exit_column = opening_edge(10) + clearance_cells(1) = 11;
-    # c_1 = exit_column + track_pitch_cells(2) = 13; the pad column (10) is
-    # deliberately left of it (inward, for this exit_dx=+1 bundle).
-    pad_slot = PadSlot(index=0, center=(10.5, 50.5), bbox=(9.5, 48.5, 11.5, 52.5), side="top")
-    assignment = PadAssignment(
-        slot=pad_slot,
-        net_id="individual:heater_x",
-        kind="individual",
-        terminal=terminal,
-        heater_id="heater_x",
-    )
-    topology_route = EscapeTopologyRoute(
-        terminal=terminal, path=((10, 10),), exit_cell=(10, 10), success=True
-    )
-    target_cells = frozenset({(10, 50)})
-    members = [(0, terminal, assignment, topology_route, target_cells)]
+    wires = [
+        ChannelWire("row1", c=10, p=50, row=1),
+        ChannelWire("row2", c=20, p=60, row=2),
+        ChannelWire("row3", c=30, p=70, row=3),
+        ChannelWire("row4", c=40, p=80, row=4),
+    ]
 
-    wires, reason = try_river_route_bundle(
-        members,
-        exit_dx=1,
-        obstacle_map=obstacle_map,
-        config=config,
-        hard_blocked=set(),
-        all_terminal_cells={(10, 10)},
-        all_assigned_pad_cells={(10, 50)},
-        assigned_pad_cells_by_slot={0: frozenset({(10, 50)})},
-        committed_footprint_cells=set(),
-    )
+    placed, unplaced = assign_tracks(wires, track_pitch_cells=5)
 
-    assert reason is None
-    assert wires is not None
-    _member, centerline, shape = wires[0]
-    assert shape == "Z"
-    xs = [point[0] for point in centerline]
-    assert xs[1] > xs[0]  # out to c_1 (13.5), away from the terminal (10.5)
-    assert xs[-1] < xs[1]  # back inward to the pad column (10.5)
+    assert unplaced == []
+    assert placed == {"row1": 4, "row2": 3, "row3": 2, "row4": 1}
+
+
+def test_assign_tracks_three_wire_case_from_cascade_16_folded():
+    """The measured case that motivated this plan (owner's observation,
+    2026-09-29): W's corridor lane and pad column at cell x 1854 and 2334,
+    V's at 2260 and 2464, U's at 2290 and 2594 -- W's own pad column (2334)
+    falls inside both V's and U's spans, and V's pad column (2464) falls
+    inside U's span, so W must sit above V and U, and V above U: three
+    tracks, W nearest the pads, U farthest.
+    """
+
+    wires = [
+        ChannelWire("W", c=1854, p=2334, row=1),
+        ChannelWire("V", c=2260, p=2464, row=1),
+        ChannelWire("U", c=2290, p=2594, row=2),
+    ]
+
+    placed, unplaced = assign_tracks(wires, track_pitch_cells=10)
+
+    assert unplaced == []
+    assert placed == {"W": 3, "V": 2, "U": 1}
+
+
+def test_assign_tracks_reports_a_two_wire_cycle_as_unplaced():
+    """W's corridor lane falls inside R's span (R must sit above W) while
+    R's corridor lane also falls inside W's span (W must sit above R): no
+    consistent order exists, so both wires are returned unplaced for the
+    per-wire fallback.
+    """
+
+    wires = [
+        ChannelWire("W", c=10, p=30, row=1),
+        ChannelWire("R", c=20, p=5, row=1),
+    ]
+
+    placed, unplaced = assign_tracks(wires, track_pitch_cells=3)
+
+    assert placed == {}
+    assert sorted(unplaced) == ["R", "W"]
+
+
+def test_assign_tracks_packs_disjoint_spans_onto_one_track():
+    """Two wires whose spans are far apart (well beyond one pitch) share
+    the lowest track: neither constrains the other, and the left-edge scan
+    places both in one pass.
+    """
+
+    wires = [
+        ChannelWire("A", c=10, p=20, row=1),
+        ChannelWire("B", c=100, p=110, row=1),
+    ]
+
+    placed, unplaced = assign_tracks(wires, track_pitch_cells=5)
+
+    assert unplaced == []
+    assert placed == {"A": 1, "B": 1}
+
+
+def test_assign_tracks_fills_from_the_top_so_an_unconstrained_wire_stays_near_its_pad():
+    """Second slice (2026-09-29): a lone wire far from a three-row nested
+    bundle has no constraint at all. Filling the tracks from the bottom put
+    it on track 1, the track farthest from the pads, next to the layout's
+    edge; filling from the top with row preference puts it on the highest
+    track, beside the bundle's own row 1, where its run is nearest its pad.
+    """
+
+    wires = [
+        ChannelWire("row1", c=10, p=50, row=1),
+        ChannelWire("row2", c=20, p=60, row=2),
+        ChannelWire("row3", c=30, p=70, row=3),
+        ChannelWire("lone", c=200, p=220, row=1),
+    ]
+
+    placed, unplaced = assign_tracks(wires, track_pitch_cells=5)
+
+    assert unplaced == []
+    assert placed == {"row1": 3, "row2": 2, "row3": 1, "lone": 3}
+
+
+def test_assign_tracks_holds_a_pad_column_within_a_pitch_of_a_lane_as_a_crossing():
+    """The measured cascade_12_folded pair (second slice, 2026-09-29): a
+    bundle's outermost row ends at pad column 683, a lone heater's corridor
+    lane starts at 681 -- two cells apart at a three-cell pitch. Neither x
+    falls inside the other's span literally, yet the dilated wires collide,
+    so the margin of one pitch less one cell counts it as a crossing: the
+    lone heater must lie below the bundle's row, two tracks, not one.
+    """
+
+    wires = [
+        ChannelWire("heater_post_5", c=630, p=683, row=6),
+        ChannelWire("heater_extra_0", c=681, p=696, row=1),
+    ]
+
+    placed, unplaced = assign_tracks(wires, track_pitch_cells=3)
+
+    assert unplaced == []
+    assert placed == {"heater_post_5": 2, "heater_extra_0": 1}
 
 
 # Also marked e2e (routes a full 16-mode cascade benchmark end to end,
@@ -266,143 +297,50 @@ def test_river_serves_an_inward_row_one_pad():
 # (scripts/test_baseline.sh).
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_eight_row_bundles_are_river_routed_on_cascade_16_folded(electrical_benchmark_result):
-    """Rules A and B (eight-row-bundles plan): ``cascade_16_folded`` has four
-    eight-terminal escape bundles (``heater_0..7``, ``heater_post_0..7``,
-    and two from the "extra" cascade heaters); the two core ones -- the
-    eight-row groups the plan's Purpose section names -- river-route
-    cleanly with no fallback and no failed route.
+def test_cascade_16_folded_routes_its_lone_heater_and_neighbour_bundle_clean(
+    electrical_benchmark_result,
+):
+    """The bug this plan fixes (2026-09-29 channel routing plan, Purpose):
+    on ``cascade_16_folded``, ``heater_extra_0``'s lone-heater bundle exits
+    under a neighbouring bundle's own corridor/pad run; the old per-bundle
+    nesting construction refused both bundles and the fallback for
+    ``heater_extra_2:l`` could not find a path at all. The joint track
+    assignment gives the three wires distinct tracks instead: all three
+    river-route, and the benchmark verifies electrically clean.
     """
 
     result = electrical_benchmark_result("cascade_16_folded")
 
-    assert result.detailed_bundle_routes is not None
-    fallback_reasons = result.detailed_bundle_routes.bundle_fallback_reasons
-    bundles_by_id = {bundle.bundle_id: bundle for bundle in result.individual_topology.bundles}
-    core_bundle_ids = {
-        bundle_id
-        for bundle_id, bundle in bundles_by_id.items()
-        if {terminal.heater_id for terminal in bundle.ordered_terminals}
-        in (
-            {f"heater_{i}" for i in range(8)},
-            {f"heater_post_{i}" for i in range(8)},
-        )
+    assert result.verification is not None
+    assert result.verification.success, result.verification.issues
+
+    routes_by_terminal_id = {
+        route.terminal.id: route for route in result.detailed_bundle_routes.routes
     }
-    assert len(core_bundle_ids) == 2
-    assert not (core_bundle_ids & fallback_reasons.keys())
-
-    failed_heater_ids = {
-        route.terminal.heater_id for route in result.detailed_bundle_routes.failed_routes
-    }
-    core_heater_ids = {f"heater_{i}" for i in range(8)} | {f"heater_post_{i}" for i in range(8)}
-    assert not (failed_heater_ids & core_heater_ids)
+    for terminal_id in ("heater_extra_0:r", "heater_extra_1:l", "heater_extra_2:l"):
+        route = routes_by_terminal_id[terminal_id]
+        assert route.construction == "river", (terminal_id, route.construction)
 
 
-# Also marked e2e (routes a full 12-mode cascade benchmark end to end):
-# keeps the fast "-m not e2e" suite under its enforced 60 s budget
+# Also marked e2e (routes a full 8-mode cascade-equivalent benchmark end to
+# end): keeps the fast "-m not e2e" suite under its enforced 60 s budget
 # (scripts/test_baseline.sh).
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_inward_block_is_river_routed_with_mirrored_nesting(electrical_benchmark_result):
-    """Mirrored-nesting plan: an inward-pushed 2-row block river-routes cleanly.
-
-    Two discrepancies from the plan's own "measured" case (``cascade_16_folded``
-    bundle 3, ``heater_extra_1:l``/``heater_extra_2:l``), both verified
-    directly against an unmodified checkout of the commit this plan starts
-    from:
-
-    1. Its actual refusal there is not "pad column is inward of its
-       corridor lane" (row 2) but a plain wire collision at row 1 -- row 1
-       (``heater_extra_1``) is processed first in the per-row loop, and its
-       own centerline (identical corridor lane and pad column, only the
-       channel height differs between the mirrored and unmirrored
-       constructions, and both heights cross the same rectangle) collides
-       with ``heater_extra_0:r``'s own, unrelated, pre-existing full-grid
-       fallback wire (bundle 2, itself a plain "collides at row 1" refusal,
-       byte-identical with or without this change). That is a separate bug
-       outside this plan's scope, not something mirrored nesting fixes;
-       ``cascade_16_folded`` is unchanged by this plan (still the one
-       cascade that does not verify clean, for that same pre-existing
-       reason).
-    2. The exact same 2-terminal pattern (``heater_extra_1``/``2``) on
-       ``cascade_12_folded`` *is* a genuine "row 1 pushed inward of c_1"
-       case, and demonstrates the fix cleanly: mirrored nesting there
-       computes different (correctly swapped) channel heights than the old,
-       unmirrored construction, both wires still land as valid, non-crossing
-       Z's, and the bundle keeps its "river" construction (no fallback).
-
-    A third discrepancy surfaced during implementation, not by the plan: an
-    *eight*-row inward block (``cascade_16_folded`` bundle 9 -- and
-    ``cascade_12_folded`` bundle 7, six rows) straddles far enough that the
-    module docstring's monotonic-pad-order argument alone does not exclude
-    a crossing; the verifier caught it as a real ``cross_net_metal_overlap``
-    before ``try_river_route_bundle`` gained the same-bundle bare-centerline
-    check its docstring now describes. Both those wider bundles now
-    correctly refuse and fall back instead (checked in
-    ``test_eight_row_bundles_are_river_routed_on_cascade_16_folded`` and the
-    suite/cascade gate that neither fallback drops a wire).
+def test_heater_s_mod_every_wire_river_routes_with_zero_detour(electrical_benchmark_result):
+    """``heater_s_mod``'s bundles nest cleanly under the joint track
+    assignment (its old per-bundle "inward"/"outward" mirrored nesting was a
+    special case of this, not a separate rule): every wire is "river" and
+    every wire's detour is 0 (each one is a monotone L or a single-bend-pair
+    Z through its own shared track, never a full-grid search).
     """
 
-    result = electrical_benchmark_result("cascade_12_folded")
+    result = electrical_benchmark_result("heater_s_mod")
+
     assert result.verification is not None
-    assert result.verification.success
-
-    fallback_reasons = result.detailed_bundle_routes.bundle_fallback_reasons
-    assert 3 not in fallback_reasons
-
-    bundle3_routes = sorted(
-        (route for route in result.detailed_bundle_routes.routes if route.bundle_id == 3),
-        key=lambda route: route.rank,
-    )
-    assert len(bundle3_routes) == 2
-    assert all(route.construction == "river" for route in bundle3_routes)
-    assert all(route.shape == "Z" for route in bundle3_routes)
-
-    assignments_by_terminal_id = {
-        assignment.terminal.id: assignment
-        for assignment in result.pad_plan.assignments
-        if assignment.terminal is not None
-    }
-    assert all(
-        assignments_by_terminal_id[route.terminal.id].nesting == "inward"
-        for route in bundle3_routes
-    )
-
-    # No two of the bundle's wires cross: the same cell-path intersection
-    # test the codebase already uses for terminal/pad openings, applied
-    # pairwise between every wire's own grid-cell centerline.
-    path_cells = [frozenset(cells_from_point_path(route.centerline)) for route in bundle3_routes]
-    for i in range(len(path_cells)):
-        for j in range(i + 1, len(path_cells)):
-            assert not path_cells[i] & path_cells[j], (
-                bundle3_routes[i].terminal.id,
-                bundle3_routes[j].terminal.id,
-            )
-
-
-@pytest.mark.integration
-@pytest.mark.e2e
-def test_suite_cases_have_no_inward_blocks(electrical_benchmark_result):
-    """Mirrored-nesting plan: the four suite cases keep every block outward.
-
-    ``heater_single``, ``heater_lanes_20``, ``heater_lanes_ripup`` and
-    ``heater_s_mod`` have no bundle whose row-1 pad is ever pushed inward of
-    its corridor lane c_1 today, so ``pad_slots._interval_nesting`` must not
-    start marking any of their assignments "inward" -- their placement must
-    not change.
-    """
-
-    for benchmark_name in (
-        "heater_single",
-        "heater_lanes_20",
-        "heater_lanes_ripup",
-        "heater_s_mod",
-    ):
-        result = electrical_benchmark_result(benchmark_name)
-        assert result.pad_plan is not None
-        inward = [
-            assignment.terminal.id
-            for assignment in result.pad_plan.assignments
-            if assignment.kind == "individual" and assignment.nesting == "inward"
-        ]
-        assert not inward, f"{benchmark_name} has inward pad blocks: {inward}"
+    assert result.verification.success, result.verification.issues
+    detailed = result.detailed_bundle_routes
+    assert detailed.failed_routes == ()
+    assert detailed.bundle_fallback_reasons == {}
+    assert all(route.construction == "river" for route in detailed.routes)
+    assert result.verification.metrics["pad_wire_detour_total_um"] == 0.0

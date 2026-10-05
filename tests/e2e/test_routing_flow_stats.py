@@ -622,35 +622,68 @@ def test_pad_wires_do_not_cross_each_other(benchmark_name):
                     )
 
 
-def test_bundle_falls_back_when_a_bundle_member_cannot_river_route():
-    """cascade_12_folded is the fixture known to force the per-wire fallback
-    (its six-row tomography block straddles its corridor lane and the river
-    construction refuses it); since rule G of 2026-09-28 every bundle of
-    heater_s_mod river-routes. This pins that a fallback bundle still routes
-    successfully and is reported as "fallback", not "river"."""
+def _force_one_wire_to_fall_back(monkeypatch):
+    """Make the channel router report its first placed wire as unplaced.
 
-    result = _route_electrical_benchmark("cascade_12_folded")
+    Since the second slice of the 2026-09-29 channel routing plan (the
+    channel sized from the global track count, tracks filled from the top)
+    no benchmark fixture reaches the per-wire fallback any more -- every
+    wire of every cascade channel-routes -- so the dispatcher's fallback
+    path is exercised by taking one wire away from the channel router's
+    result instead. Returns the id of the wire taken away.
+    """
+
+    import translation.electrical.bundle_detail_router as bdr
+    from translation.electrical.river_routing import ChannelRoutingResult
+
+    original = bdr.route_bundles_as_channels
+    taken: list[str] = []
+
+    def one_short(bundle_entries, obstacle_map, config, *rest):
+        result = original(bundle_entries, obstacle_map, config, *rest)
+        first, *others = result.placed
+        taken.append(first[0][1].id)
+        return ChannelRoutingResult(
+            placed=tuple(others),
+            unplaced=(*result.unplaced, (first[0], "taken away by the test")),
+        )
+
+    monkeypatch.setattr(bdr, "route_bundles_as_channels", one_short)
+    return taken
+
+
+def test_bundle_falls_back_when_a_wire_cannot_channel_route(monkeypatch):
+    """A wire the channel router could not place falls back individually
+    (2026-09-29 channel routing plan): the rest of its bundle still
+    channel-routes, the fallback wire routes successfully, and the two
+    constructions coexist within one bundle, since the fallback is per
+    wire, not per bundle. No fixture forces the fallback by itself any more
+    (second slice), so one wire of heater_s_mod is taken away from the
+    channel router's result."""
+
+    taken = _force_one_wire_to_fall_back(monkeypatch)
+    result = _route_electrical_benchmark("heater_s_mod")
     detailed = result.detailed_bundle_routes
     assert detailed.bundle_fallback_reasons
-    fallback_bundle_ids = set(detailed.bundle_fallback_reasons)
-    fallback_routes = [route for route in detailed.routes if route.bundle_id in fallback_bundle_ids]
-    assert fallback_routes
-    assert all(route.construction == "fallback" for route in fallback_routes)
+    fallback_routes = [route for route in detailed.routes if route.construction == "fallback"]
+    river_routes = [route for route in detailed.routes if route.construction == "river"]
+    assert [route.terminal.id for route in fallback_routes] == taken
     assert all(route.success for route in fallback_routes)
-    river_routes = [
-        route for route in detailed.routes if route.bundle_id not in fallback_bundle_ids
-    ]
     assert river_routes
-    assert all(route.construction == "river" for route in river_routes)
+    fallback_bundle_ids = {route.bundle_id for route in fallback_routes}
+    assert any(route.bundle_id in fallback_bundle_ids for route in river_routes)
+    assert result.verification is not None
+    assert result.verification.success, result.verification.issues
 
 
-def test_z_fallback_never_crosses_committed_metal():
-    """Every fallback wire keeps the wire spacing from every river wire on
-    cascade_12_folded (heater_s_mod has no fallback since rule G): a river wire's committed footprint (its centerline dilated
-    by the spacing radius, exactly what commit() reserves) never contains a
-    cell of a fallback wire's bare centerline. The fallback is only reached
-    when the river construction refuses a bundle, and the guarantee that
-    matters is that it can never run into an already-committed river wire."""
+def test_z_fallback_never_crosses_committed_metal(monkeypatch):
+    """Every fallback wire keeps the wire spacing from every river wire: a
+    river wire's committed footprint (its centerline dilated by the spacing
+    radius, exactly what commit() reserves) never contains a cell of a
+    fallback wire's bare centerline. The fallback is only reached when the
+    channel router could not place a wire (forced here, see
+    ``_force_one_wire_to_fall_back``), and the guarantee that matters is
+    that it can never run into an already-committed river wire."""
 
     from translation.electrical.wire_geometry import (
         cells_from_point_path,
@@ -658,7 +691,8 @@ def test_z_fallback_never_crosses_committed_metal():
         wire_spacing_radius_cells,
     )
 
-    result = _route_electrical_benchmark("cascade_12_folded")
+    _force_one_wire_to_fall_back(monkeypatch)
+    result = _route_electrical_benchmark("heater_s_mod")
     obstacle_map = result.obstacle_map
     config = ElectricalRoutingConfig()
     detailed = result.detailed_bundle_routes

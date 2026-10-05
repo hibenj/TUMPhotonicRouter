@@ -6,8 +6,6 @@ slots, both forced and automatic pad-row placement.
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from tests.fixtures.synthetic_layouts import (
@@ -241,21 +239,23 @@ def test_auto_pad_origin_compacts_row_toward_escape_topology():
     # last individual pad and the bus pad for the band to clear it, so this
     # terminal routes cleanly now.
     assert automatic_failed_terminal_ids == set()
-    # pads forced to origin 0 lie far left of every bundle; the river
-    # construction refuses them and the per-wire fallback serves only part
-    # of them (ExecPlan, Milestone 2), but at a positive clearance no wire
-    # is allowed to touch another net's metal, so there is no overlap issue
-    # at all.
+    # pads forced to origin 0 lie far left of every bundle; the old
+    # per-bundle nesting construction refused them and the per-wire fallback
+    # served only part of them (ExecPlan, Milestone 2). The channel router's
+    # joint track assignment (2026-09-29 channel routing plan) routes every
+    # wire even at this far-off origin -- every wire just needs a longer
+    # detour, not a refusal -- so the compactness check below (average
+    # centerline length) is what distinguishes the two origins now, not
+    # route count.
     assert not any(issue.code == "cross_net_metal_overlap" for issue in forced.verification.issues)
-    assert any(issue.code == "failed_detailed_route" for issue in forced.verification.issues)
+    assert not any(issue.code == "failed_detailed_route" for issue in forced.verification.issues)
     assert (
         automatic.verification.metrics["pad_channel_height_um"]
         < forced.verification.metrics["pad_channel_height_um"]
     )
-    # Rule B now routes every wire under the automatic origin (20/20) while
-    # forced-at-0 still fails most of them (8/20, asserted above), so a raw
-    # total no longer measures compactness -- it would just track how many
-    # wires got routed at all. The per-routed-wire average still does.
+    # Every wire routes under both origins now (asserted above), so a raw
+    # total would also measure compactness directly; the per-routed-wire
+    # average is kept since it is invariant to route count either way.
     automatic_average_length_um = automatic.verification.metrics["centerline_length_um"] / len(
         automatic.detailed_bundle_routes.routes
     )
@@ -292,7 +292,26 @@ def test_auto_pad_origin_compacts_row_toward_escape_topology():
     assert exit_distance(automatic) < exit_distance(forced)
 
 
-def test_auto_pad_channel_height_uses_widest_topology_bundle():
+def test_auto_pad_channel_height_uses_the_channel_routers_track_count(monkeypatch):
+    """The pad plan sizes the channel from the same joint track assignment
+    the channel router runs (second slice of the 2026-09-29 channel routing
+    plan): the channel height is the router's track count times the track
+    pitch plus one wire width -- not the widest bundle's row count (which
+    the global count can exceed, cascade_12_folded) and not the global
+    route count (which would leave most of the channel empty)."""
+
+    import translation.electrical.river_routing as rr
+
+    track_counts: list[int] = []
+    original_assign_tracks = rr.assign_tracks
+
+    def spy(wires, pitch_cells):
+        placed, unplaced = original_assign_tracks(wires, pitch_cells)
+        track_counts.append(max(placed.values(), default=0))
+        return placed, unplaced
+
+    monkeypatch.setattr(rr, "assign_tracks", spy)
+
     schematic = build_ripup_reroute_schematic()
     component = layout_from_schematic(schematic)
     config = ElectricalRoutingConfig(pad_side="top")
@@ -304,19 +323,17 @@ def test_auto_pad_channel_height_uses_widest_topology_bundle():
     assert result.individual_topology is not None
     assert result.detailed_bundle_routes is not None
     assert result.detailed_bundle_routes.success
+    assert result.detailed_bundle_routes.bundle_fallback_reasons == {}
+    assert track_counts, "expected the channel router to assign tracks"
 
     individual_route_count = len(result.detailed_bundle_routes.routes)
-    widest_bundle_tracks = max(
-        bundle.required_tracks for bundle in result.individual_topology.bundles
-    )
+    router_track_count = track_counts[-1]
     track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
-    compact_channel_height_um = widest_bundle_tracks * track_pitch_um + config.wire_width_um
+    channel_height_um = router_track_count * track_pitch_um + config.wire_width_um
     global_channel_height_um = individual_route_count * track_pitch_um + config.wire_width_um
 
-    assert result.verification.metrics["pad_channel_height_um"] == pytest.approx(
-        compact_channel_height_um
-    )
-    assert compact_channel_height_um < global_channel_height_um
+    assert result.verification.metrics["pad_channel_height_um"] == pytest.approx(channel_height_um)
+    assert channel_height_um < global_channel_height_um
     assert (
         result.verification.metrics["cross_net_min_spacing_um"]
         >= (result.verification.metrics["required_cross_net_clearance_um"])
@@ -381,65 +398,49 @@ def test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps():
 @pytest.mark.e2e
 def test_pad_intervals_start_outward_of_the_first_corridor_lane(electrical_benchmark_result):
     """Rule A (eight-row-bundles plan): every escape bundle's row i pad
-    column satisfies the river construction's own monotonicity inequality
-    (``exit_dx * (p_i - c_i) >= 0``, ``river_routing.try_river_route_bundle``)
+    column satisfies the channel router's own corridor-lane assignment
+    (``exit_dx * (p_i - c_i) >= 0``, ``river_routing.assign_corridor_lanes``)
     at or beyond its corridor lane c_i -- except possibly row 1, which the
     interval push rule can still shove inward by up to one pad pitch
-    (``pad_slots._assign_interval_indices``); ``river_routing``'s row-1 case
-    absorbs exactly that one inward pad, so it is excluded here.
-    ``cascade_16_diagonal`` exercises 13 escape bundles, none of which needs
-    that exception at any row beyond 1.
+    (``pad_slots._assign_interval_indices``); the channel router's global
+    track assignment (not a per-bundle nesting rule any more) absorbs that
+    case, so it is excluded here. ``cascade_16_diagonal`` exercises 13
+    escape bundles, none of which needs that exception at any row beyond 1.
     """
 
     import translation.electrical.bundle_detail_router as bdr
-    from translation.electrical.river_routing import _target_cell
-    from translation.electrical.wire_geometry import terminal_open_cells
+    from translation.electrical.river_routing import assign_corridor_lanes
 
     captures = []
-    orig_try_river_route_bundle = bdr.try_river_route_bundle
+    orig_route_bundles_as_channels = bdr.route_bundles_as_channels
 
-    def spy(members, exit_dx, obstacle_map, config, *rest):
-        captures.append((members, exit_dx, obstacle_map, config))
-        return orig_try_river_route_bundle(members, exit_dx, obstacle_map, config, *rest)
+    def spy(bundle_entries, obstacle_map, config, *rest):
+        captures.append((bundle_entries, obstacle_map, config))
+        return orig_route_bundles_as_channels(bundle_entries, obstacle_map, config, *rest)
 
-    bdr.try_river_route_bundle = spy
+    bdr.route_bundles_as_channels = spy
     try:
         electrical_benchmark_result("cascade_16_diagonal")
     finally:
-        bdr.try_river_route_bundle = orig_try_river_route_bundle
+        bdr.route_bundles_as_channels = orig_route_bundles_as_channels
 
-    assert captures, "expected at least one escape bundle to reach the river construction"
+    assert captures, "expected at least one escape bundle to reach the channel router"
     checked_rows = 0
-    for members, exit_dx, obstacle_map, config in captures:
-        grid_size = obstacle_map.grid.grid_size_um
-        track_pitch_cells = max(
-            1,
-            math.ceil((config.wire_width_um + config.individual_route_spacing_um) / grid_size),
-        )
-        clearance_cells = max(1, math.ceil(max(config.obstacle_clearance_um, 0.0) / grid_size))
-        open_xs = [
-            x
-            for _rank, terminal, _assignment, _topology_route, _target_cells in members
-            for x, _y in terminal_open_cells(obstacle_map, terminal.id)
-        ]
-        opening_edge = max(open_xs) if exit_dx > 0 else min(open_xs)
-        exit_column = opening_edge + exit_dx * clearance_cells
-        for row_index, (
-            _rank,
-            terminal,
-            _assignment,
-            _topology_route,
-            target_cells,
-        ) in enumerate(members, 1):
-            if not target_cells or row_index == 1:
+    for bundle_entries, obstacle_map, config in captures:
+        for exit_dx, members in bundle_entries:
+            if not members:
                 continue
-            c_i = exit_column + exit_dx * row_index * track_pitch_cells
-            p_i = _target_cell(target_cells, config)[0]
-            checked_rows += 1
-            assert exit_dx * (p_i - c_i) >= 0, (
-                f"{terminal.id} row {row_index} pad column {p_i} is inward of "
-                f"its corridor lane {c_i}"
-            )
+            wires, _reason = assign_corridor_lanes(members, exit_dx, obstacle_map, config)
+            if wires is None:
+                continue
+            for row_index, wire in enumerate(wires, 1):
+                if row_index == 1:
+                    continue
+                checked_rows += 1
+                assert exit_dx * (wire.p - wire.c) >= 0, (
+                    f"{wire.wire_id} row {row_index} pad column {wire.p} is inward of "
+                    f"its corridor lane {wire.c}"
+                )
     assert checked_rows > 0
 
 

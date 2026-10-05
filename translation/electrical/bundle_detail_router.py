@@ -1,9 +1,10 @@
 """Detailed centerline routing for topology-derived individual bundles.
 
-Dispatches each escape bundle to the river construction
-(``river_routing.try_river_route_bundle``) and falls the bundle back to the
-per-wire full-grid search (``pad_wire_search.route_full_grid_pad_wire``) when
-the river construction refuses it.
+Collects every escape bundle's members, channel-routes them jointly
+(``river_routing.route_bundles_as_channels``: corridor lanes per bundle, one
+global track assignment), commits every placed wire in track order, and
+falls the rest -- wire by wire, not bundle by bundle -- back to the
+per-wire full-grid search (``pad_wire_search.route_full_grid_pad_wire``).
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from .metal_realization import common_bus_escape_rects
 from .pad_slots import pad_access_cells
 from .pad_wire_search import route_full_grid_pad_wire
 from .pitch_grid import bbox_to_grid_cells
-from .river_routing import count_direction_changes, try_river_route_bundle
+from .river_routing import count_direction_changes, route_bundles_as_channels
 from .terminal_contacts import _orientation_distance
 from .types import (
     CommonBusEscapeResult,
@@ -57,14 +58,17 @@ def route_detailed_bundles(
 ) -> DetailedBundleRoutingResult:
     """Route every individual pad wire as a two-segment L, or a Z fallback.
 
-    Two passes: pass 1 tries every wire as an L (river-routed as a whole
-    bundle, see ``river_routing.try_river_route_bundle``), bundles in
-    pad-row order and, inside a bundle, the terminal nearest the pad row
-    first, committing each success's reservation footprint before the next
-    attempt. Pass 2 gives every terminal pass 1 refused (wrong side or a
-    blocked column) a full-grid A* fallback
-    (``pad_wire_search.route_full_grid_pad_wire``) that must avoid every L's
-    committed footprint, so a fallback wire can never cross an L wire.
+    Two passes: pass 1 collects every bundle's members (unchanged failure
+    checks), then channel-routes every survivor jointly
+    (``river_routing.route_bundles_as_channels``: corridor lanes per bundle,
+    one global track assignment over every bundle's wires), committing each
+    placed wire's reservation footprint before the next, lowest track first.
+    Pass 2 gives every wire pass 1 could not place (a bundle refused at the
+    corridor-lane step, a track-assignment cycle, insufficient track
+    headroom, or a collision) a full-grid A* fallback
+    (``pad_wire_search.route_full_grid_pad_wire``) that must avoid every
+    placed wire's committed footprint, so a fallback wire can never cross a
+    channel-routed one.
     """
 
     config.validate()
@@ -180,12 +184,24 @@ def route_detailed_bundles(
         )
 
     # Bundles in pad-row order (``topology.bundles`` is already sorted by
-    # exit position along the pad row). Each bundle is first tried as a
-    # whole with river routing (nested corridor/channel lanes, Milestone 2);
-    # if any wire's segment collides, the whole bundle falls back to the
-    # per-wire full-grid A* instead, nesting order, committing one by one so
-    # a later wire in the same bundle sees the earlier ones' footprints.
-    bundle_construction_notes: list[tuple[int, str, str]] = []
+    # exit position along the pad row). Every bundle's members are collected
+    # first (the same per-terminal failure checks as before); the survivors
+    # are channel-routed jointly (``river_routing.route_bundles_as_channels``:
+    # corridor lanes per bundle, one global track assignment), and every
+    # wire the channel router could not place falls back individually, not
+    # bundle by bundle.
+    bundle_entries: list[
+        tuple[
+            int,
+            list[
+                tuple[
+                    int, ElectricalTerminal, PadAssignment, EscapeTopologyRoute, frozenset[GridCell]
+                ],
+            ],
+        ]
+    ] = []
+    bundle_by_id = {bundle.bundle_id: bundle for bundle in topology.bundles}
+    bundle_id_by_terminal_id: dict[str, int] = {}
     for bundle in topology.bundles:
         route_side = bundle_route_side(bundle, obstacle_map)
         exit_dx = 1 if route_side == "right" else -1
@@ -222,114 +238,130 @@ def route_detailed_bundles(
             assert assignment is not None
             assert topology_route is not None
             members.append((rank, terminal, assignment, topology_route, target_cells))
+            bundle_id_by_terminal_id[terminal.id] = bundle.bundle_id
 
-        if not members:
-            continue
+        bundle_entries.append((exit_dx, members))
 
-        river_wires, river_failure_reason = try_river_route_bundle(
-            members,
-            exit_dx,
-            obstacle_map,
-            config,
-            hard_blocked,
-            all_terminal_cells,
-            all_assigned_pad_cells,
-            assigned_pad_cells_by_slot,
-            committed_footprint_cells,
-        )
-        if river_wires is not None:
-            for (
-                rank,
-                terminal,
-                assignment,
-                topology_route,
-                target_cells,
-            ), centerline, shape in river_wires:
-                terminal_access = obstacle_map.individual_port_accesses[terminal.id]
-                commit(
-                    centerline,
-                    bundle=bundle,
-                    rank=rank,
-                    terminal=terminal,
-                    assignment=assignment,
-                    topology_route=topology_route,
-                    target_cells=target_cells,
-                    shape=shape,
-                    contact_port_name=_pad_wire_contact_port_name(
-                        terminal, terminal_access, centerline
-                    ),
-                    construction="river",
-                )
-            continue
+    channel_result = route_bundles_as_channels(
+        bundle_entries,
+        obstacle_map,
+        config,
+        hard_blocked,
+        all_terminal_cells,
+        all_assigned_pad_cells,
+        assigned_pad_cells_by_slot,
+    )
 
-        bundle_construction_notes.append(
-            (bundle.bundle_id, "fallback", river_failure_reason or "unknown reason")
-        )
-        for rank, terminal, assignment, topology_route, target_cells in members:
-            terminal_access = obstacle_map.individual_port_accesses.get(terminal.id)
-            source_cells = terminal_open_cells(obstacle_map, terminal.id)
-            own_pad_cells = assigned_pad_cells_by_slot.get(assignment.slot.index, target_cells)
-            raw_fallback_blocked = set(hard_blocked)
-            raw_fallback_blocked.update(all_terminal_cells.difference(source_cells))
-            raw_fallback_blocked.update(all_assigned_pad_cells.difference(own_pad_cells))
-            detailed_path = (
-                route_full_grid_pad_wire(
-                    terminal_access,
-                    target_cells,
-                    obstacle_map,
-                    raw_fallback_blocked,
-                    committed_footprint_cells,
-                    config,
-                )
-                if terminal_access is not None
-                else ()
+    fallback_reasons_by_bundle_id: dict[int, list[str]] = {}
+
+    def _note_fallback(terminal_id: str, reason: str) -> None:
+        bundle_id = bundle_id_by_terminal_id.get(terminal_id)
+        if bundle_id is None:
+            return
+        reasons = fallback_reasons_by_bundle_id.setdefault(bundle_id, [])
+        if reason not in reasons:
+            reasons.append(reason)
+
+    to_fall_back: list[
+        tuple[
+            tuple[int, ElectricalTerminal, PadAssignment, EscapeTopologyRoute, frozenset[GridCell]],
+            str,
+        ]
+    ] = []
+    for member, centerline, shape in channel_result.placed:
+        rank, terminal, assignment, topology_route, target_cells = member
+        # committed_footprint_cells already carries the spacing-radius
+        # dilation (see commit() below), so it is tested against this
+        # wire's bare centerline, not a re-dilated one -- dilating twice
+        # would hold two wires apart by twice their required clearance.
+        # Placed wires are committed in track order (lowest first), so a
+        # later wire in this same list sees every earlier one's footprint.
+        if set(cells_from_point_path(centerline)) & committed_footprint_cells:
+            to_fall_back.append(
+                (member, f"{terminal.id}'s channel wire is too close to a committed wire")
             )
-            if not detailed_path:
-                fail(
-                    bundle_id=bundle.bundle_id,
-                    rank=rank,
-                    terminal=terminal,
-                    assignment=assignment,
-                    target_cells=target_cells,
-                    reason="Z fallback cannot reach its pad without crossing committed metal "
-                    "or obstacles",
-                )
-                continue
-            # A wire that would short must fail, never be drawn: the fallback
-            # search already avoids committed_footprint_cells, so this should
-            # never trip, but it is the same safety net as Milestone 2 added
-            # and is kept as a belt-and-suspenders check. committed_footprint_
-            # cells already carries the spacing-radius dilation (see commit()
-            # above), so it is tested against the fallback path's bare
-            # centerline, not a re-dilated one -- dilating twice would hold
-            # two wires apart by twice their required clearance.
-            fallback_bare_cells = set(cells_from_point_path(detailed_path))
-            if fallback_bare_cells & committed_footprint_cells:
-                fail(
-                    bundle_id=bundle.bundle_id,
-                    rank=rank,
-                    terminal=terminal,
-                    assignment=assignment,
-                    target_cells=target_cells,
-                    reason="Z fallback route crosses a sibling's committed metal footprint",
-                )
-                continue
-            assert terminal_access is not None
-            fallback_bends = count_direction_changes(detailed_path)
-            commit(
-                detailed_path,
-                bundle=bundle,
+            continue
+        terminal_access = obstacle_map.individual_port_accesses[terminal.id]
+        commit(
+            centerline,
+            bundle=bundle_by_id[bundle_id_by_terminal_id[terminal.id]],
+            rank=rank,
+            terminal=terminal,
+            assignment=assignment,
+            topology_route=topology_route,
+            target_cells=target_cells,
+            shape=shape,
+            contact_port_name=_pad_wire_contact_port_name(terminal, terminal_access, centerline),
+            construction="river",
+        )
+
+    to_fall_back.extend(channel_result.unplaced)
+    for member, reason in to_fall_back:
+        rank, terminal, assignment, topology_route, target_cells = member
+        _note_fallback(terminal.id, reason)
+        bundle_id = bundle_id_by_terminal_id[terminal.id]
+        terminal_access = obstacle_map.individual_port_accesses.get(terminal.id)
+        source_cells = terminal_open_cells(obstacle_map, terminal.id)
+        own_pad_cells = assigned_pad_cells_by_slot.get(assignment.slot.index, target_cells)
+        raw_fallback_blocked = set(hard_blocked)
+        raw_fallback_blocked.update(all_terminal_cells.difference(source_cells))
+        raw_fallback_blocked.update(all_assigned_pad_cells.difference(own_pad_cells))
+        detailed_path = (
+            route_full_grid_pad_wire(
+                terminal_access,
+                target_cells,
+                obstacle_map,
+                raw_fallback_blocked,
+                committed_footprint_cells,
+                config,
+            )
+            if terminal_access is not None
+            else ()
+        )
+        if not detailed_path:
+            fail(
+                bundle_id=bundle_id,
                 rank=rank,
                 terminal=terminal,
                 assignment=assignment,
-                topology_route=topology_route,
                 target_cells=target_cells,
-                shape="L" if fallback_bends <= 1 else "Z",
-                contact_port_name=_pad_wire_contact_port_name(
-                    terminal, terminal_access, detailed_path
-                ),
-                construction="fallback",
+                reason="Z fallback cannot reach its pad without crossing committed metal "
+                "or obstacles",
             )
+            continue
+        # A wire that would short must fail, never be drawn: the fallback
+        # search already avoids committed_footprint_cells, so this should
+        # never trip, but it is the same safety net as Milestone 2 added
+        # and is kept as a belt-and-suspenders check. committed_footprint_
+        # cells already carries the spacing-radius dilation (see commit()
+        # above), so it is tested against the fallback path's bare
+        # centerline, not a re-dilated one -- dilating twice would hold
+        # two wires apart by twice their required clearance.
+        fallback_bare_cells = set(cells_from_point_path(detailed_path))
+        if fallback_bare_cells & committed_footprint_cells:
+            fail(
+                bundle_id=bundle_id,
+                rank=rank,
+                terminal=terminal,
+                assignment=assignment,
+                target_cells=target_cells,
+                reason="Z fallback route crosses a sibling's committed metal footprint",
+            )
+            continue
+        assert terminal_access is not None
+        fallback_bends = count_direction_changes(detailed_path)
+        commit(
+            detailed_path,
+            bundle=bundle_by_id[bundle_id],
+            rank=rank,
+            terminal=terminal,
+            assignment=assignment,
+            topology_route=topology_route,
+            target_cells=target_cells,
+            shape="L" if fallback_bends <= 1 else "Z",
+            contact_port_name=_pad_wire_contact_port_name(terminal, terminal_access, detailed_path),
+            construction="fallback",
+        )
 
     routed_terminal_ids = {route.terminal.id for route in routes}
     routed_terminal_ids.update(route.terminal.id for route in failed_routes)
@@ -369,7 +401,8 @@ def route_detailed_bundles(
         cell_usage=cell_usage,
         track_pitch_cells=track_pitch_cells,
         bundle_fallback_reasons={
-            bundle_id: reason for bundle_id, _kind, reason in bundle_construction_notes
+            bundle_id: "; ".join(reasons)
+            for bundle_id, reasons in fallback_reasons_by_bundle_id.items()
         },
     )
 

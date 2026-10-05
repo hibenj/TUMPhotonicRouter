@@ -346,15 +346,17 @@ terminal-selection policy lives here.
 `individual_topology.py` (609 lines), stage 5:
 `compute_individual_escape_topology` routes every individual (non-bus)
 terminal coarsely toward the pad side, groups them into `EscapeBundle`s
-ordered outward and downward for river routing, and records
-`terminal_order` and `cell_usage`. Feeds `pad_slots`' nesting order and
-`bundle_detail_router`'s river construction.
+ordered by row (row 1 the terminal nearest the pad row), and records
+`terminal_order` and `cell_usage`. Feeds `pad_slots`' block order and the
+channel router's row order.
 
-`pad_slots.py` (503 lines), stage 6: `plan_pad_slots` lays out the one-sided
+`pad_slots.py` (764 lines), stage 6: `plan_pad_slots` lays out the one-sided
 pad-pitch grid (one `PadSlot` per index) and assigns every selected bus or
-individual net to a slot (`PadAssignment`), nesting individual assignments
-by the escape-topology bundle order so a lower wire's vertical run never
-crosses an upper wire's horizontal run.
+individual net to a slot (`PadAssignment`), one contiguous block per escape
+bundle anchored outward of the bundle's row-1 corridor lane, and sizes the
+channel between the layout and the pad row from the channel router's own
+track count (`_pad_channel_track_count` runs `river_routing.assign_tracks`
+on the same lanes and pad columns the router will build).
 
 `pad_side_reconciliation.py` (243 lines), stage 7: `reconcile_pad_sides` /
 `_apply_pad_side_consistency_swap` swap a lone heater's bus and individual
@@ -366,20 +368,27 @@ a heater with no such mismatch leaves every object unchanged.
 path from the common-bus tree to its assigned pad slot, trying the endpoint
 dogleg first and a BFS to the target cells as the fallback.
 
-`bundle_detail_router.py` (473 lines), stage 9, the dispatcher:
-`route_detailed_bundles` tries the whole-bundle river construction
-(`river_routing.try_river_route_bundle`) for every escape bundle and falls
-back, wire by wire, to the full-grid search
-(`pad_wire_search.route_full_grid_pad_wire`) when the river refuses. Owns
-commit/fail bookkeeping and route ordering, not the geometry of either
-construction.
+`bundle_detail_router.py` (506 lines), stage 9, the dispatcher:
+`route_detailed_bundles` collects every escape bundle's members,
+channel-routes them jointly (`river_routing.route_bundles_as_channels`),
+commits the placed wires in track order, and falls back, wire by wire, to
+the full-grid search (`pad_wire_search.route_full_grid_pad_wire`) for the
+wires the channel router could not place. Owns commit/fail bookkeeping and
+route ordering, not the geometry of either construction.
 
-`river_routing.py` (243 lines) owns `try_river_route_bundle`: routes a whole
-escape bundle at once as nested corridor and channel lanes, each wire a
-monotone L or 3-bend Z (`count_direction_changes`), committed only if every
-wire in the bundle is collision-free.
+`river_routing.py` (581 lines) owns the channel router:
+`assign_corridor_lanes` gives one bundle's wires their corridor lanes in row
+order; the pure `assign_tracks` assigns one horizontal track per wire over
+all bundles jointly (constrained left-edge, filled from the pad side down
+with row preference, under two crossing constraints: a wire lies below every
+run crossing its corridor lane and above every run crossing its pad column;
+a constraint cycle sends the wire to the fallback); `build_wire_path` makes
+each wire a monotone L or 3-bend Z (`count_direction_changes`).
+`bundle_opening_edge`, `corridor_lane_column` and `pad_column_cell` are
+shared with `pad_slots`, so the pad plan sizes the channel from the same
+track count the router will use.
 
-`pad_wire_search.py` (345 lines) owns the per-wire fallback:
+`pad_wire_search.py` (347 lines) owns the per-wire fallback:
 `route_full_grid_pad_wire` (a reachability check plus the A* stub search
 `search_pad_wire`) routes one pad wire against obstacles, other terminals,
 and already-committed wires.

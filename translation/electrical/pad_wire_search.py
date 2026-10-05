@@ -46,8 +46,10 @@ def route_full_grid_pad_wire(
 ) -> tuple[GridPoint, ...]:
     """Full-grid A* fallback from a terminal's port anchor to its pad.
 
-    Used only for a wire ``try_river_route_bundle`` refused (the pad column
-    is on the wrong side of the exit direction, or a run is blocked).
+    Used only for a wire the channel router
+    (``river_routing.route_bundles_as_channels``) could not place: its
+    bundle was refused at the corridor-lane step, its track constraints
+    form a cycle, its track lacks headroom, or its run is blocked.
     Searches the whole electrical grid, avoiding the obstacle map, every
     other terminal's opening, and every other pad (``raw_blocked_cells``,
     dilated here by the obstacle-clearance radius, matching the clearance a

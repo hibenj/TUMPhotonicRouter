@@ -281,16 +281,6 @@ class PadAssignment:
     heater_id: str | None = None
     topology_bundle_id: int | None = None
     topology_rank: int | None = None
-    # 2026-09-28 (eight-row-bundles plan, mirrored nesting): "outward" is
-    # the pad block's normal position (row 1's pad outward of its
-    # corridor lane c_1); "inward" marks a block that `pad_slots` could
-    # only place on the inward side of c_1 (the push in
-    # `_assign_interval_indices_pass2` can shove a "left"-side block past
-    # its own terminal column). `river_routing.try_river_route_bundle`
-    # reads this per bundle (every member of one bundle shares the same
-    # value) to pick its construction. Individual pad assignments only;
-    # the common-bus assignment keeps the default.
-    nesting: Literal["outward", "inward"] = "outward"
 
 
 @dataclass(frozen=True)

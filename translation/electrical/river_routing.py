@@ -1,24 +1,33 @@
-"""River-route a whole escape bundle as nested corridor/channel lanes.
+"""Channel-route every pad wire: one joint track assignment over all bundles.
 
-A bundle's pad block is normally outward of its own row-1 corridor lane c_1
-("outward" nesting: row i's pad grows outward with i); when ``pad_slots``
-can only place it past its own terminal column ("inward" nesting,
-``PadAssignment.nesting``), the same corridor lanes c_i are kept but every
-wire runs to a mirrored channel height h'_i and then inward to its pad, so
-row 1 -- not row k -- reaches the farthest pad. The pad order pad_slots
-guarantees (monotonically outward for "outward", monotonically inward for
-"inward") keeps every row's channel run clear of every other row's pad run
-in the common case, but not always: a row whose own pad straddles far
-outward of its own corridor lane can still widen its channel span enough to
-engulf an inner row's pad-access run (measured on an eight-row inward
-block), so ``try_river_route_bundle`` also checks each new wire's bare
-centerline against every earlier row of the same bundle at runtime and
-falls the whole bundle back rather than trust the geometry alone.
+Every individual pad wire is one horizontal run between two vertical runs: a
+corridor lane at x = c (out from the terminal's own row, on its bundle's exit
+side) and a pad-access lane at x = p (the assigned pad's column), joined by a
+horizontal "track" run at some shared height. A bundle's corridor lanes are
+assigned first, in row order (``assign_corridor_lanes``); the track heights
+are then assigned once, jointly, over every wire of every bundle
+(``assign_tracks``, tracks filled from the pad side down with row
+preference), so two bundles whose runs overlap in x never share a height by
+accident -- the old per-bundle nesting (and its "inward" mirrored special
+case) is a special case of this, not a separate rule. The pad plan
+(``pad_slots.plan_pad_slots``) runs the same pure ``assign_tracks`` on the
+same lanes and pad columns (``bundle_opening_edge``, ``corridor_lane_column``,
+``pad_column_cell``) to size the channel from the global track count.
+
+The crossing argument: a wire W's corridor run rises through every height at
+x = c_W, so any other wire R whose horizontal run also crosses x = c_W must
+sit above W (nearer the pads) or the two runs cross. Symmetrically, W's own
+pad run crosses every height at x = p_W, so any R crossing x = p_W must sit
+below W. These two rules, applied to every pair of wires, are the only
+vertical constraints the track assignment enforces; a wire whose constraints
+form a cycle (no consistent height order exists) cannot be placed and falls
+back to the per-wire full-grid search.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Literal
 
 from .types import (
@@ -33,7 +42,6 @@ from .types import (
 )
 from .wire_geometry import (
     cell_center,
-    cells_from_point_path,
     dedupe_points,
     point_direction,
     terminal_open_cells,
@@ -41,107 +49,179 @@ from .wire_geometry import (
     wire_reservation_radius_cells,
 )
 
+Member = tuple[int, ElectricalTerminal, PadAssignment, EscapeTopologyRoute, frozenset[GridCell]]
+PlacedWire = tuple[Member, tuple[GridPoint, ...], Literal["L", "Z"]]
 
-def try_river_route_bundle(
-    members: list[
-        tuple[int, ElectricalTerminal, PadAssignment, EscapeTopologyRoute, frozenset[GridCell]]
-    ],
-    exit_dx: int,
+
+@dataclass(frozen=True)
+class ChannelWire:
+    """One wire's track-assignment inputs: an id, its corridor lane and pad column.
+
+    Deliberately independent of every electrical routing type so
+    ``assign_tracks`` is pure and unit-testable on synthetic wire sets.
+    """
+
+    wire_id: str
+    c: int
+    p: int
+    row: int
+    """The wire's row in its bundle, 1 = the terminal nearest the pad row."""
+
+    @property
+    def span(self) -> tuple[int, int]:
+        return (min(self.c, self.p), max(self.c, self.p))
+
+
+@dataclass(frozen=True)
+class BundleWire:
+    """One pad wire's channel-routing geometry, built from its bundle member."""
+
+    member: Member
+    anchor_cell: GridCell
+    c: int
+    p: int
+    row: int
+    pad_cell: GridCell
+    target_cells: frozenset[GridCell]
+
+    @property
+    def wire_id(self) -> str:
+        return self.member[1].id
+
+    @property
+    def row_y(self) -> int:
+        return self.anchor_cell[1]
+
+    @property
+    def span(self) -> tuple[int, int]:
+        return (min(self.c, self.p), max(self.c, self.p))
+
+
+@dataclass(frozen=True)
+class ChannelRoutingResult:
+    """The channel router's output: wires ready to commit, and wires to fall back.
+
+    ``placed`` is already in commit order (lowest track first, i.e. farthest
+    from the pads first): the caller commits each one before checking the
+    next against the committed footprint, exactly as the per-wire fallback
+    does. ``unplaced`` carries every wire that never got a track (a whole
+    bundle refused at the corridor-lane step, a track-assignment cycle, an
+    insufficient-headroom drop, or a per-wire static collision), each with
+    its own reason.
+    """
+
+    placed: tuple[PlacedWire, ...]
+    unplaced: tuple[tuple[Member, str], ...]
+
+
+def route_bundles_as_channels(
+    bundle_entries: list[tuple[int, list[Member]]],
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
     hard_blocked: set[GridCell],
     all_terminal_cells: set[GridCell],
     all_assigned_pad_cells: set[GridCell],
     assigned_pad_cells_by_slot: dict[int, frozenset[GridCell]],
-    committed_footprint_cells: set[GridCell],
-) -> tuple[
-    list[
-        tuple[
-            tuple[int, ElectricalTerminal, PadAssignment, EscapeTopologyRoute, frozenset[GridCell]],
-            tuple[GridPoint, ...],
-            Literal["L", "Z"],
-        ]
-    ]
-    | None,
-    str | None,
-]:
-    """River-route a whole bundle: nested corridor and channel lanes.
+) -> ChannelRoutingResult:
+    """Channel-route every bundle's members jointly: lanes, tracks, paths.
 
-    2026-09-25 (electrical routing quality plan, Milestone 2): a bundle of
-    k terminals stacked on one exit side is routed together, not wire by
-    wire. Row i = 1..k, numbered from the terminal nearest the pad row
-    outward (the same nesting order pad assignment already uses): wire i
-    runs from its port at its own terminal row out to corridor lane
-    c_i = exit_column + i * track_pitch (exit_column just past every
-    member's own terminal opening, plus clearance, on the exit side), up
-    that lane to channel lane h_i = pad_access_row - i * track_pitch (the
-    same shelf arithmetic ``_individual_pad_lane_point`` used, applied
-    directly by row instead of through its lane-rank/side indirection),
-    across the channel to its own pad column, then into the pad. c_i
-    increases and h_i decreases with i, so wire i's channel run passes
-    above every wire j > i's corridor run and left of its pad run: no two
-    wires cross (by construction; asserted separately over the built
-    paths). Every run is monotone in x and y, so total length always equals
-    the Manhattan distance (detour 0); the wire collapses to a single L
-    when its corridor lane already is its pad column.
+    ``bundle_entries`` is a list of ``(exit_dx, members)``, one per escape
+    bundle with at least one member, ``members`` already in row order (row 1
+    nearest the pad row -- the caller's existing order). Each bundle's
+    corridor lanes are assigned first (``assign_corridor_lanes``); every
+    surviving wire from every bundle is then handed to one joint
+    ``assign_tracks`` call, so the vertical order between two bundles' runs
+    is exactly the crossing argument in the module docstring, never a
+    per-bundle guess.
+    """
 
-    2026-09-28 (eight-row-bundles plan, Rule A'): row 1's pad column may be
-    served even when it is inward of c_1 -- ``pad_slots`` anchors a
-    bundle's pad block, in physical space, so row 1's pad lands at or beyond
-    c_1, but a later interval's push rule can still shove that block back
-    inward by up to one pad pitch (only a "left"-side bundle can be pushed
-    this way, since the push only ever increases slot indices). Only row 1
-    absorbs this:
-    its channel run at h_1 simply reverses direction from c_1 back to p_1
-    (the same four-point centerline construction below, now with p_1 on
-    the inward side of c_1, so it is a Z rather than an L). It crosses no
-    other lane of the bundle because every row j >= 2 has a strictly more
-    outward corridor lane c_j (so its vertical run never enters row 1's
-    inward excursion) and its own channel height h_j != h_1 (so its
-    horizontal run never shares row 1's channel row). Rows >= 2 keep the
-    outward-only rule: the pad-slot nesting only ever lets row 1 be pushed
-    inward -- *provided* the bundle's own ``PadAssignment.nesting`` is
-    still "outward" (below).
+    track_pitch_cells = track_pitch_in_cells(obstacle_map, config)
+    obstacle_radius = wire_reservation_radius_cells(obstacle_map, config)
 
-    2026-09-28 (mirrored nesting plan): when the whole block ends up on the
-    inward side (``nesting == "inward"``, ``pad_slots._interval_nesting``),
-    every row uses the same corridor lanes c_i but a mirrored channel rank
-    k + 1 - i in place of i (``k`` = the bundle size), so row 1 reaches the
-    farthest-inward pad and row k the pad nearest the column -- the order
-    ``pad_slots`` already guarantees for an inward block by construction
-    (see its docstring), needing no reordering here. The "pad column is
-    inward of its corridor lane" refusal below applies only to "outward"
-    nesting: for "inward" nesting every row's pad is expected inward of its
-    own c_i, and a row whose pad happens to still be outward (a block that
-    straddles c_1) is fine too, because the crossing argument only needs
-    the pads' relative order, not each row's own side of its own c_i (see
-    the module docstring).
+    candidate_wires: list[BundleWire] = []
+    unplaced: list[tuple[Member, str]] = []
 
-    Returns ``(None, reason)`` if any member has no port access, if a corridor
-    or channel lane ends up off the grid, if an "outward"-nesting row >= 2
-    pad column ends up on the wrong side of a corridor lane (breaking
-    monotonicity), or if a wire collides -- checked in three passes: the
-    wire's centerline dilated by the obstacle-clearance radius against the
-    obstacle map, every other terminal's opening and every other pad; then
-    the wire's bare centerline against ``committed_footprint_cells`` (every
-    already-committed wire's centerline, already dilated by the spacing
-    radius when it was committed); then the wire's bare centerline against
-    every earlier row already built in this same bundle (the monotonic pad
-    order the module docstring describes does not, on its own, exclude a
-    straddling row's channel span engulfing an inner row's pad-access run --
-    see the module docstring). The caller falls the whole bundle back to the
-    per-wire full-grid search in that case. Otherwise returns the built
-    wires with the reason left ``None``.
+    for exit_dx, members in bundle_entries:
+        if not members:
+            continue
+        wires, reason = assign_corridor_lanes(members, exit_dx, obstacle_map, config)
+        if wires is None:
+            for member in members:
+                unplaced.append((member, reason or "bundle refused at the corridor-lane step"))
+            continue
+        candidate_wires.extend(wires)
+
+    if not candidate_wires:
+        return ChannelRoutingResult(placed=(), unplaced=tuple(unplaced))
+
+    by_id = {wire.wire_id: wire for wire in candidate_wires}
+    channel_wires = [ChannelWire(w.wire_id, w.c, w.p, w.row) for w in candidate_wires]
+    track_by_id, cyclic_ids = assign_tracks(channel_wires, track_pitch_cells)
+    for wire_id in cyclic_ids:
+        unplaced.append((by_id[wire_id].member, "wire is in a track-assignment constraint cycle"))
+
+    pad_edge_y = _pad_access_edge_y(candidate_wires, config)
+    track_by_id, dropped = _enforce_track_headroom(
+        track_by_id, by_id, config, obstacle_map, track_pitch_cells, pad_edge_y
+    )
+    for wire_id, reason in dropped:
+        unplaced.append((by_id[wire_id].member, reason))
+
+    total_tracks = max(track_by_id.values(), default=0)
+    track_y = {
+        track: _track_y(track, total_tracks, pad_edge_y, track_pitch_cells, config)
+        for track in range(1, total_tracks + 1)
+    }
+
+    placed: list[PlacedWire] = []
+    for wire_id in sorted(track_by_id, key=lambda wire_id: track_by_id[wire_id]):
+        wire = by_id[wire_id]
+        centerline = build_wire_path(wire, track_y[track_by_id[wire_id]])
+        reason = _check_static_collision(
+            wire,
+            centerline,
+            obstacle_map,
+            config,
+            hard_blocked,
+            all_terminal_cells,
+            all_assigned_pad_cells,
+            assigned_pad_cells_by_slot,
+            obstacle_radius,
+        )
+        if reason is not None:
+            unplaced.append((wire.member, reason))
+            continue
+        bends = count_direction_changes(centerline)
+        shape: Literal["L", "Z"] = "L" if bends <= 1 else "Z"
+        placed.append((wire.member, centerline, shape))
+
+    return ChannelRoutingResult(placed=tuple(placed), unplaced=tuple(unplaced))
+
+
+def assign_corridor_lanes(
+    members: list[Member],
+    exit_dx: int,
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> tuple[list[BundleWire] | None, str | None]:
+    """Assign one bundle's corridor lanes c_1, c_2, ... in row order.
+
+    Row i = 1..k, numbered from the terminal nearest the pad row outward (the
+    order ``members`` is already given in). c_i = exit_column +
+    exit_dx * i * track_pitch, exit_column = opening_edge + exit_dx *
+    clearance (opening_edge the outermost open cell of any member, on the
+    exit side). Refuses the whole bundle only for reasons about its own
+    inputs: a member has no port access, no pad-access cells, or its own
+    corridor lane lands off the grid. Track heights are not assigned here --
+    ``route_bundles_as_channels`` hands every surviving wire to one joint
+    ``assign_tracks`` call instead.
     """
 
     if exit_dx == 0:
         return None, "bundle exit direction is unknown"
 
-    track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
-    track_pitch_cells = max(1, math.ceil(track_pitch_um / obstacle_map.grid.grid_size_um))
-    clearance_cells = max(
-        1, math.ceil(max(config.obstacle_clearance_um, 0.0) / obstacle_map.grid.grid_size_um)
-    )
+    track_pitch_cells = track_pitch_in_cells(obstacle_map, config)
+    clearance_cells = clearance_in_cells(obstacle_map, config)
 
     terminal_accesses: list[ElectricalPortAccess] = []
     for _rank, terminal, _assignment, _topology_route, _target_cells in members:
@@ -150,117 +230,326 @@ def try_river_route_bundle(
             return None, f"{terminal.id} has no individual port access"
         terminal_accesses.append(access)
 
-    open_xs = [
-        x
-        for _rank, terminal, _assignment, _topology_route, _target_cells in members
-        for x, _y in terminal_open_cells(obstacle_map, terminal.id)
-    ]
-    if not open_xs:
-        open_xs = [access.anchor_cell[0] for access in terminal_accesses]
-    opening_edge = max(open_xs) if exit_dx > 0 else min(open_xs)
-    exit_column = opening_edge + exit_dx * clearance_cells
-    obstacle_radius = wire_reservation_radius_cells(obstacle_map, config)
+    opening_edge = bundle_opening_edge(obstacle_map, [member[1].id for member in members], exit_dx)
+    assert opening_edge is not None  # every member has a port access (checked above)
 
-    row_count = len(members)
-    nesting: Literal["outward", "inward"] = members[0][2].nesting
-    # 2026-09-28 (mirrored nesting plan, gap closed): the module docstring's
-    # crossing-freedom argument assumes every row's own pad is on the
-    # nesting's expected side of its own corridor lane; a straddling block
-    # (explicitly allowed -- some rows outward, e.g. the row farthest from
-    # the pad edge in a wide inward block) can break that assumption when
-    # that row's own channel span [min(c_i, p_i), max(c_i, p_i)] grows wide
-    # enough to engulf an inner row's pad-access run, which the monotonic
-    # pad order alone does not exclude (measured: cascade_16_folded's
-    # eight-row "extra" group, row 8 straddles far enough outward that its
-    # channel run crosses row 7's pad-access run -- confirmed by the
-    # verifier as a real ``cross_net_metal_overlap``, not just a shared
-    # grid cell). Checked here at the bare centerline, same as the
-    # committed-footprint check below, over every row already built in
-    # this same bundle; a hit falls the whole bundle back to the per-wire
-    # full-grid search, same as any other refusal.
-    own_bundle_cells: set[GridCell] = set()
-
-    wires: list[
-        tuple[
-            tuple[int, ElectricalTerminal, PadAssignment, EscapeTopologyRoute, frozenset[GridCell]],
-            tuple[GridPoint, ...],
-            Literal["L", "Z"],
-        ]
-    ] = []
+    wires: list[BundleWire] = []
     for row_index, (member, access) in enumerate(zip(members, terminal_accesses, strict=True), 1):
-        _rank, terminal, assignment, _topology_route, target_cells = member
+        _rank, terminal, _assignment, _topology_route, target_cells = member
         if not target_cells:
             return None, f"{terminal.id} has no pad access cells"
 
         anchor_cell = access.anchor_cell
-        c_i = exit_column + exit_dx * row_index * track_pitch_cells
+        c_i = corridor_lane_column(
+            opening_edge, exit_dx, row_index, track_pitch_cells, clearance_cells
+        )
         if not (0 <= c_i < obstacle_map.grid.width):
             return None, f"{terminal.id}'s corridor lane is off the grid"
-        pad_cell = _target_cell(target_cells, config)
-        p_i = pad_cell[0]
-        if nesting == "outward" and exit_dx * (p_i - c_i) < 0 and row_index != 1:
-            return None, f"{terminal.id}'s pad column is inward of its corridor lane"
-        channel_rank = row_index if nesting == "outward" else row_count + 1 - row_index
-        h_i = _river_channel_lane_y(target_cells, config, channel_rank, track_pitch_cells)
-        if not (0 <= h_i < obstacle_map.grid.height):
-            return None, f"{terminal.id}'s channel lane is off the grid"
-        if config.pad_side == "top" and h_i < anchor_cell[1]:
-            return None, f"{terminal.id}'s channel lane is below its own terminal row"
-        if config.pad_side == "bottom" and h_i > anchor_cell[1]:
-            return None, f"{terminal.id}'s channel lane is above its own terminal row"
+        pad_cell = pad_column_cell(target_cells, config)
 
-        # Row 1's inward case (see the docstring) needs no separate
-        # construction: the same four-point path, with p_i now on the
-        # inward side of c_i, already draws out-to-c_i, up-to-h_i,
-        # back-to-p_i, into-the-pad; count_direction_changes below classes
-        # it "Z" (2-3 bends) on its own.
-        centerline = dedupe_points(
-            (
-                cell_center(anchor_cell),
-                cell_center((c_i, anchor_cell[1])),
-                cell_center((c_i, h_i)),
-                cell_center((p_i, h_i)),
-                cell_center(pad_cell),
+        wires.append(
+            BundleWire(
+                member=member,
+                anchor_cell=anchor_cell,
+                c=c_i,
+                p=pad_cell[0],
+                row=row_index,
+                pad_cell=pad_cell,
+                target_cells=target_cells,
             )
         )
-        if len(centerline) < 2:
-            return None, f"{terminal.id}'s river centerline is degenerate"
-
-        source_cells = terminal_open_cells(obstacle_map, terminal.id)
-        own_pad_cells = assigned_pad_cells_by_slot.get(assignment.slot.index, target_cells)
-        member_hard_blocked = set(hard_blocked)
-        member_hard_blocked.update(all_terminal_cells.difference(source_cells))
-        member_hard_blocked.update(all_assigned_pad_cells.difference(own_pad_cells))
-        reservation = wire_reservation_cells_from_point_path(
-            centerline, obstacle_map, config, radius=obstacle_radius
-        )
-        if reservation & member_hard_blocked:
-            return None, f"{terminal.id}'s river wire collides at row {row_index}"
-        # Checked separately at the bare centerline, not dilated again:
-        # committed_footprint_cells already carries the spacing-radius
-        # dilation from commit(), so re-dilating here would hold two wires
-        # apart by twice their required clearance.
-        if set(cells_from_point_path(centerline)) & committed_footprint_cells:
-            return (
-                None,
-                f"{terminal.id}'s river wire is too close to a committed wire at row {row_index}",
-            )
-        bare_cells = set(cells_from_point_path(centerline))
-        if bare_cells & own_bundle_cells:
-            return (
-                None,
-                f"{terminal.id}'s river wire crosses another row of its own bundle",
-            )
-        own_bundle_cells.update(bare_cells)
-
-        bends = count_direction_changes(centerline)
-        shape: Literal["L", "Z"] = "L" if bends <= 1 else "Z"
-        wires.append((member, centerline, shape))
 
     return wires, None
 
 
-def _target_cell(target_cells: frozenset[GridCell], config: ElectricalRoutingConfig) -> GridCell:
+def track_pitch_in_cells(
+    obstacle_map: ElectricalObstacleMap, config: ElectricalRoutingConfig
+) -> int:
+    """Return the track pitch (wire width plus individual spacing) in grid cells, at least 1."""
+
+    track_pitch_um = config.wire_width_um + config.individual_route_spacing_um
+    return max(1, math.ceil(track_pitch_um / obstacle_map.grid.grid_size_um))
+
+
+def clearance_in_cells(obstacle_map: ElectricalObstacleMap, config: ElectricalRoutingConfig) -> int:
+    """Return the obstacle clearance in grid cells, at least 1."""
+
+    return max(
+        1, math.ceil(max(config.obstacle_clearance_um, 0.0) / obstacle_map.grid.grid_size_um)
+    )
+
+
+def bundle_opening_edge(
+    obstacle_map: ElectricalObstacleMap,
+    terminal_ids: list[str],
+    exit_dx: int,
+) -> int | None:
+    """Return a bundle's opening edge: its outermost open-cell column on the exit side.
+
+    The column every corridor lane of the bundle is measured from
+    (``corridor_lane_column``). Falls back to the terminals' port-access
+    anchor columns when no member has an open cell, and to ``None`` when
+    no member has a port access either. Shared with the pad plan so that
+    its channel sizing sees the same lanes the router will use.
+    """
+
+    xs = [
+        x
+        for terminal_id in terminal_ids
+        for x, _y in terminal_open_cells(obstacle_map, terminal_id)
+    ]
+    if not xs:
+        xs = [
+            access.anchor_cell[0]
+            for terminal_id in terminal_ids
+            if (access := obstacle_map.individual_port_accesses.get(terminal_id)) is not None
+        ]
+    if not xs:
+        return None
+    return max(xs) if exit_dx > 0 else min(xs)
+
+
+def corridor_lane_column(
+    opening_edge: int,
+    exit_dx: int,
+    row: int,
+    track_pitch_cells: int,
+    clearance_cells: int,
+) -> int:
+    """Return c_row = opening_edge + exit_dx * (clearance + row * track pitch), in cells."""
+
+    return opening_edge + exit_dx * (clearance_cells + row * track_pitch_cells)
+
+
+def assign_tracks(
+    wires: list[ChannelWire],
+    track_pitch_cells: int,
+) -> tuple[dict[str, int], list[str]]:
+    """Assign every wire a track (1 = farthest from the pads): top-down, constrained left-edge.
+
+    Vertical constraints, over every ordered pair of distinct wires (W, R):
+    if W's own corridor lane c_W falls inside R's span, R must lie above W
+    (R's run would cross W's corridor run); if W's own pad column p_W falls
+    inside R's span, W must lie above R (R's run would cross W's pad run).
+    "Inside" is widened by one track pitch less one cell on each side of the
+    span, not just literal containment: two vertical runs less than a pitch
+    apart in x are too close regardless of whether either one's exact x
+    falls inside the other's span (measured on cascade_12_folded: a pad
+    column two cells short of a lone heater's corridor lane still collides
+    once both are dilated by the spacing radius).
+
+    Tracks are filled from the top (the track nearest the pads) down. Each
+    round, the wires still unplaced are scanned in row order (row 1, the
+    terminal nearest the pad row, first; then by span start) and placed on
+    the current track when (a) their run keeps one pitch in x from every
+    run already on this track and (b) every wire that must lie above them
+    was placed on a strictly earlier, higher track -- checked against the
+    placement as it stood before this round, so a same-track dependency
+    never counts. A round that places nothing means the remaining wires are
+    in a constraint cycle (or blocked by one); they are returned unplaced.
+    Filling from the top with row preference keeps every run as near its
+    own pad as the constraints allow, so a wire nothing constrains (a lone
+    heater beside a nested bundle) no longer sinks to the lowest track at
+    the layout's edge, where it met an obstacle on cascade_12_folded
+    (2026-09-29). The result is renumbered so that track 1 is the lowest
+    track used and the highest is the number of tracks.
+    """
+
+    margin = max(0, track_pitch_cells - 1)
+    must_be_above: dict[str, set[str]] = {wire.wire_id: set() for wire in wires}
+    for wire in wires:
+        for other in wires:
+            if other.wire_id == wire.wire_id:
+                continue
+            if _within(wire.c, other.span, margin):
+                # other's run crosses wire's corridor lane (or comes within
+                # a pitch of it): other above wire.
+                must_be_above[wire.wire_id].add(other.wire_id)
+            if _within(wire.p, other.span, margin):
+                # wire's run crosses other's span at wire's own pad column
+                # (or comes within a pitch of it): wire above other.
+                must_be_above[other.wire_id].add(wire.wire_id)
+
+    by_id = {wire.wire_id: wire for wire in wires}
+    remaining = sorted(
+        (wire.wire_id for wire in wires),
+        key=lambda wire_id: (by_id[wire_id].row, by_id[wire_id].span[0], wire_id),
+    )
+    level_by_id: dict[str, int] = {}
+    level = 0
+    while remaining:
+        level += 1
+        placed_before_round = set(level_by_id)
+        occupied: list[tuple[int, int]] = []
+        still_remaining: list[str] = []
+        placed_this_round = 0
+        for wire_id in remaining:
+            wire = by_id[wire_id]
+            fits = all(
+                wire.span[0] >= end + track_pitch_cells or wire.span[1] + track_pitch_cells <= start
+                for start, end in occupied
+            )
+            deps_ready = must_be_above[wire_id] <= placed_before_round
+            if fits and deps_ready:
+                level_by_id[wire_id] = level
+                occupied.append(wire.span)
+                placed_this_round += 1
+            else:
+                still_remaining.append(wire_id)
+        if placed_this_round == 0:
+            level -= 1
+            break
+        remaining = still_remaining
+
+    placed = {wire_id: level + 1 - wire_level for wire_id, wire_level in level_by_id.items()}
+    return placed, remaining
+
+
+def build_wire_path(wire: BundleWire, track_y: int) -> tuple[GridPoint, ...]:
+    """Return the four-point (deduplicated) centerline: port -> lane -> track -> pad."""
+
+    return dedupe_points(
+        (
+            cell_center(wire.anchor_cell),
+            cell_center((wire.c, wire.anchor_cell[1])),
+            cell_center((wire.c, track_y)),
+            cell_center((wire.p, track_y)),
+            cell_center(wire.pad_cell),
+        )
+    )
+
+
+def _within(value: int, span: tuple[int, int], margin: int = 0) -> bool:
+    return span[0] - margin <= value <= span[1] + margin
+
+
+def _pad_access_edge_y(wires: list[BundleWire], config: ElectricalRoutingConfig) -> int:
+    ys = [y for wire in wires for _, y in wire.target_cells]
+    return min(ys) if config.pad_side == "top" else max(ys)
+
+
+def _track_y(
+    track: int,
+    total_tracks: int,
+    pad_edge_y: int,
+    track_pitch_cells: int,
+    config: ElectricalRoutingConfig,
+) -> int:
+    offset = (total_tracks + 1 - track) * track_pitch_cells
+    if config.pad_side == "top":
+        return pad_edge_y - offset
+    return pad_edge_y + offset
+
+
+def _tracks_valid(
+    track_by_id: dict[str, int],
+    by_id: dict[str, BundleWire],
+    config: ElectricalRoutingConfig,
+    obstacle_map: ElectricalObstacleMap,
+    track_pitch_cells: int,
+    pad_edge_y: int,
+    clearance_cells: int,
+) -> bool:
+    if not track_by_id:
+        return True
+    total_tracks = max(track_by_id.values())
+    for track in range(1, total_tracks + 1):
+        y = _track_y(track, total_tracks, pad_edge_y, track_pitch_cells, config)
+        if not (0 <= y < obstacle_map.grid.height):
+            return False
+    track1_y = _track_y(1, total_tracks, pad_edge_y, track_pitch_cells, config)
+    if config.pad_side == "top":
+        boundary_row = max(by_id[wire_id].row_y for wire_id in track_by_id)
+        return track1_y >= boundary_row + clearance_cells
+    boundary_row = min(by_id[wire_id].row_y for wire_id in track_by_id)
+    return track1_y <= boundary_row - clearance_cells
+
+
+def _enforce_track_headroom(
+    track_by_id: dict[str, int],
+    by_id: dict[str, BundleWire],
+    config: ElectricalRoutingConfig,
+    obstacle_map: ElectricalObstacleMap,
+    track_pitch_cells: int,
+    pad_edge_y: int,
+) -> tuple[dict[str, int], list[tuple[str, str]]]:
+    """Drop wires, most extreme row first, until the lowest track clears the grid and every row.
+
+    Track 1 (the track farthest from the pads) must still be on the grid and
+    clear every placed wire's own terminal row by the obstacle-clearance
+    margin; if it does not (too many tracks for the room between the
+    terminal rows and the pad row), the wire whose own row is closest to the
+    pad edge is dropped to the per-wire fallback and the check repeats. A
+    safety net: the pad plan sizes the channel from this same track
+    assignment (``pad_slots.plan_pad_slots``), so it triggers only when
+    the two disagree (a member the dispatcher refused before routing, or
+    a terminal row above the layout's own edge).
+    """
+
+    clearance_cells = max(
+        1, math.ceil(max(config.obstacle_clearance_um, 0.0) / obstacle_map.grid.grid_size_um)
+    )
+    track_by_id = dict(track_by_id)
+    dropped: list[tuple[str, str]] = []
+    while track_by_id and not _tracks_valid(
+        track_by_id, by_id, config, obstacle_map, track_pitch_cells, pad_edge_y, clearance_cells
+    ):
+        if config.pad_side == "top":
+            extreme_id = max(track_by_id, key=lambda wire_id: by_id[wire_id].row_y)
+        else:
+            extreme_id = min(track_by_id, key=lambda wire_id: by_id[wire_id].row_y)
+        del track_by_id[extreme_id]
+        dropped.append(
+            (extreme_id, f"{extreme_id}'s track has insufficient headroom above its own row")
+        )
+    return track_by_id, dropped
+
+
+def _check_static_collision(
+    wire: BundleWire,
+    centerline: tuple[GridPoint, ...],
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+    hard_blocked: set[GridCell],
+    all_terminal_cells: set[GridCell],
+    all_assigned_pad_cells: set[GridCell],
+    assigned_pad_cells_by_slot: dict[int, frozenset[GridCell]],
+    obstacle_radius: int,
+) -> str | None:
+    """Check one wire's dilated centerline against obstacles, other terminals, other pads.
+
+    Does not check ``committed_footprint_cells``: that check is order
+    -dependent on commit order, owned by the caller (``bundle_detail_
+    router.route_detailed_bundles``), which commits every wire this function
+    clears in track order, lowest first, each against the previous ones.
+    """
+
+    if len(centerline) < 2:
+        return f"{wire.wire_id}'s channel centerline is degenerate"
+
+    terminal_id = wire.wire_id
+    _rank, _terminal, assignment, _topology_route, target_cells = wire.member
+    source_cells = terminal_open_cells(obstacle_map, terminal_id)
+    own_pad_cells = assigned_pad_cells_by_slot.get(assignment.slot.index, target_cells)
+    member_hard_blocked = set(hard_blocked)
+    member_hard_blocked.update(all_terminal_cells.difference(source_cells))
+    member_hard_blocked.update(all_assigned_pad_cells.difference(own_pad_cells))
+    reservation = wire_reservation_cells_from_point_path(
+        centerline, obstacle_map, config, radius=obstacle_radius
+    )
+    if reservation & member_hard_blocked:
+        return f"{terminal_id}'s channel wire collides"
+    return None
+
+
+def pad_column_cell(target_cells: frozenset[GridCell], config: ElectricalRoutingConfig) -> GridCell:
+    """Return the pad-access cell a wire enters its pad through.
+
+    On the chip-facing edge of the pad, at its center column. Shared with
+    the pad plan so that its channel sizing sees the same pad columns the
+    router will use.
+    """
+
     if config.pad_side == "top":
         edge_y = min(y for _, y in target_cells)
     else:
@@ -269,39 +558,6 @@ def _target_cell(target_cells: frozenset[GridCell], config: ElectricalRoutingCon
     return min(
         target_cells, key=lambda cell: (abs(cell[1] - edge_y), abs(cell[0] - center_x), cell)
     )
-
-
-def _river_channel_lane_y(
-    target_cells: frozenset[GridCell],
-    config: ElectricalRoutingConfig,
-    channel_rank: int,
-    track_pitch_cells: int,
-) -> int:
-    """Channel lane height h = pad access row -+ channel_rank * track pitch.
-
-    Same shelf arithmetic as ``_individual_pad_lane_point``'s
-    ``target_edge_y +- shelf_index * track_pitch_cells``, applied directly
-    by rank (1 = nearest the pad row) since the river construction already
-    knows row order unambiguously, instead of going through that function's
-    lane-rank/lane-count/direction_x indirection (built for a different
-    caller that did not know row order in advance).
-
-    2026-09-28 (mirrored nesting plan): the caller passes ``row_index``
-    itself for "outward" nesting's h_i, or the mirrored rank
-    ``row_count + 1 - row_index`` for "inward" nesting's h'_i -- this
-    function only ever computes "rank-th shelf from the pad edge", unaware
-    of which row that rank belongs to.
-
-    Not clamped to the grid: the caller (``try_river_route_bundle``) refuses
-    a lane that ends up off the grid instead of silently sharing a lane with
-    another row at the edge.
-    """
-
-    if config.pad_side == "top":
-        target_edge_y = min(y for _, y in target_cells)
-        return target_edge_y - channel_rank * track_pitch_cells
-    target_edge_y = max(y for _, y in target_cells)
-    return target_edge_y + channel_rank * track_pitch_cells
 
 
 def count_direction_changes(points: tuple[GridPoint, ...]) -> int:

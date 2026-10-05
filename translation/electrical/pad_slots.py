@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import cast
 
 from .individual_topology import bundle_route_side
+from .river_routing import (
+    ChannelWire,
+    assign_tracks,
+    bundle_opening_edge,
+    clearance_in_cells,
+    corridor_lane_column,
+    pad_column_cell,
+    track_pitch_in_cells,
+)
 from .types import (
     CommonBusRoutingResult,
     ElectricalObstacleMap,
@@ -46,8 +55,8 @@ def plan_pad_slots(
 
     2026-09-28 (eight-row-bundles plan, Rule A'): a bundle's block is
     anchored, in a second pass once the comb's origin is known, so its row-1
-    pad -- the terminal nearest the pad row, the one the river construction
-    (``river_routing.try_river_route_bundle``) numbers row 1 -- lands at or
+    pad -- the terminal nearest the pad row, the one the channel router
+    (``river_routing.assign_corridor_lanes``) numbers row 1 -- lands at or
     beyond that row's corridor lane c_1 in physical space, never inward of
     it (``_row_one_anchored_start``); rows >= 2 grow outward from there
     automatically since a pad pitch is wider than a track pitch.
@@ -55,18 +64,19 @@ def plan_pad_slots(
     the sequence of individual pads that its wider escape band cannot
     overlap a neighbouring individual pad's own metal.
 
-    2026-09-28 (mirrored nesting plan): the anchoring above can still leave
-    row 1's pad inward of c_1 when the push in
-    ``_assign_interval_indices_pass2`` shoves a whole "left"-side block past
-    its own terminal column (the docstring there explains why only that
-    side, and only row 1, can be pushed this way). Each interval's
-    ``PadAssignment.nesting`` records "inward" in that case, "outward"
-    otherwise (``_interval_nesting``); the item order and index order are
-    unchanged either way -- row 1 (the interval's outermost item on its
-    side) already gets that side's highest-index slot by construction, so
-    an inward block's row 1 automatically lands on the block's own most
-    inward slot and row k on its slot nearest the column, which is exactly
-    what ``river_routing``'s mirrored construction needs.
+    2026-09-29 (channel routing plan): pad placement no longer needs to
+    label a block "inward" or "outward" -- the detail router
+    (``river_routing.assign_tracks``) resolves every wire's vertical order
+    from its own corridor-lane/pad-column spans, whichever side of c_1 the
+    block's pads land on. The push in ``_assign_interval_indices_pass2``
+    can still shove a "left"-side block's row 1 past its own terminal
+    column; that is just one more span relationship the global track
+    assignment already handles. The channel's height (``pad_offset_um``,
+    the gap between the layout and the pad row) is sized from that same
+    track assignment, run here on the same lanes and pad columns
+    (``_pad_channel_track_count``): tracks depend on pad columns only, not
+    on the pad row's height, so the count is known before the slots are
+    made.
     """
 
     config.validate()
@@ -95,9 +105,6 @@ def plan_pad_slots(
         obstacle_map,
         config,
     )
-    individual_nesting = _interval_nesting_list(
-        intervals, individual_indices, origin_x, obstacle_map, config
-    )
     common_bus_index = _common_bus_pad_slot_index(
         origin_x,
         individual_indices,
@@ -110,9 +117,11 @@ def plan_pad_slots(
     pad_offset_um = max(
         config.pad_offset_um,
         _required_pad_channel_offset_um(
-            _pad_channel_route_count(
+            _pad_channel_track_count(
                 intervals,
-                len(individual_indices),
+                individual_indices,
+                origin_x,
+                obstacle_map,
                 config,
             ),
             config,
@@ -138,9 +147,8 @@ def plan_pad_slots(
     )
 
     assignments: list[PadAssignment] = []
-    for assignment_index, nesting, (terminal, bundle_id, topology_rank) in zip(
+    for assignment_index, (terminal, bundle_id, topology_rank) in zip(
         individual_indices,
-        individual_nesting,
         individual_items,
         strict=True,
     ):
@@ -154,7 +162,6 @@ def plan_pad_slots(
                 heater_id=terminal.heater_id,
                 topology_bundle_id=bundle_id,
                 topology_rank=topology_rank,
-                nesting=nesting,
             )
         )
     assignments.append(
@@ -293,13 +300,13 @@ def _row_one_corridor_x_um(
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
 ) -> float:
-    """Return c_1, the river construction's row-1 corridor lane, in x um.
+    """Return c_1, the channel router's row-1 corridor lane, in x um.
 
     2026-09-28 (eight-row-bundles plan, Rule A'): mirrors
-    ``river_routing.try_river_route_bundle``'s own c_1 = exit_column +
+    ``river_routing.assign_corridor_lanes``'s own c_1 = exit_column +
     1 * track_pitch, where exit_column = opening_edge + clearance on the
     exit side. ``pad_slots`` does not scan the obstacle map's open cells
-    the way the river construction does (bundle-wide, across every
+    the way the channel router does (bundle-wide, across every
     member's ``terminal_open_cells``); it uses what it already computes
     for pad placement instead -- ``own_column_x_um``, each member's own
     escape route's ``exit_cell`` (``_preferred_pad_x_by_terminal_id``),
@@ -481,75 +488,6 @@ def _row_one_anchored_start(
     return math.ceil((c_1_um - origin_x) / config.pad_pitch_um)
 
 
-def _interval_nesting_list(
-    intervals: tuple[_PadInterval, ...],
-    individual_indices: list[int],
-    origin_x: float,
-    obstacle_map: ElectricalObstacleMap,
-    config: ElectricalRoutingConfig,
-) -> list[Literal["outward", "inward"]]:
-    """Return one nesting value per individual item, in ``individual_indices`` order.
-
-    2026-09-28 (mirrored nesting plan): computed once per interval, after
-    pass 2's final push, and broadcast to every item of that interval (a
-    bundle's members always share one nesting -- ``river_routing`` reads it
-    from any one member). See ``_interval_nesting`` for the test.
-    """
-
-    nesting_list: list[Literal["outward", "inward"]] = []
-    item_cursor = 0
-    for interval in intervals:
-        interval_indices = individual_indices[item_cursor : item_cursor + len(interval.items)]
-        item_cursor += len(interval.items)
-        nesting = _interval_nesting(interval, interval_indices, origin_x, obstacle_map, config)
-        nesting_list.extend([nesting] * len(interval.items))
-    return nesting_list
-
-
-def _interval_nesting(
-    interval: _PadInterval,
-    interval_indices: list[int],
-    origin_x: float,
-    obstacle_map: ElectricalObstacleMap,
-    config: ElectricalRoutingConfig,
-) -> Literal["outward", "inward"]:
-    """Return "inward" if this interval's row-1 pad landed inward of c_1.
-
-    2026-09-28 (mirrored nesting plan): row 1 is the interval's first slot
-    on "right", its last slot on "left" (``_make_interval``'s nesting
-    order, the same convention ``_row_one_anchored_start`` uses). Mirrors
-    the check ``river_routing.try_river_route_bundle`` used to make only for
-    row 1 (``exit_dx * (p_i - c_i) < 0``): only a "left"-side block's push
-    in ``_assign_interval_indices_pass2`` can ever move row 1 (that side's
-    *last* item) past c_1, so a "right"-side or side-less interval is
-    always "outward".
-
-    A single-terminal interval is always "outward" too, even when its own
-    (only) pad is inward of its own c_1: that terminal already *is* row 1,
-    river_routing's existing row-1 exception already serves it (the
-    mirrored channel rank, k + 1 - 1 = 1 = the unmirrored rank for k = 1,
-    makes the two nestings compute the identical h_1 for a single-terminal
-    block), and there is no row k to place nearest the column, so labelling
-    it "inward" would carry no behaviour change and only make the label
-    less meaningful.
-    """
-
-    if interval.route_side is None or not interval_indices or len(interval_indices) < 2:
-        return "outward"
-    row_one_index = interval_indices[-1] if interval.route_side == "left" else interval_indices[0]
-    row_one_x_um = origin_x + row_one_index * config.pad_pitch_um
-    c_1_um = _row_one_corridor_x_um(
-        interval.preferred_x_um,
-        interval.route_side,
-        obstacle_map,
-        config,
-    )
-    exit_dx = -1 if interval.route_side == "left" else 1
-    if exit_dx * (row_one_x_um - c_1_um) < 0:
-        return "inward"
-    return "outward"
-
-
 def _resolve_origin_x(
     intervals: tuple[_PadInterval, ...],
     individual_indices: list[int],
@@ -712,16 +650,77 @@ def _required_pad_channel_offset_um(
     return individual_route_count * track_pitch_um + config.wire_width_um
 
 
-def _pad_channel_route_count(
+def _pad_channel_track_count(
     intervals: tuple[_PadInterval, ...],
-    fallback_route_count: int,
+    individual_indices: list[int],
+    origin_x: float,
+    obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
 ) -> int:
-    if config.pad_origin_x_um is not None:
-        return fallback_route_count
-    if not intervals:
-        return fallback_route_count
-    return max(len(interval.items) for interval in intervals)
+    """Return the number of tracks the channel router will use, for the channel's height.
+
+    2026-09-29 (channel routing plan, second slice): the channel used to be
+    sized from the widest bundle, but the joint track assignment can need
+    more tracks than any one bundle has rows (cascade_12_folded: a lone
+    heater whose corridor lane lies within a pitch of a neighbouring
+    bundle's outermost pad column must sit below that bundle's six nested
+    rows -- seven tracks for a channel of six, and the lowest track ran
+    inside the layout into an obstacle). So the same pure ``assign_tracks``
+    runs here, on the same inputs the router will build: every interval
+    with a known exit side gives one ``ChannelWire`` per item -- its row
+    (1 = the terminal nearest the pad row: the first item of a "right"
+    block, the last of a "left" one, mirroring ``bundle_detail_router``'s
+    member order), its corridor lane from the bundle's opening edge
+    (``bundle_opening_edge`` / ``corridor_lane_column``) and its pad
+    column from the slot's access cells (``pad_column_cell``, whose x does
+    not depend on the pad row's height). Intervals without a known side
+    contribute their item count as a floor instead (they have no lanes to
+    assign). A forced ``pad_origin_x_um`` keeps the old global count: its
+    pads lie wherever the owner put them and most wires take the fallback.
+    """
+
+    if config.pad_origin_x_um is not None or not intervals:
+        return len(individual_indices)
+
+    pitch_cells = track_pitch_in_cells(obstacle_map, config)
+    clearance_cells = clearance_in_cells(obstacle_map, config)
+    wires: list[ChannelWire] = []
+    sideless_floor = 0
+    item_cursor = 0
+    for interval in intervals:
+        indices = individual_indices[item_cursor : item_cursor + len(interval.items)]
+        item_cursor += len(interval.items)
+        if interval.route_side is None:
+            sideless_floor = max(sideless_floor, len(interval.items))
+            continue
+        exit_dx = -1 if interval.route_side == "left" else 1
+        opening_edge = bundle_opening_edge(
+            obstacle_map, [terminal.id for terminal, _, _ in interval.items], exit_dx
+        )
+        if opening_edge is None:
+            sideless_floor = max(sideless_floor, len(interval.items))
+            continue
+        row_count = len(interval.items)
+        for position, ((terminal, _, _), index) in enumerate(
+            zip(interval.items, indices, strict=True)
+        ):
+            row = position + 1 if exit_dx > 0 else row_count - position
+            slot = _make_slot(index, origin_x, obstacle_map, config, config.pad_offset_um)
+            target_cells = pad_access_cells(slot, obstacle_map, config)
+            if not target_cells:
+                continue
+            wires.append(
+                ChannelWire(
+                    wire_id=terminal.id,
+                    c=corridor_lane_column(
+                        opening_edge, exit_dx, row, pitch_cells, clearance_cells
+                    ),
+                    p=pad_column_cell(target_cells, config)[0],
+                    row=row,
+                )
+            )
+    placed, _unplaced = assign_tracks(wires, pitch_cells)
+    return max(max(placed.values(), default=0), sideless_floor)
 
 
 def pad_access_bbox(
