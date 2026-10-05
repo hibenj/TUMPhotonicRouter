@@ -98,7 +98,7 @@ def run_benchmark(
         "metadata_expected_crossings": metadata_expected_crossings,
         "crossing_half_size_cells": int(crossing_half_size_cells),
         "min_straight_cells_per_crossing": int(min_straight_cells_per_crossing),
-        "route_failures": max(int(stats.route_failures), int(status != "ok")),
+        "route_failures": max(int(stats.route_failures or 0), int(status != "ok")),
         "simple_routes": int(stats.simple_route_count),
         "route_attempts": int(stats.route_attempts),
         "expanded_states": int(stats.expanded_states),

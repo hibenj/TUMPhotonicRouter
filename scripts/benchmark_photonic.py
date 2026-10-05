@@ -749,7 +749,9 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
             "rejected_exact_length_mismatch"
         ),
         "route_attempts": stats.route_attempts,
-        "route_failures": max(stats.route_failures, int(failed)),
+        # None when per-route collection did not run (the SUMMARY line prints
+        # `-` then); this table keeps 0 for it, as before
+        "route_failures": max(stats.route_failures or 0, int(failed)),
         "simple_routes": stats.simple_route_count,
         "repairs": stats.repair_count,
         "expanded_states": stats.expanded_states,
