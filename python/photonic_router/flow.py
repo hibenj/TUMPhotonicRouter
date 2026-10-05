@@ -317,17 +317,17 @@ def route_benchmark(config: RoutingConfig, options: FlowOptions) -> Component:
         stats=stats,
         debug_meanders=options.debug.debug_meanders,
     )
-    routed_layout = route_schematic(schematic, config, options)
-
-    if options.debug.debug_timing:
-        t_end = time.perf_counter()
-        total = t_end - t_flow_start
-        print(f"\nTiming summary for {benchmark_name}:\n  total: {total:.4f} s")
-    if stats is not None:
-        total = time.perf_counter() - t_flow_start
-        stats.total_time_s = float(total)
-
-    _print_flow_footer(stats)
+    try:
+        routed_layout = route_schematic(schematic, config, options)
+        if options.debug.debug_timing:
+            total = time.perf_counter() - t_flow_start
+            print(f"\nTiming summary for {benchmark_name}:\n  total: {total:.4f} s")
+    finally:
+        # Every run ends with the SUMMARY line, a failed one too: the stages
+        # that did not run print `-` (merge review 2026-10-05).
+        if stats is not None:
+            stats.total_time_s = float(time.perf_counter() - t_flow_start)
+        _print_flow_footer(stats)
 
     return routed_layout
 
@@ -589,9 +589,6 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
             instances=instances,
             waveguide_polygons=waveguide_polygons,
         )
-        route_svgs = getattr(debug_artifacts, "route_svgs", None)
-        if isinstance(route_svgs, list):
-            route_svgs.append(overview_path)
         print(
             f"      - Routes overview SVG: {overview_path} "
             f"({overview.route_count} routes, routed {overview.routed_length_um:.1f} um, "

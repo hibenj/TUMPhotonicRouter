@@ -510,7 +510,8 @@ the literal sequence; the types are the Protocols of
 | 4 | `CommonBusTrimmer` -- `trim_common_bus_to_connections(obstacle_map, common_bus, config)` | `+ common_bus` | `(ElectricalObstacleMap, CommonBusRoutingResult)` |
 | 5 | `EscapeTopologyPlanner` -- `compute_individual_escape_topology(obstacle_map, common_bus, config)` | `+ trimmed obstacle_map, common_bus` | `IndividualEscapeTopologyResult` |
 | 6 | `PadPlanner` -- `plan_pad_slots(common_bus, obstacle_map, config, escape_topology)` | `+ escape_topology` | `PadPlan` |
-| 7 | `PadSideReconciler` -- `reconcile_pad_sides(obstacle_map, common_bus, individual_topology, pad_plan, config)` | `+ individual_topology, pad_plan` | `PadSideReconciliation` (re-runs stages 4-6 when it swaps a heater) |
+| 6b | `CommonBusTrimmer` again -- `trim_common_bus_to_connections(obstacle_map, common_bus, config, keep_span_to_x_um=common_bus_stripe_reach_x_um(pad_plan, config))` | `+ pad_plan` | `(ElectricalObstacleMap, CommonBusRoutingResult)` with the stripe reaching the outer edge of the escape's band under the bus pad |
+| 7 | `PadSideReconciler` -- `reconcile_pad_sides(obstacle_map, common_bus, individual_topology, pad_plan, config, keep_span_to_x_um=...)` | `+ individual_topology, pad_plan` | `PadSideReconciliation` (re-runs stages 4-6b when it swaps a heater, with the same `keep_span_to_x_um`) |
 | 8 | `BusEscapeRouter` -- `route_common_bus_escape(obstacle_map, common_bus, pad_plan, config)` | `+ reconciled pad_plan` | `CommonBusEscapeResult` |
 | 9 | `PadWireRouter` -- `route_detailed_bundles(obstacle_map, common_bus, common_bus_escape, topology, pad_plan, config)` | `+ common_bus_escape` | `DetailedBundleRoutingResult` |
 | 10 | `MetalRealizer` -- `realize_electrical_metal(component, obstacle_map, common_bus, common_bus_escape, detailed_bundle_routes, pad_plan, config)` | `+ detailed_bundle_routes` | `Component` |

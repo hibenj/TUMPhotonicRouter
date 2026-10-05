@@ -40,6 +40,7 @@ from tests.fixtures.synthetic_layouts import (
 # unit-level testing.
 _E2E_NODE_IDS = {
     "tests/electrical/test_metal_realization.py::test_show_realized_electrical_metal_in_klayout",
+    "tests/electrical/test_individual_topology.py::test_bundle_route_side_follows_the_ports",
     "tests/test_port_alignment_diagnostics.py::test_heater_s_mod_pass0_characterizes_current_port_alignment",
     "tests/test_port_alignment_diagnostics.py::test_heater_s_mod_route_match_uses_corrected_records_for_realization",
     "tests/test_route_rust_geometry.py::test_rust_routed_layout_uses_waveguide_geometry",
@@ -77,8 +78,8 @@ _INTEGRATION_NODE_IDS = {
     "tests/electrical/test_pad_slots.py::test_top_pad_offset_moves_pad_row_further_from_layout",
     "tests/electrical/test_pad_slots.py::test_pad_plan_allows_empty_pitch_slots_and_keeps_individual_order",
     "tests/electrical/test_pad_slots.py::test_auto_pad_origin_compacts_row_toward_escape_topology",
-    "tests/electrical/test_pad_slots.py::test_auto_pad_channel_height_uses_widest_topology_bundle",
-    "tests/electrical/test_pad_slots.py::test_auto_pad_assignment_places_topology_bundles_as_intervals_with_gaps",
+    "tests/electrical/test_pad_slots.py::test_auto_pad_channel_height_uses_the_channel_routers_track_count",
+    "tests/electrical/test_pad_slots.py::test_auto_pad_assignment_is_monotone_in_the_lanes_and_centered_on_each_bundle",
     "tests/electrical/test_individual_topology.py::test_individual_topology_groups_escape_corridors_before_pad_assignment",
     "tests/electrical/test_metal_realization.py::test_metal_realization_creates_assigned_pads_but_not_empty_slots",
     "tests/electrical/test_metal_realization.py::test_metal_realization_adds_wire_polygons_for_bus_and_individual_routes",

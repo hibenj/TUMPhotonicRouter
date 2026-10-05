@@ -642,7 +642,9 @@ def _check_cross_net_spacing(
         return
     actual = _number(metrics.get("cross_net_min_spacing_um"))
     required = _number(metrics.get("required_cross_net_clearance_um"))
-    if actual < required:
+    # the same floating-point slack the verifier's spacing check applies
+    # (translation/electrical/verification.py::SPACING_TOLERANCE_UM)
+    if actual < required - 1e-6:
         violations.append(
             {
                 "name": "metrics.cross_net_min_spacing_um",

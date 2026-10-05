@@ -42,11 +42,12 @@ def test_individual_topology_groups_escape_corridors_before_pad_assignment():
     # pad-side consistency swap picked the other terminal for its bus
     # branch, since it is not in a bus column group and its original
     # individual terminal exited away from its pad. heater_extra_2 would
-    # have qualified the same way, but its original (:r) bus branch is the
-    # one heater_extra_1's branch joins onto (a greedy-tree join, not a bus
-    # column group); swapping it would have stranded heater_extra_1 with no
-    # path to the stripe, so the eight-row-bundles plan's Rule C skips it
-    # and it keeps its original :r terminal on the bus.
+    # have qualified the same way, but its original bus branch (from its
+    # :l terminal) is the one heater_extra_1's branch joins onto (a
+    # greedy-tree join, not a bus column group); swapping it would have
+    # stranded heater_extra_1 with no path to the stripe, so the
+    # eight-row-bundles plan's Rule C skips it: :l stays on the bus and :r
+    # stays its individual (pad-wire) terminal, which is the entry listed.
     assert [terminal.id for terminal in topology.terminal_order] == [
         "heater_3:l",
         "heater_2:l",

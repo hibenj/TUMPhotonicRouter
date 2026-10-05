@@ -16,6 +16,7 @@ meander length, the total with meanders, the die area and the layout box.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Protocol
 from xml.sax.saxutils import escape
@@ -351,40 +352,60 @@ def _drawing_extent(
 def _polygon_owners(polygons: list[list[Point]], drawn: list[RouteLike]) -> dict[int, str]:
     """Which route each waveguide polygon belongs to.
 
-    The route whose sampled centerline points the polygon contains.
+    The route whose sampled centerline points the polygon contains. A route
+    may own several polygons (the realization splits a route wherever a
+    crossing footprint clips it), so every polygon is tried against every
+    route; a polygon's bbox filters the samples before the point test.
     """
 
-    if not polygons:
+    if not polygons or not drawn:
         return {}
-    boxes = [
-        (
+    samples_by_route = [
+        (record.net_name, _sample_centerline(record.corrected_centerline_um)) for record in drawn
+    ]
+    owners: dict[int, str] = {}
+    for index, polygon in enumerate(polygons):
+        box = (
             min(x for x, _ in polygon),
             min(y for _, y in polygon),
             max(x for x, _ in polygon),
             max(y for _, y in polygon),
         )
-        for polygon in polygons
-    ]
-    owners: dict[int, str] = {}
-    for record in drawn:
-        points = record.corrected_centerline_um
-        samples = [points[int(len(points) * f)] for f in (0.1, 0.3, 0.5, 0.7, 0.9)]
-        for sample in samples:
-            hit = next(
-                (
-                    index
-                    for index, (polygon, box) in enumerate(zip(polygons, boxes, strict=True))
-                    if index not in owners
-                    and box[0] <= sample[0] <= box[2]
-                    and box[1] <= sample[1] <= box[3]
-                    and _point_in_polygon(sample, polygon)
-                ),
-                None,
-            )
-            if hit is not None:
-                owners[hit] = record.net_name
+        for net_name, samples in samples_by_route:
+            if any(
+                box[0] <= x <= box[2]
+                and box[1] <= y <= box[3]
+                and _point_in_polygon((x, y), polygon)
+                for x, y in samples
+            ):
+                owners[index] = net_name
                 break
     return owners
+
+
+def _sample_centerline(
+    points: tuple[Point, ...],
+    fractions: tuple[float, ...] = (0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95),
+) -> list[Point]:
+    """Points at the given fractions of the centerline's length (linear interpolation)."""
+
+    lengths = [((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5 for a, b in pairwise(points)]
+    total = sum(lengths)
+    if total <= 0.0:
+        return [points[0]] if points else []
+    samples: list[Point] = []
+    for fraction in fractions:
+        target = fraction * total
+        walked = 0.0
+        for (a, b), length in zip(pairwise(points), lengths, strict=True):
+            if walked + length >= target and length > 0.0:
+                t = (target - walked) / length
+                samples.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+                break
+            walked += length
+        else:
+            samples.append(points[-1])
+    return samples
 
 
 def _point_in_polygon(point: Point, polygon: list[Point]) -> bool:

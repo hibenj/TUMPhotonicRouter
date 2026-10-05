@@ -24,6 +24,9 @@ from tests.electrical.support import (
 from tests.fixtures.synthetic_layouts import (
     multi_heater_schematic as build_multi_heater_schematic,
 )
+from tests.fixtures.synthetic_layouts import (
+    single_heater_schematic as build_single_heater_schematic,
+)
 from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
 from translation.electrical.bus_search import terminal_open_cells as _terminal_open_cells
 from translation.electrical.common_bus_router import route_common_bus
@@ -457,3 +460,65 @@ def test_trim_keeps_the_stripe_under_the_bus_pad(electrical_benchmark_result):
     assert escape_rects
     assert max(rect[2] for rect in escape_rects) == pytest.approx(bus_max_x_um)
     assert _path_direction_changes(escape.path) <= 1
+
+
+def test_trim_reaches_the_escape_band_on_the_left_when_the_bus_pad_is_on_the_left():
+    """``common_bus_stripe_reach_x_um`` mirrors for ``common_bus_pad_position="left"``:
+    the stripe reaches the band's outer (left) edge and the escape rises flush
+    from the stripe's start (merge review 2026-10-05: the left branch had no test).
+    """
+
+    from translation.electrical.metal_realization import common_bus_escape_rects
+    from translation.electrical.pad_slots import common_bus_stripe_reach_x_um
+
+    schematic = build_single_heater_schematic()
+    component = layout_from_schematic(schematic)
+    config = ElectricalRoutingConfig(pad_side="top", common_bus_pad_position="left")
+
+    result = route_electrical_heaters(component, schematic, config)
+
+    assert result.verification is not None
+    assert result.verification.success, result.verification.issues
+    pad_plan = result.pad_plan
+    assert pad_plan is not None and pad_plan.common_bus_assignment is not None
+    reach_x_um = common_bus_stripe_reach_x_um(pad_plan, config)
+    centre_x_um = pad_plan.common_bus_assignment.slot.center[0]
+    assert reach_x_um == pytest.approx(centre_x_um - config.bus_width_um / 2.0)
+    bus_min_x_um, _, _, _ = result.common_bus.bus.bbox
+    assert bus_min_x_um == pytest.approx(reach_x_um)
+    escape_rects = common_bus_escape_rects(
+        result.common_bus, result.common_bus_escape, result.obstacle_map, config
+    )
+    assert escape_rects
+    assert min(rect[0] for rect in escape_rects) == pytest.approx(bus_min_x_um)
+
+
+# Also marked e2e (routes a full 8-mode cascade benchmark end to end).
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_lone_heaters_drop_straight_to_the_stripe_before_the_greedy_phase(
+    electrical_benchmark_result,
+):
+    """Phase 2b of ``route_common_bus`` (``_route_lone_straight_drops``,
+    compact-diagonal plan 2026-10-05): on the compact 8-mode diagonal every
+    cascade MZI heater stands alone in its column and row, so neither trunk
+    phase serves it; its bus branch is a straight drop -- a stub and one
+    vertical run ending on the stripe, never a sideways join onto another
+    heater's branch (which the greedy phase produced at a 900 um pitch).
+    """
+
+    result = electrical_benchmark_result("cascade_8_compact")
+
+    assert result.verification is not None
+    assert result.verification.success, result.verification.issues
+    stripe_cells = set(result.common_bus.bus.cells)
+    lone = [
+        route
+        for route in result.common_bus.routes
+        if route.heater_id.startswith("heater_extra_")
+        and int(route.heater_id.removeprefix("heater_extra_")) < 5  # the five cascade MZIs
+    ]
+    assert len(lone) == 5
+    for route in lone:
+        assert route.path[-1] in stripe_cells, route.heater_id
+        assert _path_direction_changes(route.path) <= 1, route.heater_id

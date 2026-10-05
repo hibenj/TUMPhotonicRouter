@@ -16,7 +16,10 @@ const base = (args && args.base) || 'main'
 const FILES = {
   type: 'object',
   required: ['files'],
-  properties: { files: { type: 'array', items: { type: 'string' } } },
+  properties: {
+    files: { type: 'array', items: { type: 'string' } },
+    excluded: { type: 'array', items: { type: 'string' } },
+  },
 }
 const FINDINGS = {
   type: 'object',
@@ -66,11 +69,12 @@ const REPORT = {
 
 phase('Scope')
 const scope = await agent(
-  `Run \`git diff --name-only ${base}...HEAD\` in the repository root and return the changed files that still exist, excluding files under .agent/, docs/, build/, results*/ and *.json baselines. Return only the list.`,
+  `Run \`git diff --name-only ${base}...HEAD\` in the repository root and return the changed files that still exist, excluding files under .agent/ (living plans and the state file), build/, results*/ and *.json baselines (pinned measurements), and also return the excluded ones. Return only the two lists.`,
   { schema: FILES, label: 'scope', phase: 'Scope', effort: 'low' },
 )
 const files = scope ? scope.files : []
-log(`${files.length} changed files against ${base}`)
+const excluded = (scope && scope.excluded) || []
+log(`${files.length} changed files against ${base} reviewed; ${excluded.length} excluded by scope (.agent/, build/, results*/, *.json baselines): ${excluded.join(', ') || 'none'}`)
 if (files.length === 0) return { findings: [] }
 
 const reviewed = await pipeline(
@@ -91,8 +95,17 @@ const reviewed = await pipeline(
             ),
           ),
         ).then(votes => {
-          const kept = votes.filter(Boolean).filter(v => !v.refuted).length >= 2
-          return kept ? f : null
+          // A verifier that returned nothing (skipped, or died after retries)
+          // is not a refutation: the finding is kept, marked unverified, so a
+          // missing vote never silently drops a defect.
+          const answered = votes.filter(Boolean)
+          const refuted = answered.filter(v => v.refuted).length
+          if (refuted > 0) return null
+          if (answered.length < 2) {
+            log(`finding ${f.file}:${f.line} kept with ${answered.length} of 2 verifier votes`)
+            return { ...f, verification: `unverified (${answered.length} of 2 votes)` }
+          }
+          return f
         }),
       ),
     ),

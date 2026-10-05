@@ -336,11 +336,10 @@ def test_heater_s_mod_every_wire_channel_routes_on_two_tracks(electrical_benchma
     (pad-choice plan, 2026-10-05) the whole case needs two tracks: a channel
     of 90 um (two 30 um track pitches plus the lowest track's three-cell
     headroom over the layout), measured, where the one-sided pad blocks
-    needed four tracks and 140 um. The old
-    zero-detour pin is gone with the blocks: ``detour_um`` is measured
-    against the Manhattan distance from port to pad, and a pad inward of
-    the wire's lane counts as a detour by that definition although the wire
-    is shorter than any one-sided alternative (plan's Surprises).
+    needed four tracks and 140 um. ``detour_um`` is a wire's length minus
+    the monotone path through its own corridor lane (owner decision
+    2026-10-05), so every channel-routed wire reads zero whichever side of
+    its lane its pad lies on; the suite pins that at 0.
     """
 
     result = electrical_benchmark_result("heater_s_mod")

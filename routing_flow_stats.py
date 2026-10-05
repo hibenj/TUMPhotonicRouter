@@ -19,7 +19,9 @@ class RoutingFlowStats:
     port_open_cells: int = 0
     astar_time_s: float = 0.0
     route_attempts: int = 0
-    route_failures: int = 0
+    #: None until per-route collection ran (``collect_route_stats`` or
+    #: ``debug_timing``); the SUMMARY line prints ``-`` then, never a guessed 0.
+    route_failures: int | None = None
     simple_route_count: int = 0
     repair_count: int = 0
     expanded_states: int = 0
@@ -60,10 +62,12 @@ class RoutingFlowStats:
     heap_operation_time_s: float = 0.0
     legality_check_time_s: float = 0.0
     reconstruction_time_s: float = 0.0
-    electrical_terminal_groups: int = 0
-    electrical_pad_assignments: int = 0
-    electrical_detailed_routes: int = 0
-    electrical_failed_detailed_routes: int = 0
+    #: None until the electrical step ran; a run that found no heater
+    #: terminals records 0, not None, so the SUMMARY line can tell the two apart.
+    electrical_terminal_groups: int | None = None
+    electrical_pad_assignments: int | None = None
+    electrical_detailed_routes: int | None = None
+    electrical_failed_detailed_routes: int | None = None
     electrical_verification_success: bool | None = None
     verification_error_count: int | None = None
     verification_warning_count: int | None = None
@@ -183,7 +187,12 @@ def populate_route_stats(
         stats.port_open_cells = port_open_count
     stats.astar_time_s = float(route_summary.astar_elapsed_s)
     stats.route_attempts = int(route_summary.route_attempts)
-    stats.route_failures = int(route_summary.route_failures)
+    # The failure count comes from the timing buckets, which only exist when
+    # per-route collection ran (``collect_route_stats`` or ``debug_timing``);
+    # without it the buckets are empty and the count would be a guessed 0.
+    stats.route_failures = (
+        int(route_summary.route_failures) if int(route_summary.route_attempts) > 0 else None
+    )
     stats.simple_route_count = int(route_summary.simple_route_count)
     stats.repair_count = int(route_summary.repair_count)
     stats.expanded_states = int(route_summary.expanded_states)
@@ -270,16 +279,9 @@ def format_flow_summary_line(stats: "RoutingFlowStats | None") -> str:
         ("plm_groups", cell(stats.path_length_groups)),
         ("plm_over_tolerance", cell(stats.path_length_groups_over_tolerance)),
         ("meander_inserted_um", cell(stats.meander_inserted_um, 1)),
-        ("electrical_heaters", cell(stats.electrical_terminal_groups or None)),
-        ("electrical_pads", cell(stats.electrical_pad_assignments or None)),
-        (
-            "electrical_failed_wires",
-            cell(
-                stats.electrical_failed_detailed_routes
-                if stats.electrical_terminal_groups
-                else None
-            ),
-        ),
+        ("electrical_heaters", cell(stats.electrical_terminal_groups)),
+        ("electrical_pads", cell(stats.electrical_pad_assignments)),
+        ("electrical_failed_wires", cell(stats.electrical_failed_detailed_routes)),
         ("electrical_ok", cell(stats.electrical_verification_success)),
         ("total_s", cell(stats.total_time_s, 1)),
     )

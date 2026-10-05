@@ -1,3 +1,4 @@
 rust_passed=567
-python_passed=591
+python_passed=598
 python_failures:
+FAILED tests/e2e/test_benchmark_photonic_script.py::test_continue_on_failure_records_failed_worker_row

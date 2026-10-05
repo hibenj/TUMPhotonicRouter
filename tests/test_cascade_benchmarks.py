@@ -5,10 +5,9 @@ and its twelve generated modules
 These tests only build schematics (and, for the largest module, an unrouted
 layout); none of them route waveguides, so they follow the same
 `test_benes_benchmark.py` / `test_clements_benchmark_alignment.py` pattern of
-schematic-only benchmark tests and are marked `integration` accordingly
-(`tests/conftest.py` marks those files by stem via `_INTEGRATION_FILE_STEMS`;
-this file is out of this lane's edit scope, so the marker is applied directly
-here instead -- see the verifier packet for this discrepancy).
+schematic-only benchmark tests and are marked `integration` accordingly,
+with the marker applied in this file (`pytestmark`) rather than through
+`tests/conftest.py::_INTEGRATION_FILE_STEMS`; both mechanisms are equivalent.
 """
 
 from __future__ import annotations
@@ -76,7 +75,18 @@ def test_folded_8_mode_equals_heater_s_mod():
 @pytest.mark.parametrize("module_name,n_modes,layout", CASCADE_MODULES)
 def test_cascade_counts(module_name: str, n_modes: int, layout: str):
     module = importlib.import_module(f"benchmarks.{module_name}")
+    # the module's wiring to the builder: its layout, its pitch (the
+    # layout's default) and the placements the builder gives that layout
+    assert n_modes == module.N_MODES
+    assert layout == module.LAYOUT
+    expected_pitch = cascade.default_column_pitch_um(layout)
+    if hasattr(module, "COLUMN_PITCH_UM"):
+        assert pytest.approx(expected_pitch) == module.COLUMN_PITCH_UM
     schematic = module.build_schematic()
+    reference = cascade.build_cascade_schematic(n_modes, layout)
+    for name, placement in reference.placements.items():
+        assert schematic.placements[name].x == pytest.approx(placement.x), name
+        assert schematic.placements[name].y == pytest.approx(placement.y), name
     instances = schematic.netlist.instances
 
     couplers = [n for n in instances if n.startswith("gc_in_") or n.startswith("gc_out_")]
