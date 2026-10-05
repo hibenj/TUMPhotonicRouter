@@ -2968,3 +2968,114 @@ def test_meander_search_config_includes_large_user_height():
 
     assert search.box_depths_um[0] == pytest.approx(1000.0)
     assert 40.0 in search.box_depths_um
+
+
+def test_matching_group_diagnostics_use_the_realized_placement_of_a_meander():
+    """Bookkeeping by physical edge (2026-10-05): a meander booked on one
+    incoming edge of the gate but drawn on the other (a delay-insertion
+    candidate) shows up in ``realized_inserted_extra_length_um`` of the
+    edge it was drawn on; the realized arrivals are walked over the graph,
+    so the gate's realized spread reports the physical imbalance -- here
+    the planned view is balanced (booked on the short edge) while the
+    realized view is off by twice the meander, which the acceptance summary
+    turns into a failure.
+    """
+
+    schematic = path_length_schematic()
+    short_edge = RoutedEdgeKey(
+        net_name="gc0_to_mmi_in1",
+        source=PortRef(instance="gc_0", port="o1"),
+        target=PortRef(instance="mmi_0", port="o2"),
+    )
+    long_edge = RoutedEdgeKey(
+        net_name="gc1_to_mmi_in2",
+        source=PortRef(instance="gc_1", port="o1"),
+        target=PortRef(instance="mmi_0", port="o1"),
+    )
+    records = [
+        RoutedNetRecord(
+            net_name=short_edge.net_name,
+            source=short_edge.source,
+            target=short_edge.target,
+            route_obj=None,
+            total_length_um=80.0,
+        ),
+        RoutedNetRecord(
+            net_name=long_edge.net_name,
+            source=long_edge.source,
+            target=long_edge.target,
+            route_obj=None,
+            total_length_um=100.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out1_to_gc2",
+            source=PortRef(instance="mmi_0", port="o3"),
+            target=PortRef(instance="gc_2", port="o1"),
+            route_obj=None,
+            total_length_um=60.0,
+        ),
+        RoutedNetRecord(
+            net_name="mmi_out2_to_gc3",
+            source=PortRef(instance="mmi_0", port="o4"),
+            target=PortRef(instance="gc_3", port="o1"),
+            route_obj=None,
+            total_length_um=60.0,
+        ),
+    ]
+    result, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types=PATH_LENGTH_NODE_TYPES,
+        internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
+    )
+
+    def edge_info(edge: RoutedEdgeKey) -> dict[str, object]:
+        return {
+            "net_name": edge.net_name,
+            "source": {"instance": edge.source.instance, "port": edge.source.port},
+            "target": {"instance": edge.target.instance, "port": edge.target.port},
+        }
+
+    booked = {
+        "edge": edge_info(short_edge),
+        "status": "planned",
+        "inserted_extra_length_um": 20.0,
+        "unmatched_length_um": 0.0,
+    }
+    # realized where booked: balanced in both views
+    report = {
+        "results": [booked],
+        "realized_extra_length_um_by_edge": [
+            {"edge": edge_info(short_edge), "extra_length_um": 20.0}
+        ],
+    }
+    groups = matching_group_diagnostics_to_info(result, report)
+    assert len(groups) == 1
+    by_net = {edge["edge"]["net_name"]: edge for edge in groups[0]["incoming_edges"]}
+    assert by_net[short_edge.net_name]["realized_inserted_extra_length_um"] == pytest.approx(20.0)
+    assert by_net[short_edge.net_name]["realized_length_um"] == pytest.approx(100.0)
+    assert groups[0]["realized_arrival_spread_um"] == pytest.approx(0.0)
+    assert groups[0]["realized_within_tolerance"] is True
+    assert path_length_acceptance_summary(groups)["passed"] is True
+
+    # realized on the other edge: the planned view still says balanced, the
+    # realized view reports the imbalance and the acceptance fails on it
+    report_misplaced = {
+        "results": [booked],
+        "realized_extra_length_um_by_edge": [
+            {"edge": edge_info(long_edge), "extra_length_um": 20.0}
+        ],
+    }
+    groups = matching_group_diagnostics_to_info(result, report_misplaced)
+    assert groups[0]["within_tolerance"] is True
+    assert groups[0]["realized_arrival_spread_um"] == pytest.approx(40.0)
+    assert groups[0]["realized_within_tolerance"] is False
+    summary = path_length_acceptance_summary(groups)
+    assert summary["passed"] is False
+    assert summary["realized_failed_group_count"] == 1
+    assert "realized bookkeeping" in format_path_length_acceptance_failure(summary)
+
+    # a report without the realized table (an older report, a planner stub)
+    # falls back to the booking
+    groups = matching_group_diagnostics_to_info(result, {"results": [booked]})
+    assert groups[0]["realized_arrival_spread_um"] == pytest.approx(0.0)

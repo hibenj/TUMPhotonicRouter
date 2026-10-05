@@ -176,6 +176,10 @@ class _FinalMeanderPlanningResult:
     updated_records: list[RoutedNetRecord]
     total_inserted: float
     total_physical_inserted: float
+    #: Realized extra length per physical edge (the edge the meander was
+    #: drawn on, which is the requiring edge or a delay-insertion candidate
+    #: upstream of it): what the bookkeeping must report per net.
+    realized_extra_by_edge: dict[RoutedEdgeKey, float]
     planner_calls: int
     planner_elapsed_s: float
     planning_mode: str
@@ -2214,6 +2218,14 @@ def _plan_and_commit_final_physical_meanders(
         for final_plans in final_plan_by_edge.values()
         for _, _, rr, _, _, _ in final_plans
     )
+    realized_extra_by_edge: dict[RoutedEdgeKey, float] = {}
+    for edge_key, final_plans in final_plan_by_edge.items():
+        realized = sum(
+            _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+            for _, _, rr, _, _, _ in final_plans
+        )
+        if realized > EXACT_MEANDER_EPS_UM:
+            realized_extra_by_edge[edge_key] = realized
     setup_profile = _merged_numeric_profiles(
         selection_context.setup_profile,
         final_context.setup_profile,
@@ -2233,6 +2245,7 @@ def _plan_and_commit_final_physical_meanders(
         ],
         total_inserted=total_inserted,
         total_physical_inserted=total_physical_inserted,
+        realized_extra_by_edge=realized_extra_by_edge,
         planner_calls=final_planner_calls,
         planner_elapsed_s=final_planner_elapsed_s,
         planning_mode=final_planning_mode,
@@ -3001,6 +3014,16 @@ def analyze_meander_insertion_for_requirements(
             "total_requested_extra_length_um": float(total_requested),
             "total_inserted_extra_length_um": float(total_inserted),
             "total_physical_inserted_extra_length_um": float(total_physical_inserted),
+            # Bookkeeping by physical edge (2026-10-05, owner): the meander a
+            # result books on its requiring edge may be drawn on a
+            # delay-insertion candidate upstream (through heaters, or on all
+            # inputs of an MMI whose outputs all require the same extra), so
+            # a net's realized length is its routed length plus THIS entry,
+            # not plus the result's inserted_extra_length_um.
+            "realized_extra_length_um_by_edge": [
+                {"edge": edge_key_to_dict(edge_key), "extra_length_um": float(extra)}
+                for edge_key, extra in final_result.realized_extra_by_edge.items()
+            ],
             "total_disregarded_extra_length_um": float(total_disregarded),
             "unmatched_length_um": float(total_unmatched),
             "planner_calls": int(planner_calls),

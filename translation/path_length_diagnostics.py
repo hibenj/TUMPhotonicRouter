@@ -17,6 +17,11 @@ from translation.path_length_candidates import (
 )
 from translation.path_length_requirements import PATH_LENGTH_MATCH_TOLERANCE_UM
 
+#: Tolerance for the realized (bookkept-by-physical-edge) arrival spread of a
+#: group, in um: one nanometre, the database unit; the planned check keeps
+#: its 1e-6 um.
+REALIZED_PATH_LENGTH_TOLERANCE_UM = 1.0e-3
+
 
 def object_to_float(value: object, default: float = 0.0) -> float:
     if isinstance(value, (str, bytes, bytearray, int, float)):
@@ -89,8 +94,11 @@ def matching_group_diagnostics_to_info(
         }
 
     base_groups = lifted_groups if lifted_groups is not None else matching_groups_to_info(analysis)
+    realized_by_edge = realized_extra_by_edge_identity(meander_report)
+    _, realized_arrival_by_edge = realized_arrivals(analysis, realized_by_edge)
     diagnostics: list[dict[str, object]] = []
     for group in base_groups:
+        realized_group_arrivals: list[float] = []
         edges: list[dict[str, object]] = []
         max_unmatched = 0.0
         max_physical_residual = 0.0
@@ -129,6 +137,9 @@ def matching_group_diagnostics_to_info(
             max_unmatched = max(max_unmatched, accepted_unmatched)
             max_physical_residual = max(max_physical_residual, physical_residual)
             max_disregarded = max(max_disregarded, disregarded)
+            realized_extra = float(realized_by_edge.get(edge_id, 0.0))
+            realized_arrival = float(realized_arrival_by_edge.get(edge_id, 0.0))
+            realized_group_arrivals.append(realized_arrival)
             edges.append(
                 {
                     **raw_edge,
@@ -138,8 +149,19 @@ def matching_group_diagnostics_to_info(
                     "disregarded_residual_um": disregarded,
                     "meander_status": status,
                     "meander_reason": reason,
+                    # the bookkeeping by physical edge (2026-10-05): the
+                    # meander actually drawn on this edge, and the edge's
+                    # realized length and arrival with it
+                    "realized_inserted_extra_length_um": realized_extra,
+                    "realized_length_um": float(edge_timing.routed_length_um) + realized_extra,
+                    "realized_arrival_um": realized_arrival,
                 }
             )
+        realized_spread = (
+            max(realized_group_arrivals) - min(realized_group_arrivals)
+            if realized_group_arrivals
+            else 0.0
+        )
         diagnostics.append(
             {
                 **{key: value for key, value in group.items() if key != "incoming_edges"},
@@ -149,6 +171,10 @@ def matching_group_diagnostics_to_info(
                 "max_disregarded_residual_um": float(max_disregarded),
                 "within_tolerance": bool(max_unmatched <= tolerance_um),
                 "has_disregarded_residual": bool(max_disregarded > tolerance_um),
+                "realized_arrival_spread_um": float(realized_spread),
+                "realized_within_tolerance": bool(
+                    realized_spread <= REALIZED_PATH_LENGTH_TOLERANCE_UM
+                ),
                 "incoming_edges": edges,
             }
         )
@@ -160,14 +186,35 @@ def output_matching_diagnostics_to_info(
     meander_report: dict[str, object] | None,
     *,
     tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
+    analysis: PathLengthAnalysisResult | None = None,
 ) -> list[dict[str, object]]:
-    """Build acceptance diagnostics for optional global output matching."""
+    """Build acceptance diagnostics for optional global output matching.
+
+    With ``analysis`` given, the group also carries the realized output
+    arrivals (routed lengths plus the meanders actually drawn, walked over
+    the whole graph) and their spread, the bookkeeping's own check.
+    """
     if not output_matching_info or not bool(output_matching_info.get("enabled", False)):
         return []
 
     results = _meander_results(meander_report)
     inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge = _meander_result_maps(
         results
+    )
+    realized_output_arrival: dict[str, float] = {}
+    if analysis is not None:
+        output_arrival, _ = realized_arrivals(
+            analysis, realized_extra_by_edge_identity(meander_report)
+        )
+        realized_output_arrival = {
+            node_name: output_arrival[node_name]
+            for node_name, timing in analysis.node_timings.items()
+            if timing.node_type.value == "output" and node_name in output_arrival
+        }
+    realized_output_spread = (
+        max(realized_output_arrival.values()) - min(realized_output_arrival.values())
+        if realized_output_arrival
+        else 0.0
     )
     raw_outputs = output_matching_info.get("outputs", [])
     if not isinstance(raw_outputs, list):
@@ -238,6 +285,11 @@ def output_matching_diagnostics_to_info(
             "max_disregarded_residual_um": float(max_disregarded),
             "within_tolerance": bool(max_unmatched <= tolerance_um),
             "has_disregarded_residual": bool(max_disregarded > tolerance_um),
+            "realized_arrival_spread_um": float(realized_output_spread),
+            "realized_within_tolerance": bool(
+                realized_output_spread <= REALIZED_PATH_LENGTH_TOLERANCE_UM
+            ),
+            "realized_output_arrivals_um": dict(sorted(realized_output_arrival.items())),
             "incoming_edges": edges,
         }
     ]
@@ -250,13 +302,25 @@ def path_length_acceptance_summary(
 ) -> dict[str, object]:
     """Summarize whether realized PLM exactly satisfies every group target."""
     failed_groups: list[dict[str, object]] = []
+    realized_failed_groups: list[dict[str, object]] = []
     max_physical_residual = 0.0
     max_accepted_unmatched = 0.0
     max_disregarded_residual = 0.0
+    max_realized_spread = 0.0
 
     for group in diagnostics:
         if not isinstance(group, dict):
             continue
+        realized_spread = object_to_float(group.get("realized_arrival_spread_um", 0.0))
+        max_realized_spread = max(max_realized_spread, realized_spread)
+        if realized_spread > REALIZED_PATH_LENGTH_TOLERANCE_UM:
+            realized_failed_groups.append(
+                {
+                    "node_name": group.get("node_name", ""),
+                    "node_type": group.get("node_type", ""),
+                    "realized_arrival_spread_um": realized_spread,
+                }
+            )
         group_failures: list[dict[str, object]] = []
         raw_edges = group.get("incoming_edges", [])
         if not isinstance(raw_edges, list):
@@ -308,8 +372,12 @@ def path_length_acceptance_summary(
             )
 
     return {
-        "passed": not failed_groups,
+        "passed": not failed_groups and not realized_failed_groups,
         "tolerance_um": float(tolerance_um),
+        "realized_tolerance_um": float(REALIZED_PATH_LENGTH_TOLERANCE_UM),
+        "max_realized_arrival_spread_um": float(max_realized_spread),
+        "realized_failed_group_count": len(realized_failed_groups),
+        "realized_failed_groups": realized_failed_groups,
         "failed_group_count": len(failed_groups),
         "failed_edge_count": sum(
             _list_length(group.get("failures", [])) for group in failed_groups
@@ -357,6 +425,20 @@ def format_path_length_acceptance_failure(summary: dict[str, object]) -> str:
                 lines.append(f"    reason={reason}")
     if len(failed_groups) > 5:
         lines.append(f"  - ... {len(failed_groups) - 5} more failed group(s)")
+    realized_failed_groups = summary.get("realized_failed_groups", [])
+    if isinstance(realized_failed_groups, list) and realized_failed_groups:
+        lines.append(
+            f"  realized bookkeeping: {len(realized_failed_groups)} group(s) whose incoming "
+            "arrivals (routed length plus the meander actually drawn on each edge) differ "
+            f"by more than {object_to_float(summary.get('realized_tolerance_um', 0.0)):.6g} um "
+            f"(max {object_to_float(summary.get('max_realized_arrival_spread_um', 0.0)):.6g} um):"
+        )
+        for group in realized_failed_groups[:5]:
+            if isinstance(group, dict):
+                lines.append(
+                    f"  - {group.get('node_name', '<unknown>')}: spread "
+                    f"{object_to_float(group.get('realized_arrival_spread_um', 0.0)):.6g} um"
+                )
     return "\n".join(lines)
 
 
@@ -396,6 +478,71 @@ def _incoming_edge_timing_to_dict(
         "edge_arrival_um": float(edge_timing.edge_arrival_um),
         "missing_length_um": float(edge_timing.missing_length_um),
     }
+
+
+def realized_extra_by_edge_identity(
+    meander_report: dict[str, object] | None,
+) -> dict[tuple[str, str, str, str, str], float]:
+    """The meander report's realized extra length per physical edge, by edge identity.
+
+    A report without ``realized_extra_length_um_by_edge`` (no meander
+    planned, a report written before 2026-10-05, or a planner stub in a
+    test) falls back to the booked ``inserted_extra_length_um`` of its
+    results, i.e. the realized placement is then assumed to equal the
+    booking.
+    """
+    realized: dict[tuple[str, str, str, str, str], float] = {}
+    if not meander_report:
+        return realized
+    if "realized_extra_length_um_by_edge" not in meander_report:
+        inserted_by_edge, _, _, _ = _meander_result_maps(_meander_results(meander_report))
+        return dict(inserted_by_edge)
+    entries = meander_report.get("realized_extra_length_um_by_edge", [])
+    if not isinstance(entries, list):
+        return realized
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        edge_id = edge_identity_from_info(entry.get("edge"))
+        if edge_id is None:
+            continue
+        realized[edge_id] = realized.get(edge_id, 0.0) + object_to_float(
+            entry.get("extra_length_um", 0.0)
+        )
+    return realized
+
+
+def realized_arrivals(
+    analysis: PathLengthAnalysisResult,
+    realized_by_edge: dict[tuple[str, str, str, str, str], float],
+) -> tuple[dict[str, float], dict[tuple[str, str, str, str, str], float]]:
+    """Walk the graph with realized edge lengths (routed plus the meander drawn on the edge).
+
+    Returns ``(output_arrival_by_node, arrival_by_edge)``: every node's
+    output arrival (its realized input arrival, the latest incoming edge,
+    plus its internal delay) and every edge's realized arrival at its
+    target. This is the bookkeeping's own check that the delay-insertion
+    candidates kept every gate balanced: a gate's incoming realized
+    arrivals must agree, whichever edges the meanders were drawn on.
+    """
+    output_arrival: dict[str, float] = {}
+    arrival_by_edge: dict[tuple[str, str, str, str, str], float] = {}
+    for node_name in analysis.topological_order:
+        timing = analysis.node_timings[node_name]
+        arrivals: list[float] = []
+        for edge_timing in timing.incoming_edges:
+            edge_id = edge_identity(edge_timing.edge_key)
+            source_out = output_arrival.get(edge_timing.edge_key.source.instance, 0.0)
+            arrival = (
+                source_out
+                + float(edge_timing.routed_length_um)
+                + realized_by_edge.get(edge_id, 0.0)
+            )
+            arrival_by_edge[edge_id] = arrival
+            arrivals.append(arrival)
+        input_arrival = max(arrivals) if arrivals else 0.0
+        output_arrival[node_name] = input_arrival + float(timing.internal_delay_um)
+    return output_arrival, arrival_by_edge
 
 
 def _meander_results(meander_report: dict[str, object] | None) -> list[dict[str, object]]:

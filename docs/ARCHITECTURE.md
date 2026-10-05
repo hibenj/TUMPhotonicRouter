@@ -258,10 +258,19 @@ Beside them: `preplaced_crossing_grids.py` (2,640, contribution 2's
 crossing-structure placement), `crossing_structures.py` (248),
 `crossing_modes.py` (57, the mode vocabulary), `crossing_verification_report.py`
 (803), `photonic_verification.py` (1,155, the authoritative geometry
-verifier), the three `path_length_*.py` modules (1,068 together),
-`route_order.py` (203, the net orders), `layout_from_schematic.py` (93),
-`route_gds.py` (179, the gdsfactory reference router) and
-`gds_write_options.py` (18).
+verifier), the three `path_length_*.py` modules (about 1,200 together;
+since 2026-10-05 `path_length_diagnostics.py` also carries the path-length
+bookkeeping by physical edge: the meander report's
+`realized_extra_length_um_by_edge` names the edge each meander was actually
+drawn on, which may be a delay-insertion candidate upstream of the requiring
+edge, and the matching-group diagnostics and the acceptance check carry the
+realized lengths, arrivals and spreads, with a 1 nm tolerance on a group's
+realized spread), `route_overview_svg.py` (about 190, the routes overview
+SVG `build/routes/<benchmark>_overview.svg` the flow writes under
+`--debug-svgs`: every routed waveguide with its realized length and a legend
+with the totals and the chip dimensions), `route_order.py` (203, the net
+orders), `layout_from_schematic.py` (93), `route_gds.py` (179, the
+gdsfactory reference router) and `gds_write_options.py` (18).
 
 ### `translation/electrical/` -- the heater-metal pipeline as stages
 

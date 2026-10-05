@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import math
 import time
-
 from collections import deque
 from pathlib import Path
 from typing import Any, Iterable, Mapping, cast
-
+from xml.sax.saxutils import escape as _xml_escape
 
 from translation.route_rust_crossing_plan import _port_center_um
 from translation.route_rust_debug_artifacts import (
@@ -31,11 +30,10 @@ from translation.route_rust_types import (
     _as_float,
     route_attempt_record_from_route,
 )
-
+from translation.routing import timing
 from translation.routing.crossing_plan_stage import _cells_in_raw_static_geometry
 from translation.routing.handoff import _foreign_keepout_open_cells_for_spec, _states_and_openings
 from translation.routing.route_jobs import _angle_to_step, _fanout_stub_bend_steps
-from translation.routing import timing
 from translation.routing.settings import SessionSettings
 from translation.routing.state import SessionState
 
@@ -1164,6 +1162,20 @@ def _export_route_svg(
         overlay_text = "".join(overlay)
         if "</svg>" in svg_text and 'id="port-keepout-cells"' not in svg_text:
             svg_text = svg_text.replace("</svg>", overlay_text + "</svg>", 1)
+    # The route's name and routed length (route-overview plan, 2026-10-05;
+    # before meanders: the path-length matching runs after dispatch, the
+    # realized lengths are in the routes overview SVG and the meander report).
+    routed_length_um = float(getattr(route_obj, "total_length_um", 0.0) or 0.0)
+    font_size = max(1.0, float(state.grid_height) * 0.025)
+    label = (
+        f'<text id="route-length-label" x="{font_size * 0.5:.2f}" y="{font_size * 1.2:.2f}" '
+        f'font-size="{font_size:.2f}" font-family="sans-serif" fill="#111827" '
+        f'paint-order="stroke" stroke="white" stroke-width="{font_size * 0.2:.2f}">'
+        f"{_xml_escape(job.net_name)}: routed {routed_length_um:.1f} um (before meanders)"
+        "</text>"
+    )
+    if "</svg>" in svg_text and 'id="route-length-label"' not in svg_text:
+        svg_text = svg_text.replace("</svg>", label + "</svg>", 1)
     route_svg.write_text(svg_text, encoding="utf-8")
     state.route_svgs.append(route_svg)
 

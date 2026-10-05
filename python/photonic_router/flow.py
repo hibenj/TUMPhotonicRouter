@@ -22,6 +22,7 @@ compatibility wrapper that keeps the old keyword API working.
 import importlib
 import time
 from dataclasses import replace
+from pathlib import Path
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
@@ -79,6 +80,7 @@ from translation.crossing_modes import is_guided_mode
 from translation.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_order import default_net_order
+from translation.route_overview_svg import realized_extra_um_by_net, write_routes_overview_svg
 from translation.route_rust import RipupRerouteConfig
 
 
@@ -96,6 +98,15 @@ def _depth_by_node_from_schematic(schematic: Schematic) -> dict[str, int]:
             inst2 = str(port2_spec).split(",")[0]
             jobs.append(SimpleNamespace(inst1=inst1, inst2=inst2))
     return depth_by_node_from_jobs(jobs)
+
+
+def _component_bbox_um(component: object) -> tuple[float, float, float, float] | None:
+    """A gdsfactory component's bounding box as (xmin, ymin, xmax, ymax) in um, or None."""
+    try:
+        box = component.bbox()  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    return (float(box.left), float(box.bottom), float(box.right), float(box.top))
 
 
 def load_benchmark(benchmark_name: str) -> Schematic:
@@ -556,6 +567,30 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
         )
 
     if debug_svgs_enabled:
+        # The routes overview (route-overview plan, 2026-10-05): every routed
+        # waveguide with its realized length (routed plus the meander drawn
+        # on it, the bookkeeping by physical edge) and a legend with the
+        # totals and the chip dimensions, next to the per-route SVGs.
+        overview_path = Path("build") / "routes" / f"{benchmark_name.lower()}_overview.svg"
+        overview = write_routes_overview_svg(
+            overview_path,
+            benchmark_name=benchmark_name,
+            records=list(getattr(debug_artifacts, "routed_net_records", []) or []),
+            realized_extra_um_by_net=realized_extra_um_by_net(
+                getattr(route_result, "meander_insertion_report_info", None)
+            ),
+            routable_bbox_um=getattr(debug_artifacts, "routable_bbox_um", None),
+            layout_bbox_um=_component_bbox_um(optical_result.routed_layout),
+        )
+        route_svgs = getattr(debug_artifacts, "route_svgs", None)
+        if isinstance(route_svgs, list):
+            route_svgs.append(overview_path)
+        print(
+            f"      - Routes overview SVG: {overview_path} "
+            f"({overview.route_count} routes, routed {overview.routed_length_um:.1f} um, "
+            f"meander {overview.meander_length_um:.1f} um, "
+            f"total {overview.total_length_um:.1f} um)"
+        )
         report_and_open_debug_svgs(
             debug_artifacts=debug_artifacts,
             electrical_result=electrical_result,

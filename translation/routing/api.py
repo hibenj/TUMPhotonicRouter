@@ -394,6 +394,7 @@ def route_match_and_realize(
             output_matching_diagnostics = output_matching_diagnostics_to_info(
                 output_matching_info,
                 meander_report_info,
+                analysis=analysis,
             )
             acceptance_summary = path_length_acceptance_summary(
                 matching_group_diagnostics + output_matching_diagnostics
