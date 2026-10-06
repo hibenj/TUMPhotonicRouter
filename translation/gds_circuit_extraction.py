@@ -90,10 +90,6 @@ class ExtractionConfig:
     skip_kinds: frozenset[str] = frozenset({"bondpad", "heater_metal"})
     #: an unmatched leaf cell is a waveguide piece of this kind
     default_kind: str = "net"
-    #: kinds whose components are split into one single-port component per port
-    #: (a two-port polarization-splitting coupler becomes two couplers of the
-    #: mapped kind), kind -> kind of the parts
-    split_kinds: dict[str, str] = field(default_factory=dict)
     facet_width_um: tuple[float, float] = (0.3, 2.0)
     touch_tolerance_um: float = 0.03
     placeholder_tolerance_um: float = 5.0
@@ -421,7 +417,6 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
     named: list[ExtractedComponent] = []
     index_to_name: dict[int, str] = {}
     counters: Counter = Counter()
-    split_names: dict[tuple[int, int], str] = {}
     for component_index, component in enumerate(components):
         leaf = component.leaf
         ports = ports_by_component[component_index]
@@ -430,25 +425,6 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
             continue
         ordered = sorted(ports, key=lambda port: (port.local_position[0], port.local_position[1]))
         trans = leaf.trans
-        part_kind = config.split_kinds.get(leaf.kind)
-        if part_kind is not None:
-            # one single-port component per port
-            for port in ordered:
-                counters[part_kind] += 1
-                part_name = f"{part_kind}_{counters[part_kind] - 1}"
-                split_names[(component_index, ports.index(port))] = part_name
-                named.append(
-                    ExtractedComponent(
-                        name=part_name,
-                        kind=part_kind,
-                        cell_name=leaf.cell_name,
-                        origin=(trans.disp.x, trans.disp.y),
-                        rotation_deg=float(trans.angle),
-                        mirror=bool(trans.is_mirror()),
-                        ports=(port,),
-                    )
-                )
-            continue
         counters[leaf.kind] += 1
         name = f"{leaf.kind}_{counters[leaf.kind] - 1}"
         index_to_name[component_index] = name
@@ -480,15 +456,10 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
                 note=net.note,
             )
 
-    def resolve(ci: int, pi: int) -> tuple[str, int]:
-        if (ci, pi) in split_names:
-            return (split_names[(ci, pi)], 0)
-        return (index_to_name[ci], pi)
-
     resolved_nets = [
         ExtractedNet(
             name=net.name,
-            endpoints=tuple(resolve(ci, pi) for ci, pi in net.endpoints),  # type: ignore[misc]
+            endpoints=tuple((index_to_name[ci], pi) for ci, pi in net.endpoints),
             stub=net.stub,
             note=net.note,
         )

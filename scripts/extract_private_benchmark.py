@@ -25,8 +25,10 @@ from translation.gds_circuit_extraction import extract_circuit  # noqa: E402
 from translation.gds_circuit_rebuild import (  # noqa: E402
     default_generic_mappings,
     generic_schematic,
+    overlapping_instances,
     write_benchmark_module,
 )
+from translation.layout_from_schematic import layout_from_schematic  # noqa: E402
 
 STABLE_ROUTING_FLAGS: tuple[str, ...] = (
     "--allow-45-degree-turns",
@@ -105,6 +107,14 @@ def main(argv: list[str] | None = None) -> int:
         f"wrote {target.relative_to(REPO)}: {len(schematic.netlist.instances)} instances, "
         f"{len(schematic.netlist.routes)} nets"
     )
+    # elements must never overlap (owner's rule, 2026-10-06): the rebuilt layout
+    # is checked before the module counts as written
+    overlaps = overlapping_instances(layout_from_schematic(schematic))
+    for name_a, name_b in overlaps:
+        print(f"OVERLAP {name_a} and {name_b}")
+    if overlaps:
+        print(f"{len(overlaps)} overlapping instance pair(s): the rebuild is not usable as is")
+        return 1
     return 0
 
 
