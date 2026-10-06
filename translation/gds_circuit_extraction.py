@@ -163,6 +163,10 @@ class ExtractedNet:
     endpoints: tuple[tuple[str, int], ...]
     stub: bool = False
     note: str = ""
+    #: the original waveguide's length: its polygon area over its facet width
+    #: (0 for an abutting net); what the design routed, for comparing the
+    #: original's path lengths with the rebuild's
+    length_um: float = 0.0
 
 
 @dataclass
@@ -369,6 +373,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
         count = len(points)
         endpoints: list[tuple[int, int]] = []
         touched: set[int] = set()
+        facet_widths: list[float] = []
         for index in range(count):
             a, b = points[index], points[(index + 1) % count]
             length = a.distance(b)
@@ -393,6 +398,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
             touched.add(component_index)
             port_index = register_port(component_index, (mid.x, mid.y), normal)
             endpoints.append((component_index, port_index))
+            facet_widths.append(length)
         if not endpoints:
             fragments += 1
             continue
@@ -403,12 +409,14 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
             note = "one port only: the other end touches nothing recognized"
         elif len(endpoints) > 2:
             note = "more than two ports: a crossing, a junction, or two nets that touch"
+        width = sum(facet_widths) / len(facet_widths)
         nets.append(
             ExtractedNet(
                 name=f"net_{polygon_index}",
                 endpoints=tuple((ci, pi) for ci, pi in endpoints),
                 stub=stub,
                 note=note,
+                length_um=round(dpolygon.area() / width, 3),
             )
         )
 
@@ -487,6 +495,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
                 ),
                 stub=net.stub,
                 note=net.note,
+                length_um=net.length_um,
             )
 
     def resolve(ci: int, pi: int) -> tuple[str, int]:
@@ -500,6 +509,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
             endpoints=tuple(resolve(ci, pi) for ci, pi in net.endpoints),  # type: ignore[misc]
             stub=net.stub,
             note=net.note,
+            length_um=net.length_um,
         )
         for net in nets
     ]

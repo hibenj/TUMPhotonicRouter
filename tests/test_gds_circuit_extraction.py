@@ -198,6 +198,11 @@ def test_extractor_terminates_nets_on_end_caps_and_open_ends(tmp_path: Path):
     assert all(len(net.endpoints) == 2 for net in circuit.nets)
     assert sum(net.stub for net in circuit.nets) == 2
     assert len(circuit.nets) == 5  # gc, gc, mmi -> arm, arm -> end cap, mmi -> open end
+    # the original waveguides' lengths (polygon area over facet width): the two
+    # 20 um pieces around the bare arm and the 100 um open end are straights,
+    # the coupler nets are longer routed bends
+    lengths = sorted(round(net.length_um, 1) for net in circuit.nets)
+    assert lengths[:2] == [20.0, 20.0] and 100.0 in lengths and lengths[-1] > 100.0
     by_kind = {component.kind: component for component in circuit.components}
     assert by_kind["endcap"].ports[0].position == pytest.approx(cap_end, abs=1e-3)
     assert by_kind["open_end"].ports[0].position == pytest.approx(open_end, abs=1e-3)
