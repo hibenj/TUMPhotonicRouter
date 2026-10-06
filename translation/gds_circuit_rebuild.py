@@ -31,11 +31,6 @@ class GenericMapping:
     component (its ports and measured geometry; ``None``: none);
     ``generic_ports`` gives the generic component's port
     positions and orientations for those settings (name -> (x, y, angle)).
-    ``match_ports_by_position`` replaces the side mapping for a device whose
-    ports do not sit on its sides (a two-port grating coupler's leave at 45
-    degrees): the device faces the mean of its port normals and every
-    original port gets the name of the nearest generic port (see
-    `_ports_matched_by_position`).
     """
 
     #: the generic component's name, or a callable of the extracted ports
@@ -44,7 +39,6 @@ class GenericMapping:
     port_names_by_side: dict[str, str]
     settings: Any = None
     generic_ports: Any = None
-    match_ports_by_position: bool = False
 
     def component_name(self, ports: tuple[ExtractedPort, ...]) -> str:
         return self.component(ports) if callable(self.component) else self.component
@@ -108,16 +102,20 @@ def generic_schematic(
         generic_ports = _generic_component_ports(component_name, settings)
         if mapping.generic_ports is not None:
             generic_ports = {**generic_ports, **mapping.generic_ports(settings)}
-        if mapping.match_ports_by_position:
-            names, rotation = _ports_matched_by_position(component, generic_ports)
-        else:
-            names = _port_names_by_side(mapping, component, labels)
-            # the first port's generic orientation must point along the original normal
-            rotation = _rotation_onto(
-                component.ports[0].normal, generic_ports.get(names[0], (0.0, 0.0, 180.0))[2]
-            )
-        first_name = names[0]
-        gx, gy, _ = generic_ports.get(first_name, (0.0, 0.0, 180.0))
+        # rotation: the first port's generic orientation must point along the original normal
+        first_label = labels[0]
+        first_name = mapping.port_names_by_side.get(
+            first_label, mapping.port_names_by_side.get(first_label.split("_")[0])
+        )
+        if first_name is None:
+            raise ValueError(f"{component.name}: no generic port for side {first_label!r}")
+        gx, gy, g_angle = generic_ports.get(first_name, (0.0, 0.0, 180.0))
+        # a generic port with orientation a faces direction a (its normal into
+        # the waveguide); the rotation turns that onto the original normal
+        original_angle = math.degrees(
+            math.atan2(component.ports[0].normal[1], component.ports[0].normal[0])
+        )
+        rotation = float(round(((original_angle - g_angle) % 360.0) / 90.0) * 90 % 360)
         rad = math.radians(rotation)
         rx = gx * math.cos(rad) - gy * math.sin(rad)
         ry = gx * math.sin(rad) + gy * math.cos(rad)
@@ -126,7 +124,12 @@ def generic_schematic(
         schematic.add_instance(
             component.name, Instance(component=component_name, settings=settings), placement
         )
-        for index, name in enumerate(names):
+        for index, label in enumerate(labels):
+            name = mapping.port_names_by_side.get(
+                label, mapping.port_names_by_side.get(label.split("_")[0])
+            )
+            if name is None:
+                raise ValueError(f"{component.name}: no generic port for side {label!r}")
             port_name_of[(component.name, index)] = name
     ports_by_name = {component.name: component.ports for component in circuit.components}
 
@@ -163,103 +166,6 @@ def generic_schematic(
 _GENERIC_PORT_CACHE: dict[
     tuple[str, tuple[tuple[str, Any], ...]], dict[str, tuple[float, float, float]]
 ] = {}
-
-
-def _port_names_by_side(
-    mapping: GenericMapping, component: ExtractedComponent, labels: list[str]
-) -> list[str]:
-    names = []
-    for label in labels:
-        name = mapping.port_names_by_side.get(
-            label, mapping.port_names_by_side.get(label.split("_")[0])
-        )
-        if name is None:
-            raise ValueError(f"{component.name}: no generic port for side {label!r}")
-        names.append(name)
-    return names
-
-
-def _rotation_onto(normal: tuple[float, float], generic_angle: float) -> float:
-    """The 90-degree multiple turning a generic port of ``generic_angle`` onto ``normal``.
-
-    A generic port with orientation a faces direction a (its normal into the
-    waveguide); the rotation turns that onto the original normal.
-    """
-
-    original_angle = math.degrees(math.atan2(normal[1], normal[0]))
-    return float(round(((original_angle - generic_angle) % 360.0) / 90.0) * 90 % 360)
-
-
-def _ports_matched_by_position(
-    component: ExtractedComponent, generic_ports: dict[str, tuple[float, float, float]]
-) -> tuple[list[str], float]:
-    """Generic port names, and the rotation, for a device whose ports leave it obliquely.
-
-    A two-port grating coupler's ports leave at 45 degrees, so neither their
-    sides nor their order says which generic port they are. The device faces
-    the mean of its port normals; the generic component is turned so that its
-    first optical port faces that way, and every original port, taken relative
-    to the ports' centroid and turned back into the generic frame, gets the
-    name of the nearest generic port not taken yet.
-    """
-
-    ports = component.ports
-    mean_normal = (
-        sum(port.normal[0] for port in ports),
-        sum(port.normal[1] for port in ports),
-    )
-    generic_names = sorted(generic_ports)
-    rotation = _rotation_onto(mean_normal, generic_ports[generic_names[0]][2])
-    centroid = (
-        sum(port.position[0] for port in ports) / len(ports),
-        sum(port.position[1] for port in ports) / len(ports),
-    )
-    generic_centroid = (
-        sum(generic_ports[name][0] for name in generic_names) / len(generic_names),
-        sum(generic_ports[name][1] for name in generic_names) / len(generic_names),
-    )
-    rad = math.radians(-rotation)
-    names: list[str] = []
-    for port in ports:
-        dx, dy = port.position[0] - centroid[0], port.position[1] - centroid[1]
-        x = dx * math.cos(rad) - dy * math.sin(rad)
-        y = dx * math.sin(rad) + dy * math.cos(rad)
-        free = [name for name in generic_names if name not in names]
-        if not free:
-            raise ValueError(f"{component.name}: more ports than the generic component has")
-        names.append(
-            min(
-                free,
-                key=lambda name: math.hypot(
-                    generic_ports[name][0] - generic_centroid[0] - x,
-                    generic_ports[name][1] - generic_centroid[1] - y,
-                ),
-            )
-        )
-    return names, rotation
-
-
-def overlapping_instances(layout: Any, tolerance_um: float = 0.01) -> list[tuple[str, str]]:
-    """The pairs of instances whose bounding boxes overlap (elements must never overlap).
-
-    The owner's rule (2026-10-06, the second Clements mesh): a rebuilt circuit
-    may not place two elements over each other. Bounding boxes over all
-    layers, so a pair that touches only through a heater's metal shows up
-    too; a shared edge within ``tolerance_um`` does not count.
-    """
-
-    boxes = []
-    for instance in layout.insts:
-        box = instance.dbbox()
-        boxes.append((str(instance.name), box.left, box.bottom, box.right, box.top))
-    pairs: list[tuple[str, str]] = []
-    for index, (name_a, left_a, bottom_a, right_a, top_a) in enumerate(boxes):
-        for name_b, left_b, bottom_b, right_b, top_b in boxes[index + 1 :]:
-            overlap_x = min(right_a, right_b) - max(left_a, left_b)
-            overlap_y = min(top_a, top_b) - max(bottom_a, bottom_b)
-            if overlap_x > tolerance_um and overlap_y > tolerance_um:
-                pairs.append((name_a, name_b))
-    return pairs
 
 
 def _generic_component_ports(
@@ -433,13 +339,6 @@ def _stub_settings(component: ExtractedComponent) -> dict[str, float]:
     return {"length": STUB_LENGTH_UM}
 
 
-def _grating_coupler_2d_settings(component: ExtractedComponent) -> dict[str, float]:
-    """The pitch of the two ports; the device's size is generic."""
-
-    (ax, ay), (bx, by) = (port.position for port in component.ports[:2])
-    return {"port_pitch": round(math.hypot(bx - ax, by - ay), 3)}
-
-
 #: an end cap or an open end is rebuilt as a straight of this length whose
 #: ``o1`` sits at the waveguide's end; its ``o2`` stays unconnected
 STUB_LENGTH_UM = 10.0
@@ -495,12 +394,6 @@ def default_generic_mappings(bend_radius_um: float = 5.0) -> dict[str, GenericMa
         "gc": GenericMapping(
             component="grating_coupler_te",
             port_names_by_side=any_side_o1,
-        ),
-        "gc_2d": GenericMapping(
-            component="grating_coupler_2d",
-            port_names_by_side={},
-            settings=_grating_coupler_2d_settings,
-            match_ports_by_position=True,
         ),
         "edge_coupler": GenericMapping(
             component="edge_coupler_silicon",
