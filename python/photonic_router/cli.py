@@ -590,6 +590,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Dense A* heuristic mode (default: heading_aware).",
     )
     parser.add_argument(
+        "--detour-pass-factor",
+        type=float,
+        default=0.0,
+        metavar="FACTOR",
+        help=(
+            "After routing, rip up every net whose route is longer than FACTOR times "
+            "its free-space lower bound (Manhattan distance plus two bends) and route "
+            "those nets again together, shortest first, against the rest "
+            "(the detour-aware routing plan, 2026-10-06); 0 = off (default)."
+        ),
+    )
+    parser.add_argument(
         "--net-order",
         choices=NET_ORDERS,
         default=None,
@@ -747,6 +759,7 @@ def _flow_options(args: argparse.Namespace) -> FlowOptions:
             primitive_ordering=args.primitive_ordering,
             heuristic_mode=args.heuristic_mode,
             net_order=args.net_order,
+            detour_pass_factor=args.detour_pass_factor,
             heap_tie_breaker=args.heap_tie_breaker,
             max_iterations=args.max_iterations,
             routing_window_scale=args.routing_window_scale,

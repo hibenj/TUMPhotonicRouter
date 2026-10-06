@@ -106,6 +106,8 @@ class OpticalStageOptions:
     primitive_ordering: str = "library"
     heuristic_mode: str = "heading_aware"
     net_order: str | None = None
+    #: > 0 runs the detour pass after routing with this factor; 0 (default) off
+    detour_pass_factor: float = 0.0
     heap_tie_breaker: str = "smaller_g"
     max_iterations: int = 500_000
     routing_window_scale: float | None = None

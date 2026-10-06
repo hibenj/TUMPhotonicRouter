@@ -192,6 +192,8 @@ class RustRouteDebugArtifacts:
     static_blocked_cells: tuple[tuple[int, int], ...] = ()
     static_obstacle_count: int = 0
     static_port_open_count: int = 0
+    #: nets the detour pass (phase 7b) re-routed; None when it did not run
+    detour_pass_reroutes: int | None = None
     port_alignment_diagnostics: list[dict[str, object]] = field(default_factory=list)
     route_nets_timings_s: dict[str, float] = field(default_factory=dict)
     realization_grid_spec: tuple[int, int, float, float, float] | None = None

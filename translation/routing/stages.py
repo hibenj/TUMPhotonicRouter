@@ -180,6 +180,16 @@ class ResultFinalizer(Protocol):
     ) -> RoutedRecords: ...
 
 
+class DetourPass(Protocol):
+    """Phase 7b (optional, `settings.detour_pass_factor > 0`): rip up every net whose
+    route exceeds the factor times its free-space lower bound and route those nets
+    again together, shortest first; returns the refreshed records."""
+
+    def __call__(
+        self, settings: SessionSettings, state: SessionState, routed: RoutedRecords
+    ) -> RoutedRecords: ...
+
+
 class GeometryVerifier(Protocol):
     """Phase 8: verify the final geometry and run the final repair passes."""
 

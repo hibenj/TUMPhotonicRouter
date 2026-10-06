@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 85 `RoutingConfig` fields (85 with an overlay variable), 48 `FlowOptions` fields (40 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 170 in total.
+Totals: 85 `RoutingConfig` fields (85 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 171 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -267,6 +267,7 @@ Contribution 2: the pre-placed crossing grid stage (stage 2b).
 | `primitive_ordering` | `str` | `'library'` | `--primitive-ordering` | -- |
 | `heuristic_mode` | `str` | `'heading_aware'` | `--heuristic-mode` | -- |
 | `net_order` | `str \| None` | `None` | `--net-order` | -- |
+| `detour_pass_factor` | `float` | `0.0` | `--detour-pass-factor` | > 0 runs the detour pass after routing with this factor; 0 (default) off |
 | `heap_tie_breaker` | `str` | `'smaller_g'` | `--heap-tie-breaker` | -- |
 | `max_iterations` | `int` | `500000` | `--max-iterations` | -- |
 | `routing_window_scale` | `float \| None` | `None` | `--routing-window-scale` | -- |

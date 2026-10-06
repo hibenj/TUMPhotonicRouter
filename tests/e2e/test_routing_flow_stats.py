@@ -230,6 +230,40 @@ def test_routing_flow_populates_stats():
     assert stats_dict["expanded_states"] == stats.expanded_states
 
 
+def test_detour_pass_is_a_no_op_on_the_cascade_and_reports_in_the_summary():
+    # heater_s_mod has no detoured nets: the pass runs, re-routes nothing, and the
+    # SUMMARY line says so; without the pass the field prints "-" (stage skipped).
+    from routing_flow_stats import format_flow_summary_line
+
+    with_pass = RoutingFlowStats()
+    run_routing_flow(
+        "heater_s_mod",
+        show_unrouted=False,
+        show_routed=False,
+        show_static_obstacles_svg=False,
+        enable_path_length_matching=False,
+        path_length_match_outputs=False,
+        detour_pass_factor=3.0,
+        stats=with_pass,
+    )
+    assert with_pass.detour_pass_reroutes == 0
+    assert "detours=0" in format_flow_summary_line(with_pass)
+    assert with_pass.as_dict()["detour_pass_reroutes"] == 0
+
+    without = RoutingFlowStats()
+    run_routing_flow(
+        "heater_s_mod",
+        show_unrouted=False,
+        show_routed=False,
+        show_static_obstacles_svg=False,
+        enable_path_length_matching=False,
+        path_length_match_outputs=False,
+        stats=without,
+    )
+    assert without.detour_pass_reroutes is None
+    assert "detours=-" in format_flow_summary_line(without)
+
+
 def test_route_match_uses_rust_batch_path_when_repair_disabled():
     # Four nets on the two-inputs-into-one-MMI synthetic schematic, which has
     # the topology and placement this test used to take from the TOY toy

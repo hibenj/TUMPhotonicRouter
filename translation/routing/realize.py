@@ -120,4 +120,5 @@ def realize_and_assemble_debug_artifacts(
             debug_artifacts,
             route_nets_timings_s=dict(state.route_nets_timings_s),
         )
+    debug_artifacts = replace(debug_artifacts, detour_pass_reroutes=state.detour_pass_reroutes)
     return debug_artifacts

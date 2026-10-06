@@ -71,6 +71,8 @@ class SessionSettings:
     routing_window_scale: float | None
     net_order: str
     net_order_depth_by_node: dict[str, int] | None
+    #: > 0 runs the detour pass (phase 7b, `detour_pass.py`) with this factor
+    detour_pass_factor: float
     node_depths: dict[str, int] | None
     node_ranks: dict[str, int] | None
     edge_ranks: dict[str, dict[str, int]] | None
@@ -126,6 +128,7 @@ class SessionSettings:
         heuristic_mode: str = "heading_aware",
         net_order: str = "topological",
         net_order_depth_by_node: dict[str, int] | None = None,
+        detour_pass_factor: float = 0.0,
         heap_tie_breaker: str = "smaller_g",
         proactive_congestion_weight: float = 0.0,
         proactive_congestion_radius_cells: int = 0,
@@ -264,6 +267,7 @@ class SessionSettings:
             net_order_depth_by_node=(
                 dict(net_order_depth_by_node) if net_order_depth_by_node else None
             ),
+            detour_pass_factor=float(detour_pass_factor),
             node_depths=node_depths,
             node_ranks=node_ranks,
             edge_ranks=edge_ranks,

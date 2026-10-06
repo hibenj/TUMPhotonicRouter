@@ -42,6 +42,7 @@ from translation.routing import (
     route_jobs as route_jobs_stage,  # `route_jobs` is a local name in `run`
     crossing_plan_stage,
     handoff,
+    detour_pass,
     dispatch,
     finalize,
     verify_repair,
@@ -76,7 +77,8 @@ class _RouteNetsRustSession:
         primitive_ordering: str = "library",
         heuristic_mode: str = "heading_aware",
         net_order: str = "topological",
-    net_order_depth_by_node: dict[str, int] | None = None,
+        net_order_depth_by_node: dict[str, int] | None = None,
+        detour_pass_factor: float = 0.0,
         heap_tie_breaker: str = "smaller_g",
         proactive_congestion_weight: float = 0.0,
         proactive_congestion_radius_cells: int = 0,
@@ -191,6 +193,7 @@ class _RouteNetsRustSession:
             heuristic_mode=heuristic_mode,
             net_order=net_order,
             net_order_depth_by_node=net_order_depth_by_node,
+            detour_pass_factor=detour_pass_factor,
             heap_tie_breaker=heap_tie_breaker,
             proactive_congestion_weight=proactive_congestion_weight,
             proactive_congestion_radius_cells=proactive_congestion_radius_cells,
@@ -238,7 +241,7 @@ class _RouteNetsRustSession:
         self.state = SessionState(rust_backend=rust_backend, routed_layout=routed_layout)
 
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
-        """The nine routing phases of `stages.py`, in order.
+        """The routing phases of `stages.py`, in order (nine, plus the optional detour pass).
 
         Each takes the run's frozen inputs and its mutable state; the value a
         phase returns is the input of a later one (`stages.py` names the types).
@@ -263,6 +266,8 @@ class _RouteNetsRustSession:
         routed = finalize.finalize_routing_results(
             settings, state, final.route_jobs, final.astar_start_s
         )
+        if settings.detour_pass_factor > 0:
+            routed = detour_pass.run_detour_pass(settings, state, routed)
         verified = verify_repair.repair_and_verify_final_geometry(
             settings, state, routed.routed_net_records
         )
@@ -292,7 +297,8 @@ def route_nets_rust(
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
     net_order: str = "topological",
-    net_order_depth_by_node: dict[str, int] | None = None,
+        net_order_depth_by_node: dict[str, int] | None = None,
+        detour_pass_factor: float = 0.0,
     heap_tie_breaker: str = "smaller_g",
     proactive_congestion_weight: float = 0.0,
     proactive_congestion_radius_cells: int = 0,
@@ -341,6 +347,7 @@ def route_nets_rust(
         heuristic_mode=heuristic_mode,
         net_order=net_order,
         net_order_depth_by_node=net_order_depth_by_node,
+        detour_pass_factor=detour_pass_factor,
         heap_tie_breaker=heap_tie_breaker,
         proactive_congestion_weight=proactive_congestion_weight,
         proactive_congestion_radius_cells=proactive_congestion_radius_cells,

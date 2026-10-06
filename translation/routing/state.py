@@ -299,6 +299,8 @@ class SessionState:
     """The rip-up / reroute configuration the loop runs with. w:5 r:6,8"""
 
     route_bookkeeping: RouteBookkeeping | None = None
+    #: nets the detour pass (phase 7b) re-routed; None until the pass ran
+    detour_pass_reroutes: int | None = None
     """Records, opened cells and committed cells per net. w:5 r:6,7,8  # shared writer"""
 
     collect_timing: bool = False

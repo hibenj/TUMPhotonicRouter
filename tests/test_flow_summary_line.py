@@ -29,7 +29,7 @@ def test_summary_line_lists_every_field_and_marks_skipped_stages():
     line = format_flow_summary_line(stats)
 
     assert line == (
-        "SUMMARY benchmark=cascade_8_folded nets=81 route_failures=0 "
+        "SUMMARY benchmark=cascade_8_folded nets=81 route_failures=0 detours=- "
         "verifier_errors=0 verifier_warnings=0 plm_groups=26 plm_over_tolerance=0 "
         "meander_inserted_um=23536.4 electrical_heaters=21 electrical_pads=22 "
         "electrical_failed_wires=0 electrical_ok=yes total_s=4.9"

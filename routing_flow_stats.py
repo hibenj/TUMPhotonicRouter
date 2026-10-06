@@ -22,6 +22,8 @@ class RoutingFlowStats:
     #: None until per-route collection ran (``collect_route_stats`` or
     #: ``debug_timing``); the SUMMARY line prints ``-`` then, never a guessed 0.
     route_failures: int | None = None
+    #: nets the detour pass re-routed; None when the pass did not run (prints ``-``)
+    detour_pass_reroutes: int | None = None
     simple_route_count: int = 0
     repair_count: int = 0
     expanded_states: int = 0
@@ -91,6 +93,7 @@ class RoutingFlowStats:
             "astar_time_s": self.astar_time_s,
             "route_attempts": self.route_attempts,
             "route_failures": self.route_failures,
+            "detour_pass_reroutes": self.detour_pass_reroutes,
             "simple_route_count": self.simple_route_count,
             "repair_count": self.repair_count,
             "expanded_states": self.expanded_states,
@@ -193,6 +196,7 @@ def populate_route_stats(
     stats.route_failures = (
         int(route_summary.route_failures) if int(route_summary.route_attempts) > 0 else None
     )
+    stats.detour_pass_reroutes = getattr(debug_artifacts, "detour_pass_reroutes", None)
     stats.simple_route_count = int(route_summary.simple_route_count)
     stats.repair_count = int(route_summary.repair_count)
     stats.expanded_states = int(route_summary.expanded_states)
@@ -274,6 +278,7 @@ def format_flow_summary_line(stats: "RoutingFlowStats | None") -> str:
         ("benchmark", cell(stats.benchmark_name)),
         ("nets", cell(stats.net_count)),
         ("route_failures", cell(stats.route_failures)),
+        ("detours", cell(stats.detour_pass_reroutes)),
         ("verifier_errors", cell(stats.verification_error_count)),
         ("verifier_warnings", cell(stats.verification_warning_count)),
         ("plm_groups", cell(stats.path_length_groups)),

@@ -67,6 +67,8 @@ class OpticalRoutingStageConfig:
     # contribution 2: instance depths of the original netlist for the net
     # order (the derived netlist's tile stubs would scramble the layers)
     net_order_depth_by_node: dict[str, int] | None = None
+    #: > 0 runs the detour pass after routing with this factor (plan 2026-10-06)
+    detour_pass_factor: float = 0.0
     # Milestone 1 Slice 2: the full Python-side configuration tree, threaded
     # down to `route_match_and_realize`/`_RouteNetsRustSession`.
     routing_config: RoutingConfig = field(default_factory=RoutingConfig)
@@ -127,6 +129,7 @@ def run_photonic_routing_stage(
             heuristic_mode=config.heuristic_mode,
             net_order=config.net_order,
             net_order_depth_by_node=config.net_order_depth_by_node,
+            detour_pass_factor=config.detour_pass_factor,
             heap_tie_breaker=config.heap_tie_breaker,
             proactive_congestion_weight=float(config.proactive_congestion_weight),
             proactive_congestion_radius_cells=int(config.proactive_congestion_radius_cells),
