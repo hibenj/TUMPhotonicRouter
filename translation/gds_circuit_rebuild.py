@@ -168,6 +168,29 @@ _GENERIC_PORT_CACHE: dict[
 ] = {}
 
 
+def overlapping_instances(layout: Any, tolerance_um: float = 0.01) -> list[tuple[str, str]]:
+    """The pairs of instances whose bounding boxes overlap (elements must never overlap).
+
+    The owner's rule (2026-10-06, the second Clements mesh): a rebuilt circuit
+    may not place two elements over each other, even where moving them apart
+    departs from the original layout. Bounding boxes over all layers; a
+    shared edge within ``tolerance_um`` does not count.
+    """
+
+    boxes = []
+    for instance in layout.insts:
+        box = instance.dbbox()
+        boxes.append((str(instance.name), box.left, box.bottom, box.right, box.top))
+    pairs: list[tuple[str, str]] = []
+    for index, (name_a, left_a, bottom_a, right_a, top_a) in enumerate(boxes):
+        for name_b, left_b, bottom_b, right_b, top_b in boxes[index + 1 :]:
+            overlap_x = min(right_a, right_b) - max(left_a, left_b)
+            overlap_y = min(top_a, top_b) - max(bottom_a, bottom_b)
+            if overlap_x > tolerance_um and overlap_y > tolerance_um:
+                pairs.append((name_a, name_b))
+    return pairs
+
+
 def _generic_component_ports(
     component: str, settings: dict[str, Any]
 ) -> dict[str, tuple[float, float, float]]:

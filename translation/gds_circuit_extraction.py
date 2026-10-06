@@ -94,6 +94,14 @@ class ExtractionConfig:
     #: (a two-port polarization-splitting coupler becomes two couplers of the
     #: mapped kind), kind -> kind of the parts
     split_kinds: dict[str, str] = field(default_factory=dict)
+    #: the parts of a split two-port cell are moved apart, symmetrically about
+    #: their centre along the line between their ports, until their ports are
+    #: this far apart (0: left where they are). The generic replacement of a
+    #: part is wider than the original pitch (a generic TE grating coupler is
+    #: 26 um tall, a 2D coupler's ports 9.9 um apart), and elements must never
+    #: overlap (owner's rule, 2026-10-06), even where the rebuilt layout then
+    #: departs from the original
+    split_pitch_um: float = 0.0
     facet_width_um: tuple[float, float] = (0.3, 2.0)
     touch_tolerance_um: float = 0.03
     placeholder_tolerance_um: float = 5.0
@@ -432,7 +440,8 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
         trans = leaf.trans
         part_kind = config.split_kinds.get(leaf.kind)
         if part_kind is not None:
-            # one single-port component per port
+            # one single-port component per port, the parts spread to the configured pitch
+            spread = _spread_ports(ordered, config.split_pitch_um)
             for port in ordered:
                 counters[part_kind] += 1
                 part_name = f"{part_kind}_{counters[part_kind] - 1}"
@@ -445,7 +454,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
                         origin=(trans.disp.x, trans.disp.y),
                         rotation_deg=float(trans.angle),
                         mirror=bool(trans.is_mirror()),
-                        ports=(port,),
+                        ports=(spread[id(port)],),
                     )
                 )
             continue
@@ -497,6 +506,31 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
     return ExtractedCircuit(
         components=named, nets=resolved_nets, skipped=skipped, fragments=fragments
     )
+
+
+def _spread_ports(ports: list, pitch_um: float) -> dict[int, ExtractedPort]:
+    """Two ports moved apart about their centre to ``pitch_um``; others, or 0, unchanged.
+
+    Keyed by the identity of the original port. Only the chip-frame position
+    moves: the normal and the local frame are the cell's and stay.
+    """
+
+    spread = {id(port): port for port in ports}
+    if len(ports) != 2 or pitch_um <= 0:
+        return spread
+    (ax, ay), (bx, by) = ports[0].position, ports[1].position
+    distance = math.hypot(bx - ax, by - ay)
+    if distance <= 0 or distance >= pitch_um:
+        return spread
+    ux, uy = (bx - ax) / distance, (by - ay) / distance
+    shift = (pitch_um - distance) / 2
+    spread[id(ports[0])] = dataclasses.replace(
+        ports[0], position=(ax - ux * shift, ay - uy * shift)
+    )
+    spread[id(ports[1])] = dataclasses.replace(
+        ports[1], position=(bx + ux * shift, by + uy * shift)
+    )
+    return spread
 
 
 def _group_arm_pairs(

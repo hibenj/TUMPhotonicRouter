@@ -23,8 +23,10 @@ from translation.gds_circuit_extraction import (
 from translation.gds_circuit_rebuild import (
     default_generic_mappings,
     generic_schematic,
+    overlapping_instances,
     write_benchmark_module,
 )
+from translation.layout_from_schematic import layout_from_schematic
 
 pytestmark = pytest.mark.integration
 
@@ -303,3 +305,81 @@ def test_extractor_keeps_an_arm_pair_as_one_component(tmp_path: Path):
     exec(compile(module_path.read_text(), str(module_path), "exec"), namespace)
     rebuilt = namespace["build_schematic"]()
     assert set(rebuilt.netlist.instances) == set(schematic.netlist.instances)
+
+
+def _synthetic_split_coupler_gds(path: Path) -> tuple[tuple[float, float], tuple[float, float]]:
+    """A two-port coupler cell whose ports sit 10 um apart, each feeding an MMI input;
+    returns the two port positions."""
+
+    import gdsfactory as gf
+    from gdsfactory.gpdk import get_generic_pdk
+
+    get_generic_pdk().activate()
+    c = gf.Component("synthetic_split")
+    dual = gf.Component("dual_coupler_cell")
+    for index, y in enumerate((-5.0, 5.0)):
+        stub = dual.add_ref(gf.get_component("straight", length=10.0))
+        stub.move((0.0, y))
+        dual.add_port(f"o{index + 1}", port=stub.ports["o2"])
+    coupler = c.add_ref(dual, name="dual")
+    mmi = c.add_ref(gf.get_component("mmi2x2"), name="mmi")
+    mmi.move((100.0, 0.0))
+    for coupler_port, mmi_port in (("o1", "o1"), ("o2", "o2")):
+        gf.routing.route_single(
+            c, coupler.ports[coupler_port], mmi.ports[mmi_port], cross_section="strip"
+        )
+    c.write_gds(str(path))
+    return tuple(coupler.ports["o1"].center), tuple(coupler.ports["o2"].center)
+
+
+def test_split_coupler_parts_are_moved_apart_to_the_configured_pitch(tmp_path: Path):
+    gds_path = tmp_path / "split.gds"
+    lower, upper = _synthetic_split_coupler_gds(gds_path)
+    base: dict = {
+        "core_layers": ((1, 0),),
+        "rules": (
+            ClassificationRule("gc_2d", ("dual_coupler",)),
+            ClassificationRule("mmi2x2", ("mmi2x2",)),
+            ClassificationRule("net", ("straight", "bend")),
+        ),
+        "composites": (
+            CompositeRule("gc_2d", "dual_coupler"),
+            CompositeRule("mmi2x2", "mmi2x2"),
+        ),
+        "split_kinds": {"gc_2d": "gc"},
+    }
+    # without a pitch the parts stay on the original ports, 10 um apart
+    circuit = extract_circuit(gds_path, ExtractionConfig(**base))
+    parts = sorted(
+        (component for component in circuit.components if component.kind == "gc"),
+        key=lambda component: component.ports[0].position[1],
+    )
+    assert [part.ports[0].position for part in parts] == pytest.approx([lower, upper], abs=1e-3)
+    # two generic TE couplers (26 um tall) at that pitch lie over each other
+    overlaps = overlapping_instances(
+        layout_from_schematic(generic_schematic(circuit, default_generic_mappings()))
+    )
+    assert overlaps == [("gc_0", "gc_1")]
+
+    # with the pitch the parts move apart symmetrically about their centre; the
+    # ports' normals, the nets and the MMI stay where they were
+    circuit = extract_circuit(gds_path, ExtractionConfig(**base, split_pitch_um=30.0))
+    parts = sorted(
+        (component for component in circuit.components if component.kind == "gc"),
+        key=lambda component: component.ports[0].position[1],
+    )
+    assert parts[0].ports[0].position == pytest.approx((lower[0], lower[1] - 10.0), abs=1e-3)
+    assert parts[1].ports[0].position == pytest.approx((upper[0], upper[1] + 10.0), abs=1e-3)
+    assert all(part.ports[0].normal == pytest.approx((1.0, 0.0)) for part in parts)
+    assert len(circuit.nets) == 2
+    schematic = generic_schematic(circuit, default_generic_mappings())
+    layout = layout_from_schematic(schematic)
+    assert overlapping_instances(layout) == []
+    placed = {ref.name: ref for ref in layout.insts}
+    assert tuple(placed["gc_0"].ports["o1"].center) == pytest.approx(
+        parts[0].ports[0].position, abs=1e-3
+    )
+    assert (schematic.placements["mmi2x2_0"].x, schematic.placements["mmi2x2_0"].y) == (
+        pytest.approx(100.0, abs=1e-3),
+        pytest.approx(0.0, abs=1e-3),
+    )

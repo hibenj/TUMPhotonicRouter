@@ -293,7 +293,13 @@ heater's length from its span, a bare arm as a straight of its span, an
 MZI arm pair as `gds_circuit_components.arm_pair` built from straights
 and circular 90-degree bends of the benchmark's routing radius, a one-bus ring's coupling length, a 10 um straight
 for an end cap or an open end) placed so that its ports coincide
-with the original ones, and writes the result as a benchmark module.
+with the original ones, and writes the result as a benchmark module. A
+two-port 2D grating coupler is split into two one-port generic couplers
+(`split_kinds`), which the extractor moves apart to `split_pitch_um` because
+the generic coupler is wider than the original 9.9 um pitch; rebuilt
+elements must never overlap (the owner's rule, 2026-10-06, even where the
+layout then departs from the original), which `overlapping_instances`
+checks on every rebuilt layout and the extraction script enforces.
 `scripts/extract_private_benchmark.py <name>` runs both on the owner's
 confidential circuits; their configurations (they name foundry cells) and
 the generated modules live in the git-ignored package `benchmarks/private/`,
