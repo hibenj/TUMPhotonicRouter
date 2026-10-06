@@ -31,7 +31,22 @@ def _snap_nearly_collinear_states(
     target_state: Any,
     source_port: Port,
     target_port: Port,
+    source_spec: str | None = None,
+    target_spec: str | None = None,
 ) -> tuple[Any, Any, set[tuple[int, int]]]:
+    """Line up two same-heading states that are nearly collinear, so a straight route can join them.
+
+    Two ports facing the same way whose centers differ by at most two grid
+    cells across the heading are joined by snapping the target onto the
+    source's line. A snapped state must stay inside its port's dense-port
+    lateral window (`_filter_dense_port_opening`): the two inputs of an MMI
+    sit 2 um apart and each opens only its own half of the runway, so a
+    target moved into the neighbour's half can never be reached (the
+    sender-and-receiver cut-out, 2026-10-06: a coupler 1 um above an MMI
+    input). Then the source is snapped onto the target's line instead, if
+    its own window allows; otherwise neither moves.
+    """
+
     original_cells = {
         (int(source_state.x), int(source_state.y)),
         (int(target_state.x), int(target_state.y)),
@@ -63,13 +78,12 @@ def _snap_nearly_collinear_states(
         if abs(int(target_state.y) - int(source_state.y)) > max_snap_cells:
             return source_state, target_state, original_cells
         snapped_target = state.rust_backend.State(
-            int(target_state.x),
-            int(source_state.y),
-            int(target_state.angle),
+            int(target_state.x), int(source_state.y), int(target_state.angle)
         )
-        return source_state, snapped_target, original_cells
-
-    if source_angle in {2, 6}:
+        snapped_source = state.rust_backend.State(
+            int(source_state.x), int(target_state.y), int(source_state.angle)
+        )
+    elif source_angle in {2, 6}:
         direction = 1 if source_angle == 2 else -1
         if (target_y_um - source_y_um) * direction <= 0.0:
             return source_state, target_state, original_cells
@@ -78,13 +92,30 @@ def _snap_nearly_collinear_states(
         if abs(int(target_state.x) - int(source_state.x)) > max_snap_cells:
             return source_state, target_state, original_cells
         snapped_target = state.rust_backend.State(
-            int(source_state.x),
-            int(target_state.y),
-            int(target_state.angle),
+            int(source_state.x), int(target_state.y), int(target_state.angle)
         )
-        return source_state, snapped_target, original_cells
+        snapped_source = state.rust_backend.State(
+            int(target_state.x), int(source_state.y), int(source_state.angle)
+        )
+    else:
+        return source_state, target_state, original_cells
 
+    if _state_inside_dense_port_opening(settings, state, target_spec, snapped_target):
+        return source_state, snapped_target, original_cells
+    if _state_inside_dense_port_opening(settings, state, source_spec, snapped_source):
+        return snapped_source, target_state, original_cells
     return source_state, target_state, original_cells
+
+
+def _state_inside_dense_port_opening(
+    settings, state, port_spec: str | None, grid_state: Any
+) -> bool:
+    """Whether a state's cell belongs to the port's own dense-port opening (always, without one)."""
+
+    if port_spec is None:
+        return True
+    cell = (int(grid_state.x), int(grid_state.y))
+    return bool(_filter_dense_port_opening(settings, state, port_spec, {cell}))
 
 
 def _snap_same_heading_minimum_bend_offset(
@@ -433,6 +464,8 @@ def _states_and_openings(
             target_state,
             job.source_port,
             job.target_port,
+            port1_spec,
+            port2_spec,
         )
         source_state, target_state, snapped_anchor_cells = _snap_same_heading_minimum_bend_offset(
             settings, state, source_state, target_state
