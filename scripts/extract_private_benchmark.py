@@ -59,10 +59,17 @@ STABLE_ROUTING_FLAGS: tuple[str, ...] = (
     # second net can never reach its target
     "--grid-size-um",
     "1.0",
-    # shortest nets first within the topological layers (see the rebuild's
-    # net order); one Clements mesh does not route in declaration order
+    # the nets with the nearest ports first across all depth layers, so the
+    # short interior nets of a cell (the MZI feeds) are committed before the
+    # long wires that would otherwise run through it; in declaration order or
+    # within the topological layers one Clements mesh grew a 457 um spiral out
+    # of a 54.7 um feed (ExecPlan 2026-10-06-detour-aware-routing)
     "--net-order",
-    "topological-span",
+    "span",
+    # and the safety net behind it: any net that still ends up longer than
+    # three times its free lower bound is ripped up and routed again at the end
+    "--detour-pass-factor",
+    "3",
 )
 
 

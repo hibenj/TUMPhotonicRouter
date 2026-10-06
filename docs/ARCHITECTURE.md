@@ -218,13 +218,14 @@ internals; it goes through the routing API (`translation/routing/api.py`).
 
 `session.py` (372 lines) owns the session shell and nothing else: it validates
 the keywords into `SessionSettings`, builds `SessionState`, and calls the nine
-phases (section 3). `settings.py` (295 lines) owns `SessionSettings`, the
+phases (section 3) plus, when `detour_pass_factor > 0`, the detour pass
+between phases 7 and 8. `settings.py` (295 lines) owns `SessionSettings`, the
 frozen inputs of one run (49 fields grouped by consumer) with the
 constructor's validation rules. `state.py` (339 lines) owns `SessionState`,
 everything one run computes: one documented field per value, grouped by first
 writing phase, with writer and reader phases named (section 10).
-`stages.py` (207 lines) owns the nine `Protocol`s and the small frozen
-dataclasses a phase returns -- the declared contract each phase answers to.
+`stages.py` (217 lines) owns the nine `Protocol`s, the optional `DetourPass`
+(phase 7b) and the small frozen dataclasses a phase returns -- the declared contract each phase answers to.
 `crossing_plan_info.py` (316 lines) owns `CrossingPlanInfo`, the typed crossing
 plan (66 fields grouped by writer phase) with `to_dict`/`from_dict` at the
 report boundaries. `timing.py` (38 lines) owns the pipeline timers.
@@ -232,7 +233,8 @@ report boundaries. `timing.py` (38 lines) owns the pipeline timers.
 The nine stage modules own one phase each and are named for it:
 `obstacle_context.py` (94), `router_setup.py` (280), `route_jobs.py` (1,664),
 `crossing_plan_stage.py` (669), `handoff.py` (766), `dispatch.py` (1,949),
-`finalize.py` (1,161), `verify_repair.py` (1,112), `realize.py` (123). A stage
+`finalize.py` (1,161), `verify_repair.py` (1,112), `realize.py` (123); the
+optional `detour_pass.py` (199) sits between finalize and verify. A stage
 takes `(settings, state, <its input>)` and returns its product; it calls its
 own helpers by name and another stage's helper through an explicit import. A
 stage must not know the command line, must not read the environment, and must
@@ -605,9 +607,9 @@ session below), `verify_and_attach_photonic_reports`,
 `attach_and_report_path_length_matching`, optionally
 `run_electrical_routing_step`, then `write_or_show_routed_layout`.
 
-The routing session itself is `translation/routing/session.py::run`. The nine
-calls below are that function; the types are the Protocols of
-`translation/routing/stages.py`:
+The routing session itself is `translation/routing/session.py::run`. The
+calls below are that function (nine phases, and the optional detour pass 7b);
+the types are the Protocols of `translation/routing/stages.py`:
 
 | # | call in `session.py::run` | input | product |
 | --- | --- | --- | --- |
@@ -619,6 +621,7 @@ calls below are that function; the types are the Protocols of
 | 5 | `handoff.finalize_route_jobs_and_static_handoff(settings, state, planned.route_jobs, planned.foreign_port_keepout_cells_by_instance, context.obstacle_map)` | `+ planned jobs, keepouts, obstacle map` | `FinalJobs` (jobs as handed to the kernel, `astar_start_s`) |
 | 6 | `dispatch.dispatch_native_routing(settings, state, final.route_jobs)` | `+ final jobs` | `None` -- runs the kernel's negotiated loop; results land in `state.route_bookkeeping` with the loop's counters |
 | 7 | `finalize.finalize_routing_results(settings, state, final.route_jobs, final.astar_start_s)` | `+ final jobs, t0` | `RoutedRecords` (one `RoutedNetRecord` per net, `astar_elapsed_s`) |
+| 7b | `detour_pass.run_detour_pass(settings, state, routed)`, only when `settings.detour_pass_factor > 0` (`--detour-pass-factor`) | `+ records` | `RoutedRecords` again: every net whose recorded length exceeds the factor times its free lower bound (Manhattan distance of its port centers plus two bends) ripped up and routed again in one negotiated batch, shortest first, up to three passes while the set shrinks; `state.detour_pass_reroutes` counts them (SUMMARY `detours=`) |
 | 8 | `verify_repair.repair_and_verify_final_geometry(settings, state, routed.routed_net_records)` | `+ records` | `VerifiedRecords` (records after final repair, the crossings still illegal) |
 | 9 | `realize.realize_and_assemble_debug_artifacts(settings, state, final.route_jobs, verified.routed_net_records, verified.illegal_realized_crossings, context.obstacle_map, context.obstacle_svg, routed.astar_elapsed_s)` | `+ records, illegal crossings, obstacle map, SVG, elapsed` | `RustRouteDebugArtifacts` |
 
@@ -705,6 +708,22 @@ The rules are values, one module each, chosen before the first round:
 `negotiation/attempt.rs` turns one attempt into its `native_negotiated_search`
 trace line; `negotiation/probe.rs` answers "who blocks this net";
 `negotiation/braid.rs` swaps two crossing routes locally.
+
+The loop accepts any legal path, however long, and never revisits a routed
+net unless a later net rips it up as a blocker; a net that had to go around
+a route which a later round moved away keeps its detour (the 457 um spiral
+of a 54.7 um feed in one of the owner's Clements meshes, ExecPlan
+2026-10-06-detour-aware-routing). Two opt-in measures sit outside the loop
+and leave the defaults byte-identical. `--net-order span`
+(`translation/route_order.py`) routes the nets with the nearest ports first
+across all depth layers, so the short interior nets of a cell are committed
+before the long wires that would otherwise run through it. The detour pass
+(phase 7b, `translation/routing/detour_pass.py`) measures every recorded
+route against its free lower bound and re-runs the same negotiated batch on
+the nets above the factor. Neither smooths or edits geometry: the pass only
+chooses which nets to search again, and the search is the same A*. The
+alternative of treating a detour as a failure inside the loop itself stays
+open (the plan's Milestone 4).
 
 **To add a policy.** (1) Declare the decision as a trait in its own module
 under `src/engine/negotiation/`, with today's behaviour as the first
