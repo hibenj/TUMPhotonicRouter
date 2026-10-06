@@ -10,12 +10,14 @@ extraction itself is ``gds_circuit_extraction``.
 
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .gds_circuit_extraction import ExtractedCircuit, ExtractedPort
+from .gds_circuit_components import register_generic_components
+from .gds_circuit_extraction import ExtractedCircuit, ExtractedComponent, ExtractedPort
 
 
 @dataclass(frozen=True)
@@ -25,8 +27,9 @@ class GenericMapping:
     ``port_names_by_side`` maps the original port's side in the component
     frame (``left``/``right``/``top``/``bottom``, with ``_lower``/``_upper``
     suffixes when two ports share a side) to the generic port name;
-    ``settings`` derives the component settings from the extracted ports
-    (``None``: none); ``generic_ports`` gives the generic component's port
+    ``settings`` derives the component settings from the extracted
+    component (its ports and measured geometry; ``None``: none);
+    ``generic_ports`` gives the generic component's port
     positions and orientations for those settings (name -> (x, y, angle)).
     """
 
@@ -60,6 +63,9 @@ def side_labels(ports: tuple[ExtractedPort, ...]) -> list[str]:
     return labels
 
 
+#: a net shorter than this joins two abutting components and is not emitted
+ABUT_UM = 0.5
+
 #: how ``generic_schematic`` orders the nets: by increasing port distance
 #: (``chord``), decreasing (``chord_desc``), or as extracted (``extraction``)
 NetOrder = str
@@ -83,6 +89,7 @@ def generic_schematic(
     from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
     get_generic_pdk().activate()  # the Instance validation resolves the component names
+    register_generic_components()
     schematic = Schematic()
     port_name_of: dict[tuple[str, int], str] = {}
     for component in circuit.components:
@@ -90,7 +97,7 @@ def generic_schematic(
         if mapping is None:
             raise ValueError(f"no generic mapping for kind {component.kind!r} ({component.name})")
         labels = side_labels(component.ports)
-        settings = mapping.settings(component.ports) if mapping.settings else {}
+        settings = mapping.settings(component) if mapping.settings else {}
         component_name = mapping.component_name(component.ports)
         generic_ports = _generic_component_ports(component_name, settings)
         if mapping.generic_ports is not None:
@@ -140,6 +147,8 @@ def generic_schematic(
     elif net_order != "extraction":
         raise ValueError(f"unknown net order {net_order!r}")
     for net in two_ported:
+        if chord_um(net) < ABUT_UM:
+            continue  # the components abut; nothing to route
         (a_name, a_index), (b_name, b_index) = net.endpoints
         p1 = f"{a_name},{port_name_of[(a_name, a_index)]}"
         p2 = f"{b_name},{port_name_of[(b_name, b_index)]}"
@@ -197,6 +206,8 @@ def write_benchmark_module(
         "from gdsfactory.gpdk import get_generic_pdk",
         "from gdsfactory.schematic import Instance, Net, Placement, Schematic",
         "",
+        "from translation.gds_circuit_components import register_generic_components",
+        "",
         "STABLE_ROUTING_FLAGS: tuple[str, ...] = (",
     ]
     for flag in flags:
@@ -218,6 +229,7 @@ def write_benchmark_module(
         "",
         "def build_schematic() -> Schematic:",
         "    get_generic_pdk().activate()",
+        "    register_generic_components()",
         "    schematic = Schematic()",
         "    for name, component, settings, x, y, rotation in INSTANCES:",
         "        schematic.add_instance(",
@@ -241,8 +253,8 @@ def _port_span_and_separation(ports: tuple[ExtractedPort, ...]) -> tuple[float, 
     return span, separation
 
 
-def _mmi_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, float]:
-    span, separation = _port_span_and_separation(ports)
+def _mmi_settings(component: ExtractedComponent) -> dict[str, float]:
+    span, separation = _port_span_and_separation(component.ports)
     length_taper = 10.0
     width_taper = 1.0
     gap = max(separation - width_taper, 0.25)
@@ -267,7 +279,7 @@ def _mmi_ports(settings: dict[str, float]) -> dict[str, tuple[float, float, floa
     }
 
 
-def _heater_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, Any]:
+def _heater_settings(component: ExtractedComponent) -> dict[str, Any]:
     """The heater's length from its port span, without the generic via stacks.
 
     The generic heater's contact via stacks stick out 16 um past both
@@ -277,7 +289,7 @@ def _heater_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, Any]:
     electrical ports, which these photonic-only benchmarks do not need.
     """
 
-    span, _ = _port_span_and_separation(ports)
+    span, _ = _port_span_and_separation(component.ports)
     return {"length": round(span, 3), "via_stack": None}
 
 
@@ -285,7 +297,7 @@ def _heater_ports(settings: dict[str, float]) -> dict[str, tuple[float, float, f
     return {"o1": (0.0, 0.0, 180.0), "o2": (settings["length"], 0.0, 0.0)}
 
 
-def _ring_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, float]:
+def _ring_settings(component: ExtractedComponent) -> dict[str, float]:
     """A one-bus ring's coupling length so that its bus ports span the original ones.
 
     ``ring_single`` puts ``o2`` at x = radius + 3 and ``o1`` at
@@ -294,18 +306,36 @@ def _ring_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, float]:
     the generic defaults.
     """
 
-    if len(ports) != 2:
+    if len(component.ports) != 2:
         return {}
-    span, _separation = _port_span_and_separation(ports)
+    span, _separation = _port_span_and_separation(component.ports)
     return {"length_x": max(span - 26.0, 0.0)}
 
 
-def _waveguide_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, float]:
-    span, _separation = _port_span_and_separation(ports)
+def _waveguide_settings(component: ExtractedComponent) -> dict[str, float]:
+    span, _separation = _port_span_and_separation(component.ports)
     return {"length": round(span, 3)}
 
 
-def _stub_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, float]:
+def _arm_pair_settings(component: ExtractedComponent, bend_radius_um: float) -> dict[str, float]:
+    """An arm pair's arms from the extractor's geometry, its pitches from the ports."""
+
+    by_side: dict[str, list[float]] = {}
+    for port in component.ports:
+        by_side.setdefault(port.local_side, []).append(port.local_position[1])
+    left, right = by_side.get("left", [0.0]), by_side.get("right", [0.0])
+    geometry = component.geometry
+    return {
+        "arm_length": geometry["arm_length_um"],
+        "arm_separation": geometry["arm_separation_um"],
+        "extension": geometry["extension_um"],
+        "pitch_in": round(max(left) - min(left), 3) if len(left) == 2 else 2.0,
+        "pitch_out": round(max(right) - min(right), 3) if len(right) == 2 else 2.0,
+        "bend_radius": bend_radius_um,
+    }
+
+
+def _stub_settings(component: ExtractedComponent) -> dict[str, float]:
     return {"length": STUB_LENGTH_UM}
 
 
@@ -314,8 +344,12 @@ def _stub_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, float]:
 STUB_LENGTH_UM = 10.0
 
 
-def default_generic_mappings() -> dict[str, GenericMapping]:
-    """The generic replacements: MMI2x2, heater, bare arm, couplers, ring, stubs."""
+def default_generic_mappings(bend_radius_um: float = 5.0) -> dict[str, GenericMapping]:
+    """The generic replacements: MMI2x2, heater, bare arm, arm pair, couplers, ring, stubs.
+
+    ``bend_radius_um`` is the routing bend radius of the benchmark; the arm
+    pair is drawn with the same 90-degree bends the router uses.
+    """
 
     any_side_o1 = dict.fromkeys(("left", "right", "top", "bottom"), "o1")
     stub = GenericMapping(
@@ -330,6 +364,17 @@ def default_generic_mappings() -> dict[str, GenericMapping]:
             component="straight",
             port_names_by_side={"left": "o1", "right": "o2"},
             settings=_waveguide_settings,
+        ),
+        # an MZI arm pair with its S-bends (translation/gds_circuit_components.py)
+        "arm_pair": GenericMapping(
+            component="arm_pair",
+            port_names_by_side={
+                "left_lower": "o1",
+                "left_upper": "o2",
+                "right_upper": "o3",
+                "right_lower": "o4",
+            },
+            settings=functools.partial(_arm_pair_settings, bend_radius_um=bend_radius_um),
         ),
         "mmi2x2": GenericMapping(
             component="mmi2x2",

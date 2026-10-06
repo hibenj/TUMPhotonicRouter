@@ -78,8 +78,13 @@ def main(argv: list[str] | None = None) -> int:
     print(circuit.report())
     if args.report_only:
         return 0
+    flags = STABLE_ROUTING_FLAGS + tuple(FLAG_OVERRIDES.get(args.name, ()))
+    # the arm pair is drawn with the benchmark's own routing bends
+    bend_radius_um = float(flags[flags.index("--bend-radius-um") + 1])
     schematic = generic_schematic(
-        circuit, default_generic_mappings(), net_order=NET_ORDERS.get(args.name, "chord")
+        circuit,
+        default_generic_mappings(bend_radius_um=bend_radius_um),
+        net_order=NET_ORDERS.get(args.name, "chord"),
     )
     target = REPO / "benchmarks" / "private" / f"{args.name}.py"
     write_benchmark_module(
@@ -87,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         target,
         title=f"Private benchmark {args.name} (extracted from the owner's tape-out GDS)",
         # a circuit's own flags come last: argparse keeps the last value of a flag
-        flags=STABLE_ROUTING_FLAGS + tuple(FLAG_OVERRIDES.get(args.name, ())),
+        flags=flags,
     )
     print(
         f"wrote {target.relative_to(REPO)}: {len(schematic.netlist.instances)} instances, "

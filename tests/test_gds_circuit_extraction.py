@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from translation.gds_circuit_extraction import (
+    ArmPairRule,
     ClassificationRule,
     CompositeRule,
     ExtractionConfig,
@@ -213,3 +214,92 @@ def test_extractor_terminates_nets_on_end_caps_and_open_ends(tmp_path: Path):
         # a straight's o1 sits at its origin: the stub starts at the waveguide's end
         assert (placement.x, placement.y) == pytest.approx(end, abs=1e-3)
         assert float(placement.rotation) == pytest.approx(0.0)
+
+
+def _synthetic_arm_pair_gds(path: Path) -> dict[str, tuple[float, float]]:
+    """Two MMIs joined by a metal heater arm and a bare arm over 60 um S-bends."""
+    import gdsfactory as gf
+    from gdsfactory.gpdk import get_generic_pdk
+
+    get_generic_pdk().activate()
+    c = gf.Component("synthetic_arm_pair")
+    mmi_a = c.add_ref(gf.get_component("mmi2x2"), name="mmi_a")
+    mmi_a.move((100.0, 0.0))
+    bare = gf.Component("straight_heater_metal_bare_arm_of_pair")
+    bare_ref = bare.add_ref(gf.get_component("straight", length=120.0))
+    bare.add_ports(bare_ref.ports)
+    arms = {}
+    for sign, out_port, arm_component in ((1.0, "o3", "straight_heater_metal"), (-1.0, "o4", None)):
+        pitch = abs(mmi_a.ports["o3"].center[1] - mmi_a.ports["o4"].center[1])
+        fan_out = c.add_ref(gf.get_component("bend_s", size=(60.0, sign * (58.0 - pitch) / 2)))
+        fan_out.connect("o1", mmi_a.ports[out_port])
+        arm = c.add_ref(
+            gf.get_component(arm_component, length=120.0) if arm_component else bare,
+            name=f"arm_{out_port}",
+        )
+        arm.connect("o1", fan_out.ports["o2"])
+        fan_in = c.add_ref(gf.get_component("bend_s", size=(60.0, -sign * (58.0 - pitch) / 2)))
+        fan_in.connect("o1", arm.ports["o2"])
+        arms[out_port] = fan_in
+    mmi_b = c.add_ref(gf.get_component("mmi2x2"), name="mmi_b")
+    mmi_b.connect("o2", arms["o3"].ports["o2"])
+    c.write_gds(str(path))
+    return {
+        "mmi_a_o3": tuple(mmi_a.ports["o3"].center),
+        "mmi_a_o4": tuple(mmi_a.ports["o4"].center),
+        "mmi_b_o1": tuple(mmi_b.ports["o1"].center),
+        "mmi_b_o2": tuple(mmi_b.ports["o2"].center),
+    }
+
+
+def test_extractor_keeps_an_arm_pair_as_one_component(tmp_path: Path):
+    gds_path = tmp_path / "arm_pair.gds"
+    ends = _synthetic_arm_pair_gds(gds_path)
+    config = ExtractionConfig(
+        core_layers=((1, 0),),
+        rules=(
+            ClassificationRule("heater", ("straight_heater_metal",)),
+            ClassificationRule("mmi2x2", ("mmi2x2",)),
+            ClassificationRule("net", ("straight", "bend")),
+        ),
+        composites=(
+            CompositeRule("heater", "straight_heater_metal"),
+            CompositeRule("mmi2x2", "mmi2x2"),
+        ),
+        heater_metal_layers=((47, 0),),
+        arm_pairs=(
+            ArmPairRule(("heater", "waveguide"), max_separation_um=70.0, extension_um=60.0),
+        ),
+    )
+    circuit = extract_circuit(gds_path, config)
+    kinds = sorted(component.kind for component in circuit.components)
+    assert kinds == ["arm_pair", "mmi2x2", "mmi2x2"]
+    pair = next(component for component in circuit.components if component.kind == "arm_pair")
+    assert pair.geometry["arm_length_um"] == pytest.approx(120.0)
+    assert pair.geometry["arm_separation_um"] == pytest.approx(58.0)
+    # its four ports sit on the MMIs' ports: the S-bends start right there
+    positions = sorted(tuple(round(v, 3) for v in port.position) for port in pair.ports)
+    assert positions == sorted(tuple(round(v, 3) for v in end) for end in ends.values())
+    # four abutting nets of zero length, nothing to route
+    assert len(circuit.nets) == 4
+    assert all(net.note.startswith("abutting") for net in circuit.nets)
+
+    schematic = generic_schematic(circuit, default_generic_mappings())
+    assert len(schematic.netlist.routes) == 0
+    pair_instance = schematic.netlist.instances["arm_pair_0"]
+    assert pair_instance.settings["arm_length"] == pytest.approx(120.0)
+    assert pair_instance.settings["bend_radius"] == pytest.approx(5.0)
+    assert pair_instance.settings["pitch_in"] == pytest.approx(
+        abs(ends["mmi_a_o3"][1] - ends["mmi_a_o4"][1]), abs=1e-3
+    )
+    placement = schematic.placements["arm_pair_0"]
+    assert (placement.x, placement.y) == pytest.approx(
+        (ends["mmi_a_o4"][0], (ends["mmi_a_o3"][1] + ends["mmi_a_o4"][1]) / 2), abs=1e-3
+    )
+    # the written module rebuilds, and the layout places the pair between the MMIs
+    module_path = tmp_path / "arm_pair_benchmark.py"
+    write_benchmark_module(schematic, module_path, title="synthetic", flags=())
+    namespace: dict = {}
+    exec(compile(module_path.read_text(), str(module_path), "exec"), namespace)
+    rebuilt = namespace["build_schematic"]()
+    assert set(rebuilt.netlist.instances) == set(schematic.netlist.instances)

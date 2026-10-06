@@ -276,8 +276,9 @@ Since 2026-10-05 two modules turn a foundry GDS into a benchmark:
 `gds_circuit_extraction.py` (about 550 lines) walks the hierarchy of a
 tape-out GDS to its leaf instances, classifies them by cell-name rules from an
 `ExtractionConfig` (component kinds, composite containers, placeholders,
-black boxes without core shapes, heater cells without metal as bare arms),
-merges every waveguide cell's shapes on its
+black boxes without core shapes, heater cells without metal as bare arms,
+two bare arms with S-bends on both sides as one arm pair whose box cuts the
+nets and whose abutting ports become zero-length nets), merges every waveguide cell's shapes on its
 first drawn core layer into one region so that each connected polygon is one
 net, and reads a net's ports off the polygon's end caps (one waveguide width,
 neighbours perpendicular) that touch a component's shapes, lie in a black
@@ -286,9 +287,10 @@ box, sit within a tolerance of an empty placeholder's origin, or
 `gds_circuit_rebuild.py` (about 300) replaces every component by a generic
 gdsfactory component parameterized to reproduce the original port geometry
 (`GenericMapping`: the MMI's taper and gap from its port spacing, the
-heater's length from its span, a bare arm as a straight of its span, a
-one-bus ring's coupling length, a 10 um straight for an end cap or an open
-end) placed so that its ports coincide
+heater's length from its span, a bare arm as a straight of its span, an
+MZI arm pair as `gds_circuit_components.arm_pair` built from straights
+and circular 90-degree bends of the benchmark's routing radius, a one-bus ring's coupling length, a 10 um straight
+for an end cap or an open end) placed so that its ports coincide
 with the original ones, and writes the result as a benchmark module.
 `scripts/extract_private_benchmark.py <name>` runs both on the owner's
 confidential circuits; their configurations (they name foundry cells) and

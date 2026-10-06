@@ -45,6 +45,25 @@ class CompositeRule:
 
 
 @dataclass(frozen=True)
+class ArmPairRule:
+    """Two arms of ``kinds`` (one each or both of one kind) with the same x-span,
+    at most ``max_separation_um`` apart, are one component of ``kind`` together
+    with the ``extension_um`` of S-bends on both sides: an MZI arm pair that
+    enters and leaves as a parallel pair (the owner's 2026-10-06 review of the
+    beam-splitter circuit). The nets are cut at the pair's box; a component
+    port lying on that box (an MMI feeding the pair directly) becomes an
+    abutting net of zero length."""
+
+    kinds: tuple[str, ...]
+    max_separation_um: float
+    extension_um: float
+    kind: str = "arm_pair"
+    #: the two arms must be of different kinds (a heater and a bare arm); two
+    #: stacked single-arm paths of one kind are not a pair
+    distinct_kinds: bool = True
+
+
+@dataclass(frozen=True)
 class ExtractionConfig:
     core_layers: tuple[tuple[int, int], ...]
     rules: tuple[ClassificationRule, ...]
@@ -65,6 +84,8 @@ class ExtractionConfig:
     #: pair a metal heater with a bare arm of the same cell family)
     heater_metal_layers: tuple[tuple[int, int], ...] = ()
     heater_without_metal_kind: str = "waveguide"
+    #: arm pairs kept as one component with two inputs and two outputs
+    arm_pairs: tuple[ArmPairRule, ...] = ()
     #: kinds recorded but neither components of the benchmark nor nets
     skip_kinds: frozenset[str] = frozenset({"bondpad", "heater_metal"})
     #: an unmatched leaf cell is a waveguide piece of this kind
@@ -123,6 +144,9 @@ class ExtractedComponent:
     rotation_deg: float
     mirror: bool
     ports: tuple[ExtractedPort, ...]
+    #: measured dimensions the generic replacement needs beyond the ports
+    #: (an arm pair's arm length, separation and S-bend extension)
+    geometry: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -180,6 +204,7 @@ class _Component:
     bbox: Any  # kdb.DBox, None when the cell has no shapes at all
     #: no shapes on the core layers: a foundry black box drawn elsewhere
     black_box: bool
+    geometry: dict[str, float] = field(default_factory=dict)
 
 
 def _flatten(layout: Any, top: Any, config: ExtractionConfig) -> list[_Leaf]:
@@ -288,9 +313,18 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
         half = round(config.net_gap_um / 2 / dbu)
         net_region = net_region.sized(half).sized(-half)
         net_region.merge()
-
     tol = config.touch_tolerance_um
     low, high = config.facet_width_um
+    abutting: list[tuple[int, int, Point, Point]] = []
+    if config.arm_pairs:
+        components, pair_boxes = _group_arm_pairs(
+            components, config, net_region, tol, low, high, dbu
+        )
+        abutting = _abutting_ports(net_region, components, pair_boxes, tol, low, high, dbu)
+        for box in pair_boxes:
+            net_region -= kdb.Region(box.to_itype(dbu))
+        net_region.merge()
+
     ports_by_component: dict[int, list[ExtractedPort]] = {
         index: [] for index in range(len(components))
     }
@@ -370,6 +404,19 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
             )
         )
 
+    for component_index, pair_index, position, normal in abutting:
+        # an MMI output lying on an arm pair's box: both get the port, the net
+        # between them has no length and is not routed
+        a = register_port(component_index, position, normal)
+        b = register_port(pair_index, position, (-normal[0], -normal[1]))
+        nets.append(
+            ExtractedNet(
+                name=f"abut_{len(nets)}",
+                endpoints=((component_index, a), (pair_index, b)),
+                note="abutting: the arm pair starts at the component's port",
+            )
+        )
+
     # components with ports (unconnected show cells are dropped), named by kind
     named: list[ExtractedComponent] = []
     index_to_name: dict[int, str] = {}
@@ -414,6 +461,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
                 rotation_deg=float(trans.angle),
                 mirror=bool(trans.is_mirror()),
                 ports=tuple(ordered),
+                geometry=dict(component.geometry),
             )
         )
         # remap port indexes to the ordered tuple
@@ -449,6 +497,166 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
     return ExtractedCircuit(
         components=named, nets=resolved_nets, skipped=skipped, fragments=fragments
     )
+
+
+def _group_arm_pairs(
+    components: list[_Component],
+    config: ExtractionConfig,
+    net_region: Any,
+    tol: float,
+    low: float,
+    high: float,
+    dbu: float,
+) -> tuple[list[_Component], list[Any]]:
+    """Replace every two arms an ``ArmPairRule`` matches by one arm-pair component.
+
+    Returns the new component list (the arms removed, the pairs appended)
+    and the pairs' boxes: the arms' x-span extended by the rule's S-bend
+    length on both sides, the arms' y-extent plus a waveguide width. Two
+    arms are a pair only when the waveguides enter and leave that box as
+    two on the left and two on the right (``_box_crossings``): arms fed
+    from another side (one from above over a bend) stay separate components.
+    """
+
+    absorbed: set[int] = set()
+    pairs: list[_Component] = []
+    boxes: list[Any] = []
+    for rule in config.arm_pairs:
+        candidates = [
+            (index, component)
+            for index, component in enumerate(components)
+            if component.leaf.kind in rule.kinds and component.bbox is not None
+        ]
+        for i, (index_a, a) in enumerate(candidates):
+            if index_a in absorbed:
+                continue
+            for index_b, b in candidates[i + 1 :]:
+                if index_b in absorbed:
+                    continue
+                if abs(a.bbox.left - b.bbox.left) > 1.0 or abs(a.bbox.right - b.bbox.right) > 1.0:
+                    continue
+                if rule.distinct_kinds and a.leaf.kind == b.leaf.kind:
+                    continue
+                separation = abs(a.bbox.center().y - b.bbox.center().y)
+                if separation == 0 or separation > rule.max_separation_um:
+                    continue
+                absorbed.update((index_a, index_b))
+                box = kdb.DBox(
+                    a.bbox.left - rule.extension_um,
+                    min(a.bbox.bottom, b.bbox.bottom) - 1.0,
+                    a.bbox.right + rule.extension_um,
+                    max(a.bbox.top, b.bbox.top) + 1.0,
+                )
+                if _box_crossings(net_region, box, tol, low, high, dbu) != (2, 2):
+                    absorbed.difference_update((index_a, index_b))
+                    continue
+                trans = kdb.DCplxTrans(1.0, 0.0, False, kdb.DVector(box.center().x, box.center().y))
+                leaf = _Leaf(
+                    path="<arm pair>", cell=None, trans=trans, kind=rule.kind, composite=False
+                )
+                pairs.append(
+                    _Component(
+                        leaf=leaf,
+                        region=kdb.Region(),
+                        bbox=box,
+                        black_box=True,
+                        geometry={
+                            "arm_length_um": round(a.bbox.width(), 3),
+                            "arm_separation_um": round(separation, 3),
+                            "extension_um": rule.extension_um,
+                        },
+                    )
+                )
+                boxes.append(box)
+                break
+    kept = [component for index, component in enumerate(components) if index not in absorbed]
+    return kept + pairs, boxes
+
+
+def _box_crossings(
+    net_region: Any, box: Any, tol: float, low: float, high: float, dbu: float
+) -> tuple[int, int]:
+    """How many waveguides enter ``box`` through its left and its right edge.
+
+    Counts the end caps on those edges after cutting the box out of a copy
+    of the net region, plus the caps that already lie on them (a component
+    port feeding the box directly).
+    """
+
+    cut = net_region - kdb.Region(box.to_itype(dbu))
+    cut.merge()
+    left = right = 0
+    seen: set[tuple[int, int]] = set()
+    for region in (net_region, cut):
+        for polygon in region.interacting(kdb.Region(box.enlarged(tol, tol).to_itype(dbu))).each():
+            dpolygon = polygon.to_dtype(dbu)
+            points = list(dpolygon.each_point_hull())
+            count = len(points)
+            for index in range(count):
+                a, b = points[index], points[(index + 1) % count]
+                length = a.distance(b)
+                if length < low or length > high or not _is_end_cap(points, index):
+                    continue
+                mid = kdb.DPoint((a.x + b.x) / 2, (a.y + b.y) / 2)
+                if not (box.bottom - tol <= mid.y <= box.top + tol):
+                    continue
+                key = (round(mid.x * 100), round(mid.y * 100))
+                if key in seen:
+                    continue
+                if abs(mid.x - box.left) <= tol:
+                    seen.add(key)
+                    left += 1
+                elif abs(mid.x - box.right) <= tol:
+                    seen.add(key)
+                    right += 1
+    return left, right
+
+
+def _abutting_ports(
+    net_region: Any,
+    components: list[_Component],
+    pair_boxes: list[Any],
+    tol: float,
+    low: float,
+    high: float,
+    dbu: float,
+) -> list[tuple[int, int, Point, Point]]:
+    """Net end caps that touch a component and lie on an arm pair's box boundary.
+
+    Such a net disappears when the box is cut out of the net region (an
+    MMI output feeding the pair's S-bend directly), so it is recorded here
+    as (component, pair, position, normal into the net) before the cut.
+    """
+
+    found: list[tuple[int, int, Point, Point]] = []
+    pair_indexes = [index for index, c in enumerate(components) if c.leaf.path == "<arm pair>"]
+    for polygon in net_region.each():
+        dpolygon = polygon.to_dtype(dbu)
+        points = list(dpolygon.each_point_hull())
+        count = len(points)
+        for index in range(count):
+            a, b = points[index], points[(index + 1) % count]
+            length = a.distance(b)
+            if length < low or length > high or not _is_end_cap(points, index):
+                continue
+            mid = kdb.DPoint((a.x + b.x) / 2, (a.y + b.y) / 2)
+            on_box = None
+            for pair_index, box in zip(pair_indexes, pair_boxes, strict=True):
+                if (
+                    box.bottom - tol <= mid.y <= box.top + tol
+                    and min(abs(mid.x - box.left), abs(mid.x - box.right)) <= tol
+                ):
+                    on_box = pair_index
+            if on_box is None:
+                continue
+            px, py = (b.y - a.y) / length, -(b.x - a.x) / length
+            inside = dpolygon.inside(kdb.DPoint(mid.x + px * 0.3, mid.y + py * 0.3))
+            normal = (px, py) if inside else (-px, -py)
+            component_index = _touching_component(components, mid, tol, dbu, True)
+            if component_index is None or component_index in pair_indexes:
+                continue
+            found.append((component_index, on_box, (mid.x, mid.y), normal))
+    return found
 
 
 def _is_end_cap(points: list, index: int) -> bool:
