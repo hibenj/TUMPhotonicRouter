@@ -16,6 +16,7 @@ live in the private configurations outside the repository.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections import Counter
 from dataclasses import dataclass, field
@@ -57,6 +58,13 @@ class ExtractionConfig:
     #: ``open_end`` (an I/O cell that is not in the file) instead of leaving
     #: the net one-ported
     open_ends: bool = False
+    #: when set, a cell classified ``heater`` that draws nothing on these
+    #: layers is a bare arm of the same length and becomes
+    #: ``heater_without_metal_kind``: a fixed waveguide with two ports (the
+    #: owner's 2026-10-06 review of the beam-splitter circuit, whose MZIs
+    #: pair a metal heater with a bare arm of the same cell family)
+    heater_metal_layers: tuple[tuple[int, int], ...] = ()
+    heater_without_metal_kind: str = "waveguide"
     #: kinds recorded but neither components of the benchmark nor nets
     skip_kinds: frozenset[str] = frozenset({"bondpad", "heater_metal"})
     #: an unmatched leaf cell is a waveguide piece of this kind
@@ -239,6 +247,19 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
         layout.layer(kdb.LayerInfo(layer, datatype)) for layer, datatype in config.core_layers
     ]
     leaves = _flatten(layout, top, config)
+    if config.heater_metal_layers:
+        metal_indexes = [
+            layout.layer(kdb.LayerInfo(layer, datatype))
+            for layer, datatype in config.heater_metal_layers
+        ]
+        leaves = [
+            dataclasses.replace(leaf, kind=config.heater_without_metal_kind)
+            if leaf.kind == "heater"
+            and leaf.cell is not None
+            and _cell_region(layout, leaf.cell, leaf.trans, metal_indexes).is_empty()
+            else leaf
+            for leaf in leaves
+        ]
 
     skipped: Counter = Counter()
     components: list[_Component] = []

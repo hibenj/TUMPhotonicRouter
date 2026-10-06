@@ -146,8 +146,18 @@ def _synthetic_stub_gds(path: Path) -> tuple[float, float]:
         gc.rotate(180.0)
         gc.move((-60.0, 60.0 if port == "o2" else -60.0))
         gf.routing.route_single(c, gc.ports["o1"], mmi.ports[port], cross_section="strip")
-    capped = c.add_ref(gf.get_component("straight", length=50.0), name="capped")
-    capped.connect("o1", mmi.ports["o3"])
+    # the capped arm: a waveguide piece, then a cell whose name says heater
+    # but that draws no metal (a bare arm, kept as a fixed waveguide), then
+    # a waveguide piece ending on the empty end-cap cell
+    lead_in = c.add_ref(gf.get_component("straight", length=20.0), name="lead_in")
+    lead_in.connect("o1", mmi.ports["o3"])
+    arm = gf.Component("straight_heater_metal_bare_arm")
+    arm_ref = arm.add_ref(gf.get_component("straight", length=50.0))
+    arm.add_ports(arm_ref.ports)
+    bare_arm = c.add_ref(arm, name="bare_arm")
+    bare_arm.connect("o1", lead_in.ports["o2"])
+    capped = c.add_ref(gf.get_component("straight", length=20.0), name="capped")
+    capped.connect("o1", bare_arm.ports["o2"])
     marker = c.add_ref(gf.Component("endcap_marker"), name="endcap")
     marker.move(tuple(capped.ports["o2"].center))
     # longer than the capped arm: its end must lie outside the marker's placeholder tolerance
@@ -164,19 +174,27 @@ def test_extractor_terminates_nets_on_end_caps_and_open_ends(tmp_path: Path):
         core_layers=((1, 0),),
         rules=(
             ClassificationRule("endcap", ("endcap_marker",)),
+            ClassificationRule("heater", ("straight_heater_metal",)),
             ClassificationRule("mmi2x2", ("mmi2x2",)),
             ClassificationRule("gc", ("grating_coupler",)),
             ClassificationRule("net", ("straight", "bend")),
         ),
-        composites=(CompositeRule("mmi2x2", "mmi2x2"), CompositeRule("gc", "grating_coupler")),
+        composites=(
+            CompositeRule("heater", "straight_heater_metal"),
+            CompositeRule("mmi2x2", "mmi2x2"),
+            CompositeRule("gc", "grating_coupler"),
+        ),
         placeholder_kinds=frozenset({"endcap"}),
         open_ends=True,
+        heater_metal_layers=((47, 0),),  # the generic PDK's HEATER layer
     )
     circuit = extract_circuit(gds_path, config)
     kinds = sorted(component.kind for component in circuit.components)
-    assert kinds == ["endcap", "gc", "gc", "mmi2x2", "open_end"]
+    # the metal-less heater cell is a bare arm: a waveguide with two ports
+    assert kinds == ["endcap", "gc", "gc", "mmi2x2", "open_end", "waveguide"]
     assert all(len(net.endpoints) == 2 for net in circuit.nets)
     assert sum(net.stub for net in circuit.nets) == 2
+    assert len(circuit.nets) == 5  # gc, gc, mmi -> arm, arm -> end cap, mmi -> open end
     by_kind = {component.kind: component for component in circuit.components}
     assert by_kind["endcap"].ports[0].position == pytest.approx(cap_end, abs=1e-3)
     assert by_kind["open_end"].ports[0].position == pytest.approx(open_end, abs=1e-3)
@@ -185,7 +203,9 @@ def test_extractor_terminates_nets_on_end_caps_and_open_ends(tmp_path: Path):
     assert by_kind["open_end"].ports[0].normal == pytest.approx((-1.0, 0.0))
 
     schematic = generic_schematic(circuit, default_generic_mappings())
-    assert len(schematic.netlist.routes) == 4  # the stubs are routed to as well
+    assert len(schematic.netlist.routes) == 5  # the stubs are routed to as well
+    arm_instance = schematic.netlist.instances["waveguide_0"]
+    assert arm_instance.settings["length"] == pytest.approx(50.0)
     for name, end in (("endcap_0", cap_end), ("open_end_0", open_end)):
         instance = schematic.netlist.instances[name]
         assert instance.settings["length"] == pytest.approx(10.0)

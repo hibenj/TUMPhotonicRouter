@@ -300,6 +300,11 @@ def _ring_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, float]:
     return {"length_x": max(span - 26.0, 0.0)}
 
 
+def _waveguide_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, float]:
+    span, _separation = _port_span_and_separation(ports)
+    return {"length": round(span, 3)}
+
+
 def _stub_settings(ports: tuple[ExtractedPort, ...]) -> dict[str, float]:
     return {"length": STUB_LENGTH_UM}
 
@@ -310,7 +315,7 @@ STUB_LENGTH_UM = 10.0
 
 
 def default_generic_mappings() -> dict[str, GenericMapping]:
-    """The generic replacements: MMI2x2, heater, grating coupler, edge coupler, ring, stubs."""
+    """The generic replacements: MMI2x2, heater, bare arm, couplers, ring, stubs."""
 
     any_side_o1 = dict.fromkeys(("left", "right", "top", "bottom"), "o1")
     stub = GenericMapping(
@@ -319,6 +324,13 @@ def default_generic_mappings() -> dict[str, GenericMapping]:
     return {
         "endcap": stub,
         "open_end": stub,
+        # a bare waveguide arm kept as a fixed component (a heater cell
+        # without metal, a delay arm): a straight of its span
+        "waveguide": GenericMapping(
+            component="straight",
+            port_names_by_side={"left": "o1", "right": "o2"},
+            settings=_waveguide_settings,
+        ),
         "mmi2x2": GenericMapping(
             component="mmi2x2",
             port_names_by_side={
