@@ -596,6 +596,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Net routing order within the topological layers: 'topological' = "
             "declaration order (default for the baseline and contribution 1); "
+            "'span' = shortest grid span first across the depth layers (nearest "
+            "ports first; the detour-aware routing plan, 2026-10-06); "
             "'topological-span' = shortest grid span first (LiDAR-like; default "
             "for --preplaced-crossing-grids, whose planar stubs need it); "
             "'plan-crossings-desc' / 'plan-crossings-asc' = most / fewest "
@@ -677,9 +679,7 @@ def main(argv: list[str] | None = None) -> Component:
     stable_flags, stable_env = _benchmark_stable_defaults(argv)
     stable_flags = stable_flags_for_configuration(
         stable_flags,
-        preplaced_crossing_grids=_requests_preplaced_crossing_grids(
-            configuration_argv + user_argv
-        ),
+        preplaced_crossing_grids=_requests_preplaced_crossing_grids(configuration_argv + user_argv),
     )
     # The benchmark's STABLE_ROUTING_ENV block and the process environment go
     # through the overlay table into one configuration object (environment

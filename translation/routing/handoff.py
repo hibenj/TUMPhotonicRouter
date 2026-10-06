@@ -23,6 +23,7 @@ from translation.routing.settings import SessionSettings
 from translation.routing.stages import FinalJobs
 from translation.routing.state import SessionState
 
+
 def _snap_nearly_collinear_states(
     settings,
     state,
@@ -203,7 +204,9 @@ def _opened_cells_for_spec(
     cells_by_spec: Mapping[str, set[tuple[int, int]]],
     port_spec: str,
 ) -> set[tuple[int, int]]:
-    return _filter_dense_port_opening(settings, state,
+    return _filter_dense_port_opening(
+        settings,
+        state,
         port_spec,
         set(cells_by_spec.get(port_spec, set())),
     )
@@ -225,7 +228,8 @@ def _foreign_keepout_open_cells_for_spec(settings, state, port_spec: str) -> set
 def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[RouteJob]:
     """Route nets by `self.net_order` (`translation/route_order.py`):
     source-instance depth first, then declaration order / grid span /
-    planned crossing count. Depth comes from this batch's own net graph
+    planned crossing count; `span` alone orders by grid span across the
+    depth layers. Depth comes from this batch's own net graph
     (`inst1 -> inst2` edges), not from optional benchmark metadata or the
     crossing plan, so every mode has it. The plan-based orders need the
     topology plan, which only `lidar-guided` builds
@@ -237,10 +241,10 @@ def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[
         else depth_by_node_from_jobs(jobs)
     )
     span_by_net_id: dict[int, int] | None = None
-    if settings.net_order == "topological-span":
-        span_by_net_id = {int(job.net_id): _route_job_grid_span(
-            settings, state, job
-        ) for job in jobs}
+    if settings.net_order in ("topological-span", "span"):
+        span_by_net_id = {
+            int(job.net_id): _route_job_grid_span(settings, state, job) for job in jobs
+        }
     stub_by_net_id: dict[int, int] | None = None
     if settings.net_order == "topological-stub":
         stub_by_net_id = {}
@@ -274,14 +278,18 @@ def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[
 
 
 def _route_job_grid_span(settings, state, route_job: RouteJob) -> int:
-    source_state = port_to_grid_state(settings, state,
+    source_state = port_to_grid_state(
+        settings,
+        state,
         route_job.source_port,
         state.origin_x_um,
         state.origin_y_um,
         float(state.grid.grid_size_um),
         as_target=False,
     )
-    target_state = port_to_grid_state(settings, state,
+    target_state = port_to_grid_state(
+        settings,
+        state,
         route_job.target_port,
         state.origin_x_um,
         state.origin_y_um,
@@ -372,7 +380,9 @@ def _states_and_openings(
     source_fanout_anchor = state.fanout_anchor_by_port_spec.get(port1_spec)
     target_fanout_anchor = state.fanout_anchor_by_port_spec.get(port2_spec)
     if source_fanout_anchor is None:
-        source_state = port_to_grid_state(settings, state,
+        source_state = port_to_grid_state(
+            settings,
+            state,
             job.source_port,
             state.origin_x_um,
             state.origin_y_um,
@@ -386,7 +396,9 @@ def _states_and_openings(
             int(source_fanout_anchor.physical_angle) % 8,
         )
     if target_fanout_anchor is None:
-        target_state = port_to_grid_state(settings, state,
+        target_state = port_to_grid_state(
+            settings,
+            state,
             job.target_port,
             state.origin_x_um,
             state.origin_y_um,
@@ -415,14 +427,15 @@ def _states_and_openings(
         )
     if source_fanout_anchor is None and target_fanout_anchor is None:
         source_state, target_state, original_anchor_cells = _snap_nearly_collinear_states(
-            settings, state,
+            settings,
+            state,
             source_state,
             target_state,
             job.source_port,
             job.target_port,
         )
-        source_state, target_state, snapped_anchor_cells = (
-            _snap_same_heading_minimum_bend_offset(settings, state, source_state, target_state)
+        source_state, target_state, snapped_anchor_cells = _snap_same_heading_minimum_bend_offset(
+            settings, state, source_state, target_state
         )
         original_anchor_cells.update(snapped_anchor_cells)
     else:
@@ -479,11 +492,11 @@ def _states_and_openings(
         )
         opened_candidate_cells.difference_update(foreign_fanout_stub_static_cells)
         opened_cells_set.difference_update(foreign_fanout_stub_static_cells)
-    source_endpoint_bump_open_cells = _endpoint_bump_candidate_open_cells_for_state(settings, state,
-        source_state
+    source_endpoint_bump_open_cells = _endpoint_bump_candidate_open_cells_for_state(
+        settings, state, source_state
     )
-    target_endpoint_bump_open_cells = _endpoint_bump_candidate_open_cells_for_state(settings, state,
-        target_state
+    target_endpoint_bump_open_cells = _endpoint_bump_candidate_open_cells_for_state(
+        settings, state, target_state
     )
     opened_candidate_cells.update(source_endpoint_bump_open_cells)
     opened_candidate_cells.update(target_endpoint_bump_open_cells)
@@ -554,8 +567,7 @@ def finalize_route_jobs_and_static_handoff(
         # that had already been routed). `net_id` is untouched: it is
         # the identity the obstacle map and bookkeeping key on.
         route_jobs = [
-            replace(job, route_index=position)
-            for position, job in enumerate(route_jobs, start=1)
+            replace(job, route_index=position) for position, job in enumerate(route_jobs, start=1)
         ]
 
     port_runway_static_cells: set[tuple[int, int]] = set()
@@ -584,9 +596,7 @@ def finalize_route_jobs_and_static_handoff(
         for rect in raw_blocked_rects:
             if len(rect) != 4:
                 continue
-            blocked_static_rects.append(
-                (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
-            )
+            blocked_static_rects.append((int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])))
         state.blocked_static_rects_for_diagnostics = list(blocked_static_rects)
         if blocked_static_rects:
             if not hasattr(state.router, "set_static_rects"):
@@ -660,10 +670,7 @@ def finalize_route_jobs_and_static_handoff(
     if settings.debug_stop_after_route_index is not None:
         stop_index = int(settings.debug_stop_after_route_index)
         route_jobs = [job for job in full_route_jobs if int(job.route_index) <= stop_index]
-        if (
-            settings.verbose_route_diagnostics
-            or settings.debug_route_indices is not None
-        ):
+        if settings.verbose_route_diagnostics or settings.debug_route_indices is not None:
             print(
                 f"  Debug stop-after-route active: routing {len(route_jobs)} "
                 f"of {full_route_count} full-context routes"
@@ -672,10 +679,7 @@ def finalize_route_jobs_and_static_handoff(
     if debug_execution_limit is not None:
         original_route_job_count = len(route_jobs)
         route_jobs = route_jobs[:debug_execution_limit]
-        if (
-            settings.verbose_route_diagnostics
-            or settings.debug_route_indices is not None
-        ):
+        if settings.verbose_route_diagnostics or settings.debug_route_indices is not None:
             print(
                 "  Debug execution limit active: routing "
                 f"{len(route_jobs)} of {original_route_job_count} selected "
@@ -733,7 +737,9 @@ def finalize_route_jobs_and_static_handoff(
     state.route_state_openings_by_id = {
         int(job.net_id): _states_and_openings(settings, state, job) for job in route_jobs
     }
-    timing.record_pipeline_timing(settings, state,
+    timing.record_pipeline_timing(
+        settings,
+        state,
         "state_opening_precompute",
         t_state_opening_precompute_start,
     )
@@ -750,7 +756,9 @@ def finalize_route_jobs_and_static_handoff(
             int(state.port_lane_length_cells),
         )
     }
-    timing.record_pipeline_timing(settings, state,
+    timing.record_pipeline_timing(
+        settings,
+        state,
         "clearance_exempt_batch",
         t_clearance_exempt_batch_start,
     )

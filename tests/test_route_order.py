@@ -85,6 +85,28 @@ def test_topological_span_order_routes_shortest_nets_first_within_a_layer():
     assert _ids(ordered) == [5, 4, 2, 3, 1]
 
 
+def test_span_order_routes_shortest_nets_first_across_the_layers():
+    # the depth-1 net 1 has the shortest span and goes first; within a span
+    # the declaration order decides (nets 2 and 4)
+    span = {1: 10, 2: 40, 3: 90, 4: 40, 5: 70}
+    ordered = order_route_jobs(
+        JOBS,
+        net_order="span",
+        depth_by_node=depth_by_node_from_jobs(JOBS),
+        span_by_net_id=span,
+    )
+    assert _ids(ordered) == [1, 2, 4, 5, 3]
+    layered = order_route_jobs(
+        JOBS,
+        net_order="topological-span",
+        depth_by_node=depth_by_node_from_jobs(JOBS),
+        span_by_net_id=span,
+    )
+    assert _ids(layered) == [4, 5, 1, 2, 3]
+    with pytest.raises(ValueError, match="needs span_by_net_id"):
+        order_route_jobs(JOBS, net_order="span", depth_by_node=depth_by_node_from_jobs(JOBS))
+
+
 def test_plan_crossing_orders_use_planned_crossing_counts_within_a_layer():
     planned = {1: 2, 2: 0, 3: 1}  # depth-1 nets; depth-0 nets have none
     depths = depth_by_node_from_jobs(JOBS)
@@ -125,6 +147,7 @@ def test_orders_require_their_inputs_and_reject_unknown_names():
         "topological-reverse",
         "topological-stub",
         "topological-span",
+        "span",
         "plan-crossings-asc",
         "plan-crossings-desc",
         "plan-crossings-hybrid",

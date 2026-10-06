@@ -10,12 +10,14 @@ After this change a user can (1) route with `--net-order span`, which routes eve
 
 ## Progress
 
-- [ ] Milestone 1: the `span` net order (`translation/route_order.py`, `translation/routing/handoff.py`, `tests/test_route_order.py`), the CLI accepting it, the five private circuits measured with it.
+- [x] (2026-10-06) Milestone 1: the `span` net order (`translation/route_order.py`, `translation/routing/handoff.py`, `tests/test_route_order.py`), the CLI accepting it, the five private circuits measured with it: with `--net-order span` on the command line (it overrides the modules' order) clements_2 routes all 200 nets with verifier 0 and the four feeds of the arm that had the spiral measure 54.7 um each (the S-bend), bs_circuit 63 / 0, ring_circuit 37 / 0, clements_1 240 / 0; dual_circuit fails on its known in-line coupler net as before (the open router finding of the private-circuits plan, unrelated to the order). heater_s_mod clean. The option stays opt-in; the private modules switch to it in Milestone 3 once the pass is measured too.
 - [ ] Milestone 2: the detour pass (`translation/routing/detour_pass.py`, a flow option and flag, the stage call in `translation/routing/session.py`), its unit test on synthetic records, the five private circuits measured with it.
 - [ ] Milestone 3: gates (`scripts/results/gate_short.sh` exact, `scripts/benchmark_electrical.py --suite --check --compare-baseline` zero drift, `scripts/test_baseline.sh` re-pinned), docs (`docs/ARCHITECTURE.md` sections 3 and 5, `docs/CONFIGURATION.md` regenerated), state file, commit.
 
 
 ## Surprises & Discoveries
+
+- 2026-10-06 (Milestone 1 evidence): `python -m photonic_router route heater_s_mod --net-order span` ends `SUMMARY benchmark=heater_s_mod nets=81 route_failures=0 verifier_errors=0 verifier_warnings=0 plm_groups=26 plm_over_tolerance=0 meander_inserted_um=23239.7 electrical_heaters=21 electrical_pads=22`; the default order inserts 23,582 um of meander on the same cell, so the new order changes route shapes slightly but routes and matches clean.
 
 - 2026-10-06 (from the private-circuits plan, the evidence this plan rests on): the spiral is produced by the A* search itself (its grid path is 478 cells on a 1 um grid), not by the endpoint correction or any meander machinery. Static obstacles, port keepouts (`--foreign-port-keepout-cells 0` changes nothing) and port lanes are not involved. The feed is routed three times: first as a 501 um spiral around a coupler route that crosses the MZI interior at y 13242 (between the MMI output at y 13257 and the arm at y 13218), then, after a repair round rips it, as a clean 54.7 um S-bend, then, after another repair round, as the 457 um spiral around its sibling feed's 329 um loop; the coupler route has settled beneath the arm by then. Both feeds are legal and count as successes, so no later round touches them. Reproduced with `--debug-stop-after-route N` for N = 20, 21, 31, 36, 37 (`build/routed_private.clements_2_after_<N>_routes.gds`).
 

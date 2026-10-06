@@ -53,10 +53,17 @@ NET_ORDERS: tuple[str, ...] = (
     "topological-reverse",
     "topological-stub",
     "topological-span",
+    "span",
     "plan-crossings-asc",
     "plan-crossings-desc",
     "plan-crossings-hybrid",
 )
+
+# span: the one rule without the depth key -- the nets with the nearest
+# ports first across the whole net graph (owner, 2026-10-06, after the
+# second Clements mesh's spiral: a coupler net of depth 0 routed first ran
+# through an MZI interior and the MZI's 44 um feeds, depth 1, had to go
+# around it; see .agent/execplans/2026-10-06-detour-aware-routing.md).
 
 # plan-crossings-hybrid: most planned crossings first inside a depth layer
 # with at most this many nets, declaration order in larger layers. The S3
@@ -139,8 +146,8 @@ def order_route_jobs(
     planned_crossings_by_net_id: Mapping[int, int] | None = None,
     stub_by_net_id: Mapping[int, int] | None = None,
 ) -> list[RouteJob]:
-    """Sort `jobs` by the named rule; every rule starts with source depth and
-    ends with declaration order (`route_index`)."""
+    """Sort `jobs` by the named rule; every rule but `span` starts with source
+    depth, and every rule ends with declaration order (`route_index`)."""
 
     order = normalize_net_order(net_order)
 
@@ -166,6 +173,12 @@ def order_route_jobs(
                 -int(stub_by_net_id.get(int(job.net_id), 0)),
                 int(job.route_index),
             ),
+        )
+    if order == "span":
+        if span_by_net_id is None:
+            raise ValueError("net_order 'span' needs span_by_net_id")
+        return sorted(
+            jobs, key=lambda job: (int(span_by_net_id[int(job.net_id)]), int(job.route_index))
         )
     if order == "topological-span":
         if span_by_net_id is None:
