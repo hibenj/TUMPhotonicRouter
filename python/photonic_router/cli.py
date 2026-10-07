@@ -234,6 +234,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--path-length-allow-residual",
+        type=_parse_bool_flag,
+        default=False,
+        metavar="BOOL",
+        help=(
+            "Finish a run whose path-length matching leaves residual mismatches "
+            "and report them (SUMMARY plm_over_tolerance) instead of failing "
+            "(default: false)."
+        ),
+    )
+    parser.add_argument(
         "--path-length-meander-height-um",
         type=float,
         default=SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
@@ -772,6 +783,7 @@ def _flow_options(args: argparse.Namespace) -> FlowOptions:
         path_length=PathLengthMatchingOptions(
             enable_path_length_matching=args.path_length_matching,
             path_length_match_outputs=args.path_length_match_outputs,
+            path_length_allow_residual=args.path_length_allow_residual,
             path_length_meander_height_um=args.path_length_meander_height_um,
         ),
         electrical=ElectricalOptions(

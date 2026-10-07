@@ -74,6 +74,7 @@ from translation.routing.obstacle_context import build_static_obstacle_context
 from translation.routing.route_jobs import build_route_jobs_and_fanout_clustering
 from translation.routing.router_setup import configure_router_and_grid
 
+
 def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
     _meander_impl._load_rust_backend = _load_rust_backend
     return _meander_impl.analyze_meander_insertion_for_requirements(*args, **kwargs)
@@ -90,6 +91,7 @@ def route_match_and_realize(
     *,
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
+    path_length_allow_residual: bool = False,
     node_types: dict[str, str] | None = None,
     internal_delays_um: dict[str, float] | None = None,
     enable_crossings: bool = False,
@@ -405,7 +407,13 @@ def route_match_and_realize(
             analysis_info["output_matching_diagnostics"] = output_matching_diagnostics
             analysis_info["path_length_acceptance"] = acceptance_summary
             if not acceptance_summary["passed"]:
-                raise RuntimeError(format_path_length_acceptance_failure(acceptance_summary))
+                failure = format_path_length_acceptance_failure(acceptance_summary)
+                if not path_length_allow_residual:
+                    raise RuntimeError(failure)
+                # owner's rule 2026-10-07: the run finishes and reports the
+                # residuals (SUMMARY plm_over_tolerance), the design may be
+                # unbalanced on purpose
+                print(f"      - WARNING: {failure} (--path-length-allow-residual)")
 
     if debug_artifacts.realization_grid_spec is None:
         raise RuntimeError("Missing realization grid spec from routing phase.")

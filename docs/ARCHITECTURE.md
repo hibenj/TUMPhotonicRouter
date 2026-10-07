@@ -274,7 +274,13 @@ bookkeeping by physical edge: the meander report's
 drawn on, which may be a delay-insertion candidate upstream of the requiring
 edge, and the matching-group diagnostics and the acceptance check carry the
 realized lengths, arrivals and spreads, with a 1 nm tolerance on a group's
-realized spread), `route_overview_svg.py` (about 190, the routes overview
+realized spread; since 2026-10-07 `path_length_candidates.py` finds those
+upstream candidates by structure, a serial node with one net in and one out
+passing a delay unchanged and a node whose whole output bundle needs the same
+delay taking it on its inputs, whatever the instances are called, and
+`--path-length-allow-residual` lets a run finish with reported residuals,
+`plm_over_tolerance` in the SUMMARY, where a design is unbalanced on
+purpose), `route_overview_svg.py` (about 190, the routes overview
 SVG `build/routes/<benchmark>_overview.svg` the flow writes under
 `--debug-svgs`: every routed waveguide with its realized length and a legend
 with the totals and the chip dimensions), `route_order.py` (203, the net

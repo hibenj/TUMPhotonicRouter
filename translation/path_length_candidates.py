@@ -86,8 +86,6 @@ def build_requirement_delay_candidates(
     analysis: PathLengthAnalysisResult,
     requirements: list[MissingLengthRequirement],
     *,
-    transparent_prefixes: tuple[str, ...] = ("heater",),
-    common_mode_prefixes: tuple[str, ...] = ("mmi",),
     max_recursive_pushback_depth: int = 8,
     tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
 ) -> dict[RoutedEdgeKey, list[DelayInsertionCandidate]]:
@@ -95,7 +93,12 @@ def build_requirement_delay_candidates(
 
     Direct candidates always insert on the required edge. Upstream candidates
     are found by recursively moving equal-delay requirements through
-    transparent serial elements and complete common-mode MMI output bundles.
+    transparent serial elements and complete common-mode output bundles,
+    both told by structure, not by name (owner's rule, 2026-10-07: upstream
+    only where every group stays matched): a node with exactly one incoming
+    and one outgoing edge passes a delay unchanged, and a node whose whole
+    output bundle needs the same delay can take it on its inputs instead,
+    because every path through it gets the delay.
     """
     incoming_by_node, outgoing_by_node = analysis_edge_maps(analysis)
     missing_by_edge = {req.edge_key: float(req.missing_length_um) for req in requirements}
@@ -133,11 +136,9 @@ def build_requirement_delay_candidates(
         if len(source_instances) != 1:
             return None
         source_instance = next(iter(source_instances))
-        if not source_instance.startswith(common_mode_prefixes):
-            return None
         outgoing = tuple(outgoing_by_node.get(source_instance, ()))
         incoming = tuple(incoming_by_node.get(source_instance, ()))
-        if len(outgoing) < 2 or len(incoming) < 2:
+        if len(outgoing) < 2 or len(incoming) < 1:
             return None
         if set(edge_keys) != set(outgoing):
             return None
@@ -212,7 +213,7 @@ def build_requirement_delay_candidates(
         source_instance = edge_key.source.instance
         source_outgoing = outgoing_by_node.get(source_instance, [])
         source_incoming = incoming_by_node.get(source_instance, [])
-        if source_instance.startswith(common_mode_prefixes) and len(source_incoming) >= 2:
+        if len(source_outgoing) >= 2 and len(source_incoming) >= 1:
             common_delay = min(
                 missing_by_edge.get(outgoing_edge, 0.0) for outgoing_edge in source_outgoing
             )
@@ -269,12 +270,7 @@ def build_requirement_delay_candidates(
                 source = current_edge.source.instance
                 incoming = incoming_by_node.get(source, [])
                 outgoing = outgoing_by_node.get(source, [])
-                if (
-                    not source.startswith(transparent_prefixes)
-                    or len(incoming) != 1
-                    or len(outgoing) != 1
-                    or outgoing[0] != current_edge
-                ):
+                if len(incoming) != 1 or len(outgoing) != 1 or outgoing[0] != current_edge:
                     continue
                 next_edges = tuple(
                     incoming[0] if i == index else edge for i, edge in enumerate(current_edges)

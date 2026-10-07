@@ -40,8 +40,6 @@ STABLE_ROUTING_FLAGS: tuple[str, ...] = (
     # straight segment for the endpoint correction)
     "--bend-radius-um",
     "5",
-    "--path-length-matching",
-    "false",
     "--include-heater-obstacles",
     "true",
     "--electrical-routing",
@@ -73,6 +71,14 @@ STABLE_ROUTING_FLAGS: tuple[str, ...] = (
     # three times its free lower bound is ripped up and routed again at the end
     "--detour-pass-factor",
     "3",
+    # path-length matching as the designs have it: every node's inputs
+    # balanced (the MZI arms, the mesh paths), outputs not matched; a design
+    # that is unbalanced on purpose (the cut-out's 1.5 mm, the ring arms)
+    # leaves residuals the run reports instead of failing on (owner, 2026-10-07)
+    "--path-length-matching",
+    "true",
+    "--path-length-allow-residual",
+    "true",
 )
 
 

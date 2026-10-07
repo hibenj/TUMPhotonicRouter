@@ -29,6 +29,7 @@ class OpticalRoutingStageConfig:
 
     enable_path_length_matching: bool
     path_length_match_outputs: bool
+    path_length_allow_residual: bool
     path_length_meander_height_um: float
     enable_crossings: bool
     crossing_mode: str
@@ -102,6 +103,7 @@ def run_photonic_routing_stage(
             schematic,
             enable_path_length_matching=config.enable_path_length_matching,
             path_length_match_outputs=config.path_length_match_outputs,
+            path_length_allow_residual=config.path_length_allow_residual,
             node_types=metadata.get("node_types"),
             internal_delays_um=metadata.get("internal_delays_um"),
             enable_crossings=config.enable_crossings,

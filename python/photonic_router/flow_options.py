@@ -133,6 +133,9 @@ class PathLengthMatchingOptions:
 
     enable_path_length_matching: bool = False
     path_length_match_outputs: bool = False
+    #: finish a run whose matching leaves residual mismatches and report them
+    #: (SUMMARY plm_over_tolerance) instead of failing; default strict
+    path_length_allow_residual: bool = False
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM
 
 
