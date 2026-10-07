@@ -46,19 +46,42 @@ class GenericMapping:
         return self.component(ports) if callable(self.component) else self.component
 
 
-def side_labels(ports: tuple[ExtractedPort, ...]) -> list[str]:
-    """``left``, ``right_lower``, ``right_upper``, ...: the side of each port, disambiguated."""
+def side_labels(
+    ports: tuple[ExtractedPort, ...], light_direction: tuple[float, float] | None = None
+) -> list[str]:
+    """``left``, ``right_lower``, ``right_upper``, ...: the side of each port, disambiguated.
+
+    By default the side is the port's side in the component's own frame.
+    With ``light_direction`` (a unit vector in the chip frame, where the
+    circuit's light flows) the side is taken relative to the flow instead:
+    a port facing against the flow is ``left``, the input side of every
+    generic mapping, one facing along it ``right``; a port facing across
+    the flow keeps its local side. The generic 2x2 is symmetric, so the
+    extractor's local frame cannot tell a design's input side from its
+    output side; the owner names the direction per circuit
+    (`benchmarks/private/configs`), chosen as the one under which the
+    original's path lengths balance (private-circuits plan, 2026-10-07).
+    """
 
     by_side: dict[str, list[int]] = {}
     for index, port in enumerate(ports):
-        by_side.setdefault(port.local_side, []).append(index)
+        by_side.setdefault(_port_side(port, light_direction), []).append(index)
     labels = [""] * len(ports)
     for side, indexes in by_side.items():
         if len(indexes) == 1:
             labels[indexes[0]] = side
             continue
-        axis = 1 if side in ("left", "right") else 0
-        ordered = sorted(indexes, key=lambda i: ports[i].local_position[axis])
+        if light_direction is not None and side in ("left", "right"):
+            # lower and upper across the flow, in the frame the generic
+            # component ends up in (a half turn swaps them with the flow)
+            across = (-light_direction[1], light_direction[0])
+            ordered = sorted(
+                indexes,
+                key=lambda i: ports[i].position[0] * across[0] + ports[i].position[1] * across[1],
+            )
+        else:
+            axis = 1 if side in ("left", "right") else 0
+            ordered = sorted(indexes, key=lambda i: ports[i].local_position[axis])
         for rank, index in enumerate(ordered):
             suffix = "lower" if rank == 0 else "upper" if rank == len(ordered) - 1 else f"mid{rank}"
             labels[index] = f"{side}_{suffix}"
@@ -73,10 +96,22 @@ ABUT_UM = 0.5
 NetOrder = str
 
 
+def _port_side(port: ExtractedPort, light_direction: tuple[float, float] | None) -> str:
+    if light_direction is None:
+        return port.local_side
+    along = port.normal[0] * light_direction[0] + port.normal[1] * light_direction[1]
+    if along < -0.5:
+        return "left"  # faces against the flow: the light enters here
+    if along > 0.5:
+        return "right"
+    return port.local_side
+
+
 def generic_schematic(
     circuit: ExtractedCircuit,
     mappings: dict[str, GenericMapping],
     net_order: NetOrder = "chord",
+    light_direction: tuple[float, float] | None = None,
 ) -> Any:
     """Rebuild the circuit as a gdsfactory Schematic of generic components placed by their ports.
 
@@ -98,7 +133,7 @@ def generic_schematic(
         mapping = mappings.get(component.kind)
         if mapping is None:
             raise ValueError(f"no generic mapping for kind {component.kind!r} ({component.name})")
-        labels = side_labels(component.ports)
+        labels = side_labels(component.ports, light_direction)
         settings = mapping.settings(component) if mapping.settings else {}
         component_name = mapping.component_name(component.ports)
         generic_ports = _generic_component_ports(component_name, settings)

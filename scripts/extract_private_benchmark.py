@@ -90,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     from benchmarks.private.configs.circuits import (
         CIRCUITS,
         FLAG_OVERRIDES,
+        LIGHT_DIRECTIONS,
         NET_ORDERS,
         NODE_TYPE_OVERRIDES,
     )
@@ -106,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         circuit,
         default_generic_mappings(bend_radius_um=bend_radius_um),
         net_order=NET_ORDERS.get(args.name, "chord"),
+        light_direction=LIGHT_DIRECTIONS.get(args.name),
     )
     target = REPO / "benchmarks" / "private" / f"{args.name}.py"
     node_types, internal_delays_um = benchmark_metadata(

@@ -10,6 +10,7 @@ where the originals stand.
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -142,7 +143,8 @@ def _synthetic_stub_gds(path: Path) -> tuple[float, float]:
     from gdsfactory.gpdk import get_generic_pdk
 
     get_generic_pdk().activate()
-    c = gf.Component("synthetic_stubs")
+    suffix = uuid4().hex[:6]  # the fixture is built more than once per session
+    c = gf.Component(f"synthetic_stubs_{suffix}")
     mmi = c.add_ref(gf.get_component("mmi2x2"), name="mmi")
     mmi.move((100.0, 0.0))
     for index, port in enumerate(("o1", "o2")):
@@ -155,14 +157,14 @@ def _synthetic_stub_gds(path: Path) -> tuple[float, float]:
     # a waveguide piece ending on the empty end-cap cell
     lead_in = c.add_ref(gf.get_component("straight", length=20.0), name="lead_in")
     lead_in.connect("o1", mmi.ports["o3"])
-    arm = gf.Component("straight_heater_metal_bare_arm")
+    arm = gf.Component(f"straight_heater_metal_bare_arm_{suffix}")
     arm_ref = arm.add_ref(gf.get_component("straight", length=50.0))
     arm.add_ports(arm_ref.ports)
     bare_arm = c.add_ref(arm, name="bare_arm")
     bare_arm.connect("o1", lead_in.ports["o2"])
     capped = c.add_ref(gf.get_component("straight", length=20.0), name="capped")
     capped.connect("o1", bare_arm.ports["o2"])
-    marker = c.add_ref(gf.Component("endcap_marker"), name="endcap")
+    marker = c.add_ref(gf.Component(f"endcap_marker_{suffix}"), name="endcap")
     marker.move(tuple(capped.ports["o2"].center))
     # longer than the capped arm: its end must lie outside the marker's placeholder tolerance
     open_end = c.add_ref(gf.get_component("straight", length=100.0), name="open")
@@ -462,3 +464,62 @@ def test_net_length_uses_the_waveguide_width_not_a_wide_port_face(tmp_path: Path
     (net,) = circuit.nets
     # 50 um of 0.5 um waveguide plus the taper's 12.5 um2, all over 0.5 um
     assert net.length_um == pytest.approx(75.0, abs=0.5)
+
+
+def test_light_direction_decides_the_components_input_side(tmp_path: Path):
+    """With the light flowing leftward (the beam splitter: in at its coupler array on the
+    right, out through the couplers on the left) the MMI's right-hand ports are its inputs
+    o1/o2, its left-hand ports the outputs, and the couplers on the left are the outputs."""
+
+    gds_path = tmp_path / "stubs.gds"
+    _synthetic_stub_gds(gds_path)
+    config = ExtractionConfig(
+        core_layers=((1, 0),),
+        rules=(
+            ClassificationRule("endcap", ("endcap_marker",)),
+            ClassificationRule("heater", ("straight_heater_metal",)),
+            ClassificationRule("mmi2x2", ("mmi2x2",)),
+            ClassificationRule("gc", ("grating_coupler",)),
+            ClassificationRule("net", ("straight", "bend")),
+        ),
+        composites=(
+            CompositeRule("heater", "straight_heater_metal"),
+            CompositeRule("mmi2x2", "mmi2x2"),
+            CompositeRule("gc", "grating_coupler"),
+        ),
+        placeholder_kinds=frozenset({"endcap"}),
+        open_ends=True,
+        heater_metal_layers=((47, 0),),
+    )
+    circuit = extract_circuit(gds_path, config)
+    forward = generic_schematic(circuit, default_generic_mappings())
+    backward = generic_schematic(circuit, default_generic_mappings(), light_direction=(-1.0, 0.0))
+
+    def mmi_ports_fed_by_couplers(schematic) -> set[str]:
+        ports = set()
+        for bundle in schematic.netlist.routes.values():
+            for p1, p2 in bundle.links.items():
+                for coupler, other in ((p1, p2), (p2, p1)):
+                    if coupler.startswith("gc_") and other.startswith("mmi2x2_0"):
+                        ports.add(other)
+        return ports
+
+    # the couplers feed the MMI's left ports: o1/o2 with the light from the left,
+    # o4/o3 (the outputs, lower and upper swapped by the half turn) against it
+    assert mmi_ports_fed_by_couplers(forward) == {"mmi2x2_0,o1", "mmi2x2_0,o2"}
+    assert mmi_ports_fed_by_couplers(backward) == {"mmi2x2_0,o3", "mmi2x2_0,o4"}
+    assert float(forward.placements["mmi2x2_0"].rotation) == pytest.approx(0.0)
+    assert float(backward.placements["mmi2x2_0"].rotation) == pytest.approx(180.0)
+    # the MMI's ports still land on the original ones, both ways
+    original_mmi = next(c for c in circuit.components if c.kind == "mmi2x2")
+    original = sorted(tuple(round(v, 3) for v in port.position) for port in original_mmi.ports)
+    for schematic in (forward, backward):
+        layout = layout_from_schematic(schematic)
+        mmi = next(ref for ref in layout.insts if ref.name == "mmi2x2_0")
+        centers = sorted(
+            tuple(round(v, 3) for v in mmi.ports[p].center) for p in ("o1", "o2", "o3", "o4")
+        )
+        assert centers == original
+    # the couplers are the inputs one way and the outputs the other
+    assert benchmark_metadata(forward, circuit)[0]["gc_0"] == "input"
+    assert benchmark_metadata(backward, circuit)[0]["gc_0"] == "output"
