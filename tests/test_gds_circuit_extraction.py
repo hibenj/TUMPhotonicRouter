@@ -425,3 +425,40 @@ def test_split_coupler_parts_are_moved_apart_to_the_configured_pitch(tmp_path: P
         pytest.approx(100.0, abs=1e-3),
         pytest.approx(0.0, abs=1e-3),
     )
+
+
+def test_net_length_uses_the_waveguide_width_not_a_wide_port_face(tmp_path: Path):
+    """A net that widens into a 2 um port face (the beam splitter's MMI ports) is measured
+    over its waveguide width: area over the narrowest end facet."""
+
+    import gdsfactory as gf
+    from gdsfactory.gpdk import get_generic_pdk
+
+    get_generic_pdk().activate()
+    c = gf.Component("synthetic_wide_port")
+    gc = c.add_ref(gf.get_component("grating_coupler_te"), name="gc")
+    gc.rotate(180.0)
+    straight = c.add_ref(gf.get_component("straight", length=50.0), name="lead")
+    straight.connect("o1", gc.ports["o1"])
+    taper = c.add_ref(gf.get_component("taper", length=10.0, width1=0.5, width2=2.0), name="widen")
+    taper.connect("o1", straight.ports["o2"])
+    block = gf.Component("mmi2x2_wide_block")
+    block.add_polygon([(0.0, -1.0), (20.0, -1.0), (20.0, 1.0), (0.0, 1.0)], layer="WG")
+    block.add_port("o1", center=(0.0, 0.0), width=2.0, orientation=180, layer="WG")
+    mmi = c.add_ref(block, name="mmi")
+    mmi.connect("o1", taper.ports["o2"])
+    gds_path = tmp_path / "wide_port.gds"
+    c.write_gds(str(gds_path))
+    config = ExtractionConfig(
+        core_layers=((1, 0),),
+        rules=(
+            ClassificationRule("mmi2x2", ("mmi2x2",)),
+            ClassificationRule("gc", ("grating_coupler",)),
+            ClassificationRule("net", ("straight", "taper")),
+        ),
+        composites=(CompositeRule("gc", "grating_coupler"),),
+    )
+    circuit = extract_circuit(gds_path, config)
+    (net,) = circuit.nets
+    # 50 um of 0.5 um waveguide plus the taper's 12.5 um2, all over 0.5 um
+    assert net.length_um == pytest.approx(75.0, abs=0.5)

@@ -163,9 +163,9 @@ class ExtractedNet:
     endpoints: tuple[tuple[str, int], ...]
     stub: bool = False
     note: str = ""
-    #: the original waveguide's length: its polygon area over its facet width
-    #: (0 for an abutting net); what the design routed, for comparing the
-    #: original's path lengths with the rebuild's
+    #: the original waveguide's length: its polygon area over its waveguide
+    #: width, the narrowest end facet (0 for an abutting net); what the design
+    #: routed, for comparing the original's path lengths with the rebuild's
     length_um: float = 0.0
 
 
@@ -409,7 +409,9 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
             note = "one port only: the other end touches nothing recognized"
         elif len(endpoints) > 2:
             note = "more than two ports: a crossing, a junction, or two nets that touch"
-        width = sum(facet_widths) / len(facet_widths)
+        # the narrowest end facet is the waveguide's width; a wider one is the
+        # face of the component port the net ends on (a 2 um MMI port)
+        width = min(facet_widths)
         nets.append(
             ExtractedNet(
                 name=f"net_{polygon_index}",
