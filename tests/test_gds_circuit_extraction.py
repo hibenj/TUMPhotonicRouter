@@ -213,8 +213,16 @@ def test_extractor_terminates_nets_on_end_caps_and_open_ends(tmp_path: Path):
 
     schematic = generic_schematic(circuit, default_generic_mappings())
     assert len(schematic.netlist.routes) == 5  # the stubs are routed to as well
+    # the couplers feed the MMI's input side: they are the circuit's inputs; the
+    # end cap and the open end are its sinks
     node_types, _delays = benchmark_metadata(schematic, circuit)
-    assert node_types == {"endcap_0": "output", "open_end_0": "output"}
+    assert node_types == {
+        "gc_0": "input",
+        "gc_1": "input",
+        "endcap_0": "output",
+        "open_end_0": "output",
+    }
+    assert benchmark_metadata(schematic, circuit, {"gc_1": "output"})[0]["gc_1"] == "output"
     arm_instance = schematic.netlist.instances["waveguide_0"]
     assert arm_instance.settings["length"] == pytest.approx(50.0)
     for name, end in (("endcap_0", cap_end), ("open_end_0", open_end)):
@@ -322,7 +330,7 @@ def test_extractor_keeps_an_arm_pair_as_one_component(tmp_path: Path):
     exec(compile(module_path.read_text(), str(module_path), "exec"), namespace)
     rebuilt = namespace["build_schematic"]()
     assert set(rebuilt.netlist.instances) == set(schematic.netlist.instances)
-    assert namespace["NODE_TYPES"] == {}  # no end caps or open ends here
+    assert namespace["NODE_TYPES"] == {}  # no couplers here
     mmi_settings = schematic.netlist.instances["mmi2x2_0"].settings
     assert namespace["INTERNAL_DELAYS_UM"]["mmi2x2_0"] == pytest.approx(
         mmi_settings["length_mmi"] + 2 * mmi_settings["length_taper"]

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from photonic_router.port_roles import INPUT, component_port_role
+
 from .gds_circuit_components import arm_pair_path_length_um, register_generic_components
 from .gds_circuit_extraction import ExtractedCircuit, ExtractedComponent, ExtractedPort
 
@@ -212,29 +214,49 @@ def _generic_component_ports(
     return ports
 
 
-#: kinds whose instance is a dead end: a sink for the path-length graph, never a source
+#: the extracted kinds that are a circuit's couplers (one optical port each)
+COUPLER_KINDS = frozenset({"gc", "edge_coupler"})
+#: the extracted kinds whose instance is a dead end: a sink of the circuit
 STUB_NODE_KINDS = frozenset({"endcap", "open_end"})
 
 
 def benchmark_metadata(
-    schematic: Any, circuit: ExtractedCircuit
+    schematic: Any,
+    circuit: ExtractedCircuit,
+    node_type_overrides: dict[str, str] | None = None,
 ) -> tuple[dict[str, str], dict[str, float]]:
     """``NODE_TYPES`` and ``INTERNAL_DELAYS_UM`` of the generated module, for the path-length
     analysis (`benchmark_metadata.load_benchmark_metadata`).
 
-    End caps and open ends are ``output`` nodes, so the stub net of an unused
-    MMI input is oriented into the stub and imposes no requirement on the
-    MMI. The internal delays are the optical lengths through the components
-    the light passes: the MMI's body and tapers, every straight's and
-    heater's length, the arm pair's arm; couplers and rings carry 0 (a ring
-    circuit is not matched).
+    A coupler whose net ends on the input side of the component it feeds
+    (`port_roles.INPUT_PORTS_BY_COMPONENT`, the components' fan-in) is an
+    ``input`` of the circuit, one on an output side an ``output``; an end
+    cap or open end is an ``output`` too (a dead end is a sink: its stub
+    hangs on an unused input port, where fan-in alone cannot tell the two
+    ends apart); ``node_type_overrides`` (the private configuration) has the
+    last word.
+    The internal delays are the optical lengths through the components the
+    light passes: the MMI's body
+    and tapers, every straight's and heater's length, the arm pair's arm;
+    couplers and rings carry 0 (a ring circuit is not matched).
     """
 
-    node_types = {
-        component.name: "output"
-        for component in circuit.components
-        if component.kind in STUB_NODE_KINDS
+    kind_of = {component.name: component.kind for component in circuit.components}
+    component_of = {name: inst.component for name, inst in schematic.netlist.instances.items()}
+    node_types: dict[str, str] = {
+        name: "output" for name, kind in kind_of.items() if kind in STUB_NODE_KINDS
     }
+    for bundle in schematic.netlist.routes.values():
+        for p1, p2 in bundle.links.items():
+            for coupler_spec, other_spec in ((p1, p2), (p2, p1)):
+                coupler, _ = coupler_spec.split(",")
+                other, other_port = other_spec.split(",")
+                if kind_of.get(coupler) not in COUPLER_KINDS or kind_of.get(other) in COUPLER_KINDS:
+                    continue
+                role = component_port_role(component_of.get(other, ""), other_port)
+                if role is not None:
+                    node_types[coupler] = "input" if role == INPUT else "output"
+    node_types.update(node_type_overrides or {})
     delays: dict[str, float] = {}
     for name, instance in schematic.netlist.instances.items():
         settings = dict(instance.settings)

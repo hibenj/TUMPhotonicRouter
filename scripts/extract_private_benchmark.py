@@ -81,7 +81,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("name")
     parser.add_argument("--report-only", action="store_true")
     args = parser.parse_args(argv)
-    from benchmarks.private.configs.circuits import CIRCUITS, FLAG_OVERRIDES, NET_ORDERS
+    from benchmarks.private.configs.circuits import (
+        CIRCUITS,
+        FLAG_OVERRIDES,
+        NET_ORDERS,
+        NODE_TYPE_OVERRIDES,
+    )
 
     gds_path, config = CIRCUITS[args.name]
     circuit = extract_circuit(gds_path, config)
@@ -97,7 +102,9 @@ def main(argv: list[str] | None = None) -> int:
         net_order=NET_ORDERS.get(args.name, "chord"),
     )
     target = REPO / "benchmarks" / "private" / f"{args.name}.py"
-    node_types, internal_delays_um = benchmark_metadata(schematic, circuit)
+    node_types, internal_delays_um = benchmark_metadata(
+        schematic, circuit, NODE_TYPE_OVERRIDES.get(args.name)
+    )
     write_benchmark_module(
         schematic,
         target,

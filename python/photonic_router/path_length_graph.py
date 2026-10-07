@@ -59,8 +59,8 @@ class GraphEdge:
     """One net. ``key`` names it as routed (the routed record's source and
     target, what requirements and meander candidates are matched by);
     ``source`` and ``target`` are the light's direction, which
-    `build_graph_from_schematic` derives from the port roles, so the two
-    pairs may be swapped."""
+    `build_graph_from_schematic` derives from the components' fan-in and
+    fan-out, so the two pairs may be swapped."""
 
     key: RoutedEdgeKey
     source: PortRef
@@ -232,6 +232,9 @@ class PhotonicRoutingGraph:
     edges: dict[RoutedEdgeKey, GraphEdge] = field(default_factory=dict)
     incoming_edges: dict[str, list[RoutedEdgeKey]] = field(default_factory=dict)
     outgoing_edges: dict[str, list[RoutedEdgeKey]] = field(default_factory=dict)
+    #: nets with no fan-in or fan-out role at either end (two couplers, a
+    #: component the table does not know): they keep their written order
+    undecided_nets: list[str] = field(default_factory=list)
 
     def topological_order(self) -> list[str]:
         sorter = TopologicalSorter()
@@ -266,58 +269,53 @@ def build_graph_from_schematic(
     internal_delays_um: Mapping[str, float] | None = None,
     port_role: PortRole | None = None,
 ) -> PhotonicRoutingGraph:
-    """The directed graph of a schematic, every net oriented along the light.
+    """The directed graph of a schematic: a node per instance, an edge per net.
 
-    The order a net's two ports were written in does not matter: a node of
-    type input is always a source and one of type output always a target;
-    otherwise the port roles decide (``port_role``, by default the generic
-    components' own, `port_roles.generic_port_roles`); a net whose ends have
-    no roles keeps its declared order.
+    A net carries no direction of its own, so each one is pointed along the
+    light from the components' fan-in and fan-out (`port_roles`: a net runs
+    from an output-side port to an input-side port) whichever way it was
+    written. The benchmark's labels come first: a node of type ``input`` is
+    always a source and one of type ``output`` always a target. A net with
+    no role at either end keeps its written order and is listed in
+    ``undecided_nets``. ``port_role`` replaces the generic table (tests).
     """
 
     graph = PhotonicRoutingGraph()
     internal_delays_um = internal_delays_um or {}
     role = generic_port_roles(schematic) if port_role is None else port_role
 
-    for instance_name in schematic.netlist.instances.keys():
-        graph.nodes[instance_name] = GraphNode(
-            name=instance_name,
-            node_type=_resolve_node_type(instance_name, node_types),
-            internal_delay_um=float(internal_delays_um.get(instance_name, 0.0)),
+    def ensure_node(name: str) -> None:
+        if name in graph.nodes:
+            return
+        graph.nodes[name] = GraphNode(
+            name=name,
+            node_type=_resolve_node_type(name, node_types),
+            internal_delay_um=float(internal_delays_um.get(name, 0.0)),
         )
-        graph.incoming_edges[instance_name] = []
-        graph.outgoing_edges[instance_name] = []
+        graph.incoming_edges.setdefault(name, [])
+        graph.outgoing_edges.setdefault(name, [])
+
+    for instance_name in schematic.netlist.instances:
+        ensure_node(instance_name)
 
     for net_name, bundle in schematic.netlist.routes.items():
-        links = bundle.links
-        for src_spec, dst_spec in links.items():
+        for src_spec, dst_spec in bundle.links.items():
             declared_src = _parse_port_ref(src_spec)
             declared_dst = _parse_port_ref(dst_spec)
-            src, dst = _oriented_along_the_light(
+            ensure_node(declared_src.instance)
+            ensure_node(declared_dst.instance)
+            oriented = _oriented_along_the_light(
                 declared_src,
                 declared_dst,
-                _resolve_node_type(declared_src.instance, node_types),
-                _resolve_node_type(declared_dst.instance, node_types),
+                graph.nodes[declared_src.instance].node_type,
+                graph.nodes[declared_dst.instance].node_type,
                 role,
             )
-
-            if src.instance not in graph.nodes:
-                graph.nodes[src.instance] = GraphNode(
-                    name=src.instance,
-                    node_type=_resolve_node_type(src.instance, node_types),
-                    internal_delay_um=float(internal_delays_um.get(src.instance, 0.0)),
-                )
-                graph.incoming_edges.setdefault(src.instance, [])
-                graph.outgoing_edges.setdefault(src.instance, [])
-            if dst.instance not in graph.nodes:
-                graph.nodes[dst.instance] = GraphNode(
-                    name=dst.instance,
-                    node_type=_resolve_node_type(dst.instance, node_types),
-                    internal_delay_um=float(internal_delays_um.get(dst.instance, 0.0)),
-                )
-                graph.incoming_edges.setdefault(dst.instance, [])
-                graph.outgoing_edges.setdefault(dst.instance, [])
-
+            if oriented is None:
+                graph.undecided_nets.append(net_name)
+                src, dst = declared_src, declared_dst
+            else:
+                src, dst = oriented
             graph.nodes[src.instance].ports.setdefault(
                 src.port,
                 PortMetadata(name=src.port, direction=PortDirection.OUTPUT),
@@ -326,10 +324,8 @@ def build_graph_from_schematic(
                 dst.port,
                 PortMetadata(name=dst.port, direction=PortDirection.INPUT),
             )
-
             key = RoutedEdgeKey(net_name=net_name, source=declared_src, target=declared_dst)
-            edge = GraphEdge(key=key, source=src, target=dst)
-            graph.edges[key] = edge
+            graph.edges[key] = GraphEdge(key=key, source=src, target=dst)
             graph.outgoing_edges[src.instance].append(key)
             graph.incoming_edges[dst.instance].append(key)
 
@@ -342,22 +338,20 @@ def _oriented_along_the_light(
     src_type: NodeType,
     dst_type: NodeType,
     role: PortRole,
-) -> tuple[PortRef, PortRef]:
+) -> tuple[PortRef, PortRef] | None:
+    """``(source, target)`` along the light, or None when nothing decides it."""
+
     if src_type == NodeType.INPUT or dst_type == NodeType.OUTPUT:
         return src, dst
     if dst_type == NodeType.INPUT or src_type == NodeType.OUTPUT:
         return dst, src
     src_role = role(src.instance, src.port)
     dst_role = role(dst.instance, dst.port)
-    if src_role == OUTPUT and dst_role == INPUT:
+    if src_role == dst_role:
+        return None  # no role at either end, or two input sides / two output sides
+    if src_role == OUTPUT or dst_role == INPUT:
         return src, dst
-    if src_role == INPUT and dst_role == OUTPUT:
-        return dst, src
-    if src_role is None and dst_role is not None:
-        return (src, dst) if dst_role == INPUT else (dst, src)
-    if dst_role is None and src_role is not None:
-        return (src, dst) if src_role == OUTPUT else (dst, src)
-    return src, dst
+    return dst, src
 
 
 def annotate_edge_lengths(
