@@ -113,10 +113,7 @@ def compute_group_lifted_requirements(
 
         edge_arrivals: list[tuple[NodeIncomingEdgeTiming, float]] = []
         for edge_timing in timing.incoming_edges:
-            source_output = adjusted_output_arrivals.get(
-                edge_timing.edge_key.source.instance,
-                0.0,
-            )
+            source_output = adjusted_output_arrivals.get(edge_timing.source_instance, 0.0)
             edge_arrivals.append((edge_timing, source_output + float(edge_timing.routed_length_um)))
         base_target = max(arrival for _, arrival in edge_arrivals)
         base_missing = [max(0.0, base_target - arrival) for _, arrival in edge_arrivals]
@@ -189,10 +186,7 @@ def adjusted_output_arrivals_for_requirements(
             adjusted_input_arrival = 0.0
         else:
             adjusted_input_arrival = max(
-                adjusted_output_arrivals.get(
-                    edge_timing.edge_key.source.instance,
-                    0.0,
-                )
+                adjusted_output_arrivals.get(edge_timing.source_instance, 0.0)
                 + float(edge_timing.routed_length_um)
                 + extra_by_edge.get(edge_timing.edge_key, 0.0)
                 for edge_timing in timing.incoming_edges
@@ -203,13 +197,41 @@ def adjusted_output_arrivals_for_requirements(
     return adjusted_output_arrivals
 
 
+OUTPUT_SCOPES = ("all", "depth")
+
+
+def node_depths(analysis: PathLengthAnalysisResult) -> dict[str, int]:
+    """Each node's depth: the most components on any path from a source to it."""
+
+    depths: dict[str, int] = {}
+    for node_name in analysis.topological_order:
+        timing = analysis.node_timings[node_name]
+        if not timing.incoming_edges:
+            depths[node_name] = 0
+            continue
+        depths[node_name] = 1 + max(
+            depths.get(edge_timing.source_instance, 0) for edge_timing in timing.incoming_edges
+        )
+    return depths
+
+
 def compute_output_matching_requirements(
     analysis: PathLengthAnalysisResult,
     *,
     existing_requirements: list[MissingLengthRequirement] | None = None,
     tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
+    scope: str = "all",
 ) -> tuple[list[MissingLengthRequirement], dict[str, object]]:
-    """Return additional requirements that align all one-input output nodes."""
+    """Return additional requirements that align the one-input output nodes.
+
+    ``scope`` ``all`` aligns every output to the latest one; ``depth`` aligns
+    only outputs of the same depth with each other (the owner's beam
+    splitter, 2026-10-07: four outputs tapped after the first MZI stage are
+    equalized among themselves, the four behind the last stage among
+    themselves, the two sets 1.3 mm apart by design).
+    """
+    if scope not in OUTPUT_SCOPES:
+        raise ValueError(f"output scope {scope!r} is not one of {OUTPUT_SCOPES}")
     existing_requirements = existing_requirements or []
     adjusted_output_arrivals = adjusted_output_arrivals_for_requirements(
         analysis,
@@ -222,13 +244,23 @@ def compute_output_matching_requirements(
         timing.node_name: float(adjusted_output_arrivals.get(timing.node_name, 0.0))
         for timing in output_timings
     }
+    depths = node_depths(analysis) if scope == "depth" else {}
+    group_of = {
+        timing.node_name: (depths.get(timing.node_name, 0) if scope == "depth" else 0)
+        for timing in output_timings
+    }
+    target_by_group: dict[int, float] = {}
+    for name, arrival in output_arrivals.items():
+        group = group_of[name]
+        target_by_group[group] = max(target_by_group.get(group, arrival), arrival)
     target_arrival = max(output_arrivals.values(), default=0.0)
     requirements: list[MissingLengthRequirement] = []
     outputs: list[dict[str, object]] = []
 
     for timing in output_timings:
         arrival = output_arrivals[timing.node_name]
-        missing = max(0.0, target_arrival - arrival)
+        group = group_of[timing.node_name]
+        missing = max(0.0, target_by_group[group] - arrival)
         if missing <= tolerance_um:
             missing = 0.0
         output_info: dict[str, object] = {
@@ -237,6 +269,8 @@ def compute_output_matching_requirements(
             "missing_length_um": float(missing),
             "incoming_count": len(timing.incoming_edges),
             "status": "not_required" if missing == 0.0 else "requires_delay",
+            "depth": int(depths.get(timing.node_name, 0)) if scope == "depth" else None,
+            "group_target_arrival_um": float(target_by_group[group]),
         }
         if missing > 0.0:
             if len(timing.incoming_edges) == 1:
@@ -254,7 +288,9 @@ def compute_output_matching_requirements(
 
     return requirements, {
         "enabled": True,
+        "scope": scope,
         "target_output_arrival_um": float(target_arrival),
+        "group_target_arrivals_um": {str(g): float(t) for g, t in sorted(target_by_group.items())},
         "output_count": len(output_timings),
         "requirements": [requirement_to_dict(req) for req in requirements],
         "outputs": outputs,

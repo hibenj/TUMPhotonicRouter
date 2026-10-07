@@ -245,6 +245,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--path-length-output-scope",
+        choices=("all", "depth"),
+        default="all",
+        help=(
+            "Which outputs --path-length-match-outputs aligns with each other: "
+            "all (every output to the latest) or depth (only outputs of the same "
+            "depth, the number of components behind them; default: all)."
+        ),
+    )
+    parser.add_argument(
         "--path-length-meander-height-um",
         type=float,
         default=SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
@@ -784,6 +794,7 @@ def _flow_options(args: argparse.Namespace) -> FlowOptions:
             enable_path_length_matching=args.path_length_matching,
             path_length_match_outputs=args.path_length_match_outputs,
             path_length_allow_residual=args.path_length_allow_residual,
+            path_length_output_scope=args.path_length_output_scope,
             path_length_meander_height_um=args.path_length_meander_height_um,
         ),
         electrical=ElectricalOptions(

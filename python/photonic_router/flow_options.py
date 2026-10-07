@@ -136,6 +136,9 @@ class PathLengthMatchingOptions:
     #: finish a run whose matching leaves residual mismatches and report them
     #: (SUMMARY plm_over_tolerance) instead of failing; default strict
     path_length_allow_residual: bool = False
+    #: which outputs `--path-length-match-outputs` aligns with each other: ``all``
+    #: (every output to the latest) or ``depth`` (only outputs of the same depth)
+    path_length_output_scope: str = "all"
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM
 
 

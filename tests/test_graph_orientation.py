@@ -19,6 +19,14 @@ from photonic_router.path_length_graph import (
 )
 from photonic_router.port_roles import component_port_role, generic_port_roles, no_port_roles
 
+from translation.path_length_candidates import build_requirement_delay_candidates
+from translation.path_length_requirements import (
+    analyze_path_length_matching,
+    compute_output_matching_requirements,
+    node_depths,
+)
+from translation.route_rust_types import RoutedNetRecord
+
 COMPONENTS = {
     "gc_in": "grating_coupler_te",
     "gc_out": "grating_coupler_te",
@@ -174,3 +182,61 @@ def test_generic_port_roles_resolver_reads_the_instances_components():
     assert role("heater", "o2") == "output"
     assert role("gc_in", "o1") is None
     assert role("unknown", "o1") is None
+
+
+def test_the_consumers_of_the_analysis_walk_the_light_not_the_written_order():
+    """Output matching, depths and the upstream candidates read the oriented ends of
+    an edge, not its key: the beam splitter's tap written coupler-first got a depth
+    of 1 and a wrong meander before this."""
+
+    lengths = {
+        "feed": 50.0,
+        "upper_in": 20.0,
+        "lower_in": 20.0,
+        "upper_out": 20.0,
+        "lower_out": 50.0,
+        "drain": 30.0,
+        "stub": 10.0,
+    }
+    results = []
+    for reversed_nets in (False, True):
+        schematic = _schematic(MZI, reversed_nets)
+        records = []
+        for name, bundle in schematic.netlist.routes.items():
+            ((p1, p2),) = bundle.links.items()
+            a, pa = p1.split(",")
+            b, pb = p2.split(",")
+            records.append(
+                RoutedNetRecord(
+                    net_name=name,
+                    source=PortRef(a, pa),
+                    target=PortRef(b, pb),
+                    route_obj=None,
+                    total_length_um=lengths[name],
+                )
+            )
+        analysis, requirements = analyze_path_length_matching(
+            schematic,
+            routed_net_records=records,
+            node_types={"gc_in": "input", "gc_out": "output", "endcap": "output"},
+            internal_delays_um={"heater": 320.0, "arm": 100.0},
+        )
+        depths = node_depths(analysis)
+        outputs, info = compute_output_matching_requirements(
+            analysis, existing_requirements=requirements, scope="depth"
+        )
+        candidates = build_requirement_delay_candidates(analysis, requirements)
+        results.append(
+            (
+                {req.edge_key.net_name: req.missing_length_um for req in requirements},
+                {name: depths[name] for name in ("gc_in", "mmi_a", "heater", "mmi_b", "gc_out")},
+                {req.edge_key.net_name: round(req.missing_length_um, 1) for req in outputs},
+                {key.net_name: [c.reason for c in cands] for key, cands in candidates.items()},
+            )
+        )
+    assert results[0][0] == {"lower_out": pytest.approx(190.0)}
+    assert results[0][1] == {"gc_in": 0, "mmi_a": 1, "heater": 2, "mmi_b": 3, "gc_out": 4}
+    # the endcap and gc_out are both outputs of depth 4: the stub trails by 20 um
+    assert results[0][2] == {"stub": 20.0}
+    assert "transparent_serial_upstream" in results[0][3]["lower_out"]
+    assert results[1] == results[0]

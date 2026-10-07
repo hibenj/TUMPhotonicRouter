@@ -1392,6 +1392,73 @@ def test_output_matching_requirements_align_one_input_outputs_after_existing_del
     assert info["output_count"] == 2
 
 
+def test_output_matching_by_depth_aligns_only_outputs_of_the_same_depth():
+    """The beam splitter's shape: two outputs tapped behind one gate, two behind two
+    gates; with scope ``depth`` each pair is aligned among itself and the pairs
+    stay apart, with scope ``all`` every output rises to the latest."""
+
+    schematic = _build_schematic_from_links(
+        ["src", "g1", "g2", "tap0", "tap1", "out0", "out1"],
+        {
+            "feed": {"src,o1": "g1,o1"},
+            "t0": {"g1,o2": "tap0,o1"},
+            "t1": {"g1,o3": "tap1,o1"},
+            "link": {"g1,o4": "g2,o1"},
+            "e0": {"g2,o2": "out0,o1"},
+            "e1": {"g2,o3": "out1,o1"},
+        },
+    )
+    lengths = {"feed": 10.0, "t0": 100.0, "t1": 130.0, "link": 500.0, "e0": 50.0, "e1": 80.0}
+
+    def key(net: str) -> RoutedEdgeKey:
+        ((p1, p2),) = schematic.netlist.routes[net].links.items()
+        a, pa = p1.split(",")
+        b, pb = p2.split(",")
+        return RoutedEdgeKey(net_name=net, source=PortRef(a, pa), target=PortRef(b, pb))
+
+    records = [
+        RoutedNetRecord(
+            net_name=net,
+            source=key(net).source,
+            target=key(net).target,
+            route_obj=None,
+            total_length_um=length,
+        )
+        for net, length in lengths.items()
+    ]
+    analysis, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types={
+            "src": "input",
+            "tap0": "output",
+            "tap1": "output",
+            "out0": "output",
+            "out1": "output",
+        },
+        internal_delays_um={},
+    )
+    by_depth, info = compute_output_matching_requirements(analysis, scope="depth")
+    assert {req.edge_key.net_name: req.missing_length_um for req in by_depth} == {
+        "t0": pytest.approx(30.0),
+        "e0": pytest.approx(30.0),
+    }
+    assert info["scope"] == "depth"
+    assert info["group_target_arrivals_um"] == {
+        "2": pytest.approx(140.0),
+        "3": pytest.approx(590.0),
+    }
+    everything, info_all = compute_output_matching_requirements(analysis, scope="all")
+    assert {req.edge_key.net_name: round(req.missing_length_um, 1) for req in everything} == {
+        "t0": 480.0,
+        "t1": 450.0,
+        "e0": 30.0,
+    }
+    assert info_all["target_output_arrival_um"] == pytest.approx(590.0)
+    with pytest.raises(ValueError):
+        compute_output_matching_requirements(analysis, scope="pairs")
+
+
 def test_merge_missing_length_requirements_adds_independent_requirements_per_edge():
     edge = RoutedEdgeKey(
         net_name="n0",

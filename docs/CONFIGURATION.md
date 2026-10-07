@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 85 `RoutingConfig` fields (85 with an overlay variable), 50 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 172 in total.
+Totals: 85 `RoutingConfig` fields (85 with an overlay variable), 51 `FlowOptions` fields (43 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 173 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -288,6 +288,7 @@ No fields of its own.
 | `enable_path_length_matching` | `bool` | `False` | `--path-length-matching` | -- |
 | `path_length_match_outputs` | `bool` | `False` | `--path-length-match-outputs` | -- |
 | `path_length_allow_residual` | `bool` | `False` | `--path-length-allow-residual` | finish a run whose matching leaves residual mismatches and report them (SUMMARY plm_over_tolerance) instead of failing; default strict |
+| `path_length_output_scope` | `str` | `'all'` | `--path-length-output-scope` | which outputs `--path-length-match-outputs` aligns with each other: ``all`` (every output to the latest) or ``depth`` (only outputs of the same depth) |
 | `path_length_meander_height_um` | `float` | `80.0` | `--path-length-meander-height-um` | -- |
 
 ### `electrical` -- `ElectricalOptions`

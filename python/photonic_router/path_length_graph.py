@@ -88,6 +88,9 @@ class NodeIncomingEdgeTiming:
     routed_length_um: float
     edge_arrival_um: float
     missing_length_um: float
+    #: the instance the light comes from on this edge: the oriented source,
+    #: which is the key's target when the net was written against the light
+    source_instance: str = ""
 
 
 @dataclass
@@ -109,6 +112,17 @@ class PathLengthAnalysisResult:
     node_timings: dict[str, NodeTiming]
     edge_missing_lengths_um: dict[RoutedEdgeKey, float]
     requirements: list[MissingLengthRequirement]
+    #: every edge's ends along the light, by its key (the key names the net
+    #: as routed; a net written against the light has them swapped)
+    edge_ends: dict[RoutedEdgeKey, tuple[PortRef, PortRef]] = field(default_factory=dict)
+
+    def source_instance(self, edge_key: RoutedEdgeKey) -> str:
+        ends = self.edge_ends.get(edge_key)
+        return ends[0].instance if ends is not None else edge_key.source.instance
+
+    def target_instance(self, edge_key: RoutedEdgeKey) -> str:
+        ends = self.edge_ends.get(edge_key)
+        return ends[1].instance if ends is not None else edge_key.target.instance
 
 
 @dataclass
@@ -192,6 +206,7 @@ class PathLengthGraphAnnotations:
                             routed_length_um=float(routed_length_um),
                             edge_arrival_um=arrival,
                             missing_length_um=missing,
+                            source_instance=graph.edges[edge_key].source.instance,
                         )
                     )
                     if missing > 0.0:
@@ -223,6 +238,7 @@ class PathLengthGraphAnnotations:
             node_timings=node_timings,
             edge_missing_lengths_um=edge_missing,
             requirements=requirements,
+            edge_ends={key: (edge.source, edge.target) for key, edge in graph.edges.items()},
         )
 
 

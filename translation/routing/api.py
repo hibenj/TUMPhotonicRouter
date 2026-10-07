@@ -92,6 +92,7 @@ def route_match_and_realize(
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
     path_length_allow_residual: bool = False,
+    path_length_output_scope: str = "all",
     node_types: dict[str, str] | None = None,
     internal_delays_um: dict[str, float] | None = None,
     enable_crossings: bool = False,
@@ -268,6 +269,7 @@ def route_match_and_realize(
             output_requirements, output_matching_info = compute_output_matching_requirements(
                 analysis,
                 existing_requirements=lifted_requirements,
+                scope=path_length_output_scope,
             )
             requirements = merge_missing_length_requirements(
                 lifted_requirements,

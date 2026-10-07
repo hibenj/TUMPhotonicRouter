@@ -211,14 +211,21 @@ def output_matching_diagnostics_to_info(
             for node_name, timing in analysis.node_timings.items()
             if timing.node_type.value == "output" and node_name in output_arrival
         }
-    realized_output_spread = (
-        max(realized_output_arrival.values()) - min(realized_output_arrival.values())
-        if realized_output_arrival
-        else 0.0
-    )
     raw_outputs = output_matching_info.get("outputs", [])
     if not isinstance(raw_outputs, list):
         raw_outputs = []
+    # the realized spread within each group of outputs that are matched with
+    # each other (scope ``all``: one group; ``depth``: one per depth)
+    group_of_output = {
+        str(raw.get("node_name")): raw.get("depth") for raw in raw_outputs if isinstance(raw, dict)
+    }
+    arrivals_by_group: dict[object, list[float]] = {}
+    for node_name, arrival in realized_output_arrival.items():
+        arrivals_by_group.setdefault(group_of_output.get(node_name), []).append(arrival)
+    realized_output_spread = max(
+        (max(values) - min(values) for values in arrivals_by_group.values()),
+        default=0.0,
+    )
 
     edges: list[dict[str, object]] = []
     max_unmatched = 0.0
@@ -532,7 +539,7 @@ def realized_arrivals(
         arrivals: list[float] = []
         for edge_timing in timing.incoming_edges:
             edge_id = edge_identity(edge_timing.edge_key)
-            source_out = output_arrival.get(edge_timing.edge_key.source.instance, 0.0)
+            source_out = output_arrival.get(edge_timing.source_instance, 0.0)
             arrival = (
                 source_out
                 + float(edge_timing.routed_length_um)

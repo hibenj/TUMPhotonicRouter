@@ -468,6 +468,7 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
         enable_path_length_matching=options.path_length.enable_path_length_matching,
         path_length_match_outputs=options.path_length.path_length_match_outputs,
         path_length_allow_residual=options.path_length.path_length_allow_residual,
+        path_length_output_scope=options.path_length.path_length_output_scope,
         path_length_meander_height_um=options.path_length.path_length_meander_height_um,
         enable_crossings=enable_crossings,
         crossing_mode=crossing_mode,
@@ -631,6 +632,7 @@ def run_routing_flow(
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
     path_length_allow_residual: bool = False,
+    path_length_output_scope: str = "all",
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     enable_crossings: bool = False,
     crossing_mode: str = "lidar-pure",
@@ -832,6 +834,7 @@ def run_routing_flow(
                 enable_path_length_matching=enable_path_length_matching,
                 path_length_match_outputs=path_length_match_outputs,
                 path_length_allow_residual=path_length_allow_residual,
+                path_length_output_scope=path_length_output_scope,
                 path_length_meander_height_um=path_length_meander_height_um,
             ),
             electrical=ElectricalOptions(

@@ -77,8 +77,10 @@ def analysis_edge_maps(
     for timing in analysis.node_timings.values():
         for edge_timing in timing.incoming_edges:
             edge_key = edge_timing.edge_key
-            incoming_by_node.setdefault(edge_key.target.instance, []).append(edge_key)
-            outgoing_by_node.setdefault(edge_key.source.instance, []).append(edge_key)
+            # along the light: the key names the net as routed, which may be
+            # written against the light
+            incoming_by_node.setdefault(analysis.target_instance(edge_key), []).append(edge_key)
+            outgoing_by_node.setdefault(analysis.source_instance(edge_key), []).append(edge_key)
     return incoming_by_node, outgoing_by_node
 
 
@@ -132,7 +134,7 @@ def build_requirement_delay_candidates(
     ) -> str | None:
         if len(edge_keys) < 2:
             return None
-        source_instances = {edge_key.source.instance for edge_key in edge_keys}
+        source_instances = {analysis.source_instance(edge_key) for edge_key in edge_keys}
         if len(source_instances) != 1:
             return None
         source_instance = next(iter(source_instances))
@@ -210,7 +212,7 @@ def build_requirement_delay_candidates(
             ]
         ] = [((edge_key,), (edge_key,), requested, "direct_edge", 0)]
 
-        source_instance = edge_key.source.instance
+        source_instance = analysis.source_instance(edge_key)
         source_outgoing = outgoing_by_node.get(source_instance, [])
         source_incoming = incoming_by_node.get(source_instance, [])
         if len(source_outgoing) >= 2 and len(source_incoming) >= 1:
@@ -267,7 +269,7 @@ def build_requirement_delay_candidates(
                 continue
 
             for index, current_edge in enumerate(current_edges):
-                source = current_edge.source.instance
+                source = analysis.source_instance(current_edge)
                 incoming = incoming_by_node.get(source, [])
                 outgoing = outgoing_by_node.get(source, [])
                 if len(incoming) != 1 or len(outgoing) != 1 or outgoing[0] != current_edge:
