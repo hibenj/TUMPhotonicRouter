@@ -7,6 +7,8 @@ from enum import Enum
 from graphlib import TopologicalSorter
 from typing import Any, Iterable, Mapping, Protocol
 
+from photonic_router.port_roles import INPUT, OUTPUT, PortRole, generic_port_roles
+
 
 class SchematicLike(Protocol):
     netlist: Any
@@ -54,6 +56,12 @@ class GraphNode:
 
 @dataclass
 class GraphEdge:
+    """One net. ``key`` names it as routed (the routed record's source and
+    target, what requirements and meander candidates are matched by);
+    ``source`` and ``target`` are the light's direction, which
+    `build_graph_from_schematic` derives from the port roles, so the two
+    pairs may be swapped."""
+
     key: RoutedEdgeKey
     source: PortRef
     target: PortRef
@@ -256,9 +264,20 @@ def build_graph_from_schematic(
     *,
     node_types: Mapping[str, NodeType | str] | None = None,
     internal_delays_um: Mapping[str, float] | None = None,
+    port_role: PortRole | None = None,
 ) -> PhotonicRoutingGraph:
+    """The directed graph of a schematic, every net oriented along the light.
+
+    The order a net's two ports were written in does not matter: a node of
+    type input is always a source and one of type output always a target;
+    otherwise the port roles decide (``port_role``, by default the generic
+    components' own, `port_roles.generic_port_roles`); a net whose ends have
+    no roles keeps its declared order.
+    """
+
     graph = PhotonicRoutingGraph()
     internal_delays_um = internal_delays_um or {}
+    role = generic_port_roles(schematic) if port_role is None else port_role
 
     for instance_name in schematic.netlist.instances.keys():
         graph.nodes[instance_name] = GraphNode(
@@ -272,8 +291,15 @@ def build_graph_from_schematic(
     for net_name, bundle in schematic.netlist.routes.items():
         links = bundle.links
         for src_spec, dst_spec in links.items():
-            src = _parse_port_ref(src_spec)
-            dst = _parse_port_ref(dst_spec)
+            declared_src = _parse_port_ref(src_spec)
+            declared_dst = _parse_port_ref(dst_spec)
+            src, dst = _oriented_along_the_light(
+                declared_src,
+                declared_dst,
+                _resolve_node_type(declared_src.instance, node_types),
+                _resolve_node_type(declared_dst.instance, node_types),
+                role,
+            )
 
             if src.instance not in graph.nodes:
                 graph.nodes[src.instance] = GraphNode(
@@ -301,13 +327,37 @@ def build_graph_from_schematic(
                 PortMetadata(name=dst.port, direction=PortDirection.INPUT),
             )
 
-            key = RoutedEdgeKey(net_name=net_name, source=src, target=dst)
+            key = RoutedEdgeKey(net_name=net_name, source=declared_src, target=declared_dst)
             edge = GraphEdge(key=key, source=src, target=dst)
             graph.edges[key] = edge
             graph.outgoing_edges[src.instance].append(key)
             graph.incoming_edges[dst.instance].append(key)
 
     return graph
+
+
+def _oriented_along_the_light(
+    src: PortRef,
+    dst: PortRef,
+    src_type: NodeType,
+    dst_type: NodeType,
+    role: PortRole,
+) -> tuple[PortRef, PortRef]:
+    if src_type == NodeType.INPUT or dst_type == NodeType.OUTPUT:
+        return src, dst
+    if dst_type == NodeType.INPUT or src_type == NodeType.OUTPUT:
+        return dst, src
+    src_role = role(src.instance, src.port)
+    dst_role = role(dst.instance, dst.port)
+    if src_role == OUTPUT and dst_role == INPUT:
+        return src, dst
+    if src_role == INPUT and dst_role == OUTPUT:
+        return dst, src
+    if src_role is None and dst_role is not None:
+        return (src, dst) if dst_role == INPUT else (dst, src)
+    if dst_role is None and src_role is not None:
+        return (src, dst) if src_role == OUTPUT else (dst, src)
+    return src, dst
 
 
 def annotate_edge_lengths(

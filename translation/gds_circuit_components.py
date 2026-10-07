@@ -13,6 +13,8 @@ generated benchmark modules can name it like any other cell.
 
 from __future__ import annotations
 
+import math
+
 import gdsfactory as gf
 
 ARM_PAIR = "arm_pair"
@@ -65,6 +67,24 @@ def arm_pair(
         component.add_port(in_name, port=arm.ports["o1"])
         component.add_port(out_name, port=arm.ports["o2"])
     return component
+
+
+def arm_pair_path_length_um(
+    arm_length: float,
+    arm_separation: float,
+    extension: float,
+    pitch_in: float,
+    pitch_out: float,
+    bend_radius: float,
+    **_ignored: object,
+) -> float:
+    """The optical length of one arm of `arm_pair` (both arms are equal): the
+    two leads, the two rises, the arm and four quarter arcs."""
+
+    lead = extension - 2 * bend_radius
+    rise_in = (arm_separation - pitch_in) / 2 - 2 * bend_radius
+    rise_out = (arm_separation - pitch_out) / 2 - 2 * bend_radius
+    return 2 * lead + rise_in + rise_out + arm_length + 2 * math.pi * bend_radius
 
 
 def register_generic_components() -> None:

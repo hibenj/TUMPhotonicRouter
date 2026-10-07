@@ -23,6 +23,7 @@ if str(REPO) not in sys.path:
 
 from translation.gds_circuit_extraction import extract_circuit  # noqa: E402
 from translation.gds_circuit_rebuild import (  # noqa: E402
+    benchmark_metadata,
     default_generic_mappings,
     generic_schematic,
     overlapping_instances,
@@ -96,12 +97,15 @@ def main(argv: list[str] | None = None) -> int:
         net_order=NET_ORDERS.get(args.name, "chord"),
     )
     target = REPO / "benchmarks" / "private" / f"{args.name}.py"
+    node_types, internal_delays_um = benchmark_metadata(schematic, circuit)
     write_benchmark_module(
         schematic,
         target,
         title=f"Private benchmark {args.name} (extracted from the owner's tape-out GDS)",
         # a circuit's own flags come last: argparse keeps the last value of a flag
         flags=flags,
+        node_types=node_types,
+        internal_delays_um=internal_delays_um,
     )
     print(
         f"wrote {target.relative_to(REPO)}: {len(schematic.netlist.instances)} instances, "

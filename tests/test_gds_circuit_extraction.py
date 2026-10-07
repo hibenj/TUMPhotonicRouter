@@ -21,6 +21,7 @@ from translation.gds_circuit_extraction import (
     extract_circuit,
 )
 from translation.gds_circuit_rebuild import (
+    benchmark_metadata,
     default_generic_mappings,
     generic_schematic,
     overlapping_instances,
@@ -212,6 +213,8 @@ def test_extractor_terminates_nets_on_end_caps_and_open_ends(tmp_path: Path):
 
     schematic = generic_schematic(circuit, default_generic_mappings())
     assert len(schematic.netlist.routes) == 5  # the stubs are routed to as well
+    node_types, _delays = benchmark_metadata(schematic, circuit)
+    assert node_types == {"endcap_0": "output", "open_end_0": "output"}
     arm_instance = schematic.netlist.instances["waveguide_0"]
     assert arm_instance.settings["length"] == pytest.approx(50.0)
     for name, end in (("endcap_0", cap_end), ("open_end_0", open_end)):
@@ -303,13 +306,39 @@ def test_extractor_keeps_an_arm_pair_as_one_component(tmp_path: Path):
     assert (placement.x, placement.y) == pytest.approx(
         (ends["mmi_a_o4"][0], (ends["mmi_a_o3"][1] + ends["mmi_a_o4"][1]) / 2), abs=1e-3
     )
-    # the written module rebuilds, and the layout places the pair between the MMIs
+    # the written module rebuilds, and the layout places the pair between the MMIs;
+    # its path-length metadata carries the MMI's and the arm pair's optical lengths
     module_path = tmp_path / "arm_pair_benchmark.py"
-    write_benchmark_module(schematic, module_path, title="synthetic", flags=())
+    node_types, delays = benchmark_metadata(schematic, circuit)
+    write_benchmark_module(
+        schematic,
+        module_path,
+        title="synthetic",
+        flags=(),
+        node_types=node_types,
+        internal_delays_um=delays,
+    )
     namespace: dict = {}
     exec(compile(module_path.read_text(), str(module_path), "exec"), namespace)
     rebuilt = namespace["build_schematic"]()
     assert set(rebuilt.netlist.instances) == set(schematic.netlist.instances)
+    assert namespace["NODE_TYPES"] == {}  # no end caps or open ends here
+    mmi_settings = schematic.netlist.instances["mmi2x2_0"].settings
+    assert namespace["INTERNAL_DELAYS_UM"]["mmi2x2_0"] == pytest.approx(
+        mmi_settings["length_mmi"] + 2 * mmi_settings["length_taper"]
+    )
+    # one arm: two leads, two rises, the 120 um arm and four quarter arcs of 5 um
+    pair = pair_instance.settings
+    assert namespace["INTERNAL_DELAYS_UM"]["arm_pair_0"] == pytest.approx(
+        2 * (pair["extension"] - 10.0)
+        + (pair["arm_separation"] - pair["pitch_in"]) / 2
+        - 10.0
+        + (pair["arm_separation"] - pair["pitch_out"]) / 2
+        - 10.0
+        + 120.0
+        + 2 * 3.141592653589793 * 5.0,
+        abs=1e-3,
+    )
 
 
 def _synthetic_split_coupler_gds(path: Path) -> tuple[tuple[float, float], tuple[float, float]]:

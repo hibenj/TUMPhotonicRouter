@@ -209,7 +209,12 @@ obstacle extraction and the `ObstacleMapBuilder` Protocol;
 `primitive_library.py` (179) owns the 1:1 map from Rust primitive ids to
 gdsfactory components; `topology_analysis.py` (322) and `crossing_plan.py`
 (242) own depth/rank analysis and the crossing events derived from it;
-`path_length_graph.py` (323), `graph_analysis.py` (85),
+`path_length_graph.py` (about 380: the directed graph of a schematic
+and the arrival analysis that turns routed lengths into the missing length
+per edge; since 2026-10-07 every net is oriented along the light from the
+port roles of its generic components, `port_roles.py` (about 80), and the
+node types, whichever way the net was written, while the edge key keeps the
+net as routed), `graph_analysis.py` (85),
 `benchmark_extractor.py` (177) and `routing_layers.py` (133) own their named
 analyses. Nothing in this package may import `translation.routing`'s stage
 internals; it goes through the routing API (`translation/routing/api.py`).

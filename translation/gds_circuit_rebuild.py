@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .gds_circuit_components import register_generic_components
+from .gds_circuit_components import arm_pair_path_length_um, register_generic_components
 from .gds_circuit_extraction import ExtractedCircuit, ExtractedComponent, ExtractedPort
 
 
@@ -212,10 +212,55 @@ def _generic_component_ports(
     return ports
 
 
+#: kinds whose instance is a dead end: a sink for the path-length graph, never a source
+STUB_NODE_KINDS = frozenset({"endcap", "open_end"})
+
+
+def benchmark_metadata(
+    schematic: Any, circuit: ExtractedCircuit
+) -> tuple[dict[str, str], dict[str, float]]:
+    """``NODE_TYPES`` and ``INTERNAL_DELAYS_UM`` of the generated module, for the path-length
+    analysis (`benchmark_metadata.load_benchmark_metadata`).
+
+    End caps and open ends are ``output`` nodes, so the stub net of an unused
+    MMI input is oriented into the stub and imposes no requirement on the
+    MMI. The internal delays are the optical lengths through the components
+    the light passes: the MMI's body and tapers, every straight's and
+    heater's length, the arm pair's arm; couplers and rings carry 0 (a ring
+    circuit is not matched).
+    """
+
+    node_types = {
+        component.name: "output"
+        for component in circuit.components
+        if component.kind in STUB_NODE_KINDS
+    }
+    delays: dict[str, float] = {}
+    for name, instance in schematic.netlist.instances.items():
+        settings = dict(instance.settings)
+        if instance.component == "mmi2x2":
+            delay = float(settings["length_mmi"]) + 2 * float(settings["length_taper"])
+        elif instance.component == "arm_pair":
+            delay = arm_pair_path_length_um(**settings)
+        elif "length" in settings:
+            delay = float(settings["length"])
+        else:
+            delay = 0.0
+        delays[str(name)] = round(delay, 3)
+    return node_types, delays
+
+
 def write_benchmark_module(
-    schematic: Any, path: str | Path, *, title: str, flags: tuple[str, ...]
+    schematic: Any,
+    path: str | Path,
+    *,
+    title: str,
+    flags: tuple[str, ...],
+    node_types: dict[str, str] | None = None,
+    internal_delays_um: dict[str, float] | None = None,
 ) -> None:
-    """Write a benchmark module (``build_schematic``, ``STABLE_ROUTING_FLAGS``)."""
+    """Write a benchmark module (``build_schematic``, ``STABLE_ROUTING_FLAGS``, and the
+    path-length metadata ``NODE_TYPES`` and ``INTERNAL_DELAYS_UM`` when given)."""
 
     lines = [
         f'"""{title}',
@@ -246,8 +291,16 @@ def write_benchmark_module(
     for net_name, bundle in schematic.netlist.routes.items():
         for p1, p2 in bundle.links.items():
             lines.append(f"    ({net_name!r}, {p1!r}, {p2!r}),")
+    lines.append(")")
+    if node_types is not None:
+        lines += ["", "NODE_TYPES: dict[str, str] = {"]
+        lines += [f"    {name!r}: {kind!r}," for name, kind in node_types.items()]
+        lines.append("}")
+    if internal_delays_um is not None:
+        lines += ["", "INTERNAL_DELAYS_UM: dict[str, float] = {"]
+        lines += [f"    {name!r}: {delay!r}," for name, delay in internal_delays_um.items()]
+        lines.append("}")
     lines += [
-        ")",
         "",
         "",
         "def build_schematic() -> Schematic:",
