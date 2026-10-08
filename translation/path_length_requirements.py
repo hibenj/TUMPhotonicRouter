@@ -43,12 +43,14 @@ def analyze_path_length_matching(
     routed_net_records: list[RoutedNetRecord],
     node_types: dict[str, str] | None = None,
     internal_delays_um: dict[str, float] | None = None,
+    input_ports_by_component: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[PathLengthAnalysisResult, list]:
     """Compute per-edge missing lengths before polygon realization."""
     graph = build_graph_from_schematic(
         schematic,
         node_types=node_types,
         internal_delays_um=internal_delays_um,
+        input_ports_by_component=input_ports_by_component,
     )
     return analyze_path_length_matching_for_graph(
         graph,

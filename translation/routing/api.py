@@ -93,6 +93,7 @@ def route_match_and_realize(
     path_length_match_outputs: bool = False,
     path_length_allow_residual: bool = False,
     path_length_output_scope: str = "all",
+    input_ports_by_component: dict[str, tuple[str, ...]] | None = None,
     node_types: dict[str, str] | None = None,
     internal_delays_um: dict[str, float] | None = None,
     enable_crossings: bool = False,
@@ -242,6 +243,7 @@ def route_match_and_realize(
             routed_net_records=records_for_realization,
             node_types=node_types,
             internal_delays_um=internal_delays_um,
+            input_ports_by_component=input_ports_by_component,
         )
         pipeline_timings_s["path_length_analysis"] = time.perf_counter() - t_analysis_start
         analysis_info = analysis_to_info_dict(analysis)

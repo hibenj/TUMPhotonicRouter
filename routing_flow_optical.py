@@ -108,6 +108,7 @@ def run_photonic_routing_stage(
             path_length_output_scope=config.path_length_output_scope,
             node_types=metadata.get("node_types"),
             internal_delays_um=metadata.get("internal_delays_um"),
+            input_ports_by_component=metadata.get("input_ports_by_component"),
             enable_crossings=config.enable_crossings,
             crossing_mode=config.crossing_mode,
             crossing_guidance_net_names=config.crossing_guidance_net_names,

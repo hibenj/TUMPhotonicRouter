@@ -251,7 +251,9 @@ def _generic_component_ports(
 
 #: the extracted kinds that are a circuit's couplers (one optical port each)
 COUPLER_KINDS = frozenset({"gc", "edge_coupler"})
-#: the extracted kinds whose instance is a dead end: a sink of the circuit
+#: the extracted kinds whose instance is a dead end: a sink of the circuit,
+#: labelled ``sink`` (light only goes into it, like an output, but it is not
+#: one of the circuit's outputs and takes no part in output matching)
 STUB_NODE_KINDS = frozenset({"endcap", "open_end"})
 
 
@@ -266,10 +268,10 @@ def benchmark_metadata(
     A coupler whose net ends on the input side of the component it feeds
     (`port_roles.INPUT_PORTS_BY_COMPONENT`, the components' fan-in) is an
     ``input`` of the circuit, one on an output side an ``output``; an end
-    cap or open end is an ``output`` too (a dead end is a sink: its stub
-    hangs on an unused input port, where fan-in alone cannot tell the two
-    ends apart); ``node_type_overrides`` (the private configuration) has the
-    last word.
+    cap or open end is a ``sink`` (its stub hangs on an unused input port,
+    where fan-in alone cannot tell the two ends apart, and it is no output
+    of the circuit); ``node_type_overrides`` (the private configuration) has
+    the last word.
     The internal delays are the optical lengths through the components the
     light passes: the MMI's body
     and tapers, every straight's and heater's length, the arm pair's arm;
@@ -279,7 +281,7 @@ def benchmark_metadata(
     kind_of = {component.name: component.kind for component in circuit.components}
     component_of = {name: inst.component for name, inst in schematic.netlist.instances.items()}
     node_types: dict[str, str] = {
-        name: "output" for name, kind in kind_of.items() if kind in STUB_NODE_KINDS
+        name: "sink" for name, kind in kind_of.items() if kind in STUB_NODE_KINDS
     }
     for bundle in schematic.netlist.routes.values():
         for p1, p2 in bundle.links.items():

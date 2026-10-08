@@ -8,6 +8,8 @@ the graph takes its direction from that, whichever way a net was written.
 
 from __future__ import annotations
 
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +21,7 @@ from photonic_router.path_length_graph import (
 )
 from photonic_router.port_roles import component_port_role, generic_port_roles, no_port_roles
 
+from benchmark_metadata import load_benchmark_metadata
 from translation.path_length_candidates import build_requirement_delay_candidates
 from translation.path_length_requirements import (
     analyze_path_length_matching,
@@ -222,7 +225,7 @@ def test_the_consumers_of_the_analysis_walk_the_light_not_the_written_order():
             internal_delays_um={"heater": 320.0, "arm": 100.0},
         )
         depths = node_depths(analysis)
-        outputs, info = compute_output_matching_requirements(
+        outputs, _info = compute_output_matching_requirements(
             analysis, existing_requirements=requirements, scope="depth"
         )
         candidates = build_requirement_delay_candidates(analysis, requirements)
@@ -240,3 +243,73 @@ def test_the_consumers_of_the_analysis_walk_the_light_not_the_written_order():
     assert results[0][2] == {"stub": 20.0}
     assert "transparent_serial_upstream" in results[0][3]["lower_out"]
     assert results[1] == results[0]
+
+
+def test_a_sink_is_always_a_target_and_takes_no_part_in_output_matching():
+    """An end cap on an unused MMI input: both ends are input sides, so only the
+    label can point the stub into the dead end; and the dead end must not be
+    pulled to the outputs' arrival (the second Clements mesh asked 500 um of a
+    10 um stub while its real outputs needed 20)."""
+
+    nets = [
+        ("feed", "gc_in,o1", "mmi_a,o1"),
+        ("stub", "endcap,o1", "mmi_a,o2"),  # written stub first, both ends input sides
+        ("drain", "mmi_a,o3", "gc_out,o1"),
+    ]
+    graph = build_graph_from_schematic(
+        _schematic(nets), node_types={"gc_in": "input", "endcap": "sink", "gc_out": "output"}
+    )
+    assert _flow(graph)["stub"] == ("mmi_a", "endcap")
+    lengths = {"feed": 50.0, "stub": 10.0, "drain": 30.0}
+    schematic = _schematic(nets)
+    records = []
+    for name, bundle in schematic.netlist.routes.items():
+        ((p1, p2),) = bundle.links.items()
+        a, pa = p1.split(",")
+        b, pb = p2.split(",")
+        records.append(
+            RoutedNetRecord(
+                net_name=name,
+                source=PortRef(a, pa),
+                target=PortRef(b, pb),
+                route_obj=None,
+                total_length_um=lengths[name],
+            )
+        )
+    analysis, _ = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records,
+        node_types={"gc_in": "input", "endcap": "sink", "gc_out": "output"},
+    )
+    for scope in ("all", "depth"):
+        requirements, info = compute_output_matching_requirements(analysis, scope=scope)
+        assert requirements == []  # one output: nothing to align; the sink is no output
+        assert info["output_count"] == 1
+
+
+def test_a_benchmark_declares_the_fan_in_of_its_own_cells():
+    """A cell the generic table does not know (the Benes switch, an 8x8 MZI) is
+    oriented by the benchmark's own INPUT_PORTS_BY_COMPONENT."""
+
+    nets = [
+        ("feed", "gc_in,o1", "mystery,p_in"),
+        ("drain", "gc_out,o1", "mystery,p_out"),  # written coupler first
+    ]
+    declared = {"no_such_component": ("p_in",)}
+    graph = build_graph_from_schematic(_schematic(nets), input_ports_by_component=declared)
+    assert _flow(graph) == {"feed": ("gc_in", "mystery"), "drain": ("mystery", "gc_out")}
+    assert graph.undecided_nets == []
+    # without the declaration the second net keeps its written order
+    assert _flow(build_graph_from_schematic(_schematic(nets)))["drain"] == ("gc_out", "mystery")
+    # a cell declared with no input ports is a coupler: no role of its own
+    assert component_port_role("x", "o1", {"x": ()}) is None
+    assert component_port_role("x", "o2", {"x": ("o1",)}) == "output"
+    # the metadata loader reads the declaration from the benchmark module
+    module = types.ModuleType("benchmarks.declared_fan_in")
+    module.INPUT_PORTS_BY_COMPONENT = {"switch": ["i0", "i1"]}
+    sys.modules["benchmarks.declared_fan_in"] = module
+    try:
+        metadata = load_benchmark_metadata("declared_fan_in")
+    finally:
+        del sys.modules["benchmarks.declared_fan_in"]
+    assert metadata["input_ports_by_component"] == {"switch": ("i0", "i1")}

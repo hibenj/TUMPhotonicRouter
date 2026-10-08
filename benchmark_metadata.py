@@ -142,6 +142,14 @@ def load_benchmark_metadata(
     benchmark_module = importlib.import_module(f"benchmarks.{benchmark_name}")
     node_types = getattr(benchmark_module, "NODE_TYPES", {})
     internal_delays_um = dict(getattr(benchmark_module, "INTERNAL_DELAYS_UM", {}))
+    # the fan-in of the benchmark's own cells: component -> its input-side
+    # ports (every other port is its output side; no ports: a coupler)
+    input_ports_by_component = {
+        str(component): tuple(str(port) for port in ports)
+        for component, ports in dict(
+            getattr(benchmark_module, "INPUT_PORTS_BY_COMPONENT", {})
+        ).items()
+    }
     topology_metadata = getattr(benchmark_module, "TOPOLOGY_METADATA", {})
     node_depths = getattr(benchmark_module, "NODE_DEPTHS", {})
     node_ranks = getattr(benchmark_module, "NODE_RANKS", {})
@@ -173,6 +181,7 @@ def load_benchmark_metadata(
     return {
         "node_types": node_types,
         "internal_delays_um": internal_delays_um,
+        "input_ports_by_component": input_ports_by_component,
         "topology_metadata": topology_metadata,
         "node_depths": node_depths,
         "node_ranks": node_ranks,

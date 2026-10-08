@@ -17,6 +17,10 @@ class SchematicLike(Protocol):
 class NodeType(str, Enum):
     INPUT = "input"
     OUTPUT = "output"
+    #: a dead end (an end cap, an open end): light only ever goes into it,
+    #: like an output, but it is not one of the circuit's outputs, so output
+    #: matching leaves it alone
+    SINK = "sink"
     GATE = "gate"
     SPLITTER = "splitter"
     BRANCH = "branch"
@@ -284,6 +288,7 @@ def build_graph_from_schematic(
     node_types: Mapping[str, NodeType | str] | None = None,
     internal_delays_um: Mapping[str, float] | None = None,
     port_role: PortRole | None = None,
+    input_ports_by_component: Mapping[str, Iterable[str]] | None = None,
 ) -> PhotonicRoutingGraph:
     """The directed graph of a schematic: a node per instance, an edge per net.
 
@@ -291,14 +296,19 @@ def build_graph_from_schematic(
     light from the components' fan-in and fan-out (`port_roles`: a net runs
     from an output-side port to an input-side port) whichever way it was
     written. The benchmark's labels come first: a node of type ``input`` is
-    always a source and one of type ``output`` always a target. A net with
-    no role at either end keeps its written order and is listed in
-    ``undecided_nets``. ``port_role`` replaces the generic table (tests).
+    always a source and one of type ``output`` or ``sink`` always a target.
+    A benchmark with cells of its own declares their input-side ports in
+    ``input_ports_by_component`` (its ``INPUT_PORTS_BY_COMPONENT``), which
+    extends the generic table. A net with no role at either end keeps its
+    written order and is listed in ``undecided_nets``. ``port_role``
+    replaces the table (tests).
     """
 
     graph = PhotonicRoutingGraph()
     internal_delays_um = internal_delays_um or {}
-    role = generic_port_roles(schematic) if port_role is None else port_role
+    role = (
+        generic_port_roles(schematic, input_ports_by_component) if port_role is None else port_role
+    )
 
     def ensure_node(name: str) -> None:
         if name in graph.nodes:
@@ -357,9 +367,9 @@ def _oriented_along_the_light(
 ) -> tuple[PortRef, PortRef] | None:
     """``(source, target)`` along the light, or None when nothing decides it."""
 
-    if src_type == NodeType.INPUT or dst_type == NodeType.OUTPUT:
+    if src_type == NodeType.INPUT or dst_type in (NodeType.OUTPUT, NodeType.SINK):
         return src, dst
-    if dst_type == NodeType.INPUT or src_type == NodeType.OUTPUT:
+    if dst_type == NodeType.INPUT or src_type in (NodeType.OUTPUT, NodeType.SINK):
         return dst, src
     src_role = role(src.instance, src.port)
     dst_role = role(dst.instance, dst.port)

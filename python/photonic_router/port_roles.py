@@ -20,7 +20,7 @@ entry here.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 INPUT = "input"
@@ -71,9 +71,24 @@ OPTICAL_PORTS_BY_COMPONENT: dict[str, frozenset[str]] = {
 }
 
 
-def component_port_role(component: str, port: str) -> str | None:
-    """The role of one port of a component type, or None when the table does not know."""
+def component_port_role(
+    component: str,
+    port: str,
+    declared_input_ports: Mapping[str, Iterable[str]] | None = None,
+) -> str | None:
+    """The role of one port of a component type, or None when nothing knows it.
 
+    ``declared_input_ports`` is a benchmark's own fan-in declaration for its
+    cells (``INPUT_PORTS_BY_COMPONENT`` in its module): every other port of
+    such a cell is on its output side; a cell declared with no input ports
+    (a coupler) gives its ports no role. It takes precedence over the table.
+    """
+
+    if declared_input_ports is not None and component in declared_input_ports:
+        inputs = frozenset(declared_input_ports[component])
+        if not inputs:
+            return None
+        return INPUT if port in inputs else OUTPUT
     inputs = INPUT_PORTS_BY_COMPONENT.get(component)
     if inputs is None:
         return None
@@ -90,8 +105,11 @@ def no_port_roles(instance: str, port: str) -> str | None:
     return None
 
 
-def generic_port_roles(schematic: Any) -> PortRole:
-    """The port roles of ``schematic``'s instances from their component types."""
+def generic_port_roles(
+    schematic: Any, input_ports_by_component: Mapping[str, Iterable[str]] | None = None
+) -> PortRole:
+    """The port roles of ``schematic``'s instances from their component types,
+    the benchmark's own fan-in declaration first."""
 
     component_of: dict[str, str] = {}
     instances = getattr(getattr(schematic, "netlist", None), "instances", None) or {}
@@ -102,6 +120,8 @@ def generic_port_roles(schematic: Any) -> PortRole:
 
     def role(instance: str, port: str) -> str | None:
         component = component_of.get(instance)
-        return component_port_role(component, port) if component is not None else None
+        if component is None:
+            return None
+        return component_port_role(component, port, input_ports_by_component)
 
     return role

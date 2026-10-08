@@ -221,8 +221,8 @@ def test_extractor_terminates_nets_on_end_caps_and_open_ends(tmp_path: Path):
     assert node_types == {
         "gc_0": "input",
         "gc_1": "input",
-        "endcap_0": "output",
-        "open_end_0": "output",
+        "endcap_0": "sink",
+        "open_end_0": "sink",
     }
     assert benchmark_metadata(schematic, circuit, {"gc_1": "output"})[0]["gc_1"] == "output"
     arm_instance = schematic.netlist.instances["waveguide_0"]

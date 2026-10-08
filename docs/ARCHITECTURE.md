@@ -212,11 +212,15 @@ gdsfactory components; `topology_analysis.py` (322) and `crossing_plan.py`
 `path_length_graph.py` (about 380: the directed graph of a schematic
 and the arrival analysis that turns routed lengths into the missing length
 per edge; since 2026-10-07 every net is pointed along the light from the
-components' fan-in and fan-out, `port_roles.py` (about 110: the table of
+components' fan-in and fan-out, `port_roles.py` (about 130: the table of
 each generic component's input-side ports, the photonic counterpart of a
-gate's fan-in list), with the benchmark's input and output labels first,
-whichever way the net was written, while the edge key keeps the net as
-routed), `graph_analysis.py` (85),
+gate's fan-in list, which a benchmark extends for cells of its own with
+`INPUT_PORTS_BY_COMPONENT`), with the benchmark's labels first (`input`
+nodes are sources, `output` and `sink` nodes targets; a sink is a dead end
+such as an end cap, which output matching leaves alone), whichever way the
+net was written, while the edge key keeps the net as routed and the
+analysis carries the oriented ends for its consumers), `graph_analysis.py`
+(85),
 `benchmark_extractor.py` (177) and `routing_layers.py` (133) own their named
 analyses. Nothing in this package may import `translation.routing`'s stage
 internals; it goes through the routing API (`translation/routing/api.py`).
