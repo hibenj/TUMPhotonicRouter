@@ -313,3 +313,48 @@ def test_a_benchmark_declares_the_fan_in_of_its_own_cells():
     finally:
         del sys.modules["benchmarks.declared_fan_in"]
     assert metadata["input_ports_by_component"] == {"switch": ("i0", "i1")}
+
+
+def test_a_folded_section_runs_its_components_against_their_numbering():
+    """clements_1's edge: an MMI output feeds the next MMI's output port o4, the light
+    goes on through that MMI's o1/o2 side and through a heater from o2 to o1; the
+    direction is propagated from the input over each component's two sides."""
+
+    nets = [
+        ("feed", "gc_in,o1", "mmi_a,o1"),
+        ("fold", "mmi_a,o4", "mmi_b,o4"),  # output into output: the fold
+        ("back_arm", "mmi_b,o1", "heater,o2"),  # the heater traversed o2 -> o1
+        ("back_in", "heater,o1", "arm,o2"),
+        ("drain", "arm,o1", "gc_out,o1"),
+    ]
+    graph = build_graph_from_schematic(_schematic(nets), node_types={"gc_in": "input"})
+    assert _flow(graph) == {
+        "feed": ("gc_in", "mmi_a"),
+        "fold": ("mmi_a", "mmi_b"),
+        "back_arm": ("mmi_b", "heater"),
+        "back_in": ("heater", "arm"),
+        "drain": ("arm", "gc_out"),
+    }
+    assert graph.undecided_nets == [] and graph.conflicting_nodes == []
+    assert graph.nodes["mmi_b"].ports["o4"].direction.value == "input"
+    assert graph.nodes["heater"].ports["o2"].direction.value == "input"
+    # written the other way round, the same
+    assert _flow(
+        build_graph_from_schematic(_schematic(nets, True), node_types={"gc_in": "input"})
+    ) == _flow(graph)
+    # without an input to propagate from, the table's side is the input side and
+    # the fold is undecided
+    plain = build_graph_from_schematic(_schematic(nets))
+    assert plain.undecided_nets == ["fold"]
+
+
+def test_light_arriving_from_both_sides_is_reported():
+    nets = [
+        ("feed", "gc_in,o1", "mmi_a,o1"),
+        ("back", "gc_x,o1", "mmi_a,o3"),  # a second input on the other side
+        ("drain", "mmi_a,o4", "gc_out,o1"),
+    ]
+    graph = build_graph_from_schematic(
+        _schematic(nets), node_types={"gc_in": "input", "gc_x": "input", "gc_out": "output"}
+    )
+    assert graph.conflicting_nodes == ["mmi_a"]

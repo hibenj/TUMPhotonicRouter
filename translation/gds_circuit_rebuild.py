@@ -249,12 +249,14 @@ def _generic_component_ports(
     return ports
 
 
-#: the extracted kinds that are a circuit's couplers (one optical port each)
-COUPLER_KINDS = frozenset({"gc", "edge_coupler"})
+#: the extracted kinds that are a circuit's couplers (one optical port each):
+#: an open end stands for an I/O cell missing from the file (an edge coupler
+#: the foundry did not ship) and counts as one too
+COUPLER_KINDS = frozenset({"gc", "edge_coupler", "open_end"})
 #: the extracted kinds whose instance is a dead end: a sink of the circuit,
 #: labelled ``sink`` (light only goes into it, like an output, but it is not
 #: one of the circuit's outputs and takes no part in output matching)
-STUB_NODE_KINDS = frozenset({"endcap", "open_end"})
+STUB_NODE_KINDS = frozenset({"endcap"})
 
 
 def benchmark_metadata(
@@ -267,11 +269,12 @@ def benchmark_metadata(
 
     A coupler whose net ends on the input side of the component it feeds
     (`port_roles.INPUT_PORTS_BY_COMPONENT`, the components' fan-in) is an
-    ``input`` of the circuit, one on an output side an ``output``; an end
-    cap or open end is a ``sink`` (its stub hangs on an unused input port,
-    where fan-in alone cannot tell the two ends apart, and it is no output
-    of the circuit); ``node_type_overrides`` (the private configuration) has
-    the last word.
+    ``input`` of the circuit, one on an output side an ``output``; an open
+    end (an I/O cell missing from the file) is labelled like a coupler; an
+    end cap is a ``sink`` (its stub hangs on an unused input port, where
+    fan-in alone cannot tell the two ends apart, and it is no output of the
+    circuit); ``node_type_overrides`` (the private configuration) has the
+    last word.
     The internal delays are the optical lengths through the components the
     light passes: the MMI's body
     and tapers, every straight's and heater's length, the arm pair's arm;

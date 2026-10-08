@@ -218,11 +218,12 @@ def test_extractor_terminates_nets_on_end_caps_and_open_ends(tmp_path: Path):
     # the couplers feed the MMI's input side: they are the circuit's inputs; the
     # end cap and the open end are its sinks
     node_types, _delays = benchmark_metadata(schematic, circuit)
+    # the open end stands for a missing I/O cell on the MMI's output side
     assert node_types == {
         "gc_0": "input",
         "gc_1": "input",
         "endcap_0": "sink",
-        "open_end_0": "sink",
+        "open_end_0": "output",
     }
     assert benchmark_metadata(schematic, circuit, {"gc_1": "output"})[0]["gc_1"] == "output"
     arm_instance = schematic.netlist.instances["waveguide_0"]

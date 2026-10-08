@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from graphlib import TopologicalSorter
 from typing import Any, Iterable, Mapping, Protocol
 
-from photonic_router.port_roles import INPUT, OUTPUT, PortRole, generic_port_roles
+from photonic_router.port_roles import INPUT, OUTPUT, PortRole, component_port_sides
 
 
 class SchematicLike(Protocol):
@@ -139,7 +140,7 @@ class PathLengthGraphAnnotations:
     @classmethod
     def from_edge_lengths(
         cls,
-        graph: "PhotonicRoutingGraph",
+        graph: PhotonicRoutingGraph,
         lengths_um: Mapping[RoutedEdgeKey, float],
     ) -> "PathLengthGraphAnnotations":
         annotations = cls()
@@ -148,7 +149,7 @@ class PathLengthGraphAnnotations:
 
     def set_edge_lengths(
         self,
-        graph: "PhotonicRoutingGraph",
+        graph: PhotonicRoutingGraph,
         lengths_um: Mapping[RoutedEdgeKey, float],
     ) -> None:
         for edge_key, length_um in lengths_um.items():
@@ -162,7 +163,7 @@ class PathLengthGraphAnnotations:
 
     def analyze_missing_lengths(
         self,
-        graph: "PhotonicRoutingGraph",
+        graph: PhotonicRoutingGraph,
         *,
         tolerance_um: float = 1.0e-9,
     ) -> PathLengthAnalysisResult:
@@ -255,6 +256,8 @@ class PhotonicRoutingGraph:
     #: nets with no fan-in or fan-out role at either end (two couplers, a
     #: component the table does not know): they keep their written order
     undecided_nets: list[str] = field(default_factory=list)
+    #: components the light reached from both sides: a benchmark error
+    conflicting_nodes: list[str] = field(default_factory=list)
 
     def topological_order(self) -> list[str]:
         sorter = TopologicalSorter()
@@ -292,23 +295,23 @@ def build_graph_from_schematic(
 ) -> PhotonicRoutingGraph:
     """The directed graph of a schematic: a node per instance, an edge per net.
 
-    A net carries no direction of its own, so each one is pointed along the
-    light from the components' fan-in and fan-out (`port_roles`: a net runs
-    from an output-side port to an input-side port) whichever way it was
-    written. The benchmark's labels come first: a node of type ``input`` is
-    always a source and one of type ``output`` or ``sink`` always a target.
-    A benchmark with cells of its own declares their input-side ports in
-    ``input_ports_by_component`` (its ``INPUT_PORTS_BY_COMPONENT``), which
-    extends the generic table. A net with no role at either end keeps its
-    written order and is listed in ``undecided_nets``. ``port_role``
-    replaces the table (tests).
+    A net carries no direction of its own, so the direction is propagated
+    from the benchmark's inputs: a node of type ``input`` sends light out of
+    every port; where the light arrives at a component, the ports on that
+    side are its inputs and the other side its outputs (`port_roles`
+    knows each component's two sides, the benchmark adds its own cells
+    with ``INPUT_PORTS_BY_COMPONENT``), and the light goes on through the
+    outputs; an ``output`` or ``sink`` node ends it. A folded mesh that
+    runs an MMI against its port numbering is oriented right this way. A
+    component with sides that no input reaches takes the table's side as
+    its input side; a component light reaches from both sides is listed in
+    ``conflicting_nodes`` and keeps the first arrival. A net with no role
+    at either end keeps its written order and is listed in
+    ``undecided_nets``. ``port_role`` replaces all of this (tests).
     """
 
     graph = PhotonicRoutingGraph()
     internal_delays_um = internal_delays_um or {}
-    role = (
-        generic_port_roles(schematic, input_ports_by_component) if port_role is None else port_role
-    )
 
     def ensure_node(name: str) -> None:
         if name in graph.nodes:
@@ -324,38 +327,133 @@ def build_graph_from_schematic(
     for instance_name in schematic.netlist.instances:
         ensure_node(instance_name)
 
+    links: list[tuple[str, PortRef, PortRef]] = []
     for net_name, bundle in schematic.netlist.routes.items():
         for src_spec, dst_spec in bundle.links.items():
             declared_src = _parse_port_ref(src_spec)
             declared_dst = _parse_port_ref(dst_spec)
             ensure_node(declared_src.instance)
             ensure_node(declared_dst.instance)
-            oriented = _oriented_along_the_light(
-                declared_src,
-                declared_dst,
-                graph.nodes[declared_src.instance].node_type,
-                graph.nodes[declared_dst.instance].node_type,
-                role,
-            )
-            if oriented is None:
-                graph.undecided_nets.append(net_name)
-                src, dst = declared_src, declared_dst
-            else:
-                src, dst = oriented
-            graph.nodes[src.instance].ports.setdefault(
-                src.port,
-                PortMetadata(name=src.port, direction=PortDirection.OUTPUT),
-            )
-            graph.nodes[dst.instance].ports.setdefault(
-                dst.port,
-                PortMetadata(name=dst.port, direction=PortDirection.INPUT),
-            )
-            key = RoutedEdgeKey(net_name=net_name, source=declared_src, target=declared_dst)
-            graph.edges[key] = GraphEdge(key=key, source=src, target=dst)
-            graph.outgoing_edges[src.instance].append(key)
-            graph.incoming_edges[dst.instance].append(key)
+            links.append((net_name, declared_src, declared_dst))
+
+    if port_role is None:
+        roles, graph.conflicting_nodes = _propagate_roles(
+            schematic, graph, links, input_ports_by_component
+        )
+
+        def role(instance: str, port: str) -> str | None:
+            return roles.get((instance, port))
+
+    else:
+        role = port_role
+
+    for net_name, declared_src, declared_dst in links:
+        oriented = _oriented_along_the_light(
+            declared_src,
+            declared_dst,
+            graph.nodes[declared_src.instance].node_type,
+            graph.nodes[declared_dst.instance].node_type,
+            role,
+        )
+        if oriented is None:
+            graph.undecided_nets.append(net_name)
+            src, dst = declared_src, declared_dst
+        else:
+            src, dst = oriented
+        graph.nodes[src.instance].ports.setdefault(
+            src.port,
+            PortMetadata(name=src.port, direction=PortDirection.OUTPUT),
+        )
+        graph.nodes[dst.instance].ports.setdefault(
+            dst.port,
+            PortMetadata(name=dst.port, direction=PortDirection.INPUT),
+        )
+        key = RoutedEdgeKey(net_name=net_name, source=declared_src, target=declared_dst)
+        graph.edges[key] = GraphEdge(key=key, source=src, target=dst)
+        graph.outgoing_edges[src.instance].append(key)
+        graph.incoming_edges[dst.instance].append(key)
 
     return graph
+
+
+def _propagate_roles(
+    schematic: SchematicLike,
+    graph: PhotonicRoutingGraph,
+    links: list[tuple[str, PortRef, PortRef]],
+    input_ports_by_component: Mapping[str, Iterable[str]] | None,
+) -> tuple[dict[tuple[str, str], str], list[str]]:
+    """``(instance, port) -> role`` from the light's propagation out of the inputs."""
+
+    component_of: dict[str, str] = {}
+    for name, instance in schematic.netlist.instances.items():
+        component = getattr(instance, "component", None)
+        if isinstance(component, str):
+            component_of[str(name)] = component
+    sides_of: dict[str, tuple[frozenset[str], frozenset[str]] | None] = {
+        name: component_port_sides(component, input_ports_by_component)
+        for name, component in component_of.items()
+    }
+    neighbours: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for _net_name, a, b in links:
+        neighbours.setdefault((a.instance, a.port), []).append((b.instance, b.port))
+        neighbours.setdefault((b.instance, b.port), []).append((a.instance, a.port))
+
+    roles: dict[tuple[str, str], str] = {}
+    entered_by: dict[str, str] = {}  # instance -> the port the light first arrived at
+    conflicts: list[str] = []
+
+    def assign(instance: str, input_side: frozenset[str], output_side: frozenset[str]) -> None:
+        for port in input_side:
+            roles[(instance, port)] = INPUT
+        for port in output_side:
+            roles[(instance, port)] = OUTPUT
+        for (name, port), _targets in neighbours.items():
+            # a declared cell lists only its input side: every other port is an output
+            if name == instance and (name, port) not in roles:
+                roles[(name, port)] = OUTPUT
+
+    queue: deque[tuple[str, str]] = deque()
+    for name, node in graph.nodes.items():
+        if node.node_type != NodeType.INPUT:
+            continue
+        for (instance, port), targets in neighbours.items():
+            if instance == name:
+                roles[(instance, port)] = OUTPUT
+                queue.extend(targets)
+    while queue:
+        instance, port = queue.popleft()
+        node_type = graph.nodes[instance].node_type
+        if node_type in (NodeType.OUTPUT, NodeType.SINK, NodeType.INPUT):
+            continue
+        sides = sides_of.get(instance)
+        if sides is None:
+            continue  # a coupler, or a cell nothing knows: the light ends here
+        if instance in entered_by:
+            if roles.get((instance, port)) != INPUT:
+                conflicts.append(instance)
+            continue
+        entered_by[instance] = port
+        side_a, side_b = sides
+        if port in side_a:
+            input_side, output_side = side_a, side_b
+        elif port in side_b or not side_b:
+            input_side, output_side = side_b or frozenset(), side_a
+            if not side_b:  # a declared cell entered on its other side
+                input_side = frozenset({port})
+        else:
+            continue  # an electrical or unknown port
+        assign(instance, input_side, output_side)
+        for (name, out_port), targets in neighbours.items():
+            if name == instance and roles.get((name, out_port)) == OUTPUT:
+                queue.extend(targets)
+
+    # components no input reaches: the table's side is the input side
+    for instance, sides in sides_of.items():
+        if sides is None or instance in entered_by:
+            continue
+        side_a, side_b = sides
+        assign(instance, side_a, side_b)
+    return roles, conflicts
 
 
 def _oriented_along_the_light(

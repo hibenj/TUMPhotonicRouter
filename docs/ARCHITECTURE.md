@@ -215,12 +215,13 @@ per edge; since 2026-10-07 every net is pointed along the light from the
 components' fan-in and fan-out, `port_roles.py` (about 130: the table of
 each generic component's input-side ports, the photonic counterpart of a
 gate's fan-in list, which a benchmark extends for cells of its own with
-`INPUT_PORTS_BY_COMPONENT`), with the benchmark's labels first (`input`
-nodes are sources, `output` and `sink` nodes targets; a sink is a dead end
-such as an end cap, which output matching leaves alone), whichever way the
-net was written, while the edge key keeps the net as routed and the
-analysis carries the oriented ends for its consumers), `graph_analysis.py`
-(85),
+`INPUT_PORTS_BY_COMPONENT`): the light is propagated from the benchmark's
+`input` nodes, the side it arrives at a component on is that instance's
+input side, so a folded mesh that runs an MMI against its numbering is
+oriented right; `output` and `sink` nodes end it (a sink is a dead end such
+as an end cap, which output matching leaves alone); whichever way the net
+was written, while the edge key keeps the net as routed and the analysis
+carries the oriented ends for its consumers), `graph_analysis.py` (85),
 `benchmark_extractor.py` (177) and `routing_layers.py` (133) own their named
 analyses. Nothing in this package may import `translation.routing`'s stage
 internals; it goes through the routing API (`translation/routing/api.py`).

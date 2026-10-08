@@ -99,6 +99,29 @@ def component_port_role(
     return None
 
 
+def component_port_sides(
+    component: str,
+    declared_input_ports: Mapping[str, Iterable[str]] | None = None,
+) -> tuple[frozenset[str], frozenset[str]] | None:
+    """A component's two sides, ``(the side the table calls input, the other side)``.
+
+    Which side the light enters by is decided per instance by where the
+    light arrives (`path_length_graph.build_graph_from_schematic`): a mesh
+    may fold back and run an MMI against its numbering. None for a one-port
+    coupler or a component nothing knows.
+    """
+
+    if declared_input_ports is not None and component in declared_input_ports:
+        inputs = frozenset(declared_input_ports[component])
+        if not inputs:
+            return None
+        return inputs, frozenset()  # every other port is the other side
+    inputs = INPUT_PORTS_BY_COMPONENT.get(component)
+    if not inputs:
+        return None
+    return inputs, OPTICAL_PORTS_BY_COMPONENT.get(component, frozenset()) - inputs
+
+
 def no_port_roles(instance: str, port: str) -> str | None:
     """The resolver that knows nothing: every net keeps its written direction."""
 
