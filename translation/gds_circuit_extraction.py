@@ -64,6 +64,27 @@ class ArmPairRule:
 
 
 @dataclass(frozen=True)
+class DirectionalCouplerRule:
+    """Two arms of ``arm_kinds`` (two heaters) with the same x-span, at most
+    ``max_separation_um`` apart and without an MMI, whose waveguides on a side
+    run together to a pitch of at most ``max_gap_pitch_um``, stay there and
+    spread again: a directional coupler, one component of ``kind`` with the
+    two waveguides, on each such side (the owner's 2026-10-08 review of the
+    ring circuit). The nets are cut at the coupler's outer end; the arms'
+    ports on its inner end become abutting nets of zero length."""
+
+    arm_kinds: tuple[str, ...]
+    max_separation_um: float
+    max_gap_pitch_um: float = 1.0
+    #: how far from the arms a coupler may reach
+    max_reach_um: float = 300.0
+    #: the bend radius the generic coupler spreads with: a side the original
+    #: does not spread horizontally gets the least spread two such bends need
+    bend_radius_um: float = 5.0
+    kind: str = "directional_coupler"
+
+
+@dataclass(frozen=True)
 class ExtractionConfig:
     core_layers: tuple[tuple[int, int], ...]
     rules: tuple[ClassificationRule, ...]
@@ -86,6 +107,7 @@ class ExtractionConfig:
     heater_without_metal_kind: str = "waveguide"
     #: arm pairs kept as one component with two inputs and two outputs
     arm_pairs: tuple[ArmPairRule, ...] = ()
+    directional_couplers: tuple[DirectionalCouplerRule, ...] = ()
     #: kinds recorded but neither components of the benchmark nor nets
     skip_kinds: frozenset[str] = frozenset({"bondpad", "heater_metal"})
     #: an unmatched leaf cell is a waveguide piece of this kind
@@ -328,10 +350,17 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
     tol = config.touch_tolerance_um
     low, high = config.facet_width_um
     abutting: list[tuple[int, int, Point, Point]] = []
-    if config.arm_pairs:
-        components, pair_boxes = _group_arm_pairs(
-            components, config, net_region, tol, low, high, dbu
-        )
+    if config.arm_pairs or config.directional_couplers:
+        pair_boxes: list[Any] = []
+        if config.arm_pairs:
+            components, pair_boxes = _group_arm_pairs(
+                components, config, net_region, tol, low, high, dbu
+            )
+        if config.directional_couplers:
+            components, coupler_boxes = _group_directional_couplers(
+                components, config, net_region, tol, low, high, dbu
+            )
+            pair_boxes = pair_boxes + coupler_boxes
         abutting = _abutting_ports(net_region, components, pair_boxes, tol, low, high, dbu)
         for box in pair_boxes:
             net_region -= kdb.Region(box.to_itype(dbu))
@@ -421,6 +450,23 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
                 length_um=round(dpolygon.area() / width, 3),
             )
         )
+
+    # a grouped coupler's outer ports: not the cut at its parallel section but
+    # where the generic coupler, spreading from it, puts them
+    for component_index, component in enumerate(components):
+        outer_ports = component.geometry.get("outer_ports") if component.geometry else None
+        ports = ports_by_component.get(component_index, [])
+        if not outer_ports or len(ports) != 2:
+            continue
+        ports.sort(key=lambda port: port.position[1])
+        for port_index, (port, (x, y)) in enumerate(zip(ports, outer_ports, strict=True)):
+            normal = port.normal
+            ports[port_index] = ExtractedPort(
+                position=(x, y),
+                normal=normal,
+                local_position=(x - component.leaf.trans.disp.x, y - component.leaf.trans.disp.y),
+                local_normal=port.local_normal,
+            )
 
     for component_index, pair_index, position, normal in abutting:
         # an MMI output lying on an arm pair's box: both get the port, the net
@@ -619,6 +665,233 @@ def _group_arm_pairs(
     return kept + pairs, boxes
 
 
+#: the pseudo paths of components the extractor groups out of others' shapes
+GROUPED_COMPONENT_PATHS = frozenset({"<arm pair>", "<directional coupler>"})
+
+
+def _pair_rows(
+    net_region: Any, x: float, y_lo: float, y_hi: float, dbu: float
+) -> tuple[float, float] | None:
+    """The centre rows of the two outermost waveguides crossing a thin vertical probe at ``x``."""
+
+    probe = kdb.Region(kdb.DBox(x - 0.05, y_lo, x + 0.05, y_hi).to_itype(dbu))
+    centres = sorted(p.bbox().center().y * dbu for p in (net_region & probe).each())
+    if len(centres) < 2:
+        return None
+    return centres[0], centres[-1]
+
+
+def _pair_pitch(net_region: Any, x: float, y_lo: float, y_hi: float, dbu: float) -> float | None:
+    rows = _pair_rows(net_region, x, y_lo, y_hi, dbu)
+    return None if rows is None else rows[1] - rows[0]
+
+
+def _group_directional_couplers(
+    components: list[_Component],
+    config: ExtractionConfig,
+    net_region: Any,
+    tol: float,
+    low: float,
+    high: float,
+    dbu: float,
+) -> tuple[list[_Component], list[Any]]:
+    """One directional-coupler component on each side of every arm pair a
+    ``DirectionalCouplerRule`` matches; the arms stay what they are.
+
+    On each side the two waveguides are probed every micrometre away from
+    the arms: where their pitch first drops to the rule's gap pitch the
+    coupling section starts, where it last is there it ends, and where the
+    pitch stops changing afterwards the coupler ends (its outer pitch need
+    not be the arms': the ring circuit's spread to the couplers' 127 um).
+    Those distances are the component's inner extension, coupling length
+    and outer extension. The coupler's box runs from the arms' edge to the
+    outer end, over both pitches; the waveguides must enter and leave it two
+    and two (``_box_crossings``).
+    """
+
+    couplers: list[_Component] = []
+    boxes: list[Any] = []
+    for rule in config.directional_couplers:
+        candidates = [
+            (index, component)
+            for index, component in enumerate(components)
+            if component.leaf.kind in rule.arm_kinds and component.bbox is not None
+        ]
+        paired: set[int] = set()
+        for i, (index_a, a) in enumerate(candidates):
+            if index_a in paired:
+                continue
+            for index_b, b in candidates[i + 1 :]:
+                if index_b in paired:
+                    continue
+                if abs(a.bbox.left - b.bbox.left) > 1.0 or abs(a.bbox.right - b.bbox.right) > 1.0:
+                    continue
+                separation = abs(a.bbox.center().y - b.bbox.center().y)
+                if separation == 0 or separation > rule.max_separation_um:
+                    continue
+                middle = (a.bbox.center().y + b.bbox.center().y) / 2
+                # wide enough for the outer pitch, which may exceed the arms'
+                y_lo = middle - rule.max_separation_um
+                y_hi = middle + rule.max_separation_um
+                found = []
+                for edge, direction in ((a.bbox.left, -1.0), (a.bbox.right, 1.0)):
+                    profile = _coupler_profile(
+                        net_region, edge, direction, y_lo, y_hi, separation, rule, dbu
+                    )
+                    if profile is None:
+                        break
+                    found.append((edge, direction, profile))
+                if len(found) != 2:
+                    continue
+                paired.update((index_a, index_b))
+                for edge, direction, (close, open_, reach, gap_pitch, outer_rows) in found:
+                    # the box ends with the parallel section, where the waveguides
+                    # are horizontal and the cut is clean; the generic component
+                    # spreads from there with its own bends (to the outer rows
+                    # where the original runs horizontally again, else minimally),
+                    # and the net beyond is routed anew
+                    outer = edge + direction * open_
+                    extension_out = reach - open_ if outer_rows else 2 * rule.bend_radius_um
+                    least_pitch = gap_pitch + 4 * rule.bend_radius_um + 1.0
+                    if outer_rows is None or outer_rows[1] - outer_rows[0] < least_pitch:
+                        outer_rows = (middle - least_pitch / 2, middle + least_pitch / 2)
+                        extension_out = max(extension_out, 2 * rule.bend_radius_um)
+                    outer_pitch = outer_rows[1] - outer_rows[0]
+                    # the outer ports sit where the generic coupler, spreading from
+                    # the parallel section, puts them; the net beyond starts there
+                    port_x = edge + direction * (open_ + extension_out)
+                    box = kdb.DBox(
+                        min(edge, outer),
+                        min(a.bbox.center().y, b.bbox.center().y) - 1.0,
+                        max(edge, outer),
+                        max(a.bbox.center().y, b.bbox.center().y) + 1.0,
+                    )
+                    if _box_crossings(net_region, box, tol, low, high, dbu) != (2, 2):
+                        continue
+                    trans = kdb.DCplxTrans(
+                        1.0, 0.0, False, kdb.DVector(box.center().x, box.center().y)
+                    )
+                    leaf = _Leaf(
+                        path="<directional coupler>",
+                        cell=None,
+                        trans=trans,
+                        kind=rule.kind,
+                        composite=False,
+                    )
+                    couplers.append(
+                        _Component(
+                            leaf=leaf,
+                            region=kdb.Region(),
+                            bbox=box,
+                            black_box=True,
+                            geometry={
+                                "gap_pitch_um": round(gap_pitch, 3),
+                                "coupling_length_um": round(open_ - close, 3),
+                                "extension_um": round(close, 3),
+                                "extension_out_um": round(extension_out, 3),
+                                "pitch_um": round(separation, 3),
+                                "outer_pitch_um": round(outer_pitch, 3),
+                                # which side of the coupler the arms are on
+                                "arms_side": "right" if direction < 0 else "left",
+                                "outer_ports": (
+                                    (round(port_x, 3), round(outer_rows[0], 3)),
+                                    (round(port_x, 3), round(outer_rows[1], 3)),
+                                ),
+                            },
+                        )
+                    )
+                    boxes.append(box)
+                break
+    return components + couplers, boxes
+
+
+def _coupler_profile(
+    net_region: Any,
+    edge: float,
+    direction: float,
+    y_lo: float,
+    y_hi: float,
+    separation: float,
+    rule: DirectionalCouplerRule,
+    dbu: float,
+) -> tuple[float, float, float, float, tuple[float, float] | None] | None:
+    """``(close, open, reach, gap pitch, outer rows)`` in micrometres from the arms' edge.
+
+    The two waveguides are followed outward by the rows at which they cross
+    a thin vertical probe: a horizontal waveguide or a gentle bend crosses it
+    as a short piece near the rows followed so far; a steep bend or a
+    vertical run as a tall one, over which the rows are kept. ``close`` is
+    where the pitch first reaches the gap, ``open`` where it last does. The
+    outer rows are where both waveguides run horizontally again at a pitch
+    that has stopped changing (``reach`` is that distance), also right after
+    a vertical run; None when they never do before the pair ends or turns
+    away for good. None altogether without a coupling section.
+    """
+
+    middle = y_lo + (y_hi - y_lo) / 2
+    rows = (middle - separation / 2, middle + separation / 2)
+    close = open_ = None
+    gap_pitch = separation
+    recent: list[float] = []
+    after_vertical = False
+    for d in range(1, int(rule.max_reach_um) + 1):
+        x = edge + direction * d
+        window = kdb.DBox(
+            x - 0.05, middle - rule.max_reach_um, x + 0.05, middle + rule.max_reach_um
+        )
+        pieces = [
+            poly.bbox().to_dtype(dbu)
+            for poly in (net_region & kdb.Region(window.to_itype(dbu))).each()
+        ]
+        # the pair's own pieces: within the reach of one steep bend of the rows
+        # followed so far (the ring circuit's spread 50 um in 2 um)
+        near = [
+            piece
+            for piece in pieces
+            if piece.top >= rows[0] - 100.0 and piece.bottom <= rows[1] + 100.0
+        ]
+        thin = sorted(piece.center().y for piece in near if piece.height() <= 3.0)
+        if len(thin) >= 2:
+            lower = min(thin, key=lambda c: abs(c - rows[0]))
+            upper = min(thin, key=lambda c: abs(c - rows[1]))
+        elif after_vertical:
+            # out of a vertical run the pair may reappear anywhere, two short pieces
+            # on either side of the middle
+            far = sorted(piece.center().y for piece in pieces if piece.height() <= 3.0)
+            below = [c for c in far if c < middle]
+            above = [c for c in far if c > middle]
+            if not below or not above:
+                continue
+            lower, upper = max(below), min(above)
+        elif near:
+            if open_ is not None:
+                after_vertical = True  # a steep bend or a vertical run of the pair
+            continue
+        else:
+            if open_ is not None:
+                break  # the pair ended (on a component) or turned away for good
+            continue
+        if upper <= lower:
+            continue
+        after_vertical = False
+        rows = (lower, upper)
+        pitch = upper - lower
+        if pitch <= rule.max_gap_pitch_um and (open_ is None or d - open_ <= 2):
+            if close is None:
+                close = float(d)
+            open_ = float(d)
+            gap_pitch = min(gap_pitch, pitch)
+            continue
+        if open_ is None:
+            continue
+        recent.append(pitch)
+        if len(recent) >= 3 and max(recent[-3:]) - min(recent[-3:]) <= 0.02:
+            return close, open_, float(d - 2), gap_pitch, rows
+    if close is None or open_ is None:
+        return None
+    return close, open_, open_, gap_pitch, None
+
+
 def _box_crossings(
     net_region: Any, box: Any, tol: float, low: float, high: float, dbu: float
 ) -> tuple[int, int]:
@@ -675,7 +948,9 @@ def _abutting_ports(
     """
 
     found: list[tuple[int, int, Point, Point]] = []
-    pair_indexes = [index for index, c in enumerate(components) if c.leaf.path == "<arm pair>"]
+    pair_indexes = [
+        index for index, c in enumerate(components) if c.leaf.path in GROUPED_COMPONENT_PATHS
+    ]
     for polygon in net_region.each():
         dpolygon = polygon.to_dtype(dbu)
         points = list(dpolygon.each_point_hull())

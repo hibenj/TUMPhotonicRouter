@@ -18,6 +18,7 @@ import math
 import gdsfactory as gf
 
 ARM_PAIR = "arm_pair"
+DIRECTIONAL_COUPLER = "directional_coupler"
 
 
 @gf.cell
@@ -69,6 +70,80 @@ def arm_pair(
     return component
 
 
+@gf.cell
+def directional_coupler(
+    coupling_length: float = 30.0,
+    gap_pitch: float = 0.75,
+    extension: float = 20.0,
+    pitch_in: float = 60.0,
+    pitch_out: float = 60.0,
+    bend_radius: float = 5.0,
+    extension_out: float | None = None,
+    cross_section: str = "strip",
+) -> gf.Component:
+    """Two waveguides that run together to ``gap_pitch``, couple over
+    ``coupling_length`` and spread again: the directional coupler of an MZI
+    built without MMIs (the owner's 2026-10-08 review of the ring circuit).
+
+    The same primitives the router draws: straights and circular 90-degree
+    arcs of ``bend_radius``. Each waveguide leaves its port along a straight
+    of ``extension - 2 * bend_radius``, turns toward the axis, drops over a
+    straight, turns back, runs the coupling section, and leaves the same
+    way over ``extension_out`` (``extension`` when not given), so the
+    component spans ``extension + coupling_length + extension_out``. Ports
+    like an MMI2x2: ``o1`` lower and ``o2`` upper on the left, ``pitch_in``
+    apart; ``o3`` upper and ``o4`` lower on the right, ``pitch_out`` apart.
+    """
+
+    component = gf.Component()
+    extension_out = extension if extension_out is None else extension_out
+    lead_in = extension - 2 * bend_radius
+    lead_out = extension_out - 2 * bend_radius
+    if min(lead_in, lead_out) < 0:
+        raise ValueError(f"an extension is shorter than two bends of {bend_radius}")
+    for sign, in_name, out_name in ((-1.0, "o1", "o4"), (1.0, "o2", "o3")):
+        drop_in = (pitch_in - gap_pitch) / 2 - 2 * bend_radius
+        drop_out = (pitch_out - gap_pitch) / 2 - 2 * bend_radius
+        if min(drop_in, drop_out) < 0:
+            raise ValueError("port pitch too small for two bends on each side")
+        path = (
+            gf.path.straight(length=lead_in)
+            + gf.path.arc(radius=bend_radius, angle=-90 * sign)
+            + gf.path.straight(length=drop_in)
+            + gf.path.arc(radius=bend_radius, angle=90 * sign)
+            + gf.path.straight(length=coupling_length)
+            + gf.path.arc(radius=bend_radius, angle=90 * sign)
+            + gf.path.straight(length=drop_out)
+            + gf.path.arc(radius=bend_radius, angle=-90 * sign)
+            + gf.path.straight(length=lead_out)
+        )
+        arm = component << gf.path.extrude(path, cross_section=cross_section)
+        arm.move((0.0, sign * pitch_in / 2))
+        component.add_port(in_name, port=arm.ports["o1"])
+        component.add_port(out_name, port=arm.ports["o2"])
+    return component
+
+
+def directional_coupler_path_length_um(
+    coupling_length: float,
+    gap_pitch: float,
+    extension: float,
+    pitch_in: float,
+    pitch_out: float,
+    bend_radius: float,
+    extension_out: float | None = None,
+    **_ignored: object,
+) -> float:
+    """The optical length of one waveguide of `directional_coupler` (both are equal)."""
+
+    extension_out = extension if extension_out is None else extension_out
+    lead_in = extension - 2 * bend_radius
+    lead_out = extension_out - 2 * bend_radius
+    drop_in = (pitch_in - gap_pitch) / 2 - 2 * bend_radius
+    drop_out = (pitch_out - gap_pitch) / 2 - 2 * bend_radius
+    return lead_in + lead_out + drop_in + drop_out + coupling_length + 2 * math.pi * bend_radius
+
+
 def arm_pair_path_length_um(
     arm_length: float,
     arm_separation: float,
@@ -94,5 +169,6 @@ def register_generic_components() -> None:
 
     pdk = get_generic_pdk()
     pdk.activate()
-    if ARM_PAIR not in pdk.cells:
-        pdk.register_cells(**{ARM_PAIR: arm_pair})
+    for name, cell in ((ARM_PAIR, arm_pair), (DIRECTIONAL_COUPLER, directional_coupler)):
+        if name not in pdk.cells:
+            pdk.register_cells(**{name: cell})

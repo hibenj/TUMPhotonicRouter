@@ -18,7 +18,11 @@ from typing import Any
 
 from photonic_router.port_roles import INPUT, component_port_role
 
-from .gds_circuit_components import arm_pair_path_length_um, register_generic_components
+from .gds_circuit_components import (
+    arm_pair_path_length_um,
+    directional_coupler_path_length_um,
+    register_generic_components,
+)
 from .gds_circuit_extraction import ExtractedCircuit, ExtractedComponent, ExtractedPort
 
 
@@ -304,6 +308,8 @@ def benchmark_metadata(
             delay = float(settings["length_mmi"]) + 2 * float(settings["length_taper"])
         elif instance.component == "arm_pair":
             delay = arm_pair_path_length_um(**settings)
+        elif instance.component == "directional_coupler":
+            delay = directional_coupler_path_length_um(**settings)
         elif "length" in settings:
             delay = float(settings["length"])
         else:
@@ -477,6 +483,42 @@ def _stub_settings(component: ExtractedComponent) -> dict[str, float]:
     return {"length": STUB_LENGTH_UM}
 
 
+def _directional_coupler_settings(
+    component: ExtractedComponent, bend_radius_um: float
+) -> dict[str, float]:
+    """A directional coupler's section lengths from the extractor's geometry, its pitches
+    from the ports."""
+
+    by_side: dict[str, list[float]] = {}
+    for port in component.ports:
+        by_side.setdefault(port.local_side, []).append(port.local_position[1])
+    left, right = by_side.get("left", [0.0]), by_side.get("right", [0.0])
+    geometry = component.geometry
+    # the extractor measures from the arms outward; the generic component
+    # runs left to right, so with the arms on its right the arms' extension
+    # is the component's right-hand one
+    extension_in, extension_out = geometry["extension_um"], geometry["extension_out_um"]
+    if geometry.get("arms_side") == "right":
+        extension_in, extension_out = extension_out, extension_in
+    pitch_in = round(max(left) - min(left), 3) if len(left) == 2 else geometry["pitch_um"]
+    pitch_out = round(max(right) - min(right), 3) if len(right) == 2 else geometry["pitch_um"]
+    # the generic coupler spreads with two 90-degree bends per side: a side the
+    # original spreads less (its waveguides turn away right after the coupling
+    # section) is spread to the least the bends need, and its ports move out
+    gap = geometry["gap_pitch_um"]
+    least_pitch = gap + 4 * bend_radius_um + 1.0
+    least_extension = 2 * bend_radius_um
+    return {
+        "coupling_length": geometry["coupling_length_um"],
+        "gap_pitch": gap,
+        "extension": max(extension_in, least_extension),
+        "extension_out": max(extension_out, least_extension),
+        "pitch_in": max(pitch_in, least_pitch),
+        "pitch_out": max(pitch_out, least_pitch),
+        "bend_radius": bend_radius_um,
+    }
+
+
 #: an end cap or an open end is rebuilt as a straight of this length whose
 #: ``o1`` sits at the waveguide's end; its ``o2`` stays unconnected
 STUB_LENGTH_UM = 10.0
@@ -536,6 +578,16 @@ def default_generic_mappings(bend_radius_um: float = 5.0) -> dict[str, GenericMa
         "edge_coupler": GenericMapping(
             component="edge_coupler_silicon",
             port_names_by_side=any_side_o1,
+        ),
+        "directional_coupler": GenericMapping(
+            component="directional_coupler",
+            port_names_by_side={
+                "left_lower": "o1",
+                "left_upper": "o2",
+                "right_upper": "o3",
+                "right_lower": "o4",
+            },
+            settings=lambda component: _directional_coupler_settings(component, bend_radius_um),
         ),
         "ring": GenericMapping(
             component=lambda ports: "ring_single" if len(ports) == 2 else "ring_double",

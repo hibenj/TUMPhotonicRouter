@@ -14,10 +14,16 @@ from uuid import uuid4
 
 import pytest
 
+from translation.gds_circuit_components import (
+    directional_coupler,
+    directional_coupler_path_length_um,
+    register_generic_components,
+)
 from translation.gds_circuit_extraction import (
     ArmPairRule,
     ClassificationRule,
     CompositeRule,
+    DirectionalCouplerRule,
     ExtractionConfig,
     extract_circuit,
 )
@@ -524,3 +530,135 @@ def test_light_direction_decides_the_components_input_side(tmp_path: Path):
     # the couplers are the inputs one way and the outputs the other
     assert benchmark_metadata(forward, circuit)[0]["gc_0"] == "input"
     assert benchmark_metadata(backward, circuit)[0]["gc_0"] == "output"
+
+
+def test_directional_coupler_component_has_mmi_like_ports_and_equal_waveguides():
+    import gdsfactory as gf
+
+    register_generic_components()
+    coupler = gf.get_component(
+        "directional_coupler",
+        coupling_length=29.0,
+        gap_pitch=0.75,
+        extension=19.0,
+        pitch_in=127.0,
+        pitch_out=60.75,
+        bend_radius=5.0,
+        extension_out=19.0,
+    )
+    ports = {port.name: port for port in coupler.ports if port.port_type == "optical"}
+    assert sorted(ports) == ["o1", "o2", "o3", "o4"]
+    assert tuple(ports["o1"].center) == pytest.approx((0.0, -63.5), abs=1e-3)
+    assert tuple(ports["o2"].center) == pytest.approx((0.0, 63.5), abs=1e-3)
+    assert tuple(ports["o3"].center) == pytest.approx((67.0, 30.375), abs=1e-3)
+    assert tuple(ports["o4"].center) == pytest.approx((67.0, -30.375), abs=1e-3)
+    assert ports["o1"].orientation == 180 and ports["o4"].orientation == 0
+    # both waveguides are the same length: leads, drops, the coupling section, four arcs
+    length = directional_coupler_path_length_um(
+        coupling_length=29.0,
+        gap_pitch=0.75,
+        extension=19.0,
+        pitch_in=127.0,
+        pitch_out=60.75,
+        bend_radius=5.0,
+        extension_out=19.0,
+    )
+    assert length == pytest.approx(9.0 + 9.0 + 53.125 + 20.0 + 29.0 + 2 * 3.141592653589793 * 5.0)
+    with pytest.raises(ValueError):
+        directional_coupler(pitch_in=10.0)  # no room for two bends per side
+
+
+def _synthetic_coupler_mzi_gds(path: Path) -> dict[str, tuple[float, float]]:
+    """Two heaters 60 um apart with a directional coupler on each side (gdsfactory's
+    ``coupler``: S-bends to a 0.3 um gap over 29 um) and four couplers feeding them."""
+
+    import gdsfactory as gf
+    from gdsfactory.gpdk import get_generic_pdk
+
+    get_generic_pdk().activate()
+    c = gf.Component(f"synthetic_coupler_mzi_{uuid4().hex[:6]}")
+    heaters = {}
+    for name, y in (("heater_lower", -30.0), ("heater_upper", 30.0)):
+        heater = c.add_ref(gf.get_component("straight_heater_metal", length=216.0), name=name)
+        heater.move((100.0, y))
+        heaters[name] = heater
+    left = c.add_ref(
+        gf.get_component("coupler", gap=0.3, length=29.0, dy=60.0, dx=40.0), name="dc_left"
+    )
+    left.connect("o4", heaters["heater_lower"].ports["o1"])
+    right = c.add_ref(
+        gf.get_component("coupler", gap=0.3, length=29.0, dy=60.0, dx=40.0), name="dc_right"
+    )
+    right.connect("o1", heaters["heater_lower"].ports["o2"])
+    ends = {}
+    for index, (ref, port, dx, dy) in enumerate(
+        (
+            (left, "o1", -120.0, -40.0),
+            (left, "o2", -120.0, 40.0),
+            (right, "o3", 120.0, 40.0),
+            (right, "o4", 120.0, -40.0),
+        )
+    ):
+        gc = c.add_ref(gf.get_component("grating_coupler_te"), name=f"gc_{index}")
+        if dx < 0:
+            gc.rotate(180.0)
+        gc.move((ref.ports[port].center[0] + dx, ref.ports[port].center[1] + dy))
+        gf.routing.route_single(c, gc.ports["o1"], ref.ports[port], cross_section="strip")
+        ends[f"gc_{index}"] = tuple(gc.ports["o1"].center)
+    c.write_gds(str(path))
+    return {
+        **ends,
+        **{f"{name},o1": tuple(h.ports["o1"].center) for name, h in heaters.items()},
+        **{f"{name},o2": tuple(h.ports["o2"].center) for name, h in heaters.items()},
+    }
+
+
+def test_extractor_keeps_a_directional_coupler_as_one_component(tmp_path: Path):
+    gds_path = tmp_path / "coupler_mzi.gds"
+    ends = _synthetic_coupler_mzi_gds(gds_path)
+    config = ExtractionConfig(
+        core_layers=((1, 0),),
+        rules=(
+            ClassificationRule("heater", ("straight_heater_metal",)),
+            ClassificationRule("gc", ("grating_coupler",)),
+            ClassificationRule("net", ("straight", "bend", "coupler")),
+        ),
+        composites=(
+            CompositeRule("heater", "straight_heater_metal"),
+            CompositeRule("gc", "grating_coupler"),
+        ),
+        heater_metal_layers=((47, 0),),
+        directional_couplers=(DirectionalCouplerRule(("heater",), max_separation_um=70.0),),
+    )
+    circuit = extract_circuit(gds_path, config)
+    kinds = sorted(component.kind for component in circuit.components)
+    assert kinds == ["directional_coupler"] * 2 + ["gc"] * 4 + ["heater"] * 2
+    couplers = [c for c in circuit.components if c.kind == "directional_coupler"]
+    for coupler in couplers:
+        geometry = coupler.geometry
+        assert geometry["gap_pitch_um"] == pytest.approx(0.8, abs=0.05)
+        assert geometry["coupling_length_um"] == pytest.approx(29.0, abs=2.0)
+        assert geometry["pitch_um"] == pytest.approx(60.0, abs=0.1)
+        assert geometry["outer_pitch_um"] == pytest.approx(60.0, abs=0.1)
+    # four nets to route (the gcs to the couplers' outer ports), four abutting
+    # ones of zero length (the couplers' inner ports on the heaters)
+    assert sum(net.note.startswith("abutting") for net in circuit.nets) == 4
+    assert len(circuit.nets) == 8
+
+    schematic = generic_schematic(circuit, default_generic_mappings())
+    assert len(schematic.netlist.routes) == 4
+    layout = layout_from_schematic(schematic)
+    assert overlapping_instances(layout) == []
+    placed = {ref.name: ref for ref in layout.insts}
+    # the couplers' inner ports sit on the heaters' ports
+    inner = sorted(
+        tuple(round(v, 2) for v in placed[name].ports[port].center)
+        for name in ("directional_coupler_0", "directional_coupler_1")
+        for port in ("o1", "o2", "o3", "o4")
+        if abs(placed[name].ports[port].center[0] - 100.0) < 0.5
+        or abs(placed[name].ports[port].center[0] - 316.0) < 0.5
+    )
+    heater_ports = sorted(
+        tuple(round(v, 2) for v in ends[key]) for key in ends if key.startswith("heater")
+    )
+    assert inner == heater_ports

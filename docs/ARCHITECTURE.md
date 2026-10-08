@@ -309,9 +309,13 @@ gdsfactory component parameterized to reproduce the original port geometry
 (`GenericMapping`: the MMI's taper and gap from its port spacing, the
 heater's length from its span, a bare arm as a straight of its span, an
 MZI arm pair as `gds_circuit_components.arm_pair` built from straights
-and circular 90-degree bends of the benchmark's routing radius, a one-bus ring's coupling length, a 10 um straight
-for an end cap or an open end) placed so that its ports coincide
-with the original ones, and writes the result as a benchmark module. A
+and circular 90-degree bends of the benchmark's routing radius, a
+directional coupler as `gds_circuit_components.directional_coupler` built
+the same way (two waveguides running to a gap, coupling and spreading
+again, which the router could not draw at a 0.75 um port pitch), a one-bus
+ring's coupling length, a 10 um straight for an end cap or an open end)
+placed so that its ports coincide with the original ones, and writes the
+result as a benchmark module. A
 two-port 2D grating coupler is split into two one-port generic couplers
 (`split_kinds`), which the extractor moves apart to `split_pitch_um` because
 the generic coupler is wider than the original 9.9 um pitch; rebuilt
