@@ -61,6 +61,8 @@ The owner's project dump holds five tape-out circuits as GDS files (confidential
 
 ## Decision Log
 
+- 2026-10-08 (owner): the coupler cells' internal paths stay out of the model. At the beam splitter's first four MMIs the matching adds 141 um to each 1D feed because the 2D coupler's and the 1D coupler's paths from grating to port are unknown to it (measured in the original cells: the 1D taper about 406 um, the 2D arm between 373 and 526 um depending on a waveguide course on foundry layers we cannot read); whichever way one looks at it the two paths are never equal, so no value is declared and the four small meanders stay, documented here. The 96 um at the sender-and-receiver cut-out's 1D feeds are not the same effect (its 2D cells are 20 um with the grating 7 um from the ports) and stay as well.
+
 - 2026-10-07 (owner): path-length matching on the private circuits is a flag, as it already is: `--path-length-matching` balances every node's inputs (the MZI arms and the mesh paths, what the originals match); the outputs are not matched by default, and `--path-length-match-outputs` matches all of them against each other when asked. No group-wise output scope. The private modules get `--path-length-matching true` in their stable flags once all five run clean with it.
 
 - 2026-10-05 (owner): the five circuits of the dump are the next benchmarks; confidential, never into git; rebuilt with the open-source PDK elements; photonic routing only for now, since the GDS files carry no electrical routing to compare against.
