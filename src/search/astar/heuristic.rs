@@ -166,7 +166,7 @@ impl SearchHeuristic {
                 let dy = (self.target.y - state.y).abs();
                 let diagonal_correction_needed = dx > *tolerance
                     && dy > *tolerance
-                    && (state.angle % 2 == 0)
+                    && state.angle.is_multiple_of(2)
                     && !direction_reaches_target_ray(state, self.target, *tolerance);
                 let estimate = if !target_angle_ok[(state.angle % 8) as usize]
                     || !direction_reaches_target_ray(state, self.target, *tolerance)

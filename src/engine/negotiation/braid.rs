@@ -291,7 +291,7 @@ impl PyPhotonicRouter {
         // partner after one pair failed, instead of re-selecting the failed
         // top pair forever (found 2026-09-15 on multiportmmi_64x64_bands8to9:
         // net 526 braided three neighbours and only one was repaired).
-        let Some((&victim_id, &before)) = counts
+        let (&victim_id, &before) = counts
             .iter()
             .filter(|(_, count)| **count >= 2)
             .filter(|(partner, _)| batch.final_routes.contains_key(*partner))
@@ -299,13 +299,8 @@ impl PyPhotonicRouter {
                 let pair_key = (job.net_id.min(**partner), job.net_id.max(**partner));
                 !skip_pairs.is_some_and(|pairs| pairs.contains(&pair_key))
             })
-            .max_by_key(|(partner, count)| (**count, std::cmp::Reverse(**partner)))
-        else {
-            return None;
-        };
-        let Some(victim_job) = job_by_id.get(&victim_id) else {
-            return None;
-        };
+            .max_by_key(|(partner, count)| (**count, std::cmp::Reverse(**partner)))?;
+        let victim_job = job_by_id.get(&victim_id)?;
         if trace_native_repair {
             eprintln!(
                 "native_repair_braid_start net={} partner={} crossings_between={} budget={}",

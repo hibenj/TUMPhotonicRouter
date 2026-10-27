@@ -1,3 +1,7 @@
+// pyo3 0.22's `#[pymethods]` / `#[pyfunction]` expansion converts the returned
+// `PyErr` into `PyErr`, which clippy reports at every binding; nothing here to fix.
+#![allow(clippy::useless_conversion)]
+
 use std::time::Instant;
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -377,8 +381,8 @@ impl PyPhotonicRouter {
         let mut geometries = Vec::with_capacity(count);
         for ((centerline, registered_open_index), max_bumps) in centerlines
             .into_iter()
-            .zip(registered_opened_cell_indices.into_iter())
-            .zip(max_bumps_by_edge.into_iter())
+            .zip(registered_opened_cell_indices)
+            .zip(max_bumps_by_edge)
         {
             if registered_open_index >= open_cell_count {
                 return Err(PyValueError::new_err(

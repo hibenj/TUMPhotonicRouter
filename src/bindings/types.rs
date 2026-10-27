@@ -1,3 +1,7 @@
+// pyo3 0.22's `#[pymethods]` / `#[pyfunction]` expansion converts the returned
+// `PyErr` into `PyErr`, which clippy reports at every binding; nothing here to fix.
+#![allow(clippy::useless_conversion)]
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 

@@ -857,41 +857,42 @@ fn meander_projection_rejection_detail(
         0.0
     };
     let allowed_interval_length_um = (allowed_end_dist - allowed_start_dist).max(0.0);
-    if endpoint_inset_um >= 0.0 && endpoint_inset_um.is_finite() {
-        if allowed_interval_length_um + EPS >= min_segment_length_um {
-            let start_point = point_on_run_at_distance(run, allowed_start_dist);
-            let end_point = point_on_run_at_distance(run, allowed_end_dist);
-            let horizontal = (run.start.1 - run.end.1).abs() <= EPS;
-            let vertical = (run.start.0 - run.end.0).abs() <= EPS;
-            let allowed_min_coord = if horizontal {
-                start_point.x_um.min(end_point.x_um)
-            } else {
-                start_point.y_um.min(end_point.y_um)
-            };
-            let allowed_max_coord = if horizontal {
-                start_point.x_um.max(end_point.x_um)
-            } else {
-                start_point.y_um.max(end_point.y_um)
-            };
-            if (horizontal || vertical)
-                && allowed_max_coord - allowed_min_coord + EPS >= min_segment_length_um
+    if endpoint_inset_um >= 0.0
+        && endpoint_inset_um.is_finite()
+        && allowed_interval_length_um + EPS >= min_segment_length_um
+    {
+        let start_point = point_on_run_at_distance(run, allowed_start_dist);
+        let end_point = point_on_run_at_distance(run, allowed_end_dist);
+        let horizontal = (run.start.1 - run.end.1).abs() <= EPS;
+        let vertical = (run.start.0 - run.end.0).abs() <= EPS;
+        let allowed_min_coord = if horizontal {
+            start_point.x_um.min(end_point.x_um)
+        } else {
+            start_point.y_um.min(end_point.y_um)
+        };
+        let allowed_max_coord = if horizontal {
+            start_point.x_um.max(end_point.x_um)
+        } else {
+            start_point.y_um.max(end_point.y_um)
+        };
+        if (horizontal || vertical)
+            && allowed_max_coord - allowed_min_coord + EPS >= min_segment_length_um
+        {
+            if let Ok(allowed_segment) =
+                segment_from_axis_interval(run, allowed_min_coord, allowed_max_coord)
             {
-                if let Ok(allowed_segment) =
-                    segment_from_axis_interval(run, allowed_min_coord, allowed_max_coord)
+                if let Ok(strip_box) =
+                    build_meander_box_for_segment(allowed_segment, side, box_depth_um)
                 {
-                    if let Ok(strip_box) =
-                        build_meander_box_for_segment(allowed_segment, side, box_depth_um)
-                    {
-                        match meander_box_to_grid_rect(strip_box, grid, clearance_radius_cells) {
-                            Ok(rect) => {
-                                strip_blocked_count = occupancy.blocked_count_in_rect(
-                                    rect.min_x, rect.max_x, rect.min_y, rect.max_y,
-                                );
-                                strip_grid_rect = Some(rect);
-                            }
-                            Err(err) => {
-                                strip_grid_error = Some(err.to_string());
-                            }
+                    match meander_box_to_grid_rect(strip_box, grid, clearance_radius_cells) {
+                        Ok(rect) => {
+                            strip_blocked_count = occupancy.blocked_count_in_rect(
+                                rect.min_x, rect.max_x, rect.min_y, rect.max_y,
+                            );
+                            strip_grid_rect = Some(rect);
+                        }
+                        Err(err) => {
+                            strip_grid_error = Some(err.to_string());
                         }
                     }
                 }
@@ -1114,7 +1115,7 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
     };
 
     let run_extraction_start = Instant::now();
-    let runs = extract_axis_aligned_straight_runs(&centerline, config.min_segment_length_um);
+    let runs = extract_axis_aligned_straight_runs(centerline, config.min_segment_length_um);
     profile.run_extraction_s += run_extraction_start.elapsed().as_secs_f64();
     if runs.is_empty() {
         return Err(GeometryError::NoMeanderCandidateSegment);
@@ -1338,7 +1339,7 @@ pub fn plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         rejected_planning_failed,
         rejected_exact_length_mismatch,
         rejected_too_short,
-        first_rejection: first_rejection.clone(),
+        first_rejection: first_rejection.clone().map(Box::new),
     };
     let (selected_box, selected_grid_rect, plan, selected_box_depth_um) =
         selected.ok_or_else(no_auto_err)?;
@@ -1419,7 +1420,7 @@ pub fn probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
         AutoMeanderSidePolicy::Right => &[MeanderSide::Right],
         AutoMeanderSidePolicy::Both => &[MeanderSide::Left, MeanderSide::Right],
     };
-    let runs = extract_axis_aligned_straight_runs(&centerline, config.min_segment_length_um);
+    let runs = extract_axis_aligned_straight_runs(centerline, config.min_segment_length_um);
     if runs.is_empty() {
         return Err(GeometryError::NoMeanderCandidateSegment);
     }

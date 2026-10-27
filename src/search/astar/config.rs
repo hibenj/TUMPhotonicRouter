@@ -151,6 +151,9 @@ pub(crate) const NO_HEAP_POSITION: usize = usize::MAX;
 
 pub(crate) const JPS4_DIRECTIONS: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
 
+// `DiagonalAware` carries its 64 terminal approaches inline so the mode stays
+// `Copy` and is built once per search; the size difference is deliberate.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SearchHeuristicMode {
     Distance,

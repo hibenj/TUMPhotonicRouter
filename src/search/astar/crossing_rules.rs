@@ -146,7 +146,6 @@ pub(crate) struct RelativeEffectiveCollisionWitness {
 #[derive(Clone, Debug)]
 pub(crate) struct PrimitiveCrossingMetadata {
     pub(crate) segments: Vec<RelativePrimitivePathSegment>,
-    pub(crate) footprint_witnesses: Vec<RelativeEffectiveCollisionWitness>,
     pub(crate) witnesses: Vec<RelativeEffectiveCollisionWitness>,
     pub(crate) extra_witnesses: Vec<RelativeEffectiveCollisionWitness>,
     pub(crate) extra_witness_offsets: Vec<(i32, i32)>,
@@ -330,15 +329,6 @@ pub(crate) fn primitive_crossing_metadata(primitive: &Primitive) -> PrimitiveCro
         });
     }
 
-    let footprint_witnesses: Vec<RelativeEffectiveCollisionWitness> = primitive
-        .footprint
-        .iter()
-        .copied()
-        .map(|offset| RelativeEffectiveCollisionWitness {
-            offset,
-            route_segment_idx: None,
-        })
-        .collect();
     let witnesses = effective_collision_witness_offsets(primitive, &segments);
     let extra_witnesses: Vec<RelativeEffectiveCollisionWitness> = witnesses
         .iter()
@@ -353,7 +343,6 @@ pub(crate) fn primitive_crossing_metadata(primitive: &Primitive) -> PrimitiveCro
     let has_extra_witnesses = !extra_witnesses.is_empty();
     PrimitiveCrossingMetadata {
         segments,
-        footprint_witnesses,
         witnesses,
         extra_witnesses,
         extra_witness_offsets,
@@ -456,7 +445,7 @@ pub(crate) fn terminal_bump_guard_satisfied(
         |axis_delta: f64| -> bool { (axis_delta.round() - required).abs() <= eps };
     match guard.axis {
         TerminalBumpAxis::Horizontal => {
-            if route_angle % 8 != 0 && route_angle % 8 != 4 {
+            if !route_angle.is_multiple_of(8) && route_angle % 8 != 4 {
                 return true;
             }
             let axis_delta = (y - guard.target_axis_coord).abs();

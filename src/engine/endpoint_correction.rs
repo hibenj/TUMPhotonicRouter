@@ -392,9 +392,7 @@ impl PyPhotonicRouter {
         let endpoint_bump_trace_net_id = net_id.to_string();
         let trace_endpoint_bumps = match &self.router_config.diagnostics.trace_endpoint_bump_nets {
             NetNameTrace::All => true,
-            NetNameTrace::Names(names) => {
-                names.iter().any(|name| *name == endpoint_bump_trace_net_id)
-            }
+            NetNameTrace::Names(names) => names.contains(&endpoint_bump_trace_net_id),
             NetNameTrace::None => false,
         };
 
@@ -669,9 +667,7 @@ impl PyPhotonicRouter {
         let endpoint_bump_trace_net_id = net_id.to_string();
         let trace_endpoint_bumps = match &self.router_config.diagnostics.trace_endpoint_bump_nets {
             NetNameTrace::All => true,
-            NetNameTrace::Names(names) => {
-                names.iter().any(|name| *name == endpoint_bump_trace_net_id)
-            }
+            NetNameTrace::Names(names) => names.contains(&endpoint_bump_trace_net_id),
             NetNameTrace::None => false,
         };
 

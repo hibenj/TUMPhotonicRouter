@@ -12,3 +12,11 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 pyo3 = { version = "0.22", features = ["abi3-py38"] }
 rustc-hash = "2"
+
+[lints.clippy]
+# Phase-3 debt of the do-over (working/.agent/TUMPhotonicRouter/DO_OVER_ANALYSIS.md):
+# 40 functions take 8 to 21 positional arguments that one typed request struct
+# will replace, and 9 signatures spell out tuple types that struct will name.
+# Allowed here so that every other warning is a failure in CI.
+too_many_arguments = "allow"
+type_complexity = "allow"

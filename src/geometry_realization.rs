@@ -204,7 +204,7 @@ pub enum GeometryError {
         rejected_planning_failed: usize,
         rejected_exact_length_mismatch: usize,
         rejected_too_short: usize,
-        first_rejection: Option<AutoMeanderRejectionDetail>,
+        first_rejection: Option<Box<AutoMeanderRejectionDetail>>,
     },
     NoMeanderCandidateSegment,
     PortEndpointCorrectionRequiresUnsupportedStub,
@@ -790,62 +790,62 @@ pub fn route_to_port_corrected_centerline_with_options_and_collision_check(
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
     let replay = route_to_primitive_centerline_with_runs(route, primitives, grid)?;
     let mut centerline = replay.centerline;
-    if !try_apply_full_straight_port_correction(&mut centerline, source_port_um, target_port_um)? {
-        if !try_apply_full_diagonal_straight_port_correction(
+    if !try_apply_full_straight_port_correction(&mut centerline, source_port_um, target_port_um)?
+        && !try_apply_full_diagonal_straight_port_correction(
             &mut centerline,
             source_port_um,
             target_port_um,
+        )?
+    {
+        try_apply_shared_axis_port_shift(&mut centerline, source_port_um, target_port_um)?;
+        if !try_apply_45_degree_endpoint_delta_correction(
+            &mut centerline,
+            &replay.straight_runs,
+            &replay.directional_runs,
+            &replay.dogleg_absorbers,
+            primitives,
+            route,
+            source_port_um,
+            target_port_um,
+            false,
+            collision_check,
         )? {
-            try_apply_shared_axis_port_shift(&mut centerline, source_port_um, target_port_um)?;
-            if !try_apply_45_degree_endpoint_delta_correction(
-                &mut centerline,
+            let mut existing_axis_candidate = centerline.clone();
+            if absorb_endpoint_delta_into_existing_axis_runs(
+                &mut existing_axis_candidate,
                 &replay.straight_runs,
-                &replay.directional_runs,
-                &replay.dogleg_absorbers,
-                primitives,
-                route,
                 source_port_um,
                 target_port_um,
-                false,
-                collision_check,
-            )? {
-                let mut existing_axis_candidate = centerline.clone();
-                if absorb_endpoint_delta_into_existing_axis_runs(
-                    &mut existing_axis_candidate,
-                    &replay.straight_runs,
+            )
+            .is_ok()
+            {
+                centerline = existing_axis_candidate;
+            } else if allow_unchecked_bumps {
+                let mut bump_candidate = centerline.clone();
+                match try_apply_full_straight_offset_bump_correction(
+                    &mut bump_candidate,
+                    route,
+                    primitives,
                     source_port_um,
                     target_port_um,
-                )
-                .is_ok()
-                {
-                    centerline = existing_axis_candidate;
-                } else if allow_unchecked_bumps {
-                    let mut bump_candidate = centerline.clone();
-                    match try_apply_full_straight_offset_bump_correction(
-                        &mut bump_candidate,
-                        route,
+                ) {
+                    Ok(true) => centerline = bump_candidate,
+                    Ok(false) | Err(_) => absorb_endpoint_delta_into_axis_runs(
+                        &mut centerline,
+                        &replay.straight_runs,
+                        &replay.dogleg_absorbers,
                         primitives,
                         source_port_um,
                         target_port_um,
-                    ) {
-                        Ok(true) => centerline = bump_candidate,
-                        Ok(false) | Err(_) => absorb_endpoint_delta_into_axis_runs(
-                            &mut centerline,
-                            &replay.straight_runs,
-                            &replay.dogleg_absorbers,
-                            primitives,
-                            source_port_um,
-                            target_port_um,
-                        )?,
-                    }
-                } else {
-                    absorb_endpoint_delta_into_existing_axis_runs(
-                        &mut centerline,
-                        &replay.straight_runs,
-                        source_port_um,
-                        target_port_um,
-                    )?;
+                    )?,
                 }
+            } else {
+                absorb_endpoint_delta_into_existing_axis_runs(
+                    &mut centerline,
+                    &replay.straight_runs,
+                    source_port_um,
+                    target_port_um,
+                )?;
             }
         }
     }
@@ -897,61 +897,61 @@ pub fn centerline_to_port_corrected_centerline_with_options(
     let directional_runs = directional_runs_from_centerline(&centerline);
     let dogleg_absorbers: Vec<DoglegAbsorber> = Vec::new();
 
-    if !try_apply_full_straight_port_correction(&mut centerline, source_port_um, target_port_um)? {
-        if !try_apply_full_diagonal_straight_port_correction(
+    if !try_apply_full_straight_port_correction(&mut centerline, source_port_um, target_port_um)?
+        && !try_apply_full_diagonal_straight_port_correction(
             &mut centerline,
             source_port_um,
             target_port_um,
+        )?
+    {
+        try_apply_shared_axis_port_shift(&mut centerline, source_port_um, target_port_um)?;
+        if !try_apply_45_degree_centerline_endpoint_delta_correction(
+            &mut centerline,
+            &straight_runs,
+            &directional_runs,
+            &dogleg_absorbers,
+            primitives,
+            source_port_um,
+            target_port_um,
+            false,
+            source_angle,
+            target_angle,
         )? {
-            try_apply_shared_axis_port_shift(&mut centerline, source_port_um, target_port_um)?;
-            if !try_apply_45_degree_centerline_endpoint_delta_correction(
-                &mut centerline,
+            let mut existing_axis_candidate = centerline.clone();
+            if absorb_endpoint_delta_into_existing_axis_runs(
+                &mut existing_axis_candidate,
                 &straight_runs,
-                &directional_runs,
-                &dogleg_absorbers,
-                primitives,
                 source_port_um,
                 target_port_um,
-                false,
-                source_angle,
-                target_angle,
-            )? {
-                let mut existing_axis_candidate = centerline.clone();
-                if absorb_endpoint_delta_into_existing_axis_runs(
-                    &mut existing_axis_candidate,
-                    &straight_runs,
+            )
+            .is_ok()
+            {
+                centerline = existing_axis_candidate;
+            } else if allow_unchecked_bumps {
+                let mut bump_candidate = centerline.clone();
+                match try_apply_full_straight_offset_bump_correction_for_centerline(
+                    &mut bump_candidate,
+                    primitives,
                     source_port_um,
                     target_port_um,
-                )
-                .is_ok()
-                {
-                    centerline = existing_axis_candidate;
-                } else if allow_unchecked_bumps {
-                    let mut bump_candidate = centerline.clone();
-                    match try_apply_full_straight_offset_bump_correction_for_centerline(
-                        &mut bump_candidate,
+                ) {
+                    Ok(true) => centerline = bump_candidate,
+                    Ok(false) | Err(_) => absorb_endpoint_delta_into_axis_runs(
+                        &mut centerline,
+                        &straight_runs,
+                        &dogleg_absorbers,
                         primitives,
                         source_port_um,
                         target_port_um,
-                    ) {
-                        Ok(true) => centerline = bump_candidate,
-                        Ok(false) | Err(_) => absorb_endpoint_delta_into_axis_runs(
-                            &mut centerline,
-                            &straight_runs,
-                            &dogleg_absorbers,
-                            primitives,
-                            source_port_um,
-                            target_port_um,
-                        )?,
-                    }
-                } else {
-                    absorb_endpoint_delta_into_existing_axis_runs(
-                        &mut centerline,
-                        &straight_runs,
-                        source_port_um,
-                        target_port_um,
-                    )?;
+                    )?,
                 }
+            } else {
+                absorb_endpoint_delta_into_existing_axis_runs(
+                    &mut centerline,
+                    &straight_runs,
+                    source_port_um,
+                    target_port_um,
+                )?;
             }
         }
     }
@@ -1706,8 +1706,8 @@ fn build_compact_offset_bump_with_side_retry(
     placement: OffsetBumpPlacement,
 ) -> Result<Vec<(f64, f64)>, GeometryError> {
     let route_dir = angle_to_unit_vector(route_angle);
-    let left_angle = ((route_angle + 2) % 8) as u8;
-    let right_angle = ((route_angle + 6) % 8) as u8;
+    let left_angle = (route_angle + 2) % 8;
+    let right_angle = (route_angle + 6) % 8;
     let left_dir = angle_to_unit_vector(left_angle);
     let required_offset = dot(sub(target, source), left_dir);
     let primary_offset_angle = if required_offset >= 0.0 {
@@ -1715,7 +1715,7 @@ fn build_compact_offset_bump_with_side_retry(
     } else {
         right_angle
     };
-    let secondary_offset_angle = ((primary_offset_angle + 4) % 8) as u8;
+    let secondary_offset_angle = (primary_offset_angle + 4) % 8;
 
     for offset_angle in [primary_offset_angle, secondary_offset_angle] {
         if let Ok(centerline) = build_compact_four_bend_offset_bump(
@@ -1768,7 +1768,7 @@ fn build_compact_four_bend_offset_bump(
     }
     let first_leg_len = offset_len.max(0.0);
     let second_leg_len = (-offset_len).max(0.0);
-    let opposite_offset_angle = ((first_offset_angle + 4) % 8) as u8;
+    let opposite_offset_angle = (first_offset_angle + 4) % 8;
     let bump_start = match placement {
         OffsetBumpPlacement::Start => source,
         OffsetBumpPlacement::End => sub(
@@ -2470,7 +2470,7 @@ fn validate_corrected_centerline_endpoint_candidate(
 }
 
 fn insert_terminal_tangent_stubs(
-    centerline: &mut Vec<(f64, f64)>,
+    centerline: &mut [(f64, f64)],
     route: &RouteResult,
     _stub_len_um: f64,
     source_enabled: bool,

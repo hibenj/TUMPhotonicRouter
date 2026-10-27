@@ -1419,9 +1419,7 @@ impl PyPhotonicRouter {
         partner_id: u64,
         point: (f64, f64),
     ) -> Option<u64> {
-        let Some((center_x, center_y)) = self.grid_cell_for_physical_point(point) else {
-            return None;
-        };
+        let (center_x, center_y) = self.grid_cell_for_physical_point(point)?;
         let config = self.crossing_context.config();
         let keys = crossing_reservation_window_keys(
             f64::from(center_x),
@@ -2993,7 +2991,7 @@ mod tests {
         assert!(polylines_closer_than(&a, &near, 0.5 + 1.0e-6, region));
         assert!(polylines_closer_than(
             &a,
-            &vec![(0.3, 0.0), (0.3, 100.0)],
+            &[(0.3, 0.0), (0.3, 100.0)],
             0.5,
             region
         ));

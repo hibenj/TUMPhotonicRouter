@@ -1329,7 +1329,7 @@ mod tests {
             );
             // the check must not have registered anything
             assert!(
-                map.net_routes.get(&2).is_none(),
+                !map.net_routes.contains_key(&2),
                 "{label}: can_commit mutated the map"
             );
             assert!(

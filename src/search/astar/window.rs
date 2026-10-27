@@ -549,7 +549,7 @@ mod tests {
             stats.expanded_states
         );
         assert!(
-            (stats.expanded_states as usize) < config.max_iterations,
+            stats.expanded_states < config.max_iterations,
             "the attempt must stop well short of the window's own max_iterations cap, got {} of {}",
             stats.expanded_states,
             config.max_iterations

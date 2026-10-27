@@ -90,10 +90,10 @@ impl MeanderTurnModel {
     }
 
     pub fn from_u_turns(u_turns: usize) -> Option<Self> {
-        if u_turns == 0 || u_turns % 2 == 0 {
+        if u_turns == 0 || u_turns.is_multiple_of(2) {
             return None;
         }
-        let visual_bumps = (u_turns + 1) / 2;
+        let visual_bumps = u_turns.div_ceil(2);
         let quarter_turns = visual_bumps.checked_mul(4)?;
         Some(Self {
             visual_bumps,
@@ -178,7 +178,7 @@ pub fn plan_fill_box_multi_bump_footprint(
         return Err(MeanderPlanningError::AvailableBoxTooSmall);
     }
 
-    let max_visual_bumps = (max_bumps + 1) / 2;
+    let max_visual_bumps = max_bumps.div_ceil(2);
     for visual_bumps in 1..=max_visual_bumps {
         let Some(model) = MeanderTurnModel::from_visual_bumps(visual_bumps) else {
             continue;
@@ -420,7 +420,7 @@ pub fn plan_fill_box_multi_bump_meander(
     // Dense comb with explicit 180-degree turns:
     // two 90-degree connectors only at entry/exit, all internal reversals are U-turns.
     let mut max_feasible_u_turns = 0usize;
-    let max_visual_bumps = (config.max_bumps + 1) / 2;
+    let max_visual_bumps = config.max_bumps.div_ceil(2);
     for visual_bumps in 1..=max_visual_bumps {
         let Some(model) = MeanderTurnModel::from_visual_bumps(visual_bumps) else {
             continue;

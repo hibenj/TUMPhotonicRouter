@@ -28,7 +28,7 @@ pub(crate) fn search_timed_out(search_start: Option<&Instant>, config: &AStarCon
 }
 
 pub(crate) fn should_check_timeout(iterations: usize, config: &AStarConfig) -> bool {
-    config.max_search_time_ms > 0 && iterations % SEARCH_TIMEOUT_CHECK_INTERVAL == 0
+    config.max_search_time_ms > 0 && iterations.is_multiple_of(SEARCH_TIMEOUT_CHECK_INTERVAL)
 }
 
 pub(crate) fn trace_search_timeout(
@@ -142,9 +142,9 @@ pub(crate) fn print_target_ring_report(
     }
 }
 
-/// Companion to the search-failure diagnosis (owner request 2026-09-02):
-/// dump the accepted path that legalized the most crossings. Its
-/// endpoint is the first crossing the search never got past.
+// Companion to the search-failure diagnosis (owner request 2026-09-02):
+// dump the accepted path that legalized the most crossings. Its
+// endpoint is the first crossing the search never got past.
 
 /// Permanent, env-gated: `PHOTONIC_ROUTER_PROBE_CELLS="x,y;x,y;..."` prints,
 /// on every search failure, whether each listed cell is static, opened for

@@ -247,12 +247,12 @@ pub(crate) fn simple_candidate_to_route_result(
         }
         trimmed_lengths.push(trimmed);
     }
-    if require_terminal_straights && segment_count > 1 {
-        if trimmed_lengths.first().copied().unwrap_or(0) == 0
-            || trimmed_lengths.last().copied().unwrap_or(0) == 0
-        {
-            return None;
-        }
+    if require_terminal_straights
+        && segment_count > 1
+        && (trimmed_lengths.first().copied().unwrap_or(0) == 0
+            || trimmed_lengths.last().copied().unwrap_or(0) == 0)
+    {
+        return None;
     }
 
     if segment_count == 3 && bend_radius_cells > 0 {
@@ -563,8 +563,10 @@ mod tests {
     fn simple_z_route_rejects_too_short_middle_leg() {
         let map = ObstacleMap::new(20, 20);
         let library = primitive_library_no45_bend2();
-        let mut config = AStarConfig::default();
-        config.enable_simple_routes = true;
+        let config = AStarConfig {
+            enable_simple_routes: true,
+            ..AStarConfig::default()
+        };
 
         let result = try_simple_route_with_config(
             &map,
@@ -781,8 +783,10 @@ mod tests {
             bend_radius_cells: 20,
             allow_45_degree_turns: false,
         });
-        let mut config = AStarConfig::default();
-        config.simple_route_max_offset_cells = 120;
+        let config = AStarConfig {
+            simple_route_max_offset_cells: 120,
+            ..AStarConfig::default()
+        };
 
         let result = try_simple_route_with_config(
             &map,
@@ -808,8 +812,10 @@ mod tests {
             bend_radius_cells: 20,
             allow_45_degree_turns: false,
         });
-        let mut config = AStarConfig::default();
-        config.simple_route_max_offset_cells = 240;
+        let config = AStarConfig {
+            simple_route_max_offset_cells: 240,
+            ..AStarConfig::default()
+        };
 
         let result = try_simple_route_with_config(
             &map,

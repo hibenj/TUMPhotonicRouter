@@ -535,10 +535,10 @@ pub(crate) fn move_is_legal<H: CrossingLegalityHook>(
             stats.crossing_reject_pending_straight += 1;
             return Some(MoveVerdict::Illegal(MoveRejection::PendingCorridorAngle));
         }
-        if !pending_completed_by_primitive
-            && !(candidate.class_is_straight
+        if !(pending_completed_by_primitive
+            || (candidate.class_is_straight
                 && primitive.end_angle % 8 == state.angle
-                && pending_initial_run > 0.0)
+                && pending_initial_run > 0.0))
         {
             stats.crossing_reject_pending_straight += 1;
             return Some(MoveVerdict::Illegal(

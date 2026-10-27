@@ -813,7 +813,7 @@ pub(crate) fn evaluate_jps4_eligibility(
             reason: "history costs are active",
         };
     }
-    if source.angle % 2 != 0 || target.angle % 2 != 0 {
+    if !source.angle.is_multiple_of(2) || !target.angle.is_multiple_of(2) {
         return Jps4Eligibility {
             eligible: false,
             reason: "source or target heading is diagonal",
@@ -1478,10 +1478,12 @@ mod tests {
     }
 
     fn route_with_jps4(map: &ObstacleMap, source: State, target: State) -> RouteResult {
-        let mut config = AStarConfig::default();
-        config.enable_jps4 = true;
-        config.require_target_angle = false;
-        config.enable_simple_routes = false;
+        let config = AStarConfig {
+            enable_jps4: true,
+            require_target_angle: false,
+            enable_simple_routes: false,
+            ..AStarConfig::default()
+        };
         route_single_net_with_config(
             map,
             &plain_jps4_primitive_library(),
@@ -1495,9 +1497,11 @@ mod tests {
 
     #[test]
     fn jps4_eligibility_rejects_current_photonic_primitives() {
-        let mut config = AStarConfig::default();
-        config.enable_jps4 = true;
-        config.require_target_angle = false;
+        let config = AStarConfig {
+            enable_jps4: true,
+            require_target_angle: false,
+            ..AStarConfig::default()
+        };
 
         let eligibility = evaluate_jps4_eligibility(
             &primitive_library(),
@@ -1515,9 +1519,11 @@ mod tests {
 
     #[test]
     fn jps4_eligibility_accepts_plain_cardinal_unit_grid() {
-        let mut config = AStarConfig::default();
-        config.enable_jps4 = true;
-        config.require_target_angle = false;
+        let config = AStarConfig {
+            enable_jps4: true,
+            require_target_angle: false,
+            ..AStarConfig::default()
+        };
 
         let eligibility = evaluate_jps4_eligibility(
             &plain_jps4_primitive_library(),
@@ -1533,9 +1539,11 @@ mod tests {
     #[test]
     fn jps4_request_falls_back_to_baseline_route_for_photonic_primitives() {
         let map = ObstacleMap::new(10, 5);
-        let mut config = AStarConfig::default();
-        config.enable_jps4 = true;
-        config.require_target_angle = false;
+        let config = AStarConfig {
+            enable_jps4: true,
+            require_target_angle: false,
+            ..AStarConfig::default()
+        };
 
         let result = route_single_net_with_config(
             &map,

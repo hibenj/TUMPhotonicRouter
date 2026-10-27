@@ -5,6 +5,10 @@
 //! bounding-box/grid creation, polygon rasterization, clearance inflation, port
 //! openings, and static [`ObstacleMap`] population.
 
+// pyo3 0.22's `#[pymethods]` / `#[pyfunction]` expansion converts the returned
+// `PyErr` into `PyErr`, which clippy reports at every binding; nothing here to fix.
+#![allow(clippy::useless_conversion)]
+
 use std::time::Instant;
 
 use pyo3::prelude::*;
@@ -37,16 +41,11 @@ pub struct PortInput {
     pub orientation: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum StaticObstacleBuildMode {
     RasterizedPolygons,
+    #[default]
     BoundingBoxes,
-}
-
-impl Default for StaticObstacleBuildMode {
-    fn default() -> Self {
-        Self::BoundingBoxes
-    }
 }
 
 impl PortInput {
@@ -339,19 +338,14 @@ pub fn build_static_obstacle_map_from_geometry(
             if config.materialize_bbox_cells {
                 let mut blocked_cells_cells = materialize_rects(&blocked_static_rects);
                 if clear_port_open_cells {
-                    blocked_cells_cells = blocked_cells_cells
-                        .into_iter()
-                        .filter(|(x, y)| !port_open_keys.contains(&pack_xy(*x, *y)))
-                        .collect();
+                    blocked_cells_cells.retain(|(x, y)| !port_open_keys.contains(&pack_xy(*x, *y)));
                 }
                 blocked_cells = blocked_cells_cells;
 
                 let mut raw_blocked_cells_rect = materialize_rects(&raw_static_rects);
                 if clear_port_open_cells {
-                    raw_blocked_cells_rect = raw_blocked_cells_rect
-                        .into_iter()
-                        .filter(|(x, y)| !port_open_keys.contains(&pack_xy(*x, *y)))
-                        .collect();
+                    raw_blocked_cells_rect
+                        .retain(|(x, y)| !port_open_keys.contains(&pack_xy(*x, *y)));
                 }
                 raw_blocked_cells = raw_blocked_cells_rect;
             } else {
@@ -972,7 +966,7 @@ fn build_static_obstacle_map_rs(
     materialize_cell_sets: bool,
 ) -> PyResult<PyObject> {
     let metric = parse_clearance_metric(&clearance_metric).map_err(pyo3_value_error)?;
-    let mode = parse_obstacle_mode(&obstacle_mode).map_err(pyo3_value_error)?;
+    let mode = parse_obstacle_mode(obstacle_mode).map_err(pyo3_value_error)?;
     let port_inputs = ports
         .into_iter()
         .map(|(name, x, y, orientation)| PortInput::new(name, x, y, orientation))

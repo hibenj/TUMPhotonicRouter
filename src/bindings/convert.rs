@@ -8,7 +8,7 @@ use crate::search::state::{RouteResult, RouteSearchStats, State};
 use crate::bindings::*;
 
 pub(crate) fn primitive_kind(p: &Primitive) -> String {
-    let d = ((p.end_angle as i16 - p.start_angle as i16).rem_euclid(8)) as i16;
+    let d = (p.end_angle as i16 - p.start_angle as i16).rem_euclid(8);
     if d == 0 {
         "straight".into()
     } else if d == 1 || d == 7 {

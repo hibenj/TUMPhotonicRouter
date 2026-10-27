@@ -349,54 +349,54 @@ impl OpenSet {
     }
 }
 
-/// The single A* search kernel for single-net routing, replacing the two
-/// independently-implemented kernels this repository used to carry (see
-/// `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
-/// for the full design history and migration record). Wired into every
-/// production call site via `crate::search::AStarSearch`'s `NetSearch` impl,
-/// plus the crate's own stable `route_single_net_with_config`-family entry
-/// points (also above), both of which now delegate to this module's entry
-/// points instead of the two old kernel functions -- which no longer exist;
-/// the full benchmark ladder validated byte-identical route costs against
-/// them before they were deleted.
-///
-/// Every step behaves exactly like a plain, crossing-unaware A* search --
-/// dense-array `DenseSearchStorage`/`OpenSet` state, no extra bookkeeping --
-/// until an accepted primitive's destination is blocked or the current state
-/// already carries a non-default `CrossingExtension` (meaning its own path
-/// has already crossed something). Only then does the kernel consult a
-/// pluggable `CrossingLegalityHook` and, if it accepts, store the resulting
-/// state in a small side table (Tier 2) instead of the dense array (Tier 1).
-/// `NoCrossingHook` (crossings disabled) never does real work in that hook at
-/// all, so crossing-disabled routing is the same code path a plain kernel
-/// would have been, at the same cost; `LiveCrossingHook` (crossings enabled)
-/// reuses the real crossing-legality functions (`crossing_no_contact_outcome`,
-/// `crossing_move_outcome_with_segments`) unchanged.
-///
-/// Two design points worth knowing when reading this module:
-/// - Tier 1 honors `AStarConfig::use_indexed_heap` via the plain `OpenSet`/`IndexedOpenSet`
-///   types (which gained a `peek` method for this). Tier 2 (a small minority
-///   of states in any real search) uses a plain `BinaryHeap<OpenEntry>` --
-///   never slower than what the old crossing kernel used unconditionally for
-///   *every* state. The two heaps are merged each iteration by peeking both
-///   and popping whichever holds the better candidate.
-/// - `unified_candidate_hits_active_local_crossing_reservation` (the local
-///   self-overlap guard preventing a route from illegally crossing the same
-///   partner twice) walks `UnifiedExtendedNode`'s own parent chain and stops
-///   the instant it reaches a Tier-1 (dense) ancestor, since Tier-1 states
-///   structurally never carry a reservation -- bounded by how far into an
-///   active crossing corridor the current state is, not by the whole route.
-/// - `CrossingExtension::straight_run_cells` is tracked for Tier-1 states too
-///   (via the `dense_straight_run` side array, gated on the `H::TRACKS_STRAIGHT_RUN`
-///   associated const so it costs nothing when crossings are disabled) --
-///   not just for Tier-2 ones. A route's straight-run margin going into its
-///   *first* crossing depends on geometry from before that crossing ever
-///   started, so a state that has never crossed anything still needs an
-///   accurate count the instant it tries to. Migration's own benchmark
-///   ladder is what caught this: `benes_4x4` started failing with
-///   `"insufficient_straight_margin"` crossing rejections until this was
-///   added, because the earlier bounded-prototype fixtures never had a long
-///   enough straight approach to expose the gap.
+// The single A* search kernel for single-net routing, replacing the two
+// independently-implemented kernels this repository used to carry (see
+// `.agent/execplans/2026-08-25-unify-astar-kernel-and-clean-repair-baseline.md`
+// for the full design history and migration record). Wired into every
+// production call site via `crate::search::AStarSearch`'s `NetSearch` impl,
+// plus the crate's own stable `route_single_net_with_config`-family entry
+// points (also above), both of which now delegate to this module's entry
+// points instead of the two old kernel functions -- which no longer exist;
+// the full benchmark ladder validated byte-identical route costs against
+// them before they were deleted.
+//
+// Every step behaves exactly like a plain, crossing-unaware A* search --
+// dense-array `DenseSearchStorage`/`OpenSet` state, no extra bookkeeping --
+// until an accepted primitive's destination is blocked or the current state
+// already carries a non-default `CrossingExtension` (meaning its own path
+// has already crossed something). Only then does the kernel consult a
+// pluggable `CrossingLegalityHook` and, if it accepts, store the resulting
+// state in a small side table (Tier 2) instead of the dense array (Tier 1).
+// `NoCrossingHook` (crossings disabled) never does real work in that hook at
+// all, so crossing-disabled routing is the same code path a plain kernel
+// would have been, at the same cost; `LiveCrossingHook` (crossings enabled)
+// reuses the real crossing-legality functions (`crossing_no_contact_outcome`,
+// `crossing_move_outcome_with_segments`) unchanged.
+//
+// Two design points worth knowing when reading this module:
+// - Tier 1 honors `AStarConfig::use_indexed_heap` via the plain `OpenSet`/`IndexedOpenSet`
+//   types (which gained a `peek` method for this). Tier 2 (a small minority
+//   of states in any real search) uses a plain `BinaryHeap<OpenEntry>` --
+//   never slower than what the old crossing kernel used unconditionally for
+//   *every* state. The two heaps are merged each iteration by peeking both
+//   and popping whichever holds the better candidate.
+// - `unified_candidate_hits_active_local_crossing_reservation` (the local
+//   self-overlap guard preventing a route from illegally crossing the same
+//   partner twice) walks `UnifiedExtendedNode`'s own parent chain and stops
+//   the instant it reaches a Tier-1 (dense) ancestor, since Tier-1 states
+//   structurally never carry a reservation -- bounded by how far into an
+//   active crossing corridor the current state is, not by the whole route.
+// - `CrossingExtension::straight_run_cells` is tracked for Tier-1 states too
+//   (via the `dense_straight_run` side array, gated on the `H::TRACKS_STRAIGHT_RUN`
+//   associated const so it costs nothing when crossings are disabled) --
+//   not just for Tier-2 ones. A route's straight-run margin going into its
+//   *first* crossing depends on geometry from before that crossing ever
+//   started, so a state that has never crossed anything still needs an
+//   accurate count the instant it tries to. Migration's own benchmark
+//   ladder is what caught this: `benes_4x4` started failing with
+//   `"insufficient_straight_margin"` crossing rejections until this was
+//   added, because the earlier bounded-prototype fixtures never had a long
+//   enough straight approach to expose the gap.
 
 /// Identifies a state the unified kernel has reached: either a Tier-1
 /// dense-array index, or an index into the Tier-2 `UnifiedExtendedNode`
