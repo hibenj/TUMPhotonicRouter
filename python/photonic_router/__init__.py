@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 # Matplotlib config directory (moved here from routing_flow.py in Milestone 5,
 # Slice 3, so that every entry point gets it: `python -m photonic_router`,
@@ -14,10 +14,8 @@ import sys
 # choice already in the environment.
 if "MPLCONFIGDIR" not in os.environ:
     _default_mpl_config_dir = Path(__file__).resolve().parents[2] / "build" / "mpl"
-    try:
+    with contextlib.suppress(OSError):
         _default_mpl_config_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
     os.environ["MPLCONFIGDIR"] = str(_default_mpl_config_dir)
 
 
@@ -37,7 +35,7 @@ def _register_windows_rust_dll_directories() -> None:
         Path(sys.executable).resolve().parent,
         gnullvm_toolchain / "bin",
         gnullvm_toolchain / "lib" / "rustlib" / "x86_64-pc-windows-gnullvm" / "bin",
-        Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "downlevel",
+        Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "downlevel",  # noqa: SIM112  (Windows spells it this way)
     )
     for directory in candidate_dirs:
         if not directory.is_dir():
@@ -51,20 +49,13 @@ def _register_windows_rust_dll_directories() -> None:
 _register_windows_rust_dll_directories()
 
 from photonic_router.benchmark_extractor import ExtractedBenchmark, Port, extract_benchmark
-from photonic_router.static_obstacle_builder import (
-    GridSpec,
-    StaticObstacleMapData,
-    StaticObstacleMapConfig,
-    build_static_obstacle_map,
+from photonic_router.crossing_plan import (
+    CrossingEvent,
+    CrossingPlan,
+    CrossingStagePlan,
+    build_crossing_plan,
 )
-from photonic_router.routing_layers import (
-    ComponentPortAccessRule,
-    HEATER_METAL_OBSTACLE_LAYERS,
-    HEATER_OPTICAL_PORT_ACCESS_RULES,
-    OPTICAL_OBSTACLE_LAYERS,
-    find_component_port_access_rule,
-    get_routing_obstacle_layers,
-)
+from photonic_router.graph_analysis import GraphAnalysisContext
 from photonic_router.path_length_graph import (
     DelayInsertionCandidate,
     GraphEdge,
@@ -81,12 +72,19 @@ from photonic_router.path_length_graph import (
     build_graph_from_schematic,
     list_edges_requiring_meander,
 )
-from photonic_router.graph_analysis import GraphAnalysisContext
-from photonic_router.crossing_plan import (
-    CrossingEvent,
-    CrossingPlan,
-    CrossingStagePlan,
-    build_crossing_plan,
+from photonic_router.routing_layers import (
+    HEATER_METAL_OBSTACLE_LAYERS,
+    HEATER_OPTICAL_PORT_ACCESS_RULES,
+    OPTICAL_OBSTACLE_LAYERS,
+    ComponentPortAccessRule,
+    find_component_port_access_rule,
+    get_routing_obstacle_layers,
+)
+from photonic_router.static_obstacle_builder import (
+    GridSpec,
+    StaticObstacleMapConfig,
+    StaticObstacleMapData,
+    build_static_obstacle_map,
 )
 from photonic_router.topology_analysis import (
     TopologyAnalysisResult,
@@ -97,36 +95,36 @@ from photonic_router.topology_analysis import (
 )
 
 __all__ = [
+    "HEATER_METAL_OBSTACLE_LAYERS",
+    "HEATER_OPTICAL_PORT_ACCESS_RULES",
+    "OPTICAL_OBSTACLE_LAYERS",
+    "ComponentPortAccessRule",
+    "CrossingEvent",
+    "CrossingPlan",
+    "CrossingStagePlan",
+    "DelayInsertionCandidate",
     "ExtractedBenchmark",
+    "GraphAnalysisContext",
+    "GraphEdge",
+    "GraphNode",
     "GridSpec",
+    "MissingLengthRequirement",
+    "NodeType",
+    "PathLengthAnalysisResult",
+    "PathLengthGraphAnnotations",
+    "PhotonicRoutingGraph",
     "Port",
     "PortDirection",
     "PortRef",
     "RoutedEdgeKey",
-    "NodeType",
-    "GraphNode",
-    "GraphEdge",
-    "PhotonicRoutingGraph",
-    "PathLengthAnalysisResult",
-    "PathLengthGraphAnnotations",
-    "MissingLengthRequirement",
-    "DelayInsertionCandidate",
-    "GraphAnalysisContext",
-    "CrossingEvent",
-    "CrossingPlan",
-    "CrossingStagePlan",
+    "StaticObstacleMapConfig",
+    "StaticObstacleMapData",
     "TopologyAnalysisResult",
     "TopologyCrossing",
     "TopologyEdgeRank",
-    "ComponentPortAccessRule",
-    "StaticObstacleMapConfig",
-    "StaticObstacleMapData",
-    "HEATER_METAL_OBSTACLE_LAYERS",
-    "HEATER_OPTICAL_PORT_ACCESS_RULES",
-    "OPTICAL_OBSTACLE_LAYERS",
-    "annotate_edge_lengths",
     "analyze_graph_topology",
     "analyze_schematic_topology",
+    "annotate_edge_lengths",
     "build_crossing_plan",
     "build_graph_from_schematic",
     "build_static_obstacle_map",

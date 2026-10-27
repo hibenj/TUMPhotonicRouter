@@ -14,13 +14,11 @@ search, crossings, fan-out and port access, repair, realization.
 from __future__ import annotations
 
 import math
-
 from dataclasses import dataclass
 from pathlib import Path
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
-
 from photonic_router.config import RouterConfig, RoutingConfig
 
 from translation.crossing_modes import is_lidar_mode, normalize_crossing_mode
@@ -156,7 +154,7 @@ class SessionSettings:
         defer_realization: bool = False,
         enable_checked_endpoint_correction: bool = True,
         config: RoutingConfig | None = None,
-    ) -> "SessionSettings":
+    ) -> SessionSettings:
         """Validate and normalise the session keywords into one frozen record.
 
         The rules are the ones the session constructor applied before Milestone 5

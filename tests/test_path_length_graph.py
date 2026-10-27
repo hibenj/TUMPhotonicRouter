@@ -1,13 +1,11 @@
-import pytest
+from __future__ import annotations
+
 from dataclasses import replace
 from typing import Any, Protocol, cast
+
+import pytest
 from gdsfactory.component import Component
-from photonic_router.static_obstacle_builder import _load_rust_backend
-from tests.fixtures.synthetic_layouts import (
-    PATH_LENGTH_INTERNAL_DELAYS_UM,
-    PATH_LENGTH_NODE_TYPES,
-    path_length_schematic,
-)
+from photonic_router import flow as routing_flow
 from photonic_router.path_length_graph import (
     DelayInsertionCandidate,
     MissingLengthRequirement,
@@ -15,11 +13,20 @@ from photonic_router.path_length_graph import (
     RoutedEdgeKey,
     build_graph_from_schematic,
 )
+from photonic_router.static_obstacle_builder import _load_rust_backend
+
+import routing_flow_optical
+import translation.route_rust as route_rust
+from tests.fixtures.synthetic_layouts import (
+    PATH_LENGTH_INTERNAL_DELAYS_UM,
+    PATH_LENGTH_NODE_TYPES,
+    path_length_schematic,
+)
 from translation.route_rust import (
+    MeanderInsertionConfig,
+    RoutedNetRecord,
     RouteRustPipelineResult,
     RustRouteDebugArtifacts,
-    RoutedNetRecord,
-    MeanderInsertionConfig,
     analyze_meander_insertion_for_requirements,
     analyze_path_length_matching,
     insert_meanders_for_requirements,
@@ -37,16 +44,13 @@ from translation.route_rust_analysis import (
     path_length_acceptance_summary,
 )
 from translation.route_rust_meanders import (
-    _MeanderPlannerContext,
     _axis_aligned_centerline_run_lengths_um,
     _build_planner_context,
     _meander_search_config,
+    _MeanderPlannerContext,
     _normalize_minimum_insertable_request,
 )
-import translation.route_rust as route_rust
 from translation.routing import api as routing_api
-from photonic_router import flow as routing_flow
-import routing_flow_optical
 
 
 class _SchematicLike(Protocol):
@@ -2031,7 +2035,7 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
             plans = []
             plan_input_indices = []
             for input_index, (_geometry_index, requested) in enumerate(
-                zip(geometry_indices, requested_extra_lengths_um)
+                zip(geometry_indices, requested_extra_lengths_um, strict=False)
             ):
                 offset = 10 if input_index == 0 else 20
                 plans.append(

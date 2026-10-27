@@ -1,16 +1,18 @@
 """Electrical routing stage for heater metal routing."""
 
+from __future__ import annotations
+
 from .metal_realization import realize_electrical_metal
 from .route_electrical import route_electrical_heaters
 from .types import (
-    CommonBusRoutingResult,
-    CommonBusEscapeResult,
     DEFAULT_BONDPAD_WIDTH_UM,
     DEFAULT_BUS_WIDTH_UM,
     DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM,
     DEFAULT_COMMON_BUS_BONDPAD_WIDTH_UM,
     DEFAULT_PAD_PITCH_UM,
     DEFAULT_WIRE_WIDTH_UM,
+    CommonBusEscapeResult,
+    CommonBusRoutingResult,
     DetailedBundleRoute,
     DetailedBundleRoutingResult,
     ElectricalObstacleMap,
@@ -31,14 +33,14 @@ from .types import (
 from .verification import verify_electrical_routing
 
 __all__ = [
-    "CommonBusRoutingResult",
-    "CommonBusEscapeResult",
     "DEFAULT_BONDPAD_WIDTH_UM",
     "DEFAULT_BUS_WIDTH_UM",
     "DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM",
     "DEFAULT_COMMON_BUS_BONDPAD_WIDTH_UM",
     "DEFAULT_PAD_PITCH_UM",
     "DEFAULT_WIRE_WIDTH_UM",
+    "CommonBusEscapeResult",
+    "CommonBusRoutingResult",
     "DetailedBundleRoute",
     "DetailedBundleRoutingResult",
     "ElectricalObstacleMap",

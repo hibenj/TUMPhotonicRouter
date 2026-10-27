@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import itertools
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
-import math
 from typing import Literal, cast
 
 from photonic_router.static_obstacle_builder import GridSpec, physical_to_grid
@@ -221,8 +222,8 @@ def select_anchor_cell(
     if _in_bounds(seed_cell, grid):
         return seed_cell
     return (
-        min(max(seed_cell[0], 0), int(getattr(grid, "width")) - 1),
-        min(max(seed_cell[1], 0), int(getattr(grid, "height")) - 1),
+        min(max(seed_cell[0], 0), int(grid.width) - 1),
+        min(max(seed_cell[1], 0), int(grid.height) - 1),
     )
 
 
@@ -266,7 +267,7 @@ def _dedupe_points(points: tuple[Point, ...]) -> tuple[Point, ...]:
 def _polyline_length(points: tuple[Point, ...]) -> float:
     return sum(
         math.hypot(right[0] - left[0], right[1] - left[1])
-        for left, right in zip(points, points[1:])
+        for left, right in itertools.pairwise(points)
     )
 
 
@@ -281,6 +282,4 @@ def _fallback_contact_bbox(point: Point, width_um: float) -> tuple[float, float,
 
 
 def _in_bounds(cell: GridCell, grid: object) -> bool:
-    return 0 <= cell[0] < int(getattr(grid, "width")) and 0 <= cell[1] < int(
-        getattr(grid, "height")
-    )
+    return 0 <= cell[0] < int(grid.width) and 0 <= cell[1] < int(grid.height)

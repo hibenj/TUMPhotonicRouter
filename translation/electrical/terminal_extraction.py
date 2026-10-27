@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from fnmatch import fnmatchcase
-from typing import Any, Iterable
+from typing import Any
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
@@ -109,7 +110,7 @@ def _is_electrical_port(port: Any) -> bool:
 def _port_ref(port: Any) -> ElectricalPortRef:
     center = getattr(port, "dcenter", None)
     if center is None:
-        center = getattr(port, "center")
+        center = port.center
     return ElectricalPortRef(
         name=str(getattr(port, "name", "") or ""),
         center=(float(center[0]), float(center[1])),

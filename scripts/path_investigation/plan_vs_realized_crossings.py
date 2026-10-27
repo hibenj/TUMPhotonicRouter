@@ -3,14 +3,18 @@
 .venv/bin/python scripts/path_investigation/plan_vs_realized_crossings.py benes_32x32
 (contribution 1 design measurement, 2026-09-04)."""
 
-import json, sys
+from __future__ import annotations
+
+import json
+import sys
 from collections import Counter
 
 sys.path.insert(0, ".")
-from routing_flow import load_benchmark
-from benchmark_metadata import load_benchmark_metadata
-from photonic_router.topology_analysis import analyze_schematic_topology
 from photonic_router.crossing_plan import build_crossing_plan
+from photonic_router.topology_analysis import analyze_schematic_topology
+
+from benchmark_metadata import load_benchmark_metadata
+from routing_flow import load_benchmark
 
 b = sys.argv[1]
 sch = load_benchmark(b)

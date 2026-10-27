@@ -7,12 +7,11 @@ benchmark runs without adding work to the A* hot path.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
 import json
 import math
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 Point = tuple[float, float]
 
@@ -796,7 +795,7 @@ def _as_str_or_none(value: object) -> str | None:
     if value is None:
         return None
     text = str(value)
-    return text if text else None
+    return text or None
 
 
 def _distance(a: Point, b: Point) -> float:

@@ -9,9 +9,11 @@ Structure:
 - 1:1 mapping: Rust primitive ID → component + metadata
 """
 
-import gdsfactory as gf
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict
+
+import gdsfactory as gf
 
 
 @dataclass(frozen=True)
@@ -29,8 +31,8 @@ class PrimitiveLibrary:
 
     def __init__(self):
         """Initialize the primitive library with gdsfactory waveguides."""
-        self.components: Dict[int, gf.Component] = {}
-        self.metadata: Dict[int, PrimitiveMetadata] = {}
+        self.components: dict[int, gf.Component] = {}
+        self.metadata: dict[int, PrimitiveMetadata] = {}
         self._build_library()
 
     def _build_library(self) -> None:
@@ -156,7 +158,7 @@ class PrimitiveLibrary:
         """Get metadata for a primitive ID."""
         return self.metadata.get(primitive_id)
 
-    def get_all_metadata(self) -> Dict[int, PrimitiveMetadata]:
+    def get_all_metadata(self) -> dict[int, PrimitiveMetadata]:
         """Get all primitive metadata."""
         return dict(self.metadata)
 

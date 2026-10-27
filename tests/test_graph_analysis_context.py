@@ -1,9 +1,12 @@
-from benchmark_metadata import load_benchmark_metadata
-from benchmarks.benes_4x4 import build_schematic
+from __future__ import annotations
+
 from photonic_router.crossing_plan import build_crossing_plan
 from photonic_router.graph_analysis import GraphAnalysisContext
 from photonic_router.path_length_graph import build_graph_from_schematic
 from photonic_router.topology_analysis import analyze_schematic_topology
+
+from benchmark_metadata import load_benchmark_metadata
+from benchmarks.benes_4x4 import build_schematic
 
 
 def test_graph_analysis_context_reuses_one_graph_for_plm_and_topology():
@@ -14,7 +17,7 @@ def test_graph_analysis_context_reuses_one_graph_for_plm_and_topology():
         node_types=metadata["node_types"],
         internal_delays_um=metadata["internal_delays_um"],
     )
-    edge_lengths = {edge_key: 100.0 for edge_key in context.graph.edges}
+    edge_lengths = dict.fromkeys(context.graph.edges, 100.0)
 
     timing = context.analyze_path_lengths(edge_lengths)
     topology = context.analyze_topology(

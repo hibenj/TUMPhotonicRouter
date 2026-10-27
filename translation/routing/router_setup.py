@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, cast
+from collections.abc import Iterable
+from typing import Any, cast
 
 from translation.route_rust_obstacle_config import _grid_origin_xy
 from translation.route_rust_types import (
@@ -66,9 +67,7 @@ def configure_router_and_grid(
         allow_45_degree_turns=settings.allow_45_degree_turns,
     )
     state.bend_radius_cells = int(state.primitive_cfg.bend_radius_cells)
-    state.astar_cfg = state.rust_backend.AStarConfig(
-        max_iterations=int(settings.max_iterations)
-    )
+    state.astar_cfg = state.rust_backend.AStarConfig(max_iterations=int(settings.max_iterations))
     # The crossing search (lidar modes) builds a dense grid over the full
     # routing bounds and panics when that exceeds the kernel's cap
     # (default 10M cells; benes_64x64 needs 29M, multiportmmi_64x64 83M,
@@ -144,9 +143,7 @@ def configure_router_and_grid(
         effective_heap_tie_breaker = env_tie_breaker
     state.astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
     if hasattr(state.astar_cfg, "proactive_congestion_weight"):
-        state.astar_cfg.proactive_congestion_weight = float(
-            settings.proactive_congestion_weight
-        )
+        state.astar_cfg.proactive_congestion_weight = float(settings.proactive_congestion_weight)
     if hasattr(state.astar_cfg, "proactive_congestion_radius_cells"):
         state.astar_cfg.proactive_congestion_radius_cells = int(
             settings.proactive_congestion_radius_cells
@@ -163,9 +160,7 @@ def configure_router_and_grid(
         grid_size_um=float(state.grid.grid_size_um),
         route_clearance_um=state.route_clearance_um,
     )
-    state.block_radius_cells = (
-        state.clearance_policy.dynamic_obstacle_search_expansion_radius_cells
-    )
+    state.block_radius_cells = state.clearance_policy.dynamic_obstacle_search_expansion_radius_cells
     state.commit_radius_cells = state.clearance_policy.dynamic_route_commit_keepout_radius_cells
     state.core_commit_radius_cells = state.clearance_policy.dynamic_route_core_radius_cells
     routing_window_min_margin_cells = max(
@@ -227,14 +222,9 @@ def configure_router_and_grid(
         0,
     )
 
-    port_open_radius_um = _as_float(
-        getattr(state.resolved_obstacle_config, "port_open_radius_um", 0.5),
-        0.5,
-    )
-
     raw_blocked_obj: object
     if hasattr(obstacle_map, "raw_blocked_cells"):
-        raw_blocked_obj = getattr(obstacle_map, "raw_blocked_cells")
+        raw_blocked_obj = obstacle_map.raw_blocked_cells
     else:
         raw_blocked_obj = obstacle_map.blocked_cells
     raw_blocked_cells = cast(Iterable[tuple[int, int]], raw_blocked_obj)
@@ -244,7 +234,7 @@ def configure_router_and_grid(
     if hasattr(obstacle_map, "raw_static_rects"):
         for rect in cast(
             Iterable[tuple[int, int, int, int]],
-            getattr(obstacle_map, "raw_static_rects"),
+            obstacle_map.raw_static_rects,
         ):
             if len(rect) == 4:
                 state.raw_static_rects_for_openings.append(
@@ -254,7 +244,7 @@ def configure_router_and_grid(
     if hasattr(obstacle_map, "blocked_static_rects"):
         for rect in cast(
             Iterable[tuple[int, int, int, int]],
-            getattr(obstacle_map, "blocked_static_rects"),
+            obstacle_map.blocked_static_rects,
         ):
             if len(rect) == 4:
                 blocked_static_rects_for_openings.append(
@@ -278,4 +268,6 @@ def dense_obstacle_cell_cap(grid_width: int, grid_height: int, default_cap: int)
     clamped bound expansion), or the kernel refuses the grid and panics.
     Maps that fit the default cap keep it, so small benchmarks are unchanged.
     """
-    return max(int(default_cap), DENSE_OBSTACLE_CELL_CAP_MARGIN * int(grid_width) * int(grid_height))
+    return max(
+        int(default_cap), DENSE_OBSTACLE_CELL_CAP_MARGIN * int(grid_width) * int(grid_height)
+    )

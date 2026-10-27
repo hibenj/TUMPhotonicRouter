@@ -14,11 +14,13 @@ re-export of the module that now owns it - no behaviour lives in this file.
 Milestone 7 retires it.
 """
 
+from __future__ import annotations
+
 from photonic_router.cli import (  # noqa: F401
-    _benchmark_stable_defaults,
-    _build_arg_parser,
     _CONFIGURATION_FLAGS,
     _CROSSING_DISCOVERY_FLAGS,
+    _benchmark_stable_defaults,
+    _build_arg_parser,
     _parse_bool_flag,
     _requests_preplaced_crossing_grids,
     configuration_flags,
@@ -43,8 +45,8 @@ from photonic_router.flow import (  # noqa: F401
 )
 from photonic_router.flow_options import FlowOptions  # noqa: F401
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig  # noqa: F401
+
 from routing_flow_config import (  # noqa: F401
-    DebugSvgSelector,
     SCRIPT_ALLOW_45_DEGREE_TURNS,
     SCRIPT_ATTEMPT_DIAGNOSTICS,
     SCRIPT_BENCHMARK,
@@ -86,6 +88,7 @@ from routing_flow_config import (  # noqa: F401
     SCRIPT_SHOW_KLAYOUT,
     SCRIPT_VERBOSE_ROUTES,
     SCRIPT_WAVEGUIDE_CLEARANCE_UM,
+    DebugSvgSelector,
     build_optical_routing_stage_config,
     build_static_obstacle_config,
     debug_artifact_routing_options,

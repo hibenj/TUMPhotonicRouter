@@ -20,34 +20,32 @@ Protocols declare each phase's inputs and its product."""
 from __future__ import annotations
 
 import importlib
-
 from pathlib import Path
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
-
 from photonic_router.config import RoutingConfig
 
 from translation.route_rust_types import RipupRerouteConfig, RustRouteDebugArtifacts
-
+from translation.routing import (
+    crossing_plan_stage,
+    detour_pass,
+    dispatch,
+    finalize,
+    handoff,
+    obstacle_context,
+    realize,
+    router_setup,
+    verify_repair,
+)
+from translation.routing import (
+    route_jobs as route_jobs_stage,  # `route_jobs` is a local name in `run`
+)
 from translation.routing.settings import (
     DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     SessionSettings,
 )
 from translation.routing.state import SessionState
-
-from translation.routing import (
-    obstacle_context,
-    router_setup,
-    route_jobs as route_jobs_stage,  # `route_jobs` is a local name in `run`
-    crossing_plan_stage,
-    handoff,
-    detour_pass,
-    dispatch,
-    finalize,
-    verify_repair,
-    realize,
-)
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 GridSpec = _sob.GridSpec
@@ -254,13 +252,20 @@ class _RouteNetsRustSession:
         )
         route_jobs_stage.apply_long_straight_fanout_exemption(settings, state)
         planned = crossing_plan_stage.build_crossing_plan_and_port_footprints(
-            settings, state, jobs.route_jobs, jobs.endpoint_port_specs_by_instance,
-            jobs.dense_port_runway_length_by_spec, context.obstacle_map,
+            settings,
+            state,
+            jobs.route_jobs,
+            jobs.endpoint_port_specs_by_instance,
+            jobs.dense_port_runway_length_by_spec,
+            context.obstacle_map,
             context.crossing_device_info,
         )
         final = handoff.finalize_route_jobs_and_static_handoff(
-            settings, state, planned.route_jobs,
-            planned.foreign_port_keepout_cells_by_instance, context.obstacle_map,
+            settings,
+            state,
+            planned.route_jobs,
+            planned.foreign_port_keepout_cells_by_instance,
+            context.obstacle_map,
         )
         dispatch.dispatch_native_routing(settings, state, final.route_jobs)
         routed = finalize.finalize_routing_results(
@@ -272,11 +277,17 @@ class _RouteNetsRustSession:
             settings, state, routed.routed_net_records
         )
         debug_artifacts = realize.realize_and_assemble_debug_artifacts(
-            settings, state, final.route_jobs, verified.routed_net_records,
-            verified.illegal_realized_crossings, context.obstacle_map,
-            context.obstacle_svg, routed.astar_elapsed_s,
+            settings,
+            state,
+            final.route_jobs,
+            verified.routed_net_records,
+            verified.illegal_realized_crossings,
+            context.obstacle_map,
+            context.obstacle_svg,
+            routed.astar_elapsed_s,
         )
         return state.routed_layout, debug_artifacts
+
 
 def route_nets_rust(
     unrouted_layout: Component,
@@ -297,8 +308,8 @@ def route_nets_rust(
     primitive_ordering: str = "library",
     heuristic_mode: str = "heading_aware",
     net_order: str = "topological",
-        net_order_depth_by_node: dict[str, int] | None = None,
-        detour_pass_factor: float = 0.0,
+    net_order_depth_by_node: dict[str, int] | None = None,
+    detour_pass_factor: float = 0.0,
     heap_tie_breaker: str = "smaller_g",
     proactive_congestion_weight: float = 0.0,
     proactive_congestion_radius_cells: int = 0,

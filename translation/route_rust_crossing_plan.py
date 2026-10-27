@@ -5,20 +5,21 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from gdsfactory.schematic import Schematic
-
 from photonic_router.config import CrossingPlanConfig
 from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
-from translation.crossing_modes import is_guided_mode
 from photonic_router.topology_analysis import analyze_schematic_topology
+
+from translation.crossing_modes import is_guided_mode
 from translation.route_rust_crossing_components import _crossing_component_bbox_size_um
 from translation.route_rust_geometry import _first_perpendicular_route_intersection
 from translation.route_rust_records import route_edge_key
-from translation.route_rust_types import RouteJob, RoutedNetRecord
+from translation.route_rust_types import RoutedNetRecord, RouteJob
 
 if TYPE_CHECKING:
     from translation.routing.crossing_plan_info import CrossingPlanInfo
@@ -82,7 +83,7 @@ def _resolve_crossing_half_size_cells(
 
     component_name, width_um, height_um = component_size
     half_extent_um = max(width_um, height_um) / 2.0 + max(0.0, float(clearance_um))
-    half_size_cells = int(math.ceil(half_extent_um / float(grid_size_um)))
+    half_size_cells = math.ceil(half_extent_um / float(grid_size_um))
     info.update(
         {
             "component_name": component_name,
@@ -372,9 +373,7 @@ def _segment_bend_units(route_obj: object) -> float:
             continue
         if kind == "turn45":
             bend_units += 0.5
-        elif kind == "turn90":
-            bend_units += 1.0
-        elif kind and kind != "straight":
+        elif kind == "turn90" or (kind and kind != "straight"):
             bend_units += 1.0
     return bend_units
 
@@ -579,9 +578,9 @@ def _augment_crossing_plan_with_realized_overlaps(
             if not record["valid_crossing_geometry"]:
                 record["unrealized_reason"] = "insufficient_straight_margin"
                 record["required_margin_cells"] = required_crossing_margin_cells
-        if geometric_crossing is not None and record.get("valid_crossing_geometry"):
-            actual_crossings.append(record)
-        elif overlap and routed_records_by_net_id is None:
+        if (geometric_crossing is not None and record.get("valid_crossing_geometry")) or (
+            overlap and routed_records_by_net_id is None
+        ):
             actual_crossings.append(record)
         else:
             unrealized_expected.append(record)

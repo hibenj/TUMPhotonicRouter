@@ -11,11 +11,11 @@ from translation.route_rust_debug_artifacts import _ensure_dir
 from translation.route_rust_geometry import _format_route_indices
 from translation.route_rust_obstacle_config import _resolve_obstacle_config
 from translation.route_rust_types import _as_float
-
 from translation.routing import timing
 from translation.routing.settings import SessionSettings
 from translation.routing.stages import ObstacleContext
 from translation.routing.state import SessionState
+
 
 def build_static_obstacle_context(
     settings: SessionSettings, state: SessionState
@@ -57,9 +57,7 @@ def build_static_obstacle_context(
         )
     )
 
-    state.debug_path = (
-        Path(settings.debug_dir) if settings.debug_dir is not None else None
-    )
+    state.debug_path = Path(settings.debug_dir) if settings.debug_dir is not None else None
     state.diagnostics_enabled = state.debug_path is not None
     obstacle_svg = None
     state.route_svgs: list[Path] = []

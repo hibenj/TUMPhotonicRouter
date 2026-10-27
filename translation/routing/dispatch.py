@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
 from collections import deque
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Iterable, Mapping, cast
+from typing import Any, cast
 from xml.sax.saxutils import escape as _xml_escape
 
 from translation.route_rust_crossing_plan import _port_center_um
@@ -74,9 +76,7 @@ def _direction_reaches_target_ray(
     if dir_y == 0:
         return abs(dy) <= tolerance and (dx > 0) == (dir_x > 0)
     return (
-        (dx > 0) == (dir_x > 0)
-        and (dy > 0) == (dir_y > 0)
-        and abs(abs(dx) - abs(dy)) <= tolerance
+        (dx > 0) == (dir_x > 0) and (dy > 0) == (dir_y > 0) and abs(abs(dx) - abs(dy)) <= tolerance
     )
 
 
@@ -100,7 +100,9 @@ def _source_lower_bounds(
         target_angle_ok = not bool(getattr(state.astar_cfg, "require_target_angle", True)) or (
             source_angle % 8 == target_angle % 8
         )
-        reaches_target_ray = _direction_reaches_target_ray(settings, state,
+        reaches_target_ray = _direction_reaches_target_ray(
+            settings,
+            state,
             source_x=source_x,
             source_y=source_y,
             source_angle=source_angle,
@@ -131,9 +133,9 @@ def _foreign_keepout_cleanup_cells_for_spec(
 
 def _foreign_keepout_cleanup_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
     cells = _foreign_keepout_cleanup_cells_for_spec(settings, state, f"{job.inst1},{job.port1}")
-    cells.update(_foreign_keepout_cleanup_cells_for_spec(
-        settings, state, f"{job.inst2},{job.port2}"
-    ))
+    cells.update(
+        _foreign_keepout_cleanup_cells_for_spec(settings, state, f"{job.inst2},{job.port2}")
+    )
     return sorted(cells)
 
 
@@ -386,26 +388,34 @@ def _route_attempt_diagnostics(
             min_y=window_min_y,
             max_y=window_max_y,
         )
-    window_static_cells = _static_cells_in_rect(settings, state,
+    window_static_cells = _static_cells_in_rect(
+        settings,
+        state,
         window_min_x,
         window_max_x,
         window_min_y,
         window_max_y,
     )
-    window_dynamic_cells = _cells_in_rect(settings, state,
+    window_dynamic_cells = _cells_in_rect(
+        settings,
+        state,
         dynamic_cells_before,
         min_x=window_min_x,
         max_x=window_max_x,
         min_y=window_min_y,
         max_y=window_max_y,
     )
-    span_static_cells = _static_cells_in_rect(settings, state,
+    span_static_cells = _static_cells_in_rect(
+        settings,
+        state,
         span_bbox_min_x,
         span_bbox_max_x,
         span_bbox_min_y,
         span_bbox_max_y,
     )
-    span_dynamic_cells = _cells_in_rect(settings, state,
+    span_dynamic_cells = _cells_in_rect(
+        settings,
+        state,
         dynamic_cells_before,
         min_x=span_bbox_min_x,
         max_x=span_bbox_max_x,
@@ -428,7 +438,9 @@ def _route_attempt_diagnostics(
         max_y=route_bbox_max_y,
     )
     total_cost = float(getattr(route_obj, "total_cost", 0.0)) if route_obj is not None else None
-    euclidean_lower_bound, heading_lower_bound = _source_lower_bounds(settings, state,
+    euclidean_lower_bound, heading_lower_bound = _source_lower_bounds(
+        settings,
+        state,
         source_x=source_x,
         source_y=source_y,
         source_angle=source_angle,
@@ -445,13 +457,10 @@ def _route_attempt_diagnostics(
     raw_net_route_cells: set[tuple[int, int]] = set()
     if hasattr(state.router, "raw_dynamic_obstacle_cells"):
         raw_dynamic_entries = [
-            (int(x), int(y), int(refs))
-            for x, y, refs in state.router.raw_dynamic_obstacle_cells()
+            (int(x), int(y), int(refs)) for x, y, refs in state.router.raw_dynamic_obstacle_cells()
         ]
         raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
-        raw_dynamic_refcount_gt1_cells = {
-            (x, y) for x, y, refs in raw_dynamic_entries if refs > 1
-        }
+        raw_dynamic_refcount_gt1_cells = {(x, y) for x, y, refs in raw_dynamic_entries if refs > 1}
     if hasattr(state.router, "raw_dynamic_core_cells"):
         raw_core_entries = [
             (int(x), int(y), int(refs)) for x, y, refs in state.router.raw_dynamic_core_cells()
@@ -503,9 +512,7 @@ def _route_attempt_diagnostics(
         "dynamic_route_commit_keepout_radius_cells": (
             state.clearance_policy.dynamic_route_commit_keepout_radius_cells
         ),
-        "dynamic_route_core_radius_cells": (
-            state.clearance_policy.dynamic_route_core_radius_cells
-        ),
+        "dynamic_route_core_radius_cells": (state.clearance_policy.dynamic_route_core_radius_cells),
         "bend_radius_cells": state.bend_radius_cells,
         "window_width_cells": max(0, window_max_x - window_min_x + 1),
         "window_height_cells": max(0, window_max_y - window_min_y + 1),
@@ -559,9 +566,7 @@ def _route_attempt_diagnostics(
         "raw_core_without_dynamic_count": len(raw_core_without_dynamic),
         "span_raw_dynamic_cells": len(raw_dynamic_span_cells),
         "span_raw_dynamic_without_owner_count": len(raw_dynamic_without_owner_span_cells),
-        "span_raw_dynamic_without_owner_bbox": _cells_bbox(
-            raw_dynamic_without_owner_span_cells
-        ),
+        "span_raw_dynamic_without_owner_bbox": _cells_bbox(raw_dynamic_without_owner_span_cells),
         "candidate_blocker_count": len(blocker_ids),
         "candidate_blocker_net_ids": blocker_ids,
         "candidate_blocker_route_indices": [
@@ -605,14 +610,12 @@ def _write_route_diagnostics(
     committed_dynamic_cells = _committed_dynamic_cells(settings, state, exclude_net_id=job.net_id)
     if state.diagnostics_enabled:
         opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
-        opened_candidate_static_overlap = _cells_in_raw_static_geometry(settings, state,
-            opened_candidate_cells
+        opened_candidate_static_overlap = _cells_in_raw_static_geometry(
+            settings, state, opened_candidate_cells
         )
         opened_static_overlap = _cells_in_raw_static_geometry(settings, state, opened_cells_set)
         opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
-        dynamic_exempt_dynamic_overlap = (
-            dynamic_clearance_exempt_cells & committed_dynamic_cells
-        )
+        dynamic_exempt_dynamic_overlap = dynamic_clearance_exempt_cells & committed_dynamic_cells
     else:
         opened_candidate_dynamic_overlap = set()
         opened_candidate_static_overlap = set()
@@ -638,26 +641,20 @@ def _write_route_diagnostics(
     current_port_runway_cells = set(state.port_runway_cells_by_spec.get(port1_spec, set()))
     current_port_runway_cells.update(state.port_runway_cells_by_spec.get(port2_spec, set()))
     source_sibling_port_runway_cells: set[tuple[int, int]] = set()
-    for cluster_port_spec in state.dense_source_cluster_specs_by_port_spec.get(
-        port1_spec, set()
-    ):
+    for cluster_port_spec in state.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()):
         if cluster_port_spec == port1_spec:
             continue
         source_sibling_port_runway_cells.update(
             state.port_runway_cells_by_spec.get(cluster_port_spec, set())
         )
     target_sibling_port_runway_cells: set[tuple[int, int]] = set()
-    for cluster_port_spec in state.dense_source_cluster_specs_by_port_spec.get(
-        port2_spec, set()
-    ):
+    for cluster_port_spec in state.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()):
         if cluster_port_spec == port2_spec:
             continue
         target_sibling_port_runway_cells.update(
             state.port_runway_cells_by_spec.get(cluster_port_spec, set())
         )
-    sibling_port_runway_cells = (
-        source_sibling_port_runway_cells | target_sibling_port_runway_cells
-    )
+    sibling_port_runway_cells = source_sibling_port_runway_cells | target_sibling_port_runway_cells
     current_port_runway_dynamic_overlap = current_port_runway_cells & committed_dynamic_cells
     sibling_port_runway_dynamic_overlap = sibling_port_runway_cells & committed_dynamic_cells
     route_overlap_current_port_runway = route_cells & current_port_runway_cells
@@ -790,7 +787,7 @@ def _write_route_diagnostics(
             first_corner_x = bend_start_x + radius
             first_corner_y = cross_y
             first_end_y = cross_y + dy_sign * radius
-            for step in range(0, radius + 1):
+            for step in range(radius + 1):
                 cells.add((first_corner_x, first_corner_y + dy_sign * step))
             vertical_start_y = first_end_y
             second_start_y = target_anchor_cell[1] - dy_sign * radius
@@ -798,7 +795,7 @@ def _write_route_diagnostics(
             for y in range(y0, y1 + 1):
                 cells.add((first_corner_x, y))
             second_end_x = first_corner_x + radius
-            for step in range(0, radius + 1):
+            for step in range(radius + 1):
                 cells.add((first_corner_x + step, second_start_y + dy_sign * step))
             for x in range(second_end_x, target_anchor_cell[0] + 1):
                 cells.add((x, target_anchor_cell[1]))
@@ -907,7 +904,7 @@ def _write_route_diagnostics(
         opened_search_cells = {
             cell
             for cell in opened_cells_set
-            if cell == source_key or cell == target_key or cell not in committed_dynamic_cells
+            if cell in (source_key, target_key) or cell not in committed_dynamic_cells
         }
         routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
         routing_static_cells.update(state.debug_port_keepout_cells)
@@ -944,33 +941,18 @@ def _write_route_diagnostics(
             )
             owner_cells = _dynamic_owners_for_cells(dynamic_overlap)
             debug_lines.append(
-                "first_move_{label}="
-                "end=({end_x},{end_y},{end_angle}); "
-                "footprint={footprint}; "
-                "static={static}; "
-                "routing_static={routing_static}; "
-                "static_blockers={static_blockers}; "
-                "dynamic={dynamic}; "
-                "dynamic_blockers={dynamic_blockers}; "
-                "dynamic_owners={owners}; "
-                "opened={opened}; "
-                "opened_search={opened_search}; "
-                "dynamic_exempt={dynamic_exempt}".format(
-                    label=label,
-                    end_x=end_cell[0],
-                    end_y=end_cell[1],
-                    end_angle=end_angle,
-                    footprint=footprint,
-                    static=sorted(static_overlap),
-                    routing_static=sorted(routing_static_overlap),
-                    static_blockers=sorted(effective_static_blockers),
-                    dynamic=sorted(dynamic_overlap),
-                    dynamic_blockers=sorted(effective_dynamic_blockers),
-                    owners=owner_cells,
-                    opened=sorted(footprint_set & opened_cells_set),
-                    opened_search=sorted(footprint_set & opened_search_cells),
-                    dynamic_exempt=sorted(footprint_set & dynamic_clearance_exempt_cells),
-                )
+                f"first_move_{label}="
+                f"end=({end_cell[0]},{end_cell[1]},{end_angle}); "
+                f"footprint={footprint}; "
+                f"static={sorted(static_overlap)}; "
+                f"routing_static={sorted(routing_static_overlap)}; "
+                f"static_blockers={sorted(effective_static_blockers)}; "
+                f"dynamic={sorted(dynamic_overlap)}; "
+                f"dynamic_blockers={sorted(effective_dynamic_blockers)}; "
+                f"dynamic_owners={owner_cells}; "
+                f"opened={sorted(footprint_set & opened_cells_set)}; "
+                f"opened_search={sorted(footprint_set & opened_search_cells)}; "
+                f"dynamic_exempt={sorted(footprint_set & dynamic_clearance_exempt_cells)}"
             )
         return debug_lines
 
@@ -991,14 +973,22 @@ def _write_route_diagnostics(
         f"fanout_stub_static_cell_count={len(state.fanout_stub_static_cells)}",
         f"source_fanout_anchor={f'{job.inst1},{job.port1}' in state.fanout_anchor_by_port_spec}",
         f"target_fanout_anchor={f'{job.inst2},{job.port2}' in state.fanout_anchor_by_port_spec}",
-        "source_dense_port_runway_cells="
-        f"{state.dense_source_port_runway_length_by_spec.get(port1_spec)}",
-        "target_dense_port_runway_cells="
-        f"{state.dense_target_port_runway_length_by_spec.get(port2_spec)}",
-        "source_dense_source_cluster_size="
-        f"{len(state.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()))}",
-        "target_dense_source_cluster_size="
-        f"{len(state.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()))}",
+        (
+            "source_dense_port_runway_cells="
+            f"{state.dense_source_port_runway_length_by_spec.get(port1_spec)}"
+        ),
+        (
+            "target_dense_port_runway_cells="
+            f"{state.dense_target_port_runway_length_by_spec.get(port2_spec)}"
+        ),
+        (
+            "source_dense_source_cluster_size="
+            f"{len(state.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()))}"
+        ),
+        (
+            "target_dense_source_cluster_size="
+            f"{len(state.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()))}"
+        ),
         f"foreign_port_keepout_static_count={len(state.foreign_port_keepout_static_cells)}",
         f"foreign_port_keepout_open_count={len(foreign_keepout_open_cells)}",
         f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
@@ -1016,11 +1006,15 @@ def _write_route_diagnostics(
         f"opened_dynamic_overlap_bbox={_cells_bbox(opened_dynamic_overlap)}",
         f"opened_dynamic_overlap_owners={_dynamic_owners_for_cells(opened_dynamic_overlap)}",
         f"current_port_runway_dynamic_overlap_count={len(current_port_runway_dynamic_overlap)}",
-        "current_port_runway_dynamic_overlap_bbox="
-        f"{_cells_bbox(current_port_runway_dynamic_overlap)}",
+        (
+            "current_port_runway_dynamic_overlap_bbox="
+            f"{_cells_bbox(current_port_runway_dynamic_overlap)}"
+        ),
         f"sibling_port_runway_dynamic_overlap_count={len(sibling_port_runway_dynamic_overlap)}",
-        "sibling_port_runway_dynamic_overlap_bbox="
-        f"{_cells_bbox(sibling_port_runway_dynamic_overlap)}",
+        (
+            "sibling_port_runway_dynamic_overlap_bbox="
+            f"{_cells_bbox(sibling_port_runway_dynamic_overlap)}"
+        ),
         f"dynamic_clearance_exempt_cells_count={len(dynamic_clearance_exempt_cells)}",
         f"dynamic_clearance_exempt_cells_bbox={_cells_bbox(dynamic_clearance_exempt_cells)}",
         f"dynamic_clearance_exempt_dynamic_overlap_count={len(dynamic_exempt_dynamic_overlap)}",
@@ -1032,11 +1026,9 @@ def _write_route_diagnostics(
         f"route_dynamic_overlap_bbox={_cells_bbox(route_dynamic_overlap)}",
         f"route_dynamic_overlap_owners={_dynamic_owners_for_cells(route_dynamic_overlap)}",
         f"route_overlap_current_port_runway_count={len(route_overlap_current_port_runway)}",
-        "route_overlap_current_port_runway_bbox="
-        f"{_cells_bbox(route_overlap_current_port_runway)}",
+        f"route_overlap_current_port_runway_bbox={_cells_bbox(route_overlap_current_port_runway)}",
         f"route_overlap_sibling_port_runway_count={len(route_overlap_sibling_port_runway)}",
-        "route_overlap_sibling_port_runway_bbox="
-        f"{_cells_bbox(route_overlap_sibling_port_runway)}",
+        f"route_overlap_sibling_port_runway_bbox={_cells_bbox(route_overlap_sibling_port_runway)}",
         f"route_overlap_candidate_opened_static_count={len(route_overlap_with_candidate_opened_static)}",
         f"route_overlap_effective_opened_static_count={len(route_overlap_with_effective_opened_static)}",
         f"route_overlap_candidate_opened_dynamic_count={len(route_overlap_with_candidate_opened_dynamic)}",
@@ -1086,9 +1078,7 @@ def _record_route(
             except Exception:
                 corrected_total_length_um = None
     target_anchor = state.fanout_anchor_by_port_spec.get(f"{job.inst2},{job.port2}")
-    target_port_center_um_override = (
-        target_anchor.center_um if target_anchor is not None else None
-    )
+    target_port_center_um_override = target_anchor.center_um if target_anchor is not None else None
     state.route_bookkeeping.record_route(
         job,
         route_obj,
@@ -1113,17 +1103,14 @@ def _export_route_svg(
     opened_cells: list[tuple[int, int]] | None = None,
 ) -> None:
     should_export = state.debug_path is not None and (
-        settings.debug_route_indices is None
-        or job.route_index in settings.debug_route_indices
+        settings.debug_route_indices is None or job.route_index in settings.debug_route_indices
     )
     if not should_export:
         return
     route_dir = state.debug_path / "routes"
     _ensure_dir(route_dir)
     route_svg = route_dir / f"{settings.debug_prefix}_{job.net_name}{suffix}.svg"
-    if obstacle_cells is not None and hasattr(
-        state.router, "export_debug_svg_with_obstacle_cells"
-    ):
+    if obstacle_cells is not None and hasattr(state.router, "export_debug_svg_with_obstacle_cells"):
         svg_text = state.router.export_debug_svg_with_obstacle_cells(
             route_obj,
             sorted(obstacle_cells),
@@ -1142,10 +1129,8 @@ def _export_route_svg(
             int(settings.debug_stop_after_route_index) + 1
         )
         if next_job is not None:
-            try:
+            with contextlib.suppress(Exception):
                 _, _, _, _, opened_cells = _states_and_openings(settings, state, next_job)
-            except Exception:
-                pass
     red_keepout_cells = state.debug_port_keepout_cells - {
         (int(cell[0]), int(cell[1])) for cell in opened_cells
     }
@@ -1185,12 +1170,7 @@ def _route_engine_summary(settings, state, route_obj: Any) -> str:
     route_kind = "simple" if expanded_states == 0 else "astar"
     length_um = _as_float(getattr(route_obj, "total_length_um", 0.0), 0.0)
     total_cost = _as_float(getattr(route_obj, "total_cost", 0.0), 0.0)
-    return (
-        f"{route_kind} "
-        f"length={length_um:.3f}um "
-        f"cost={total_cost:.3f} "
-        f"expanded={expanded_states}"
-    )
+    return f"{route_kind} length={length_um:.3f}um cost={total_cost:.3f} expanded={expanded_states}"
 
 
 def _corridor_clearance_diagnostic(
@@ -1202,10 +1182,7 @@ def _corridor_clearance_diagnostic(
     *,
     max_radius: int | None = None,
 ) -> dict[str, Any]:
-    if max_radius is None:
-        max_radius = max(4, int(state.bend_radius_cells) + 2)
-    else:
-        max_radius = int(max_radius)
+    max_radius = max(4, int(state.bend_radius_cells) + 2) if max_radius is None else int(max_radius)
 
     source = (int(source_state.x), int(source_state.y))
     target = (int(target_state.x), int(target_state.y))
@@ -1329,15 +1306,15 @@ def _write_failed_log(
     )
     opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
     opened_cells_set = set(opened_cells)
-    corridor_diagnostic = _corridor_clearance_diagnostic(settings, state,
+    corridor_diagnostic = _corridor_clearance_diagnostic(
+        settings,
+        state,
         source_state,
         target_state,
         (state.static_blocked_cells_before_port_reservations - opened_cells_set)
         | committed_dynamic_cells,
     )
-    opened_static_overlap = (
-        opened_cells_set & state.static_blocked_cells_before_port_reservations
-    )
+    opened_static_overlap = opened_cells_set & state.static_blocked_cells_before_port_reservations
     opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
     current_attempts = [
         ("current", record)
@@ -1361,12 +1338,15 @@ def _write_failed_log(
         f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
         f"allow_45_degree_turns={settings.allow_45_degree_turns}",
         f"block_radius_cells={state.block_radius_cells}",
-        "dynamic_obstacle_search_expansion_radius_cells="
-        f"{state.clearance_policy.dynamic_obstacle_search_expansion_radius_cells}",
-        "dynamic_route_commit_keepout_radius_cells="
-        f"{state.clearance_policy.dynamic_route_commit_keepout_radius_cells}",
-        "dynamic_route_core_radius_cells="
-        f"{state.clearance_policy.dynamic_route_core_radius_cells}",
+        (
+            "dynamic_obstacle_search_expansion_radius_cells="
+            f"{state.clearance_policy.dynamic_obstacle_search_expansion_radius_cells}"
+        ),
+        (
+            "dynamic_route_commit_keepout_radius_cells="
+            f"{state.clearance_policy.dynamic_route_commit_keepout_radius_cells}"
+        ),
+        f"dynamic_route_core_radius_cells={state.clearance_policy.dynamic_route_core_radius_cells}",
         f"bend_radius_cells={state.bend_radius_cells}",
         f"port_lane_length_cells={state.port_lane_length_cells}",
         f"port_lane_half_width_cells={state.port_lane_half_width_cells}",
@@ -1385,10 +1365,14 @@ def _write_failed_log(
         f"corridor_clearance_first_disconnected_radius={corridor_diagnostic['first_disconnected_radius']}",
         f"corridor_clearance_source_region_size={corridor_diagnostic['source_region_size']}",
         f"corridor_clearance_target_region_size={corridor_diagnostic['target_region_size']}",
-        "corridor_clearance_source_region_min_distance_to_target="
-        f"{corridor_diagnostic['source_region_min_distance_to_target']}",
-        "corridor_clearance_target_region_min_distance_to_source="
-        f"{corridor_diagnostic['target_region_min_distance_to_source']}",
+        (
+            "corridor_clearance_source_region_min_distance_to_target="
+            f"{corridor_diagnostic['source_region_min_distance_to_target']}"
+        ),
+        (
+            "corridor_clearance_target_region_min_distance_to_source="
+            f"{corridor_diagnostic['target_region_min_distance_to_source']}"
+        ),
         f"error={error_text}",
     ]
     if root_cause_line is not None:
@@ -1463,7 +1447,9 @@ def _finalize_committed_route(
         route_cells = {
             (int(cell[0]), int(cell[1])) for cell in (getattr(route_obj, "cells", None) or [])
         }
-        _write_route_diagnostics(settings, state,
+        _write_route_diagnostics(
+            settings,
+            state,
             job=job,
             source_state=source_state,
             target_state=target_state,
@@ -1476,7 +1462,9 @@ def _finalize_committed_route(
             route_obj=route_obj,
         )
 
-    _export_route_svg(settings, state,
+    _export_route_svg(
+        settings,
+        state,
         job,
         route_obj,
         obstacle_cells=debug_obstacle_cells,
@@ -1521,9 +1509,7 @@ def dispatch_native_routing(
                 settings.debug_route_indices is None
                 or job.route_index in settings.debug_route_indices
             )
-            should_print_route = (
-                settings.verbose_route_diagnostics and route_selected_for_debug
-            )
+            should_print_route = settings.verbose_route_diagnostics and route_selected_for_debug
             if settings.debug_route_indices is not None and route_selected_for_debug:
                 should_print_route = True
             if should_print_route:
@@ -1540,9 +1526,7 @@ def dispatch_native_routing(
                 and route_dir is not None
             ):
                 _ensure_dir(route_dir)
-                diag_txt = (
-                    route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
-                )
+                diag_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
             batch_jobs.append(
                 (
                     int(job.net_id),
@@ -1605,12 +1589,9 @@ def dispatch_native_routing(
             repair_round = int(repair_round_raw) if repair_round_raw is not None else None
             attempt_index = len(state.route_attempt_records) + 1
             candidate_blockers = [
-                int(value)
-                for value in cast(list[object], attempt.get("candidate_blockers", []))
+                int(value) for value in cast(list[object], attempt.get("candidate_blockers", []))
             ]
-            ripup_ids = [
-                int(value) for value in cast(list[object], attempt.get("ripup_ids", []))
-            ]
+            ripup_ids = [int(value) for value in cast(list[object], attempt.get("ripup_ids", []))]
             if (
                 route_obj is not None
                 and not failed
@@ -1621,7 +1602,9 @@ def dispatch_native_routing(
                     or job.route_index in settings.debug_route_indices
                 )
             ):
-                _export_route_svg(settings, state,
+                _export_route_svg(
+                    settings,
+                    state,
                     job,
                     route_obj,
                     suffix=f"_attempt{attempt_index}_{bucket_name}",
@@ -1655,7 +1638,9 @@ def dispatch_native_routing(
                         failed=failed,
                         repair_round=repair_round,
                         error=error_text,
-                        diagnostics=_route_attempt_diagnostics(settings, state,
+                        diagnostics=_route_attempt_diagnostics(
+                            settings,
+                            state,
                             job,
                             route_obj if route_obj is not None and not failed else None,
                             candidate_blockers=candidate_blockers,
@@ -1677,14 +1662,18 @@ def dispatch_native_routing(
             opened_cells = batch_opened_cells_by_id[net_id]
             _record_route(settings, state, job, route_obj, opened_cells)
             should_print_route, diag_txt = batch_debug_by_id[net_id]
-            _finalize_committed_route(settings, state,
+            _finalize_committed_route(
+                settings,
+                state,
                 job,
                 route_obj,
                 opened_cells,
                 should_print_route=should_print_route,
                 diag_txt=diag_txt,
             )
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "batch_result_processing",
             t_batch_result_processing_start,
         )
@@ -1712,20 +1701,24 @@ def dispatch_native_routing(
                     f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
                     f"{failed_job.inst2},{failed_job.port2}... failed"
                 )
-            _write_route_diagnostics(settings, state,
+            _write_route_diagnostics(
+                settings,
+                state,
                 job=failed_job,
                 source_state=source_state,
                 target_state=target_state,
                 opened_candidate_cells=opened_candidate_cells,
-                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(settings, state,
-                    failed_job
+                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(
+                    settings, state, failed_job
                 ),
                 opened_cells_set=opened_cells_set,
                 diag_txt=diag_txt,
                 status="failed",
                 error_text=error_text,
             )
-            _write_failed_log(settings, state,
+            _write_failed_log(
+                settings,
+                state,
                 failed_job,
                 source_state,
                 target_state,
@@ -1773,9 +1766,7 @@ def dispatch_native_routing(
                 settings.debug_route_indices is None
                 or job.route_index in settings.debug_route_indices
             )
-            should_print_route = (
-                settings.verbose_route_diagnostics and route_selected_for_debug
-            )
+            should_print_route = settings.verbose_route_diagnostics and route_selected_for_debug
             if settings.debug_route_indices is not None and route_selected_for_debug:
                 should_print_route = True
             if should_print_route:
@@ -1792,9 +1783,7 @@ def dispatch_native_routing(
                 and route_dir is not None
             ):
                 _ensure_dir(route_dir)
-                diag_txt = (
-                    route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
-                )
+                diag_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
             batch_jobs.append(
                 (
                     int(job.net_id),
@@ -1864,14 +1853,18 @@ def dispatch_native_routing(
                 )
             _record_route(settings, state, job, route_obj, opened_cells)
             should_print_route, diag_txt = batch_debug_by_id[net_id]
-            _finalize_committed_route(settings, state,
+            _finalize_committed_route(
+                settings,
+                state,
                 job,
                 route_obj,
                 opened_cells,
                 should_print_route=should_print_route,
                 diag_txt=diag_txt,
             )
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "batch_result_processing",
             t_batch_result_processing_start,
         )
@@ -1916,20 +1909,24 @@ def dispatch_native_routing(
                     f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
                     f"{failed_job.inst2},{failed_job.port2}... failed"
                 )
-            _write_route_diagnostics(settings, state,
+            _write_route_diagnostics(
+                settings,
+                state,
                 job=failed_job,
                 source_state=source_state,
                 target_state=target_state,
                 opened_candidate_cells=opened_candidate_cells,
-                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(settings, state,
-                    failed_job
+                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(
+                    settings, state, failed_job
                 ),
                 opened_cells_set=opened_cells_set,
                 diag_txt=diag_txt,
                 status="failed",
                 error_text=error_text,
             )
-            _write_failed_log(settings, state,
+            _write_failed_log(
+                settings,
+                state,
                 failed_job,
                 source_state,
                 target_state,
@@ -1944,4 +1941,3 @@ def dispatch_native_routing(
                 f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
                 f"allow_45_degree_turns={settings.allow_45_degree_turns}"
             )
-

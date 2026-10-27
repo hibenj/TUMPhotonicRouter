@@ -19,6 +19,8 @@ is `photonic_router.cli`, which builds both objects and calls
 compatibility wrapper that keeps the old keyword API working.
 """
 
+from __future__ import annotations
+
 import importlib
 import time
 from dataclasses import replace
@@ -136,7 +138,6 @@ def load_benchmark(benchmark_name: str) -> Schematic:
                 f"Expected Schematic from {benchmark_name}.build_schematic(), got {type(schematic)}"
             )
 
-        return schematic
     except ModuleNotFoundError as e:
         raise ModuleNotFoundError(
             f"Benchmark '{benchmark_name}' not found in benchmarks/ directory"
@@ -145,6 +146,8 @@ def load_benchmark(benchmark_name: str) -> Schematic:
         raise AttributeError(
             f"Benchmark '{benchmark_name}' must have a 'build_schematic()' function"
         ) from e
+    else:
+        return schematic
 
 
 def _load_benchmark_stage(
@@ -354,7 +357,7 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
     debug_svgs_enabled, debug_route_indices = parse_debug_svg_selector(debug_svgs)
     total_steps = 4 if options.electrical.enable_electrical_routing else 3
 
-    route_static_obstacle_config, waveguide_clearance_um, heater_clearance_um = (
+    route_static_obstacle_config, _waveguide_clearance_um, _heater_clearance_um = (
         build_static_obstacle_config(
             static_obstacle_config=obstacles.static_obstacle_config,
             grid_size_um=obstacles.grid_size_um,
@@ -388,7 +391,7 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
             preplaced_crossing_grids=preplaced_crossing_grids,
             guided=bool(enable_crossings) and is_guided_mode(crossing_mode),
         )
-    if preplaced_crossing_grids:
+    if preplaced_crossing_grids:  # noqa: SIM102 (the comment below is the inner condition's reason)
         # Contribution 2 (2026-09-17, multiportmmi_128x128): the fan-in /
         # fan-out nets of dense multi-port instances route without the
         # long-straight congestion penalty so that their lanes can pack in

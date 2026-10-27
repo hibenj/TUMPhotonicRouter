@@ -70,7 +70,7 @@ def select_terminal_contact(
     route_start = route_start_um
 
     ranked_ports = sorted(
-        zip(terminal.ports, contacts),
+        zip(terminal.ports, contacts, strict=False),
         key=lambda item: (
             _distance_sq(item[0].center, route_start),
             item[0].name,
@@ -175,7 +175,7 @@ def _select_terminal_contact_with_port(
     if not terminal.ports:
         return (terminal.center, contacts[0], None)
     if preferred_port_name is not None:
-        for port, bbox in zip(terminal.ports, contacts):
+        for port, bbox in zip(terminal.ports, contacts, strict=False):
             if port.name == preferred_port_name:
                 return (port.center, bbox, port)
     if route_start_um is None:
@@ -184,7 +184,7 @@ def _select_terminal_contact_with_port(
     route_start = route_start_um
 
     ranked_ports = sorted(
-        zip(terminal.ports, contacts),
+        zip(terminal.ports, contacts, strict=False),
         key=lambda item: (
             _distance_sq(item[0].center, route_start),
             item[0].name,

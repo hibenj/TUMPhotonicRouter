@@ -3,8 +3,9 @@ pass/fail contract."""
 
 from __future__ import annotations
 
-from collections import Counter
+import itertools
 import math
+from collections import Counter
 from typing import Any
 
 from .net_geometry import NetGeometry, detailed_route_centerline_points
@@ -219,7 +220,7 @@ def _lane_path_length(points: tuple[tuple[float, float], ...]) -> float:
         return 0.0
     start, end = points[0], points[-1]
     lane_x = start[0]
-    for a, b in zip(points, points[1:], strict=False):
+    for a, b in itertools.pairwise(points):
         if a[0] == b[0] and a[1] != b[1]:
             lane_x = a[0]
             break
@@ -450,10 +451,10 @@ def _area_overcount_attribution(
         }
     x_edges = sorted({rect[0] for rect in net.rects} | {rect[2] for rect in net.rects})
     y_edges = sorted({rect[1] for rect in net.rects} | {rect[3] for rect in net.rects})
-    for left, right in zip(x_edges, x_edges[1:]):
+    for left, right in itertools.pairwise(x_edges):
         if right <= left:
             continue
-        for bottom, top in zip(y_edges, y_edges[1:]):
+        for bottom, top in itertools.pairwise(y_edges):
             if top <= bottom:
                 continue
             covering = tuple(
@@ -529,7 +530,7 @@ def _net_bend_count(net: NetGeometry) -> int:
 
 def _polyline_length(points: tuple[tuple[float, float], ...]) -> float:
     return sum(
-        abs(end[0] - start[0]) + abs(end[1] - start[1]) for start, end in zip(points, points[1:])
+        abs(end[0] - start[0]) + abs(end[1] - start[1]) for start, end in itertools.pairwise(points)
     )
 
 
@@ -538,7 +539,7 @@ def _bend_count(points: tuple[tuple[float, float], ...]) -> int:
         return 0
     count = 0
     previous = _point_direction(points[0], points[1])
-    for start, end in zip(points[1:], points[2:]):
+    for start, end in itertools.pairwise(points):
         current = _point_direction(start, end)
         if current != (0, 0) and previous != (0, 0) and current != previous:
             count += 1

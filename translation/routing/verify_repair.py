@@ -14,14 +14,13 @@ from __future__ import annotations
 import math
 import re
 import time
-
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
 from pathlib import Path
-from typing import Any, Iterable, Mapping, cast
+from typing import Any, cast
 
 from gdsfactory.component import Component
-
 from photonic_router.static_obstacle_builder import physical_to_grid
 
 from translation.photonic_verification import (
@@ -48,7 +47,7 @@ from translation.route_rust_debug_artifacts import _dump_photonic_probe_failure_
 from translation.route_rust_obstacle_config import _default_obstacle_layers
 from translation.route_rust_realization import realize_routed_net_records
 from translation.route_rust_types import RoutedNetRecord
-
+from translation.routing import timing
 from translation.routing.dispatch import (
     NEGOTIATED_MAX_ROUNDS,
     _clearance_exempt_cells_for_job,
@@ -60,10 +59,10 @@ from translation.routing.dispatch import (
 from translation.routing.finalize import (
     _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids,
 )
-from translation.routing import timing
 from translation.routing.settings import SessionSettings
 from translation.routing.stages import VerifiedRecords
 from translation.routing.state import SessionState
+
 
 def _grid_cell_from_raw_point(settings, state, raw_point: object) -> tuple[int, int] | None:
     if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
@@ -97,12 +96,15 @@ def _illegal_crossing_keepout_radius(settings, state, item: Mapping[str, object]
     if reason == "collinear_route_overlap":
         return 1
     blockers = item.get("crossing_footprint_blockers")
-    if isinstance(blockers, IterableABC) and not isinstance(
-        blockers,
-        (str, bytes, bytearray),
+    if (
+        isinstance(blockers, IterableABC)
+        and not isinstance(
+            blockers,
+            (str, bytes, bytearray),
+        )
+        and any(isinstance(blocker, Mapping) for blocker in blockers)
     ):
-        if any(isinstance(blocker, Mapping) for blocker in blockers):
-            return max(1, int(state.resolved_crossing_half_size_cells) + 1)
+        return max(1, int(state.resolved_crossing_half_size_cells) + 1)
     if reason in {
         "crossing_footprint_contains_route_geometry",
         "crossing_footprint_overlap",
@@ -140,8 +142,8 @@ def _add_segment_keepout_cells(
     for step in range(steps + 1):
         t = float(step) / float(steps)
         cell = (
-            int(round(float(start_cell[0]) + float(dx) * t)),
-            int(round(float(start_cell[1]) + float(dy) * t)),
+            round(float(start_cell[0]) + float(dx) * t),
+            round(float(start_cell[1]) + float(dy) * t),
         )
         _add_keepout_square(settings, state, keepout_cells, center=cell, radius=radius)
 
@@ -159,7 +161,9 @@ def _final_crossing_repair_keepout_cells(
             start_cell = _grid_cell_from_raw_point(settings, state, item.get("overlap_start_um"))
             end_cell = _grid_cell_from_raw_point(settings, state, item.get("overlap_end_um"))
             if start_cell is not None and end_cell is not None:
-                _add_segment_keepout_cells(settings, state,
+                _add_segment_keepout_cells(
+                    settings,
+                    state,
                     keepout_cells,
                     start_cell=start_cell,
                     end_cell=end_cell,
@@ -174,7 +178,9 @@ def _final_crossing_repair_keepout_cells(
             if isinstance(peer, Mapping):
                 peer_center = _grid_cell_from_raw_point(settings, state, peer.get("point_um"))
                 if peer_center is not None:
-                    _add_keepout_square(settings, state,
+                    _add_keepout_square(
+                        settings,
+                        state,
                         keepout_cells,
                         center=peer_center,
                         radius=radius,
@@ -365,7 +371,9 @@ def _repair_final_illegal_crossings(
         "insufficient_straight_margin",
         "not_perpendicular",
     }:
-        repair_batches = _final_crossing_repair_batches(settings, state,
+        repair_batches = _final_crossing_repair_batches(
+            settings,
+            state,
             selected_illegal_crossings,
             max_net_ids=min(4, max_repair_net_ids),
         )
@@ -414,9 +422,7 @@ def _repair_final_illegal_crossings(
             Counter(str(item.get("reason", "") or "unknown") for item in illegal_crossings)
         ),
         "selected_reason_counts": dict(
-            Counter(
-                str(item.get("reason", "") or "unknown") for item in selected_illegal_crossings
-            )
+            Counter(str(item.get("reason", "") or "unknown") for item in selected_illegal_crossings)
         ),
         "repair_net_ids": [int(net_id) for net_id in repair_net_ids],
     }
@@ -508,7 +514,9 @@ def _repair_final_illegal_crossings(
         repaired_net_ids = [
             int(record.net_id) for record in repaired_records if record.net_id is not None
         ]
-        _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(settings, state,
+        _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+            settings,
+            state,
             repaired_net_ids,
             record_pipeline_timing=False,
         )
@@ -548,9 +556,9 @@ def _grid_rect_from_um_bbox(
     min_cell = physical_to_grid(min_x_um, min_y_um, state.grid)
     return (
         min_cell[0],
-        int(math.ceil((max_x_um - float(state.origin_x_um)) / grid_size)),
+        math.ceil((max_x_um - float(state.origin_x_um)) / grid_size),
         min_cell[1],
-        int(math.ceil((max_y_um - float(state.origin_y_um)) / grid_size)),
+        math.ceil((max_y_um - float(state.origin_y_um)) / grid_size),
     )
 
 
@@ -650,12 +658,16 @@ def _photonic_issue_keepout_cells(
         return cells
     details = issue.details or {}
     if issue.code == "cross_net_waveguide_overlap":
-        return _cells_from_um_bbox(settings, state,
+        return _cells_from_um_bbox(
+            settings,
+            state,
             details.get("overlap_bbox_um"),
             radius=radius,
         )
     if issue.code == "waveguide_obstacle_overlap":
-        return _cells_from_um_bbox(settings, state,
+        return _cells_from_um_bbox(
+            settings,
+            state,
             details.get("overlap_bbox_um"),
             radius=radius,
         )
@@ -667,7 +679,9 @@ def _photonic_issue_keepout_cells(
             )
             if polygon_bbox is not None:
                 return _cells_from_um_bbox(settings, state, polygon_bbox, radius=radius)
-        return _cells_from_um_bbox(settings, state,
+        return _cells_from_um_bbox(
+            settings,
+            state,
             details.get("overlap_bbox_um"),
             radius=radius,
         )
@@ -717,11 +731,15 @@ def _make_photonic_verification_probe_layout(
     if state.crossing_plan_info.enabled:
         t_probe_crossings_start = timing.pipeline_timer_start(settings, state)
         _place_realized_crossing_components(probe_layout, state.crossing_plan_info)
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "photonic_probe_crossing_place",
             t_probe_crossings_start,
         )
-    timing.record_pipeline_timing(settings, state,
+    timing.record_pipeline_timing(
+        settings,
+        state,
         "photonic_probe_layout_total",
         t_probe_layout_total_start,
     )
@@ -796,11 +814,7 @@ def _repair_final_photonic_issues(
         ("crossing_component_route_overlap", {"crossing_component_route_overlap"}),
     )
     selected_group = next(
-        (
-            name
-            for name, codes in priority_groups
-            if any(issue.code in codes for issue in issues)
-        ),
+        (name for name, codes in priority_groups if any(issue.code in codes for issue in issues)),
         None,
     )
     if selected_group is None:
@@ -908,11 +922,11 @@ def _repair_final_photonic_issues(
         _record_route(settings, state, job, route_obj, opened_by_id[net_id])
         repaired_net_ids.append(net_id)
     if settings.enable_checked_endpoint_correction and repaired_net_ids:
-        failed_corrections = (
-            _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(settings, state,
-                repaired_net_ids,
-                record_pipeline_timing=False,
-            )
+        failed_corrections = _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+            settings,
+            state,
+            repaired_net_ids,
+            record_pipeline_timing=False,
         )
         attempt["endpoint_correction_failed_net_ids"] = [
             int(net_id) for net_id in failed_corrections
@@ -963,7 +977,9 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
             native_crossing_events = []
         state.crossing_plan_info.native_crossing_events = native_crossing_events
         state.crossing_plan_info.native_crossing_event_count = len(native_crossing_events)
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "realized_crossing_native_events",
             t_native_events_start,
         )
@@ -973,7 +989,9 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
             routed_records_by_net_id=state.route_bookkeeping.records_by_id,
             native_crossing_events=native_crossing_events,
         )
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "realized_crossing_insertion_loss",
             t_insertion_loss_start,
         )
@@ -991,7 +1009,9 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
             native_crossing_events=native_crossing_events,
             realization_grid_spec=state.realization_grid_spec,
         )
-    timing.record_pipeline_timing(settings, state,
+    timing.record_pipeline_timing(
+        settings,
+        state,
         "realized_crossing_verify_intersections",
         t_illegal_crossing_verify_start,
     )
@@ -1000,11 +1020,15 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
         crossing_plan_info=state.crossing_plan_info,
         routed_records_by_net_id=state.route_bookkeeping.records_by_id,
     )
-    timing.record_pipeline_timing(settings, state,
+    timing.record_pipeline_timing(
+        settings,
+        state,
         "realized_crossing_realized_loss",
         t_realized_insertion_loss_start,
     )
-    timing.record_pipeline_timing(settings, state,
+    timing.record_pipeline_timing(
+        settings,
+        state,
         "realized_crossing_refresh_total",
         t_refresh_crossings_start,
     )
@@ -1053,10 +1077,7 @@ def repair_and_verify_final_geometry(
             break
         routed_net_records = state.route_bookkeeping.ordered_records()
         illegal_realized_crossings = _refresh_realized_crossing_verification(settings, state)
-    if (
-        not illegal_realized_crossings
-        and settings.enable_internal_photonic_probe_verification
-    ):
+    if not illegal_realized_crossings and settings.enable_internal_photonic_probe_verification:
         final_photonic_verification = _refresh_photonic_verification(settings, state)
         for _final_photonic_repair_round in range(8):
             if final_photonic_verification.success:
@@ -1095,10 +1116,10 @@ def repair_and_verify_final_geometry(
                 realization_grid_spec=state.realization_grid_spec,
                 allow_unchecked_bumps=True,
             )
-            state.crossing_plan_info.photonic_probe_failure_artifacts = (
-                probe_failure_artifacts
-            )
-            timing.record_pipeline_timing(settings, state,
+            state.crossing_plan_info.photonic_probe_failure_artifacts = probe_failure_artifacts
+            timing.record_pipeline_timing(
+                settings,
+                state,
                 "final_verification_block",
                 t_final_verification_block_start,
             )
@@ -1107,7 +1128,9 @@ def repair_and_verify_final_geometry(
                 f"{final_photonic_verification.error_count} error(s). "
                 f"{_photonic_repair_failure_preview(settings, state, final_photonic_verification)}"
             )
-    timing.record_pipeline_timing(settings, state,
+    timing.record_pipeline_timing(
+        settings,
+        state,
         "final_verification_block",
         t_final_verification_block_start,
     )

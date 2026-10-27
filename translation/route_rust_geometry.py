@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import re
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, cast
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any, cast
 
 from photonic_router.static_obstacle_builder import floor_snap_to_grid
+
 from translation.route_rust_types import RoutedNetRecord
 
 if TYPE_CHECKING:
@@ -151,7 +154,7 @@ def _route_waypoints_from_obj(route_obj: object | None) -> tuple[tuple[float, fl
     points = []
     for state in cast(Iterable[Any], raw_states):
         try:
-            points.append((float(getattr(state, "x")), float(getattr(state, "y"))))
+            points.append((float(state.x), float(state.y)))
         except (TypeError, ValueError):
             return ()
     return tuple(points) if len(points) >= 2 else ()
@@ -161,7 +164,7 @@ def _route_segments_from_waypoints(
     waypoints: tuple[tuple[float, float], ...],
 ) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
     segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    for start, end in zip(waypoints, waypoints[1:]):
+    for start, end in itertools.pairwise(waypoints):
         if start == end:
             continue
         segments.append((start, end))
@@ -547,7 +550,7 @@ def _polygon_axes(
     polygon: list[tuple[float, float]],
 ) -> list[tuple[float, float]]:
     axes: list[tuple[float, float]] = []
-    for start, end in zip(polygon, polygon[1:] + polygon[:1]):
+    for start, end in zip(polygon, polygon[1:] + polygon[:1], strict=False):
         ex = end[0] - start[0]
         ey = end[1] - start[1]
         length = math.hypot(ex, ey)

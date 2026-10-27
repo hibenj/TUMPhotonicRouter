@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import math
 import sys
-from importlib import machinery, util
-from importlib import import_module
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
+from importlib import import_module, machinery, util
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Protocol, Sequence, Set, Tuple, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from photonic_router.benchmark_extractor import (
     BBox,
@@ -19,8 +19,8 @@ from photonic_router.benchmark_extractor import (
 )
 from photonic_router.routing_layers import HEATER_METAL_OBSTACLE_LAYERS
 
-GridCell = Tuple[int, int]
-GridRect = Tuple[int, int, int, int]
+GridCell = tuple[int, int]
+GridRect = tuple[int, int, int, int]
 
 
 @runtime_checkable
@@ -39,7 +39,7 @@ class StaticObstacleMapConfig:
     grid_size_um: float = 0.5
     security_margin_um: float = 20.0
     clearance_um: float = 0.5
-    heater_clearance_um: Optional[float] = None
+    heater_clearance_um: float | None = None
     clearance_metric: str = "chebyshev"
     port_open_radius_um: float = 0.5
     obstacle_mode: str = "bounding_boxes"
@@ -47,11 +47,11 @@ class StaticObstacleMapConfig:
     materialize_bbox_cells: bool = True
     materialize_cell_sets: bool = True
     populate_obstacle_map: bool = True
-    die_bbox: Optional[BBox] = None
+    die_bbox: BBox | None = None
     chip_add_x_um: float = 0.0
     chip_add_y_um: float = 0.0
-    obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = None
-    heater_obstacle_layers: Optional[Tuple[Tuple[int, int], ...]] = HEATER_METAL_OBSTACLE_LAYERS
+    obstacle_layers: tuple[tuple[int, int], ...] | None = None
+    heater_obstacle_layers: tuple[tuple[int, int], ...] | None = HEATER_METAL_OBSTACLE_LAYERS
 
 
 @dataclass(frozen=True)
@@ -70,9 +70,9 @@ class StaticObstacleMapData:
     """Static obstacle-map payload ready to pass to Rust later."""
 
     grid: GridSpec
-    raw_blocked_cells: Set[GridCell]
-    blocked_cells: Set[GridCell]
-    port_open_cells: Set[GridCell]
+    raw_blocked_cells: set[GridCell]
+    blocked_cells: set[GridCell]
+    port_open_cells: set[GridCell]
     benchmark: ExtractedBenchmark
     raw_static_rects: tuple[GridRect, ...] = ()
     blocked_static_rects: tuple[GridRect, ...] = ()
@@ -86,12 +86,12 @@ class StaticObstacleMapData:
     routable_bbox: BBox | None = None
     chip_boundary_rects: tuple[GridRect, ...] = ()
 
-    def rust_static_cells(self) -> List[GridCell]:
+    def rust_static_cells(self) -> list[GridCell]:
         """Return deterministic `(x, y)` cells suitable for `ObstacleMap.add_static_cells`."""
 
         return sorted(self.blocked_cells)
 
-    def rust_open_cells(self) -> List[GridCell]:
+    def rust_open_cells(self) -> list[GridCell]:
         """Return deterministic port-opening cells for temporary free-space queries."""
 
         return sorted(self.port_open_cells)
@@ -372,7 +372,7 @@ def _merge_static_obstacle_data(
 def _merge_rust_static_cell_handles(
     data_items: Iterable[StaticObstacleMapData],
     *,
-    blocked_cells: Set[GridCell],
+    blocked_cells: set[GridCell],
     rust_backend: Any | None,
 ) -> Any | None:
     handle_cls = (
@@ -440,7 +440,7 @@ def build_static_obstacle_map_python_from_extracted(
         chip_add_y_um=config.chip_add_y_um,
     )
 
-    raw_blocked: Set[GridCell] = set()
+    raw_blocked: set[GridCell] = set()
     if config.obstacle_mode == "rasterized_polygons":
         for polygon in benchmark.polygons:
             raw_blocked.update(rasterize_polygon(polygon, grid))
@@ -519,7 +519,7 @@ def _build_static_obstacle_map_rust(
                 config.populate_obstacle_map,
                 config.materialize_cell_sets,
             )
-            return result_obj
+            return result_obj  # noqa: TRY300 (compat shim for older wheels; removed with the Python builder)
         except TypeError as exc:
             # Backward compatibility with older local wheels/extensions.
             msg = str(exc)
@@ -687,10 +687,9 @@ def _build_static_obstacle_map_rust(
             )
 
     stats_raw = result.get("stats")
-    if fallback_without_clear_port_flag:
-        if isinstance(stats_raw, dict):
-            stats_raw["clear_port_open_cells_from_static"] = False
-            stats_raw["blocked_cells_after_port_opening"] = len(blocked_cells)
+    if fallback_without_clear_port_flag and isinstance(stats_raw, dict):
+        stats_raw["clear_port_open_cells_from_static"] = False
+        stats_raw["blocked_cells_after_port_opening"] = len(blocked_cells)
     build_stats = (
         {str(key): value for key, value in stats_raw.items()}
         if isinstance(stats_raw, dict)
@@ -750,9 +749,10 @@ def _load_rust_backend() -> Any | None:
             module = util.module_from_spec(spec)
             loader.exec_module(module)
             sys.modules[module_name] = module
-            return module
         except ImportError:
             continue
+        else:
+            return module
 
     return None
 
@@ -762,7 +762,7 @@ def make_grid_spec(
     *,
     grid_size_um: float,
     security_margin_um: float,
-    die_bbox: Optional[BBox] = None,
+    die_bbox: BBox | None = None,
     chip_add_x_um: float = 0.0,
     chip_add_y_um: float = 0.0,
 ) -> GridSpec:
@@ -954,7 +954,7 @@ def grid_cell_center(gx: int, gy: int, grid: GridSpec) -> Point:
     )
 
 
-def rasterize_polygon(polygon: Polygon, grid: GridSpec) -> Set[GridCell]:
+def rasterize_polygon(polygon: Polygon, grid: GridSpec) -> set[GridCell]:
     """Rasterize a polygon by testing grid-cell centers inside its bbox."""
 
     if len(polygon) < 3:
@@ -973,7 +973,7 @@ def rasterize_polygon(polygon: Polygon, grid: GridSpec) -> Set[GridCell]:
     gx_max = min(gx_max, grid.width - 1)
     gy_max = min(gy_max, grid.height - 1)
 
-    cells: Set[GridCell] = set()
+    cells: set[GridCell] = set()
     for gx in range(gx_min, gx_max + 1):
         for gy in range(gy_min, gy_max + 1):
             center = grid_cell_center(gx, gy, grid)
@@ -983,7 +983,7 @@ def rasterize_polygon(polygon: Polygon, grid: GridSpec) -> Set[GridCell]:
     return cells
 
 
-def polygon_to_bbox_cells(polygon: Polygon, grid: GridSpec) -> Set[GridCell]:
+def polygon_to_bbox_cells(polygon: Polygon, grid: GridSpec) -> set[GridCell]:
     """Conservatively mark polygon bounding-box cell range."""
 
     rect = polygon_to_grid_rect(polygon, grid)
@@ -1050,7 +1050,7 @@ def inflate_cells(
     radius: int,
     *,
     metric: str,
-) -> Set[GridCell]:
+) -> set[GridCell]:
     """Expand cells by Manhattan or Chebyshev distance, clipped to grid bounds."""
 
     if radius < 0:
@@ -1060,7 +1060,7 @@ def inflate_cells(
     if normalized_metric not in {"manhattan", "chebyshev"}:
         raise ValueError("metric must be 'manhattan' or 'chebyshev'")
 
-    inflated: Set[GridCell] = set()
+    inflated: set[GridCell] = set()
     for gx, gy in cells:
         if not in_bounds(gx, gy, width, height):
             continue
@@ -1086,7 +1086,7 @@ def build_port_open_cells(
     benchmark: ExtractedBenchmark,
     grid: GridSpec,
     radius: int,
-) -> Set[GridCell]:
+) -> set[GridCell]:
     """Generate temporary opening cells around every extracted port."""
 
     base_cells = [
@@ -1115,9 +1115,11 @@ def grid_to_svg(
     width_px = grid.width * cell_px
     height_px = grid.height * cell_px
 
-    parts: List[str] = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" '
-        f'viewBox="0 0 {grid.width} {grid.height}">',
+    parts: list[str] = [
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" '
+            f'viewBox="0 0 {grid.width} {grid.height}">'
+        ),
         '<rect width="100%" height="100%" fill="#eeeeee" />',
         '<path d="'
         + " ".join(f"M {x} 0 V {grid.height}" for x in range(grid.width + 1))

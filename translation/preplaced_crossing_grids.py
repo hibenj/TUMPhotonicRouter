@@ -34,13 +34,12 @@ from __future__ import annotations
 import hashlib
 import itertools
 import math
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Iterable, Mapping
 
 import gdsfactory as gf
 from gdsfactory.component import Component
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
-
 from photonic_router.config import CrossingGridConfig, RoutingConfig
 from photonic_router.crossing_plan import CrossingPlan, CrossingStagePlan
 from photonic_router.path_length_graph import RoutedEdgeKey
@@ -48,6 +47,7 @@ from photonic_router.routing_layers import (
     ComponentPortAccessRule,
     register_component_port_access_rule,
 )
+
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_gds import get_port_from_instance
 
@@ -60,7 +60,7 @@ _GEOMETRY_TOLERANCE_UM = 0.02
 # Grid components are content-addressed by name (see `_grid_component_name`);
 # the KLayout cell registry refuses duplicate names within one process, so a
 # grid with an identical schedule and geometry is built once and reused.
-_GRID_BUILD_CACHE: dict[str, "CrossingGridBuildResult"] = {}
+_GRID_BUILD_CACHE: dict[str, CrossingGridBuildResult] = {}
 
 
 @dataclass(frozen=True)
@@ -441,9 +441,7 @@ def build_crossing_grid_component(
 
     final_slot_by_net = {edge.net_name: i for i, edge in enumerate(stage_plan.final_edge_order)}
     entry_rows = {
-        edge.net_name: float(
-            (entry_row_by_net or {}).get(edge.net_name, slot_y(index))
-        )
+        edge.net_name: float((entry_row_by_net or {}).get(edge.net_name, slot_y(index)))
         for index, edge in enumerate(lanes)
     }
     exit_rows = {
@@ -460,8 +458,7 @@ def build_crossing_grid_component(
     idle = [edge.net_name for edge in lanes if edge.net_name not in movement]
     if idle:
         raise ValueError(
-            "crossing grid lanes must all take part in a crossing; idle lanes: "
-            + ", ".join(idle)
+            "crossing grid lanes must all take part in a crossing; idle lanes: " + ", ".join(idle)
         )
 
     # --- lattice core parameters -------------------------------------------
@@ -500,8 +497,10 @@ def build_crossing_grid_component(
     column_pitch_um = float(geometry.fan_column_pitch_um)
     entry_um = float(geometry.entry_straight_um)
 
-    entry_offsets = {net: slot_y(i) - entry_rows[net] for i, net in
-                     ((i, e.net_name) for i, e in enumerate(lanes))}
+    entry_offsets = {
+        net: slot_y(i) - entry_rows[net]
+        for i, net in ((i, e.net_name) for i, e in enumerate(lanes))
+    }
     exit_offsets = {net: exit_rows[net] - slot_y(final_slot_by_net[net]) for net in entry_rows}
     entry_slot_rows = {e.net_name: slot_y(i) for i, e in enumerate(lanes)}
     exit_slot_rows = {net: slot_y(final_slot_by_net[net]) for net in entry_rows}
@@ -552,7 +551,10 @@ def build_crossing_grid_component(
 
     def _check(port_a, port_b, what: str) -> None:
         a, b = port_a.dcenter, port_b.dcenter
-        if math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1])) > _GEOMETRY_TOLERANCE_UM:
+        if (
+            math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
+            > _GEOMETRY_TOLERANCE_UM
+        ):
             raise RuntimeError(
                 f"crossing grid geometry mismatch ({what}): {tuple(a)} vs {tuple(b)}"
             )
@@ -754,8 +756,8 @@ def _build_stretched_grid_component(
         )
 
     # --- geometry pieces ----------------------------------------------------
-    bend_ccw = _bend_45(geometry, 45.0)   # turns +45 degrees (counter-clockwise)
-    bend_cw = _bend_45(geometry, -45.0)   # turns -45 degrees (clockwise)
+    bend_ccw = _bend_45(geometry, 45.0)  # turns +45 degrees (counter-clockwise)
+    bend_cw = _bend_45(geometry, -45.0)  # turns -45 degrees (clockwise)
     native_dx, native_dy = _port_dx_dy(bend_ccw)
     native_dy = abs(native_dy)
     bend_length_um = _component_length_um(bend_ccw, math.hypot(native_dx, native_dy))
@@ -1404,10 +1406,9 @@ def _port_cells_stay_inside_footprint(center: float, origin: float, grid: float)
     def cell(v: float) -> int:
         return math.floor((v - origin) / grid)
 
-    return (
-        cell(center - arm - half_width) == cell(center - arm)
-        and cell(center + arm + half_width) == cell(center + arm)
-    )
+    return cell(center - arm - half_width) == cell(center - arm) and cell(
+        center + arm + half_width
+    ) == cell(center + arm)
 
 
 def _snap_x_tile_center(
@@ -1485,9 +1486,10 @@ def _derive_crossing_tiles(
             # A layer the X array can take keeps the router's default stubs
             # (its tiles sit on the natural rows); every other crossing layer
             # is a column-grid candidate and needs its lanes on spread rows.
-            if geometry.tile_placement != "column-grid" and evaluate_x_array(
-                schematic, unrouted_layout, stage_plan, geometry
-            ).feasible:
+            if (
+                geometry.tile_placement != "column-grid"
+                and evaluate_x_array(schematic, unrouted_layout, stage_plan, geometry).feasible
+            ):
                 continue
             count: dict[str, int] = {}
             for edge in stage_plan.initial_edge_order:
@@ -1550,8 +1552,14 @@ def _derive_crossing_tiles(
             "auto": (X_ARRAY, COLUMN_GRID),
         }[geometry.tile_placement]
         decision = select_layer_structure(
-            schematic, unrouted_layout, stage_plan, geometry, anchors,
-            stage_key=tuple(stage_key), allowed=allowed, config=config,
+            schematic,
+            unrouted_layout,
+            stage_plan,
+            geometry,
+            anchors,
+            stage_key=tuple(stage_key),
+            allowed=allowed,
+            config=config,
         )
         decisions.append(decision)
         print(f"      - crossing structure {decision.describe()}")
@@ -1561,7 +1569,13 @@ def _derive_crossing_tiles(
             continue
         if decision.chosen == COLUMN_GRID:
             stage_result = _column_grid_stage(
-                schematic, unrouted_layout, stage_plan, geometry, derived, plus_tile, anchors,
+                schematic,
+                unrouted_layout,
+                stage_plan,
+                geometry,
+                derived,
+                plus_tile,
+                anchors,
                 config=config,
             )
             tile_names.extend(stage_result[0])
@@ -1649,8 +1663,17 @@ def _derive_crossing_tiles(
             f"{len(fallback_nets)} net(s) left to the guided router"
         )
     return (
-        tile_names, builds, stub_nets, lengths, nets, split, expected, placed, decisions,
-        fallback_nets, dense_fanout_instances,
+        tile_names,
+        builds,
+        stub_nets,
+        lengths,
+        nets,
+        split,
+        expected,
+        placed,
+        decisions,
+        fallback_nets,
+        dense_fanout_instances,
     )
 
 

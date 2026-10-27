@@ -58,4 +58,3 @@ def is_guided_mode(crossing_mode: object) -> bool:
     """Contribution 1: lidar mechanics plus the topology plan as guidance."""
 
     return str(crossing_mode).strip().lower() == "lidar-guided"
-

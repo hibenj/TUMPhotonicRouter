@@ -28,9 +28,9 @@ from uuid import uuid4
 from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
+from photonic_router.static_obstacle_builder import GridSpec
 
 from benchmarks import heater_lanes_20, heater_lanes_ripup, heater_single
-from photonic_router.static_obstacle_builder import GridSpec
 
 get_generic_pdk().activate()
 
@@ -208,9 +208,7 @@ PATH_LENGTH_NODE_TYPES: dict[str, str] = {
     "gc_2": "output",
     "gc_3": "output",
 }
-PATH_LENGTH_INTERNAL_DELAYS_UM: dict[str, float] = {
-    instance_name: 0.0 for instance_name in PATH_LENGTH_NODE_TYPES
-}
+PATH_LENGTH_INTERNAL_DELAYS_UM: dict[str, float] = dict.fromkeys(PATH_LENGTH_NODE_TYPES, 0.0)
 
 
 def path_length_schematic() -> Schematic:

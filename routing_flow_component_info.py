@@ -1,5 +1,7 @@
 """Shared gdsfactory Component info helpers for routing flow stages."""
 
+from __future__ import annotations
+
 from typing import Any
 
 from gdsfactory.component import Component
@@ -10,7 +12,7 @@ def component_info(component: Component) -> Any:
     info = getattr(component, "info", None)
     if info is None:
         info = {}
-        setattr(component, "info", info)
+        component.info = info
     return info
 
 

@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
-from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from photonic_router.routing_layers import get_routing_obstacle_layers
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
 from translation.route_rust import _resolve_obstacle_config
 
 
@@ -104,5 +107,8 @@ def test_dense_obstacle_cell_cap_covers_the_whole_map_and_keeps_the_default_for_
     from translation.route_rust import DENSE_OBSTACLE_CELL_CAP_MARGIN, dense_obstacle_cell_cap
 
     assert dense_obstacle_cell_cap(1000, 500, 10_000_000) == 10_000_000
-    assert dense_obstacle_cell_cap(8380, 3439, 10_000_000) == DENSE_OBSTACLE_CELL_CAP_MARGIN * 8380 * 3439
+    assert (
+        dense_obstacle_cell_cap(8380, 3439, 10_000_000)
+        == DENSE_OBSTACLE_CELL_CAP_MARGIN * 8380 * 3439
+    )
     assert dense_obstacle_cell_cap(8380, 3439, 10_000_000) > 28_800_000

@@ -1,9 +1,12 @@
 """Configuration defaults and option resolution for routing_flow."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 from photonic_router.config import RoutingConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
 from routing_flow_optical import OpticalRoutingStageConfig
 from translation.electrical import (
     DEFAULT_BUS_WIDTH_UM,

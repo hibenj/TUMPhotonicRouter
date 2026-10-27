@@ -21,7 +21,6 @@ from routing_flow import (
     run_routing_flow,
 )
 
-
 DEFAULT_BENCHMARKS = ("benes_4x4", "benes_8x8", "benes_16x16", "benes_32x32")
 
 

@@ -1,5 +1,11 @@
-from routing_flow import load_benchmark, run_routing_flow
+from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import Any, Protocol, cast
+
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
+from routing_flow import load_benchmark, run_routing_flow
 from tests.fixtures.synthetic_layouts import (
     TIGHT_S_BEND_BEND_RADIUS_UM,
     TIGHT_S_BEND_OFFSET_UM,
@@ -9,7 +15,6 @@ from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import route_match_and_realize
 from translation.route_rust_geometry import _physical_point_to_grid_cell
 from translation.route_rust_records import _grid_cell_center_um
-from typing import Any, Iterable, Protocol, cast
 
 
 class _RouteWithCompressedWaypoints(Protocol):

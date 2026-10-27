@@ -24,6 +24,8 @@ the die extent without blocking any electrical route (see
 reuses).
 """
 
+from __future__ import annotations
+
 from gdsfactory.schematic import Schematic
 
 from benchmarks.heater_lanes_20 import heater_only_schematic

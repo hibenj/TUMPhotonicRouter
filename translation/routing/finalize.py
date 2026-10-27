@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import time
-
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
-from typing import Any, Iterable, Mapping, cast
+from typing import Any, cast
 
 from translation.route_rust_crossing_plan import _port_center_um
 from translation.route_rust_crossing_verification import (
@@ -25,10 +25,10 @@ from translation.route_rust_records import EndpointCorrectionRouter, _centerline
 from translation.route_rust_types import (
     EndpointCorrectionCategory,
     NetEndpointCorrectionClassification,
-    RouteJob,
     RoutedNetRecord,
+    RouteJob,
 )
-
+from translation.routing import timing
 from translation.routing.dispatch import (
     _append_centerline_points,
     _clearance_exempt_cells_for_job,
@@ -37,10 +37,10 @@ from translation.routing.dispatch import (
     _timing_start,
 )
 from translation.routing.route_jobs import _grid_cell_center_um
-from translation.routing import timing
 from translation.routing.settings import SessionSettings
 from translation.routing.stages import RoutedRecords
 from translation.routing.state import SessionState
+
 
 def _endpoint_correction_crossing_net_ids(settings, state) -> set[int]:
     """Net ids involved in any crossing, per `router.crossing_events()`.
@@ -195,8 +195,8 @@ def _apply_checked_endpoint_corrections_for_net_ids(
     crossing_net_ids = _endpoint_correction_crossing_net_ids(settings, state)
     t_endpoint_correction_pack_start = timing.pipeline_timer_start(settings, state)
     for net_id in requested_net_ids:
-        classification = _classify_net_for_endpoint_correction(settings, state,
-            net_id, crossing_net_ids=crossing_net_ids
+        classification = _classify_net_for_endpoint_correction(
+            settings, state, net_id, crossing_net_ids=crossing_net_ids
         )
         if (
             classification is None
@@ -209,9 +209,8 @@ def _apply_checked_endpoint_corrections_for_net_ids(
         target_port = _routing_endpoint_center_um(settings, state, job, source=False)
         if source_port is None and target_port is None:
             continue
-        source_state, target_state, opened_candidate_cells, _, _ = _state_openings_for_job(
-            settings, state,
-            job
+        _source_state, _target_state, opened_candidate_cells, _, _ = _state_openings_for_job(
+            settings, state, job
         )
         clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
         correction_jobs.append(
@@ -225,7 +224,9 @@ def _apply_checked_endpoint_corrections_for_net_ids(
             )
         )
     if record_pipeline_timing:
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "endpoint_correction_pack",
             t_endpoint_correction_pack_start,
         )
@@ -240,9 +241,7 @@ def _apply_checked_endpoint_corrections_for_net_ids(
         int(state.core_commit_radius_cells),
         True,
     )
-    correction_elapsed_s = (
-        time.perf_counter() - correction_start if state.collect_timing else 0.0
-    )
+    correction_elapsed_s = time.perf_counter() - correction_start if state.collect_timing else 0.0
     if record_pipeline_timing:
         timing.record_pipeline_timing(
             settings, state, "endpoint_correction_native", correction_start
@@ -327,7 +326,9 @@ def _apply_checked_endpoint_corrections_for_net_ids(
             endpoint_correction_error=None,
         )
     if record_pipeline_timing:
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "endpoint_correction_processing",
             t_endpoint_correction_processing_start,
         )
@@ -375,8 +376,8 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         # classification puts any crossing net (and any both-sides-stub
         # net) into a category other than the two this pass owns, so
         # both exclusions fall out of the single category check below.
-        classification = _classify_net_for_endpoint_correction(settings, state,
-            net_id, crossing_net_ids=crossing_net_ids
+        classification = _classify_net_for_endpoint_correction(
+            settings, state, net_id, crossing_net_ids=crossing_net_ids
         )
         # ALREADY_CORRECTED_NO_OP (source *and* target stubbed) dates from
         # the eager-stitch design in which both sides were pre-stitched;
@@ -435,7 +436,9 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         )
 
     if record_pipeline_timing:
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "fanout_stub_endpoint_correction_pack",
             t_endpoint_correction_pack_start,
         )
@@ -450,11 +453,11 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         int(state.core_commit_radius_cells),
         True,
     )
-    correction_elapsed_s = (
-        time.perf_counter() - correction_start if state.collect_timing else 0.0
-    )
+    correction_elapsed_s = time.perf_counter() - correction_start if state.collect_timing else 0.0
     if record_pipeline_timing:
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "fanout_stub_endpoint_correction_native",
             correction_start,
         )
@@ -477,8 +480,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
                     failed=True,
                 )
             message = (
-                "Checked fanout-stub endpoint correction skipped for net "
-                f"{job.net_name!r}: {error}"
+                f"Checked fanout-stub endpoint correction skipped for net {job.net_name!r}: {error}"
             )
             if print_warnings:
                 print("WARNING: " + message)
@@ -562,7 +564,9 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         )
 
     if record_pipeline_timing:
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "fanout_stub_endpoint_correction_processing",
             t_endpoint_correction_processing_start,
         )
@@ -649,9 +653,7 @@ def _record_terminal_bump_distance_check_candidates(
     grid_size = float(state.grid.grid_size_um)
     eps = max(1e-6, grid_size * 1e-6)
     axis_eps = max(1e-6, grid_size * 0.25)
-    crossing_half_um = (
-        float(state.crossing_plan_info.crossing_half_size_cells or 0) * grid_size
-    )
+    crossing_half_um = float(state.crossing_plan_info.crossing_half_size_cells or 0) * grid_size
     required_bump_um = 4.0 * float(state.bend_radius_cells) * grid_size
 
     target_x_offset_nets: list[dict[str, object]] = []
@@ -739,13 +741,9 @@ def _record_terminal_bump_distance_check_candidates(
                     }
                 )
 
-        should_trace = (
-            trace_all or record.net_name in trace_tokens or str(net_id) in trace_tokens
-        )
+        should_trace = trace_all or record.net_name in trace_tokens or str(net_id) in trace_tokens
         if should_trace:
-            matching_checks = [
-                item for item in active_checks if int(item["net_id"]) == int(net_id)
-            ]
+            matching_checks = [item for item in active_checks if int(item["net_id"]) == int(net_id)]
             print(
                 "terminal_bump_distance_check "
                 f"net={record.net_name} id={net_id} "
@@ -784,16 +782,15 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
     record_pipeline_timing: bool = True,
     print_warnings: bool = False,
 ) -> list[int]:
-    if (
-        not settings.enable_checked_endpoint_correction
-        or not settings.enable_crossings
-    ):
+    if not settings.enable_checked_endpoint_correction or not settings.enable_crossings:
         return []
     crossing_points_by_net_id = _current_crossing_points_by_net_id(settings, state)
     if not crossing_points_by_net_id:
         return []
     requested_net_ids = [int(net_id) for net_id in net_ids]
-    _record_terminal_bump_distance_check_candidates(settings, state,
+    _record_terminal_bump_distance_check_candidates(
+        settings,
+        state,
         crossing_points_by_net_id,
         requested_net_ids,
     )
@@ -803,7 +800,7 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
     for raw_net_id in requested_net_ids:
         net_id = int(raw_net_id)
         crossing_points = crossing_points_by_net_id.get(net_id, [])
-        if not crossing_points:
+        if not crossing_points:  # noqa: SIM102 (the comment below is the inner condition's reason)
             # A net classified crossing-aware (the crossing plan expected
             # it to cross something) but with zero REALIZED crossing
             # points normally just gets skipped here entirely, on the
@@ -890,7 +887,9 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
         state.route_bookkeeping.records_by_id[net_id] = updated
 
     if record_pipeline_timing:
-        timing.record_pipeline_timing(settings, state,
+        timing.record_pipeline_timing(
+            settings,
+            state,
             "crossing_endpoint_correction",
             t_endpoint_correction_start,
         )
@@ -927,14 +926,18 @@ def _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
     """
     net_id_list = [int(net_id) for net_id in net_ids]
     failed_net_ids = list(
-        _apply_checked_endpoint_corrections_for_net_ids(settings, state,
+        _apply_checked_endpoint_corrections_for_net_ids(
+            settings,
+            state,
             net_id_list,
             record_pipeline_timing=record_pipeline_timing,
             print_warnings=print_warnings,
         )
     )
     failed_net_ids.extend(
-        _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(settings, state,
+        _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
+            settings,
+            state,
             net_id_list,
             record_pipeline_timing=record_pipeline_timing,
             print_warnings=print_warnings,
@@ -974,12 +977,15 @@ def _apply_all_endpoint_corrections_for_net_ids(
     """
     net_id_list = [int(net_id) for net_id in net_ids]
     failed_net_ids = _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
-        settings, state,
+        settings,
+        state,
         net_id_list,
         print_warnings=print_warnings,
     )
     failed_net_ids.extend(
-        _apply_crossing_aware_endpoint_corrections_for_net_ids(settings, state,
+        _apply_crossing_aware_endpoint_corrections_for_net_ids(
+            settings,
+            state,
             net_id_list,
             print_warnings=print_warnings,
         )
@@ -1058,7 +1064,9 @@ def finalize_routing_results(
         astar_elapsed_s = time.perf_counter() - t_astar_start
 
     if settings.enable_checked_endpoint_correction:
-        _apply_all_endpoint_corrections_for_net_ids(settings, state,
+        _apply_all_endpoint_corrections_for_net_ids(
+            settings,
+            state,
             list(state.route_bookkeeping.route_order),
             print_warnings=(
                 settings.collect_attempt_diagnostics
@@ -1080,9 +1088,7 @@ def finalize_routing_results(
         )
         for record in routed_net_records
     ]
-    duplicate_record_keys = [
-        key for key, count in Counter(routed_record_keys).items() if count > 1
-    ]
+    duplicate_record_keys = [key for key, count in Counter(routed_record_keys).items() if count > 1]
     if duplicate_record_keys:
         formatted = ", ".join(
             f"{name}:{src_i},{src_p}->{dst_i},{dst_p}"

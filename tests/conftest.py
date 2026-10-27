@@ -27,12 +27,14 @@ from tests.fixtures.sessions import (
 )
 from tests.fixtures.sessions import settings_for_test as _settings_for_test
 from tests.fixtures.synthetic_layouts import (
-    DummySchematic,
     GRID_HEIGHT,
     GRID_WIDTH,
+    DummySchematic,
     port_from_instance,
-    single_rectangle_schematic as _single_rectangle_schematic,
     three_net_schematic,
+)
+from tests.fixtures.synthetic_layouts import (
+    single_rectangle_schematic as _single_rectangle_schematic,
 )
 
 # Mixed files: tests that load a benchmark and route it, or spawn a

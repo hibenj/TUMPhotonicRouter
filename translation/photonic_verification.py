@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import math
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import Any
 
-import numpy as np
-from collections.abc import Mapping
-from typing import Any, Iterable
-
-from gdsfactory.component import Component
 import klayout.db as kdb
+import numpy as np
+from gdsfactory.component import Component
 from shapely.geometry import LineString, Point
 
 from translation.route_rust_realization import (
@@ -1204,10 +1203,10 @@ def _component_dbu(component: Component) -> float:
 
 
 def _um_to_dbu(value_um: float, dbu: float) -> int:
-    return int(round(float(value_um) / float(dbu)))
+    return round(float(value_um) / float(dbu))
 
 
-def _dbu_to_um(value_dbu: int | float, dbu: float) -> float:
+def _dbu_to_um(value_dbu: float, dbu: float) -> float:
     return float(value_dbu) * float(dbu)
 
 

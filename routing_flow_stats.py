@@ -1,5 +1,7 @@
 """Legacy statistics collection for routing_flow."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -252,7 +254,7 @@ def populate_route_stats(
     stats.route_attempt_records = route_attempt_records
 
 
-def format_flow_summary_line(stats: "RoutingFlowStats | None") -> str:
+def format_flow_summary_line(stats: RoutingFlowStats | None) -> str:
     """One fixed, grep-able line per flow run (`SUMMARY key=value ...`).
 
     Every value a reader or an agent needs to judge a run without parsing the

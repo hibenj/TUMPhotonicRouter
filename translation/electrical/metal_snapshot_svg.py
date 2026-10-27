@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from html import escape
 from pathlib import Path
-from typing import Any, Iterable, cast
+from typing import Any, cast
 
 from .svg_support import _all_port_accesses
 from .terminal_contacts import terminal_contact_bboxes
@@ -110,8 +111,10 @@ def electrical_metal_snapshot_svg(
     ctx = _SnapshotContext(xmin=xmin, ymax=ymax)
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" '
-        f'viewBox="0 0 {width_um:.6g} {height_um:.6g}">',
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" '
+            f'viewBox="0 0 {width_um:.6g} {height_um:.6g}">'
+        ),
         "<title>electrical metal snapshot</title>",
         '<rect width="100%" height="100%" fill="#fbfbf8" />',
     ]

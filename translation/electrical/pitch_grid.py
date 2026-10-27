@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from collections.abc import Iterable
 
 from photonic_router.benchmark_extractor import BBox
 from photonic_router.static_obstacle_builder import GridSpec, physical_to_grid

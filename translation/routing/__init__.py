@@ -18,21 +18,21 @@ PYTHON_SOURCE = PROJECT_ROOT / "python"
 if str(PYTHON_SOURCE) not in sys.path:
     sys.path.insert(0, str(PYTHON_SOURCE))
 
-from translation.routing.session import (  # noqa: E402
-    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
-    _RouteNetsRustSession,
-    route_nets_rust,
+from translation.routing.api import (  # noqa: E402
+    analyze_meander_insertion_for_requirements,
+    insert_meanders_for_requirements,
+    route_match_and_realize,
+    static_fanout_anchors_um,
 )
 from translation.routing.dispatch import NEGOTIATED_MAX_ROUNDS  # noqa: E402
 from translation.routing.router_setup import (  # noqa: E402
     DENSE_OBSTACLE_CELL_CAP_MARGIN,
     dense_obstacle_cell_cap,
 )
-from translation.routing.api import (  # noqa: E402
-    analyze_meander_insertion_for_requirements,
-    insert_meanders_for_requirements,
-    route_match_and_realize,
-    static_fanout_anchors_um,
+from translation.routing.session import (  # noqa: E402
+    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
+    _RouteNetsRustSession,
+    route_nets_rust,
 )
 
 __all__ = [

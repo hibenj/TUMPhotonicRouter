@@ -15,6 +15,19 @@ from gdsfactory.gpdk import get_generic_pdk
 from photonic_router.routing_layers import ComponentPortAccessRule
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
 
+from tests.fixtures.sessions import settings_for_test
+from tests.fixtures.synthetic_layouts import (
+    DummyBundle as _DummyBundle,
+)
+from tests.fixtures.synthetic_layouts import (
+    DummyNetlist as _DummyNetlist,
+)
+from tests.fixtures.synthetic_layouts import (
+    DummySchematic as _DummySchematic,
+)
+from tests.fixtures.synthetic_layouts import (
+    make_dummy_layout as _make_dummy_layout,
+)
 from translation import route_rust
 from translation.routing import crossing_plan_stage as routing_crossing_plan_stage
 from translation.routing import dispatch as routing_dispatch
@@ -23,14 +36,6 @@ from translation.routing import obstacle_context as routing_obstacle_context
 from translation.routing import route_jobs as routing_route_jobs
 from translation.routing import session as routing_session
 from translation.routing.state import SessionState
-
-from tests.fixtures.sessions import settings_for_test
-from tests.fixtures.synthetic_layouts import (
-    DummyBundle as _DummyBundle,
-    DummyNetlist as _DummyNetlist,
-    DummySchematic as _DummySchematic,
-    make_dummy_layout as _make_dummy_layout,
-)
 
 get_generic_pdk().activate()
 
@@ -1345,9 +1350,7 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
     # Milestone 5 Slice 2b: the pass calls its collaborators as module
     # functions, so the stubs are monkeypatched where `finalize` looks them up
     # instead of being attached to the fake session.
-    monkeypatch.setattr(
-        routing_finalize, "_timing_start", lambda _settings, _state: 0.0
-    )
+    monkeypatch.setattr(routing_finalize, "_timing_start", lambda _settings, _state: 0.0)
     monkeypatch.setattr(routing_finalize, "_routing_endpoint_center_um", _endpoint)
     monkeypatch.setattr(
         routing_finalize,
@@ -1699,8 +1702,6 @@ def test_only_rules_flagged_for_instance_geometry_open_the_heater_pad(monkeypatc
     """
     from photonic_router import routing_layers
     from photonic_router.routing_layers import HEATER_OPTICAL_PORT_ACCESS_RULES
-
-    from translation import route_rust as route_rust_module
 
     grid_rule = ComponentPortAccessRule(
         component_name_pattern="crossing_grid_test",

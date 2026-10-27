@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from routing_flow_config import (
-    DebugSvgSelector,
     SCRIPT_ALLOW_45_DEGREE_TURNS,
     SCRIPT_BENCHMARK,
     SCRIPT_BEND_RADIUS_UM,
@@ -36,6 +35,7 @@ from routing_flow_config import (
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
     SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
+    DebugSvgSelector,
 )
 from routing_flow_stats import RoutingFlowStats
 from translation.electrical import ElectricalRoutingConfig

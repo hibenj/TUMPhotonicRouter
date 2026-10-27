@@ -20,6 +20,8 @@ the die extent without blocking any electrical route.
 `heater_only_schematic` below.
 """
 
+from __future__ import annotations
+
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Placement, Schematic
 

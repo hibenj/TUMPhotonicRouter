@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
+from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
 from photonic_router.path_length_graph import (
     PathLengthAnalysisResult,
     PathLengthGraphAnnotations,
@@ -12,7 +14,6 @@ from photonic_router.path_length_graph import (
     RoutedEdgeKey,
     build_graph_from_schematic,
 )
-from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
 from photonic_router.topology_analysis import (
     TopologyAnalysisResult,
     analyze_graph_topology,
@@ -42,7 +43,7 @@ class GraphAnalysisContext:
         *,
         node_types: Mapping[str, str] | None = None,
         internal_delays_um: Mapping[str, float] | None = None,
-    ) -> "GraphAnalysisContext":
+    ) -> GraphAnalysisContext:
         graph = build_graph_from_schematic(
             schematic,
             node_types=node_types,

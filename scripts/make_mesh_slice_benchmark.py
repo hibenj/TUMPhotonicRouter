@@ -108,7 +108,9 @@ def build_schematic() -> Schematic:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("parent", help="parent benchmark module name, e.g. multiportmmi_64x64")
     parser.add_argument("--first-column")
     parser.add_argument("--last-column")
@@ -132,12 +134,19 @@ def main() -> int:
     n_side = getattr(importlib.import_module(f"benchmarks.{args.parent}"), "N", 0)
     (ROOT / "benchmarks" / f"{args.name}.py").write_text(
         MODULE_TEMPLATE.format(
-            name=args.name, parent=args.parent, first=args.first_column, last=args.last_column,
-            n_instances=len(out["instances"]), n_nets=len(out["nets"]),
-            date=_dt.date.today().isoformat(), n_side=n_side,
+            name=args.name,
+            parent=args.parent,
+            first=args.first_column,
+            last=args.last_column,
+            n_instances=len(out["instances"]),
+            n_nets=len(out["nets"]),
+            date=_dt.date.today().isoformat(),
+            n_side=n_side,
         )
     )
-    print(f"{args.name}: {len(out['instances'])} instances, {len(out['nets'])} nets -> {out_yaml.name}, benchmarks/{args.name}.py")
+    print(
+        f"{args.name}: {len(out['instances'])} instances, {len(out['nets'])} nets -> {out_yaml.name}, benchmarks/{args.name}.py"
+    )
     return 0
 
 

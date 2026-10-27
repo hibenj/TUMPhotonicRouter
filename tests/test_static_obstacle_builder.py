@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
@@ -9,7 +11,6 @@ import webbrowser
 import gdsfactory as gf
 import pytest
 from gdsfactory.gpdk import get_generic_pdk
-
 from photonic_router.benchmark_extractor import ExtractedBenchmark, Port, extract_benchmark
 from photonic_router.static_obstacle_builder import (
     GridSpec,
@@ -20,9 +21,9 @@ from photonic_router.static_obstacle_builder import (
     _build_static_obstacle_map_rust,
     _expand_rect_perpendicular_to_long_axis,
     _materialize_grid_rects,
-    build_static_obstacle_map_python_from_extracted,
     build_port_open_cells,
     build_static_obstacle_map,
+    build_static_obstacle_map_python_from_extracted,
     chip_boundary_keepout_rects,
     expand_bbox,
     grid_cell_center,

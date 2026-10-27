@@ -399,14 +399,12 @@ def _route_local_trunks(
             key=lambda group: _group_center(group)[0],
         )
         group_pair = (left_pair, right_pair)
-        target_grid_x = int(
-            round(
-                (
-                    local_target_x_by_group.get(group_pair[0].heater_id, 0.0)
-                    + local_target_x_by_group.get(group_pair[1].heater_id, 0.0)
-                )
-                / 2.0
+        target_grid_x = round(
+            (
+                local_target_x_by_group.get(group_pair[0].heater_id, 0.0)
+                + local_target_x_by_group.get(group_pair[1].heater_id, 0.0)
             )
+            / 2.0
         )
         pair_routes = _build_local_trunk_pair_routes(
             group_pair,

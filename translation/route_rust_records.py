@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol, Sequence, cast
+from typing import Any, Protocol, cast
 
-from photonic_router.static_obstacle_builder import cell_center_coordinate
 from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
+from photonic_router.static_obstacle_builder import cell_center_coordinate
 
 from translation.route_rust_types import (
-    RouteJob,
     RouteAttemptRecord,
-    RouteSearchSummary,
     RoutedNetRecord,
+    RouteJob,
+    RouteSearchSummary,
     RustRouteDebugArtifacts,
 )
 
@@ -333,7 +334,7 @@ class RouteBookkeeping:
         target_port_center_um_override: tuple[float, float] | None = None,
     ) -> None:
         edge_key = route_edge_key(job)
-        route_total_length_um = float(getattr(route_obj, "total_length_um"))
+        route_total_length_um = float(route_obj.total_length_um)
         total_length_um = (
             float(corrected_total_length_um)
             if corrected_total_length_um is not None

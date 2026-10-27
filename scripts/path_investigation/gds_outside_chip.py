@@ -3,7 +3,11 @@ the union bbox of all non-route instances (0.6 um slack for the waveguide
 half-width). Usage: .venv/bin/python scripts/path_investigation/gds_outside_chip.py build/routed_<bench>.gds
 (chip-boundary keepout, 2026-09-04)."""
 
-import sys, klayout.db as db
+from __future__ import annotations
+
+import sys
+
+import klayout.db as db
 
 path = sys.argv[1]
 ly = db.Layout()

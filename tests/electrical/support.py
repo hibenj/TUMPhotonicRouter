@@ -7,6 +7,7 @@ helper another module also uses.
 
 from __future__ import annotations
 
+import itertools
 from types import SimpleNamespace
 
 import klayout.db as kdb
@@ -37,11 +38,11 @@ def _polygon_bboxes_by_layer(component: Component, layer: tuple[int, int]):
 
 
 def _kdb_region(*args):
-    return getattr(kdb, "Region")(*args)
+    return kdb.Region(*args)
 
 
 def _kdb_box(*args):
-    return getattr(kdb, "Box")(*args)
+    return kdb.Box(*args)
 
 
 def _polygon_region_by_layer(component: Component, layer: tuple[int, int]):
@@ -123,8 +124,8 @@ def _terminal(terminal_id: str, center: tuple[float, float]) -> ElectricalTermin
 def _path_direction_changes(path: tuple[tuple[int, int], ...]) -> int:
     """Count direction changes along a grid-cell path (0 for a straight run)."""
 
-    steps = [(x1 - x0, y1 - y0) for (x0, y0), (x1, y1) in zip(path, path[1:])]
-    return sum(1 for previous, current in zip(steps, steps[1:]) if previous != current)
+    steps = [(x1 - x0, y1 - y0) for (x0, y0), (x1, y1) in itertools.pairwise(path)]
+    return sum(1 for previous, current in itertools.pairwise(steps) if previous != current)
 
 
 def _column_trunk_vertical_cells(path: tuple[tuple[int, int], ...]) -> set[tuple[int, int]]:

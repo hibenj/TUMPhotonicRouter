@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from gdsfactory.component import Component
-
 from photonic_router.benchmark_extractor import BBox, extract_benchmark
 from photonic_router.static_obstacle_builder import (
     StaticObstacleMapConfig,

@@ -15,7 +15,6 @@ module had no direct test).
 from __future__ import annotations
 
 import pytest
-
 from photonic_router.primitive_library import (
     PrimitiveLibrary,
     PrimitiveMetadata,
@@ -81,16 +80,14 @@ def test_the_library_holds_six_primitives_per_heading():
     per_start_angle: dict[int, int] = {}
     for metadata in library.metadata.values():
         per_start_angle[metadata.start_angle] = per_start_angle.get(metadata.start_angle, 0) + 1
-    assert per_start_angle == {angle: 6 for angle in range(8)}
+    assert per_start_angle == dict.fromkeys(range(8), 6)
 
 
 def test_each_metadata_entry_records_the_heading_change_of_its_primitive():
     library = PrimitiveLibrary()
     # The six primitives of heading 0 are ids 0..5 in build order: short
     # straight, long straight, +45, -45, +90, -90.
-    deltas = [
-        (library.get_metadata(primitive_id).end_angle - 0) % 8 for primitive_id in range(6)
-    ]
+    deltas = [(library.get_metadata(primitive_id).end_angle - 0) % 8 for primitive_id in range(6)]
     assert deltas == [0, 0, 1, 7, 2, 6]
     # The long straight is four cells where the short one is one cell, and a
     # straight costs no bend.

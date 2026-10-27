@@ -15,7 +15,7 @@ StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
 
 def _grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
     if hasattr(grid, "origin"):
-        origin = getattr(grid, "origin")
+        origin = grid.origin
         return float(origin[0]), float(origin[1])
     return (
         float(getattr(grid, "origin_x_um", 0.0)),

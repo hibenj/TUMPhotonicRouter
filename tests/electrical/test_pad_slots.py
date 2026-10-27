@@ -203,15 +203,15 @@ def test_pad_plan_allows_empty_pitch_slots_and_keeps_individual_order():
 def test_auto_pad_origin_compacts_row_toward_escape_topology():
     schematic = build_multi_heater_schematic()
     component = layout_from_schematic(schematic)
-    base_kwargs = dict(
-        pad_side="top",
-        pad_pitch_um=150.0,
-        routing_grid_pitch_um=20.0,
-        obstacle_clearance_um=10.0,
-        terminal_open_radius_um=20.0,
-        wire_width_um=20.0,
-        individual_route_spacing_um=20.0,
-    )
+    base_kwargs = {
+        "pad_side": "top",
+        "pad_pitch_um": 150.0,
+        "routing_grid_pitch_um": 20.0,
+        "obstacle_clearance_um": 10.0,
+        "terminal_open_radius_um": 20.0,
+        "wire_width_um": 20.0,
+        "individual_route_spacing_um": 20.0,
+    }
 
     forced = route_electrical_heaters(
         component,

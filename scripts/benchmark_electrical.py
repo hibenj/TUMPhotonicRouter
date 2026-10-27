@@ -4,11 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from collections import Counter
 from collections.abc import Mapping
-import json
 from pathlib import Path
-import sys
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -18,7 +18,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from routing_flow import load_benchmark
 from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
 from translation.layout_from_schematic import layout_from_schematic
-
 
 DEFAULT_BENCHMARK = "heater_lanes_ripup"
 DEFAULT_BENCHMARKS = (
@@ -924,7 +923,7 @@ def _resolve_benchmarks(args: argparse.Namespace) -> tuple[str, ...]:
     if args.suite:
         return DEFAULT_BENCHMARKS
     benchmarks = tuple(args.benchmark)
-    return benchmarks if benchmarks else (DEFAULT_BENCHMARK,)
+    return benchmarks or (DEFAULT_BENCHMARK,)
 
 
 def _has_guardrail_violations(payload: object) -> bool:

@@ -1,14 +1,16 @@
 """Crossing and photonic verification stage for routing_flow."""
 
-from collections.abc import Mapping
+from __future__ import annotations
+
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
-
 from photonic_router.routing_layers import get_routing_obstacle_layers
+
 from routing_flow_component_info import component_info
 from translation.crossing_verification_report import (
     RouteCostTerms,

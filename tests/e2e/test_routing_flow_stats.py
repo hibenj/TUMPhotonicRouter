@@ -1,29 +1,33 @@
-import math
-import json
-from dataclasses import replace
+from __future__ import annotations
 
+import inspect
+import itertools
+import json
+import math
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+
+import pytest
+from photonic_router.routing_layers import get_routing_obstacle_layers
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
+import benchmark_metadata
 from routing_flow import (
-    RipupRerouteConfig,
-    RoutingFlowStats,
     SCRIPT_ELECTRICAL_BUS_WIDTH_UM,
     SCRIPT_ELECTRICAL_PAD_PITCH_UM,
     SCRIPT_ELECTRICAL_WIRE_WIDTH_UM,
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
+    RipupRerouteConfig,
+    RoutingFlowStats,
     _build_arg_parser,
     _format_debug_route_indices,
+    _parse_debug_svg_selector,
     _verification_status_metadata,
     load_benchmark,
-    _parse_debug_svg_selector,
     run_routing_flow,
 )
-import inspect
-import benchmark_metadata
-from translation.path_length_requirements import analyze_path_length_matching
-from translation.route_rust_types import RoutedNetRecord
-import pytest
-from pathlib import Path
-from photonic_router.routing_layers import get_routing_obstacle_layers
-from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from tests.fixtures.sessions import route_electrical_benchmark_result
 from tests.fixtures.synthetic_layouts import path_length_schematic
 from translation.electrical import (
@@ -36,6 +40,7 @@ from translation.electrical import (
     ElectricalRoutingConfig,
 )
 from translation.layout_from_schematic import layout_from_schematic
+from translation.path_length_requirements import analyze_path_length_matching
 from translation.photonic_verification import verify_photonic_routing
 from translation.route_rust import (
     COLLISION_CROSSING_SEARCH_LOSS_ENV,
@@ -49,12 +54,11 @@ from translation.route_rust_types import (
     DEFAULT_MEANDER_MAX_HEIGHT_UM,
     MeanderInsertionConfig,
     RouteAttemptRecord,
+    RoutedNetRecord,
     RouteJob,
     RouteSearchSummary,
     bend_radius_cells_from_um,
 )
-from types import SimpleNamespace
-from typing import cast
 
 
 def test_default_bend_radius_is_ten_um_on_routing_grid():
@@ -88,7 +92,7 @@ def test_electrical_width_defaults_are_centralized():
     assert DEFAULT_BONDPAD_WIDTH_UM == 80.0
     assert DEFAULT_COMMON_BUS_BONDPAD_WIDTH_UM == DEFAULT_BUS_WIDTH_UM
     assert DEFAULT_COMMON_BUS_BONDPAD_LENGTH_UM == DEFAULT_BUS_WIDTH_UM
-    assert DEFAULT_PAD_PITCH_UM == (config.bondpad_width_um + config.bondpad_spacing_um)
+    assert (config.bondpad_width_um + config.bondpad_spacing_um) == DEFAULT_PAD_PITCH_UM
     assert config.wire_width_um == DEFAULT_WIRE_WIDTH_UM
     assert config.bus_width_um == DEFAULT_BUS_WIDTH_UM
     assert config.bondpad_width_um == DEFAULT_BONDPAD_WIDTH_UM
@@ -574,7 +578,7 @@ def _route_electrical_benchmark(benchmark_name: str):
 
 
 def _segments(points):
-    return tuple(zip(points, points[1:], strict=False))
+    return tuple(itertools.pairwise(points))
 
 
 def _segments_intersect(first, second) -> bool:
@@ -852,7 +856,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
             bbox=(0.0, 0.0, 10.0, 10.0),
         )
 
-    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+    def fake_load_metadata(_benchmark_name: str, schematic: object):
         return {
             "node_types": None,
             "internal_delays_um": None,
@@ -910,6 +914,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
         )
 
     from photonic_router import flow as routing_flow
+
     import routing_flow_optical
 
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
@@ -951,7 +956,7 @@ def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_p
             bbox=(0.0, 0.0, 10.0, 10.0),
         )
 
-    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+    def fake_load_metadata(_benchmark_name: str, schematic: object):
         return {"node_types": None, "internal_delays_um": None}
 
     def fake_route_match_and_realize(
@@ -1018,6 +1023,7 @@ def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_p
         )
 
     from photonic_router import flow as routing_flow
+
     import routing_flow_optical
 
     monkeypatch.chdir(tmp_path)
@@ -1067,7 +1073,7 @@ def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_pa
             bbox=(0.0, 0.0, 10.0, 10.0),
         )
 
-    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+    def fake_load_metadata(_benchmark_name: str, schematic: object):
         return {"node_types": None, "internal_delays_um": None}
 
     def fake_route_match_and_realize(
@@ -1125,6 +1131,7 @@ def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_pa
         )
 
     from photonic_router import flow as routing_flow
+
     import routing_flow_optical
 
     monkeypatch.chdir(tmp_path)
@@ -1185,7 +1192,7 @@ def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_
             bbox=(0.0, 0.0, 10.0, 10.0),
         )
 
-    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+    def fake_load_metadata(_benchmark_name: str, schematic: object):
         return {"node_types": None, "internal_delays_um": None}
 
     def fake_route_match_and_realize(
@@ -1248,6 +1255,7 @@ def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_
     }
 
     from photonic_router import flow as routing_flow
+
     import routing_flow_optical
     import routing_flow_verification
 
@@ -1294,7 +1302,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
             bbox=(0.0, 0.0, 10.0, 10.0),
         )
 
-    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+    def fake_load_metadata(_benchmark_name: str, schematic: object):
         return {"node_types": None, "internal_delays_um": None}
 
     def fake_route_match_and_realize(
@@ -1379,6 +1387,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
         )
 
     from photonic_router import flow as routing_flow
+
     import routing_flow_optical
 
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
@@ -1552,7 +1561,7 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
     def fake_layout_from_schematic(_schematic: object):
         return optical_layout
 
-    def fake_load_metadata(_benchmark_name: str, schematic: object):  # noqa: ARG001
+    def fake_load_metadata(_benchmark_name: str, schematic: object):
         return {"node_types": None, "internal_delays_um": None}
 
     def fake_route_match_and_realize(
@@ -1608,6 +1617,7 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
         )
 
     from photonic_router import flow as routing_flow
+
     import routing_flow_electrical
     import routing_flow_optical
 
@@ -1828,6 +1838,7 @@ def test_lidar_pure_still_ignores_the_topology_plan():
 
 def test_planned_crossing_search_loss_env_override(monkeypatch):
     from photonic_router.config import RoutingConfig
+
     from translation.route_rust_crossing_plan import (
         PLANNED_CROSSING_SEARCH_LOSS_ENV,
         _effective_planned_crossing_search_loss,
@@ -1846,6 +1857,7 @@ def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
     """`PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET=0` (default, owner 2026-09-04) =
     every crossing of a planned partner discounted (S1); `1` = one per pair (S2)."""
     from photonic_router.config import RoutingConfig
+
     from translation.route_rust_crossing_plan import (
         PLANNED_CROSSING_BUDGET_ENV,
         _effective_single_discounted_crossing_per_pair,

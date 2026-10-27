@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from gdsfactory.component import Component
-
 from photonic_router.routing_layers import HEATER_METAL_OBSTACLE_LAYERS, Layer
 
 Point = tuple[float, float]

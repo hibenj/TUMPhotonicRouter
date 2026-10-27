@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, cast
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, Any, cast
 
+from translation.crossing_modes import is_lidar_mode
 from translation.route_rust_geometry import (
     _collinear_segment_overlap_with_params,
     _convex_polygons_overlap_with_area,
@@ -30,7 +32,6 @@ from translation.route_rust_geometry import (
     _segments_are_perpendicular,
     _um_bboxes_overlap,
 )
-from translation.crossing_modes import is_lidar_mode
 from translation.route_rust_types import RoutedNetRecord
 
 if TYPE_CHECKING:
@@ -612,10 +613,7 @@ def _verify_realized_route_intersections(
         crossing["overlapping_crossing"] = peer
         crossing["overlapping_crossing_index"] = int(peer_index)
         raw_indices = crossing.get("overlapping_crossing_indices")
-        if isinstance(raw_indices, list):
-            indices = raw_indices
-        else:
-            indices = []
+        indices = raw_indices if isinstance(raw_indices, list) else []
         if int(peer_index) not in indices:
             indices.append(int(peer_index))
         crossing["overlapping_crossing_indices"] = indices

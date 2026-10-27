@@ -21,15 +21,15 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from translation.gds_circuit_extraction import extract_circuit  # noqa: E402
-from translation.gds_circuit_rebuild import (  # noqa: E402
+from translation.gds_circuit_extraction import extract_circuit
+from translation.gds_circuit_rebuild import (
     benchmark_metadata,
     default_generic_mappings,
     generic_schematic,
     overlapping_instances,
     write_benchmark_module,
 )
-from translation.layout_from_schematic import layout_from_schematic  # noqa: E402
+from translation.layout_from_schematic import layout_from_schematic
 
 STABLE_ROUTING_FLAGS: tuple[str, ...] = (
     "--allow-45-degree-turns",

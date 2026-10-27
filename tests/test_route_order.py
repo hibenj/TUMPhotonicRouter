@@ -1,5 +1,7 @@
 """Net routing order (contribution 1, S3): pure ordering rules on synthetic jobs."""
 
+from __future__ import annotations
+
 from typing import cast
 
 import pytest

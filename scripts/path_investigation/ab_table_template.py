@@ -2,7 +2,11 @@
 <prefix>_<bench>_<mode>.log / .crossing.json next to a <prefix>.summary as
 written by the scratchpad runner scripts; adapt S and the file names)."""
 
-import json, re, sys, os
+from __future__ import annotations
+
+import json
+import os
+import re
 
 S = os.path.dirname(os.path.abspath(__file__))
 rows = []

@@ -5,16 +5,18 @@ the large router option set here lets `run_routing_flow()` read as orchestration
 instead of as a full argument map for the Rust bridge.
 """
 
+from __future__ import annotations
+
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-import time
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
-
-from benchmark_metadata import load_benchmark_metadata
 from photonic_router.config import RoutingConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
+from benchmark_metadata import load_benchmark_metadata
 from routing_flow_reporting import (
     report_optical_timing,
     report_partial_debug_artifacts,

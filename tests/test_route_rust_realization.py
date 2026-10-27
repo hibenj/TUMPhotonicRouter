@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import klayout.db as kdb
 from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk

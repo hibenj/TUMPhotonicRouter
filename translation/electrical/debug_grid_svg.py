@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from html import escape
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Protocol
 
 from .svg_support import _all_port_accesses
 from .types import (
@@ -104,8 +105,10 @@ def electrical_debug_svg(
     height_px = grid.height * cell_px
 
     parts: list[str] = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" '
-        f'viewBox="0 0 {grid.width} {grid.height}">',
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width_px}" height="{height_px}" '
+            f'viewBox="0 0 {grid.width} {grid.height}">'
+        ),
         '<rect width="100%" height="100%" fill="#f7f7f2" />',
     ]
 

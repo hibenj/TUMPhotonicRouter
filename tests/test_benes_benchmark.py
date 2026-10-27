@@ -1,3 +1,9 @@
+from __future__ import annotations
+
+from photonic_router.crossing_plan import build_crossing_plan
+from photonic_router.path_length_graph import build_graph_from_schematic
+from photonic_router.topology_analysis import analyze_schematic_topology
+
 from benchmark_metadata import load_benchmark_metadata
 from benchmarks.benes import (
     SWITCH_COMPONENT,
@@ -6,8 +12,8 @@ from benchmarks.benes import (
     benes_topology_metadata,
 )
 from benchmarks.benes_4x4 import (
-    EXPECTED_CROSSINGS,
     EDGE_RANKS,
+    EXPECTED_CROSSINGS,
     INTERNAL_DELAYS_UM,
     NODE_DEPTHS,
     NODE_RANKS,
@@ -16,24 +22,29 @@ from benchmarks.benes_4x4 import (
 )
 from benchmarks.benes_8x8 import (
     EDGE_RANKS as EDGE_RANKS_8X8,
+)
+from benchmarks.benes_8x8 import (
     EXPECTED_CROSSINGS as EXPECTED_CROSSINGS_8X8,
+)
+from benchmarks.benes_8x8 import (
     NODE_DEPTHS as NODE_DEPTHS_8X8,
+)
+from benchmarks.benes_8x8 import (
     NODE_RANKS as NODE_RANKS_8X8,
+)
+from benchmarks.benes_8x8 import (
     build_schematic as build_schematic_8x8,
 )
 from benchmarks.benes_16x16 import build_schematic as build_schematic_16x16
 from benchmarks.benes_32x32 import build_schematic as build_schematic_32x32
-from photonic_router.path_length_graph import build_graph_from_schematic
-from photonic_router.crossing_plan import build_crossing_plan
-from photonic_router.topology_analysis import analyze_schematic_topology
 from translation.layout_from_schematic import layout_from_schematic
 from translation.route_rust import (
     _augment_crossing_plan_with_realized_overlaps,
     _build_crossing_plan_info,
     _resolve_crossing_half_size_cells,
 )
-from translation.routing.crossing_plan_info import CrossingPlanInfo
 from translation.route_rust_types import RouteJob
+from translation.routing.crossing_plan_info import CrossingPlanInfo
 
 
 class _FakeCrossingConstraint:

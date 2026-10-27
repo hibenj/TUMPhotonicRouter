@@ -422,7 +422,7 @@ NODE_TYPES = {
     "gc_array_out_gc_7": "output",
 }
 
-INTERNAL_DELAYS_UM = {instance_name: 0.0 for instance_name in NODE_TYPES}
+INTERNAL_DELAYS_UM = dict.fromkeys(NODE_TYPES, 0.0)
 
 
 def build_schematic() -> Schematic:

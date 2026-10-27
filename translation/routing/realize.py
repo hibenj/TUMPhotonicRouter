@@ -11,15 +11,15 @@ from translation.route_rust_crossing_plan import _write_crossing_debug_artifacts
 from translation.route_rust_realization import realize_routed_net_records
 from translation.route_rust_records import build_route_debug_artifacts
 from translation.route_rust_types import (
-    RouteJob,
     RoutedNetRecord,
+    RouteJob,
     RustRouteDebugArtifacts,
     summarize_route_search,
 )
-
 from translation.routing import timing
 from translation.routing.settings import SessionSettings
 from translation.routing.state import SessionState
+
 
 def realize_and_assemble_debug_artifacts(
     settings: SessionSettings,

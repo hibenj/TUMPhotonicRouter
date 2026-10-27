@@ -47,11 +47,12 @@ if str(REPO_ROOT / "python") not in sys.path:
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from photonic_router import cli as cli_module  # noqa: E402
-from photonic_router import config as config_module  # noqa: E402
-from photonic_router import env_overlay as env_overlay_module  # noqa: E402
-from photonic_router import flow_options as flow_options_module  # noqa: E402
-from translation.electrical import types as electrical_types_module  # noqa: E402
+from photonic_router import cli as cli_module
+from photonic_router import config as config_module
+from photonic_router import env_overlay as env_overlay_module
+from photonic_router import flow_options as flow_options_module
+
+from translation.electrical import types as electrical_types_module
 
 OUTPUT_PATH = REPO_ROOT / "docs" / "CONFIGURATION.md"
 

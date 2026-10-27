@@ -1,17 +1,19 @@
+from __future__ import annotations
+
 from types import SimpleNamespace
 from typing import cast
 
-from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
 from gdsfactory.typings import Port
+from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
 
 from translation.route_rust_records import (
     RouteBookkeeping,
     routed_edge_lengths_from_records,
 )
 from translation.route_rust_types import (
+    RoutedNetRecord,
     RouteJob,
     RouteSearchSummary,
-    RoutedNetRecord,
     summarize_route_search,
 )
 

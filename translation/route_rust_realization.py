@@ -7,16 +7,16 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import Protocol
 
-from gdsfactory.component import Component
 import klayout.db as kdb
+from gdsfactory.component import Component
 
+from translation.route_rust_records import format_port_endpoint_correction_error
 from translation.route_rust_types import (
     DEFAULT_MEANDER_MAX_HEIGHT_UM,
     RoutedNetRecord,
     _as_float,
     _as_int,
 )
-from translation.route_rust_records import format_port_endpoint_correction_error
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 _load_rust_backend = _sob._load_rust_backend
@@ -267,10 +267,7 @@ def _record_realized_polygon(
                 if isinstance(p, (tuple, list)) and len(p) == 2
             ]
             if corrected_centerline:
-                realize_with_tangents = getattr(
-                    router,
-                    "realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents",
-                )
+                realize_with_tangents = router.realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents
                 try:
                     return realize_with_tangents(
                         corrected_centerline,
@@ -520,7 +517,7 @@ def _component_dbu(component: Component) -> float:
 
 
 def _um_to_dbu(value_um: float, dbu: float) -> int:
-    return int(round(float(value_um) / float(dbu)))
+    return round(float(value_um) / float(dbu))
 
 
 def _as_int_or_none(value: object) -> int | None:

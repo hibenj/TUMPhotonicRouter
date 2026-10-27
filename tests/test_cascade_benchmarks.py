@@ -89,7 +89,7 @@ def test_cascade_counts(module_name: str, n_modes: int, layout: str):
         assert schematic.placements[name].y == pytest.approx(placement.y), name
     instances = schematic.netlist.instances
 
-    couplers = [n for n in instances if n.startswith("gc_in_") or n.startswith("gc_out_")]
+    couplers = [n for n in instances if n.startswith(("gc_in_", "gc_out_"))]
     heaters = [n for n in instances if n.startswith("heater_")]
     mmis = [n for n in instances if n.startswith("mmi_")]
     cascade_count = n_modes - 3

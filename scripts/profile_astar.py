@@ -9,17 +9,18 @@ repeatable grids, and reports the route stats returned by Rust.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterable as IterableABC
-from dataclasses import dataclass, replace
-from datetime import datetime
 import json
-from pathlib import Path
 import platform
 import statistics
 import subprocess
 import sys
 import time
-from typing import Any, Iterable, Literal, Protocol, TypeAlias, cast
+from collections.abc import Iterable
+from collections.abc import Iterable as IterableABC
+from dataclasses import dataclass, replace
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Literal, Protocol, TypeAlias, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_SOURCE = PROJECT_ROOT / "python"
@@ -119,11 +120,11 @@ def _format_mib(value: object) -> str:
 def _route_counter_dict(route_obj: object, attr: str) -> dict[str, int]:
     values = getattr(route_obj, attr, None)
     labels: tuple[PrimitiveClass, ...] = ("straight_short", "straight_long", "bend45", "bend90")
-    counters: dict[str, int] = {label: 0 for label in labels}
+    counters: dict[str, int] = dict.fromkeys(labels, 0)
     if not isinstance(values, IterableABC):
         return counters
     sequence = list(values)
-    for label, value in zip(labels, sequence):
+    for label, value in zip(labels, sequence, strict=False):
         if isinstance(value, (str, bytes, bytearray, int, float)):
             counters[label] = int(value)
     return counters
@@ -405,9 +406,9 @@ def _route_stat(route: object, attr: str) -> int | float | bool:
 
 def _state_tuple(state: object) -> tuple[int, int, int]:
     return (
-        int(getattr(state, "x")),
-        int(getattr(state, "y")),
-        int(getattr(state, "angle")),
+        int(state.x),
+        int(state.y),
+        int(state.angle),
     )
 
 
@@ -434,7 +435,7 @@ def run_scenario(
         last_route = route
 
     assert last_route is not None
-    reached_target = _state_tuple(getattr(last_route, "reached_target"))
+    reached_target = _state_tuple(last_route.reached_target)
     return {
         "scenario": scenario.name,
         "grid": f"{scenario.width}x{scenario.height}",

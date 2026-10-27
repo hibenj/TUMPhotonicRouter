@@ -102,8 +102,10 @@ def _write_centerline_probe_svg(
         return " ".join(f"{sx(x):.6g},{sy(y):.6g}" for x, y in points)
 
     parts = [
-        '<svg xmlns="http://www.w3.org/2000/svg" '
-        f'width="1100" height="800" viewBox="0 0 {width:.6g} {height:.6g}">',
+        (
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="1100" height="800" viewBox="0 0 {width:.6g} {height:.6g}">'
+        ),
         '<rect width="100%" height="100%" fill="#ffffff" />',
         '<g stroke="#d0d7de" stroke-width="0.15" opacity="0.55">',
     ]

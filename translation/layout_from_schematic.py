@@ -1,9 +1,12 @@
 """Convert gdsfactory.Schematic to unrouted gdsfactory.Component."""
 
+from __future__ import annotations
+
+from uuid import uuid4
+
 import gdsfactory as gf
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
-from uuid import uuid4
 
 
 def _anchor_point_from_bbox(bbox, anchor: str) -> tuple[float, float]:

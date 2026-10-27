@@ -9,6 +9,8 @@ which is `photonic_router.cli.main` - see `python -m photonic_router route
 with argparse's usage-error status.
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 

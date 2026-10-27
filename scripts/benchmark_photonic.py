@@ -5,21 +5,22 @@ from __future__ import annotations
 
 import argparse
 import csv
-from collections.abc import Mapping
-from datetime import datetime
 import json
-import statistics
-from pathlib import Path
 import platform
+import statistics
 import subprocess
 import sys
-from typing import Any, Iterable, Literal, Protocol, TypeAlias, TypeGuard, cast
+from collections.abc import Iterable, Mapping
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Literal, Protocol, TypeAlias, TypeGuard, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
 from routing_flow import (
     SCRIPT_BEND_RADIUS_UM,
     SCRIPT_CHIP_ADD_X_UM,
@@ -33,7 +34,6 @@ from routing_flow import (
     load_benchmark,
     run_routing_flow,
 )
-
 
 DEFAULT_BENCHMARKS = ("heater_s_mod", "benes_4x4", "benes_8x8")
 PERF_SMOKE_BENCHMARKS = ("heater_s_mod", "clements_8x8", "benes_4x4", "benes_8x8")
@@ -913,7 +913,9 @@ def _worker_row(benchmark: str, args: argparse.Namespace) -> dict[str, object]:
         raise RuntimeError(f"benchmark worker did not report stats for {benchmark}")
     loaded = json.loads(marker_lines[-1])
     if not isinstance(loaded, dict):
-        raise RuntimeError(f"benchmark worker reported invalid stats for {benchmark}")
+        raise RuntimeError(  # noqa: TRY004 (a protocol error of the worker, not a caller type error)
+            f"benchmark worker reported invalid stats for {benchmark}"
+        )
     return loaded
 
 
@@ -930,7 +932,8 @@ _REPEAT_MEDIAN_FIELDS = (
     "meander_obstacle_map_s",
     "meander_planning_s",
     "meander_planner_elapsed_s",
-) + tuple(f"route_nets_{key}_s" for key in ROUTE_NETS_TIMING_KEYS)
+    *tuple(f"route_nets_{key}_s" for key in ROUTE_NETS_TIMING_KEYS),
+)
 
 
 def _as_float(value: object) -> float | None:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import random
 import time
@@ -18,17 +20,17 @@ from translation.photonic_verification import (
     _component_layer_region,
     _net_id_pair,
     _polygon_regions_by_pair_um,
+    _polyline_self_intersects_um,
+    _realized_record_region,
     _region_area_um2,
     _region_bbox_um,
+    _verify_cross_net_route_overlaps,
     _verify_crossing_component_overlaps,
     _verify_crossing_component_route_overlaps,
-    _verify_cross_net_route_overlaps,
     _verify_record_coverage,
-    _realized_record_region,
     _verify_route_obstacle_overlaps,
     _verify_routes_inside_routable_bbox,
     _verify_self_intersecting_routes,
-    _polyline_self_intersects_um,
     verify_photonic_routing,
 )
 from translation.route_rust_realization import (

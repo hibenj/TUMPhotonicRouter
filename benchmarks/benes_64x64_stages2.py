@@ -14,29 +14,39 @@ from gdsfactory.schematic import Schematic
 from benchmarks.benes import build_benes_schematic, input_name, switch_name
 from benchmarks.benes_64x64 import (
     EDGE_RANKS as PARENT_EDGE_RANKS,
+)
+from benchmarks.benes_64x64 import (
     EXPECTED_CROSSINGS as PARENT_EXPECTED_CROSSINGS,
+)
+from benchmarks.benes_64x64 import (
     INTERNAL_DELAYS_UM as PARENT_INTERNAL_DELAYS_UM,
+)
+from benchmarks.benes_64x64 import (
     NETWORK_SIZE,
-    NODE_DEPTHS as PARENT_NODE_DEPTHS,
-    NODE_RANKS as PARENT_NODE_RANKS,
-    NODE_TYPES as PARENT_NODE_TYPES,
     STABLE_ROUTING_ENV,
     STABLE_ROUTING_FLAGS,
     STAGE_PITCH_UM,
+)
+from benchmarks.benes_64x64 import (
+    NODE_DEPTHS as PARENT_NODE_DEPTHS,
+)
+from benchmarks.benes_64x64 import (
+    NODE_RANKS as PARENT_NODE_RANKS,
+)
+from benchmarks.benes_64x64 import (
+    NODE_TYPES as PARENT_NODE_TYPES,
+)
+from benchmarks.benes_64x64 import (
     TOPOLOGY_METADATA as PARENT_TOPOLOGY_METADATA,
 )
 
 STAGE_LIMIT = 2
 
 _KEPT_NODES = {input_name(index) for index in range(NETWORK_SIZE)} | {
-    switch_name(stage, index)
-    for stage in range(STAGE_LIMIT)
-    for index in range(NETWORK_SIZE // 2)
+    switch_name(stage, index) for stage in range(STAGE_LIMIT) for index in range(NETWORK_SIZE // 2)
 }
 _KEPT_EDGES = {
-    name
-    for name, ranks in PARENT_EDGE_RANKS.items()
-    if int(ranks["target_depth"]) <= STAGE_LIMIT
+    name for name, ranks in PARENT_EDGE_RANKS.items() if int(ranks["target_depth"]) <= STAGE_LIMIT
 }
 
 NODE_DEPTHS = {name: depth for name, depth in PARENT_NODE_DEPTHS.items() if name in _KEPT_NODES}

@@ -1,5 +1,8 @@
-from benchmarks.multiportmmi_8x8 import build_schematic
+from __future__ import annotations
+
 import pytest
+
+from benchmarks.multiportmmi_8x8 import build_schematic
 from routing_flow import RoutingFlowStats, run_routing_flow
 from translation.layout_from_schematic import layout_from_schematic
 

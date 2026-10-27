@@ -5,6 +5,8 @@ Later, this will be replaced by a custom router with grid-based routing, obstacl
 rip-up and reroute, etc.
 """
 
+from __future__ import annotations
+
 from gdsfactory.component import Component
 from gdsfactory.routing import route_single
 from gdsfactory.schematic import Schematic
@@ -73,15 +75,13 @@ def print_instance_ports(component: Component, instance_name: str) -> None:
     print(f"\nInstance: {instance_name}")
     print(f"Base component: {inst.cell.name}")
     print(f"Position: x={inst.x}, y={inst.y}")
-    print(f"\nPorts (already transformed):")
+    print("\nPorts (already transformed):")
     print(f"{'Port':<10} {'Center (um)':<35} {'Orient':<10} {'Width':<10}")
     print("-" * 70)
 
     for port in inst.ports:
         center = tuple(port.center)
-        print(
-            f"{port.name:<10} {str(center):<35} {str(port.orientation):<10} {str(port.width):<10}"
-        )
+        print(f"{port.name:<10} {center!s:<35} {port.orientation!s:<10} {port.width!s:<10}")
 
 
 def route_nets_gds(
@@ -146,7 +146,7 @@ def route_nets_gds(
                 )
 
                 # Route using gdsfactory's built-in Manhattan router
-                route = route_single(
+                route_single(
                     routed_layout,
                     abs_port1,
                     abs_port2,
@@ -161,7 +161,7 @@ def route_nets_gds(
 
             except Exception as e:
                 failed_nets.append((net_name, port1_spec, port2_spec, str(e)))
-                print(f"✗")
+                print("✗")
                 if on_error != "error":
                     # Print error details only in non-strict mode
                     print(f"      Error: {str(e)[:100]}")

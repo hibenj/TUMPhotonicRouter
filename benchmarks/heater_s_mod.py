@@ -7,6 +7,8 @@ while the lower output bypasses the heater. Both paths then meet again in a
 second-stage MMI, whose upper output passes through another heater.
 """
 
+from __future__ import annotations
+
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
@@ -669,8 +671,8 @@ def build_schematic() -> Schematic:
 
 
 if __name__ == "__main__":
-    from pathlib import Path
     import sys
+    from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import itertools
 import math
 import time
 from collections import Counter
@@ -50,7 +51,7 @@ class MeanderRustBackendLike(Protocol):
         *args: object,
         **kwargs: object,
     ) -> dict[str, object]: ...
-    def PyPhotonicRouter(self, *args: object, **kwargs: object) -> "MeanderRouterLike": ...
+    def PyPhotonicRouter(self, *args: object, **kwargs: object) -> MeanderRouterLike: ...
 
 
 class MeanderRouterLike(Protocol):
@@ -497,6 +498,7 @@ class _MeanderPlannerContext:
                         raw_plans,
                         candidate_records,
                         candidate_max_bumps,
+                        strict=False,
                     )
                 ]
                 for attempt_info in edge_attempts:
@@ -778,6 +780,7 @@ class _MeanderPlannerContext:
             raw_plans,
             max_bumps_values,
             attempted_edges,
+            strict=False,
         ):
             record = self.by_edge[edge_key]
             attempt_info["status"] = "planned"
@@ -978,6 +981,7 @@ class _MeanderPlannerContext:
             raw_plans,
             max_bumps_values,
             attempted_edges,
+            strict=False,
         ):
             attempt_info["status"] = "planned"
             attempt_info["reason"] = ""
@@ -1138,7 +1142,7 @@ class _MeanderPlannerContext:
         plans: list[PlannedEdgeInsertion] = []
         max_bumps_values: list[int] = []
         open_count = 0
-        for raw_plan, input_index in zip(raw_plans, plan_input_indices):
+        for raw_plan, input_index in zip(raw_plans, plan_input_indices, strict=False):
             if input_index < 0 or input_index >= len(edge_keys):
                 return (
                     [],
@@ -1624,7 +1628,7 @@ def _build_planner_context(
         register_route_cells_s = time.perf_counter() - t_register_start
         registered_unique_route_cell_count = int(unique_count)
         t_registration_map_start = time.perf_counter()
-        for edge_key, raw_index, raw_count in zip(edge_order, indices, open_counts):
+        for edge_key, raw_index, raw_count in zip(edge_order, indices, open_counts, strict=False):
             registered_open_cell_index_by_edge[edge_key] = int(raw_index)
             registered_open_cell_count_by_edge[edge_key] = int(raw_count)
         registration_result_map_s = time.perf_counter() - t_registration_map_start
@@ -1661,7 +1665,7 @@ def _build_planner_context(
             geometry_call_s = time.perf_counter() - t_geometry_call_start
             register_route_geometry_s = time.perf_counter() - t_geometry_start
             t_geometry_result_map_start = time.perf_counter()
-            for edge_key, raw_index in zip(edge_order, geometry_indices):
+            for edge_key, raw_index in zip(edge_order, geometry_indices, strict=False):
                 registered_geometry_index_by_edge[edge_key] = int(raw_index)
             geometry_result_map_s = time.perf_counter() - t_geometry_result_map_start
     setup_profile = {
@@ -1942,7 +1946,7 @@ def _route_geometry_max_meander_bumps(
     longest_straight_um = _longest_axis_aligned_centerline_run_um(record.corrected_centerline_um)
     if longest_straight_um <= 0.0:
         waypoints = getattr(record.route_obj, "compressed_waypoints", None) or []
-        for p0, p1 in zip(waypoints, waypoints[1:]):
+        for p0, p1 in itertools.pairwise(waypoints):
             if (
                 not isinstance(p0, (tuple, list))
                 or not isinstance(p1, (tuple, list))
@@ -1959,7 +1963,7 @@ def _route_geometry_max_meander_bumps(
             elif y0 == y1:
                 longest_straight_um = max(longest_straight_um, abs(x1 - x0) * grid_size)
 
-    visible_lobes = int(math.floor(longest_straight_um / (4.0 * radius)))
+    visible_lobes = math.floor(longest_straight_um / (4.0 * radius))
     return max(1, 2 * visible_lobes - 1)
 
 
@@ -1981,7 +1985,7 @@ def _axis_aligned_centerline_run_lengths_um(
     current_axis: str | None = None
     current_line_coord = 0.0
     current_dir = 0
-    for p0, p1 in zip(centerline, centerline[1:]):
+    for p0, p1 in itertools.pairwise(centerline):
         dx = float(p1[0]) - float(p0[0])
         dy = float(p1[1]) - float(p0[1])
         if abs(dy) <= eps and abs(dx) > eps:
@@ -2410,11 +2414,7 @@ def analyze_meander_insertion_for_requirements(
             requirement_edge_alternatives=requirement_edge_alternatives,
             requirement_delay_candidates=requirement_delay_candidates,
         ):
-            affected_edges = (
-                candidate.affected_requirement_edge_keys
-                if candidate.affected_requirement_edge_keys
-                else (edge_key,)
-            )
+            affected_edges = candidate.affected_requirement_edge_keys or (edge_key,)
             remaining_for_affected = [
                 max(
                     0.0,

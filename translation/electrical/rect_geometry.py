@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Iterable
 
 from .types import BBox, Point
@@ -34,8 +35,8 @@ def wire_rects_for_points(
     if len(points) == 1:
         return (_point_rect(points[0], half_width),)
     rects: list[BBox] = []
-    directions = tuple(_point_direction(start, end) for start, end in zip(points, points[1:]))
-    for index, (start, end) in enumerate(zip(points, points[1:])):
+    directions = tuple(_point_direction(start, end) for start, end in itertools.pairwise(points))
+    for index, (start, end) in enumerate(itertools.pairwise(points)):
         trim_end = (
             trim_bends
             and index + 1 < len(directions)
@@ -64,7 +65,7 @@ def clip_manhattan_path_at_first_bbox_entry(
         return points
     if _point_in_bbox(points[0], bbox):
         return clip_manhattan_path_start_at_bbox(points, bbox)
-    for index, (start, end) in enumerate(zip(points, points[1:])):
+    for index, (start, end) in enumerate(itertools.pairwise(points)):
         if _point_in_bbox(start, bbox):
             return points[: index + 1]
         if _point_in_bbox(end, bbox):
@@ -141,7 +142,7 @@ def disjoint_union_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
         return compact
     x_edges = sorted({rect[0] for rect in compact} | {rect[2] for rect in compact})
     strips: list[BBox] = []
-    for left, right in zip(x_edges, x_edges[1:]):
+    for left, right in itertools.pairwise(x_edges):
         if right <= left:
             continue
         intervals = [(rect[1], rect[3]) for rect in compact if rect[0] < right and rect[2] > left]
@@ -185,7 +186,7 @@ def union_rect_area(rects: Iterable[BBox]) -> float:
         return 0.0
     x_edges = sorted({rect[0] for rect in normalized} | {rect[2] for rect in normalized})
     area = 0.0
-    for left, right in zip(x_edges, x_edges[1:]):
+    for left, right in itertools.pairwise(x_edges):
         if right <= left:
             continue
         intervals = [

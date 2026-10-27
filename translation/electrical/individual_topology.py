@@ -505,10 +505,7 @@ def _route_core_cells(
 ) -> frozenset[GridCell]:
     if not route.path:
         return frozenset()
-    if config.pad_side == "top":
-        boundary_y = obstacle_map.grid.height - 1
-    else:
-        boundary_y = 0
+    boundary_y = obstacle_map.grid.height - 1 if config.pad_side == "top" else 0
     return frozenset(
         cell for cell in route.path if cell not in terminal_cells and cell[1] != boundary_y
     )

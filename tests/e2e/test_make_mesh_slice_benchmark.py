@@ -20,7 +20,8 @@ spec.loader.exec_module(mod)
 
 def _parent():
     return yaml.load(
-        (ROOT / "benchmarks" / "data" / "multiportmmi_8x8.yml").read_text(), Loader=yaml.UnsafeLoader
+        (ROOT / "benchmarks" / "data" / "multiportmmi_8x8.yml").read_text(),
+        Loader=yaml.UnsafeLoader,
     )
 
 
@@ -42,7 +43,11 @@ def test_slice_keeps_only_inner_nets_and_unchanged_placements():
         assert parent["nets"][name] == endpoints
     for name, placement in out["schematic_placements"].items():
         assert placement == parent["schematic_placements"][name]
-    dropped = {n for n, (a, b) in parent["nets"].items() if (a.split(",")[0] in kept) != (b.split(",")[0] in kept)}
+    dropped = {
+        n
+        for n, (a, b) in parent["nets"].items()
+        if (a.split(",")[0] in kept) != (b.split(",")[0] in kept)
+    }
     assert dropped and not (dropped & set(out["nets"]))
 
 

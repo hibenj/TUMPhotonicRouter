@@ -19,6 +19,8 @@ flags so that an explicit flag always wins.
 reproduction scripts and the benchmark stable blocks use it; D4).
 """
 
+from __future__ import annotations
+
 import argparse
 import importlib
 import sys
@@ -40,11 +42,6 @@ from photonic_router.flow_options import (
     PreplacedCrossingGridOptions,
 )
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-from translation.crossing_modes import CROSSING_MODES
-from translation.electrical import ElectricalRoutingConfig
-from translation.route_order import NET_ORDERS
-from translation.route_rust import RipupRerouteConfig
-
 from routing_flow_config import (
     SCRIPT_ALLOW_45_DEGREE_TURNS,
     SCRIPT_ATTEMPT_DIAGNOSTICS,
@@ -87,7 +84,10 @@ from routing_flow_config import (
     SCRIPT_VERBOSE_ROUTES,
     SCRIPT_WAVEGUIDE_CLEARANCE_UM,
 )
-
+from translation.crossing_modes import CROSSING_MODES
+from translation.electrical import ElectricalRoutingConfig
+from translation.route_order import NET_ORDERS
+from translation.route_rust import RipupRerouteConfig
 
 _CONFIGURATION_FLAGS: dict[str, tuple[str, ...]] = {
     # Exactly the flags scripts/results/reproduce_date2027.sh passes for each

@@ -9,8 +9,8 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-
 from photonic_router.config import RouterConfig, RoutingConfig, SearchOverrides
+
 from routing_flow import run_routing_flow
 
 

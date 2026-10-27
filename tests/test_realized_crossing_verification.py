@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 from types import SimpleNamespace
 
 import pytest
 from gdsfactory.component import Component
 from photonic_router.path_length_graph import PortRef
+
 from translation.crossing_verification_report import build_crossing_verification_report
 from translation.route_rust import (
     _augment_insertion_loss_report_from_realized_intersections,
@@ -35,21 +38,23 @@ def _record(
 
 
 def _plan_info() -> CrossingPlanInfo:
-    return CrossingPlanInfo.from_dict({
-        "enabled": True,
-        "allow_only_expected_crossings": True,
-        "crossing_half_size_cells": 2,
-        "min_straight_cells_per_crossing": 2,
-        "events": [
-            {
-                "loaded": True,
-                "net_id_a": 1,
-                "net_id_b": 2,
-                "net_name_a": "a",
-                "net_name_b": "b",
-            }
-        ],
-    })
+    return CrossingPlanInfo.from_dict(
+        {
+            "enabled": True,
+            "allow_only_expected_crossings": True,
+            "crossing_half_size_cells": 2,
+            "min_straight_cells_per_crossing": 2,
+            "events": [
+                {
+                    "loaded": True,
+                    "net_id_a": 1,
+                    "net_id_b": 2,
+                    "net_name_a": "a",
+                    "net_name_b": "b",
+                }
+            ],
+        }
+    )
 
 
 def test_realized_crossing_verifier_accepts_straight_expected_crossing():
@@ -219,29 +224,31 @@ def test_realized_crossing_verifier_reports_search_margin_without_min_straight()
 
 
 def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():
-    info = CrossingPlanInfo.from_dict({
-        "enabled": True,
-        "allow_only_expected_crossings": True,
-        "crossing_half_size_cells": 4,
-        "min_straight_cells_per_crossing": 2,
-        "crossing_device": {"component_bbox_um": [8.0, 8.0]},
-        "events": [
-            {
-                "loaded": True,
-                "net_id_a": 1,
-                "net_id_b": 2,
-                "net_name_a": "a",
-                "net_name_b": "b",
-            },
-            {
-                "loaded": True,
-                "net_id_a": 3,
-                "net_id_b": 4,
-                "net_name_a": "c",
-                "net_name_b": "d",
-            },
-        ],
-    })
+    info = CrossingPlanInfo.from_dict(
+        {
+            "enabled": True,
+            "allow_only_expected_crossings": True,
+            "crossing_half_size_cells": 4,
+            "min_straight_cells_per_crossing": 2,
+            "crossing_device": {"component_bbox_um": [8.0, 8.0]},
+            "events": [
+                {
+                    "loaded": True,
+                    "net_id_a": 1,
+                    "net_id_b": 2,
+                    "net_name_a": "a",
+                    "net_name_b": "b",
+                },
+                {
+                    "loaded": True,
+                    "net_id_a": 3,
+                    "net_id_b": 4,
+                    "net_name_a": "c",
+                    "net_name_b": "d",
+                },
+            ],
+        }
+    )
 
     illegal = _verify_realized_route_intersections(
         crossing_plan_info=info,
@@ -259,15 +266,17 @@ def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():
 
 
 def test_realized_crossing_verifier_rejects_lidar_pure_overlapping_crossing_footprints():
-    info = CrossingPlanInfo.from_dict({
-        "enabled": True,
-        "allow_only_expected_crossings": False,
-        "crossing_mode": "lidar-pure",
-        "crossing_half_size_cells": 4,
-        "min_straight_cells_per_crossing": 2,
-        "crossing_device": {"component_bbox_um": [8.0, 8.0]},
-        "events": [],
-    })
+    info = CrossingPlanInfo.from_dict(
+        {
+            "enabled": True,
+            "allow_only_expected_crossings": False,
+            "crossing_mode": "lidar-pure",
+            "crossing_half_size_cells": 4,
+            "min_straight_cells_per_crossing": 2,
+            "crossing_device": {"component_bbox_um": [8.0, 8.0]},
+            "events": [],
+        }
+    )
 
     illegal = _verify_realized_route_intersections(
         crossing_plan_info=info,
@@ -282,9 +291,7 @@ def test_realized_crossing_verifier_rejects_lidar_pure_overlapping_crossing_foot
 
     reasons = {item["reason"] for item in illegal}
     assert "crossing_footprint_overlap" in reasons
-    assert {item.get("footprint_overlap_policy") for item in info.realized_intersections} == {
-        None
-    }
+    assert {item.get("footprint_overlap_policy") for item in info.realized_intersections} == {None}
 
 
 def test_realized_crossing_verifier_rejects_route_inside_crossing_footprint():
@@ -453,21 +460,23 @@ def test_realized_crossing_verifier_ignores_port_center_access():
 
 def test_places_active_crossing_components_for_legal_realized_intersections():
     layout = Component("crossing_component_placement")
-    info = CrossingPlanInfo.from_dict({
-        "enabled": True,
-        "realized_intersections": [
-            {
-                "classification": "legal_unexpected_crossing",
-                "point_um": [10.0, 20.0],
-                "segment_a_um": [[0.0, 10.0], [20.0, 30.0]],
-                "segment_b_um": [[0.0, 30.0], [20.0, 10.0]],
-                "net_id_a": 1,
-                "net_id_b": 2,
-                "net_name_a": "a",
-                "net_name_b": "b",
-            }
-        ],
-    })
+    info = CrossingPlanInfo.from_dict(
+        {
+            "enabled": True,
+            "realized_intersections": [
+                {
+                    "classification": "legal_unexpected_crossing",
+                    "point_um": [10.0, 20.0],
+                    "segment_a_um": [[0.0, 10.0], [20.0, 30.0]],
+                    "segment_b_um": [[0.0, 30.0], [20.0, 10.0]],
+                    "net_id_a": 1,
+                    "net_id_b": 2,
+                    "net_name_a": "a",
+                    "net_name_b": "b",
+                }
+            ],
+        }
+    )
 
     placements = _place_realized_crossing_components(layout, info)
 
@@ -480,7 +489,7 @@ def test_places_active_crossing_components_for_legal_realized_intersections():
     assert placement["rotation_deg"] == pytest.approx(45.0)
     assert placement["component_name"]
     assert placement["instance_name"]
-    ref = list(layout.insts)[0]
+    ref = next(iter(layout.insts))
     port_center_x = sum(float(port.center[0]) for port in ref.ports) / len(ref.ports)
     port_center_y = sum(float(port.center[1]) for port in ref.ports) / len(ref.ports)
     assert port_center_x == pytest.approx(10.0)
@@ -502,47 +511,49 @@ def test_places_active_crossing_components_for_legal_realized_intersections():
 
 def test_places_one_component_for_allowed_degraded_overlap_cluster():
     layout = Component("crossing_component_cluster_placement")
-    info = CrossingPlanInfo.from_dict({
-        "enabled": True,
-        "realized_intersections": [
-            {
-                "classification": "legal_unexpected_crossing",
-                "point_um": [10.0, 20.0],
-                "segment_a_um": [[0.0, 20.0], [20.0, 20.0]],
-                "segment_b_um": [[10.0, 10.0], [10.0, 30.0]],
-                "net_id_a": 1,
-                "net_id_b": 2,
-                "net_name_a": "a",
-                "net_name_b": "b",
-                "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
-                "overlapping_crossing_indices": [1, 2],
-            },
-            {
-                "classification": "legal_unexpected_crossing",
-                "point_um": [12.0, 20.0],
-                "segment_a_um": [[2.0, 20.0], [22.0, 20.0]],
-                "segment_b_um": [[12.0, 10.0], [12.0, 30.0]],
-                "net_id_a": 1,
-                "net_id_b": 3,
-                "net_name_a": "a",
-                "net_name_b": "c",
-                "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
-                "overlapping_crossing_indices": [0],
-            },
-            {
-                "classification": "legal_unexpected_crossing",
-                "point_um": [14.0, 20.0],
-                "segment_a_um": [[4.0, 20.0], [24.0, 20.0]],
-                "segment_b_um": [[14.0, 10.0], [14.0, 30.0]],
-                "net_id_a": 1,
-                "net_id_b": 4,
-                "net_name_a": "a",
-                "net_name_b": "d",
-                "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
-                "overlapping_crossing_indices": [0],
-            },
-        ],
-    })
+    info = CrossingPlanInfo.from_dict(
+        {
+            "enabled": True,
+            "realized_intersections": [
+                {
+                    "classification": "legal_unexpected_crossing",
+                    "point_um": [10.0, 20.0],
+                    "segment_a_um": [[0.0, 20.0], [20.0, 20.0]],
+                    "segment_b_um": [[10.0, 10.0], [10.0, 30.0]],
+                    "net_id_a": 1,
+                    "net_id_b": 2,
+                    "net_name_a": "a",
+                    "net_name_b": "b",
+                    "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
+                    "overlapping_crossing_indices": [1, 2],
+                },
+                {
+                    "classification": "legal_unexpected_crossing",
+                    "point_um": [12.0, 20.0],
+                    "segment_a_um": [[2.0, 20.0], [22.0, 20.0]],
+                    "segment_b_um": [[12.0, 10.0], [12.0, 30.0]],
+                    "net_id_a": 1,
+                    "net_id_b": 3,
+                    "net_name_a": "a",
+                    "net_name_b": "c",
+                    "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
+                    "overlapping_crossing_indices": [0],
+                },
+                {
+                    "classification": "legal_unexpected_crossing",
+                    "point_um": [14.0, 20.0],
+                    "segment_a_um": [[4.0, 20.0], [24.0, 20.0]],
+                    "segment_b_um": [[14.0, 10.0], [14.0, 30.0]],
+                    "net_id_a": 1,
+                    "net_id_b": 4,
+                    "net_name_a": "a",
+                    "net_name_b": "d",
+                    "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
+                    "overlapping_crossing_indices": [0],
+                },
+            ],
+        }
+    )
 
     placements = _place_realized_crossing_components(layout, info)
 
@@ -555,48 +566,50 @@ def test_places_one_component_for_allowed_degraded_overlap_cluster():
 def test_places_one_component_for_transitive_degraded_overlap_cluster():
     layout = Component("crossing_component_transitive_cluster")
     footprint = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]
-    info = CrossingPlanInfo.from_dict({
-        "enabled": True,
-        "realized_intersections": [
-            {
-                "classification": "legal_unexpected_crossing",
-                "point_um": [10.0, 20.0],
-                "segment_a_um": [[0.0, 20.0], [20.0, 20.0]],
-                "segment_b_um": [[10.0, 10.0], [10.0, 30.0]],
-                "net_id_a": 1,
-                "net_id_b": 2,
-                "net_name_a": "a",
-                "net_name_b": "b",
-                "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
-                "overlapping_crossing_indices": [1],
-                "crossing_footprint_polygon_um": footprint,
-            },
-            {
-                "classification": "legal_unexpected_crossing",
-                "point_um": [12.0, 20.0],
-                "segment_a_um": [[2.0, 20.0], [22.0, 20.0]],
-                "segment_b_um": [[12.0, 10.0], [12.0, 30.0]],
-                "net_id_a": 1,
-                "net_id_b": 3,
-                "net_name_a": "a",
-                "net_name_b": "c",
-                "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
-                "overlapping_crossing_indices": [0, 2],
-            },
-            {
-                "classification": "legal_unexpected_crossing",
-                "point_um": [14.0, 20.0],
-                "segment_a_um": [[4.0, 20.0], [24.0, 20.0]],
-                "segment_b_um": [[14.0, 10.0], [14.0, 30.0]],
-                "net_id_a": 1,
-                "net_id_b": 4,
-                "net_name_a": "a",
-                "net_name_b": "d",
-                "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
-                "overlapping_crossing_indices": [1],
-            },
-        ],
-    })
+    info = CrossingPlanInfo.from_dict(
+        {
+            "enabled": True,
+            "realized_intersections": [
+                {
+                    "classification": "legal_unexpected_crossing",
+                    "point_um": [10.0, 20.0],
+                    "segment_a_um": [[0.0, 20.0], [20.0, 20.0]],
+                    "segment_b_um": [[10.0, 10.0], [10.0, 30.0]],
+                    "net_id_a": 1,
+                    "net_id_b": 2,
+                    "net_name_a": "a",
+                    "net_name_b": "b",
+                    "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
+                    "overlapping_crossing_indices": [1],
+                    "crossing_footprint_polygon_um": footprint,
+                },
+                {
+                    "classification": "legal_unexpected_crossing",
+                    "point_um": [12.0, 20.0],
+                    "segment_a_um": [[2.0, 20.0], [22.0, 20.0]],
+                    "segment_b_um": [[12.0, 10.0], [12.0, 30.0]],
+                    "net_id_a": 1,
+                    "net_id_b": 3,
+                    "net_name_a": "a",
+                    "net_name_b": "c",
+                    "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
+                    "overlapping_crossing_indices": [0, 2],
+                },
+                {
+                    "classification": "legal_unexpected_crossing",
+                    "point_um": [14.0, 20.0],
+                    "segment_a_um": [[4.0, 20.0], [24.0, 20.0]],
+                    "segment_b_um": [[14.0, 10.0], [14.0, 30.0]],
+                    "net_id_a": 1,
+                    "net_id_b": 4,
+                    "net_name_a": "a",
+                    "net_name_b": "d",
+                    "footprint_overlap_policy": "allowed_lidar_pure_degraded_cluster",
+                    "overlapping_crossing_indices": [1],
+                },
+            ],
+        }
+    )
 
     placements = _place_realized_crossing_components(layout, info)
 
@@ -608,20 +621,22 @@ def test_places_one_component_for_transitive_degraded_overlap_cluster():
 
 
 def test_insertion_loss_report_uses_final_realized_intersections():
-    info = CrossingPlanInfo.from_dict({
-        "enabled": True,
-        "crossing_loss": 0.2,
-        "realized_intersections": [
-            {
-                "classification": "legal_unexpected_crossing",
-                "point_um": [5.0, 5.0],
-                "net_id_a": 1,
-                "net_id_b": 2,
-                "net_name_a": "a",
-                "net_name_b": "b",
-            }
-        ],
-    })
+    info = CrossingPlanInfo.from_dict(
+        {
+            "enabled": True,
+            "crossing_loss": 0.2,
+            "realized_intersections": [
+                {
+                    "classification": "legal_unexpected_crossing",
+                    "point_um": [5.0, 5.0],
+                    "net_id_a": 1,
+                    "net_id_b": 2,
+                    "net_name_a": "a",
+                    "net_name_b": "b",
+                }
+            ],
+        }
+    )
 
     _augment_insertion_loss_report_from_realized_intersections(
         crossing_plan_info=info,

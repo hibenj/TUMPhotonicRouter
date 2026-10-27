@@ -41,7 +41,6 @@ from gdsfactory.typings import Port
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
 
 from translation.route_rust_records import RouteBookkeeping
-from translation.routing.crossing_plan_info import CrossingPlanInfo
 from translation.route_rust_types import (
     OpticalRouteClearancePolicy,
     RipupRerouteConfig,
@@ -50,6 +49,7 @@ from translation.route_rust_types import (
     RouteJob,
     RouteTimingBucket,
 )
+from translation.routing.crossing_plan_info import CrossingPlanInfo
 
 if TYPE_CHECKING:  # `route_jobs` imports this module, so keep the edge annotation-only
     from translation.routing.route_jobs import _FanoutAnchor
@@ -107,9 +107,7 @@ class SessionState:
     raw_static_rects_for_openings: list[tuple[int, int, int, int]] = field(default_factory=list)
     """Raw static geometry as rectangles, for port openings. w:2 r:2,4"""
 
-    heater_opening_rects_for_openings: list[tuple[int, int, int, int]] = field(
-        default_factory=list
-    )
+    heater_opening_rects_for_openings: list[tuple[int, int, int, int]] = field(default_factory=list)
     """Raw plus heater-layer rectangles, for heater openings. w:2 r:4"""
 
     raw_static_cells_by_y: dict[int, set[int]] | None = None
@@ -121,9 +119,7 @@ class SessionState:
     heater_opening_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
     """Row index of the heater opening rectangles, on demand. w:2,4 r:4  # shared writer"""
 
-    static_blocked_cells_before_port_reservations: set[tuple[int, int]] = field(
-        default_factory=set
-    )
+    static_blocked_cells_before_port_reservations: set[tuple[int, int]] = field(default_factory=set)
     """Static blockers as of before port reservations. w:2,5 m:5 r:5,6  # shared writer"""
 
     clearance_policy: OpticalRouteClearancePolicy | None = None
@@ -220,9 +216,7 @@ class SessionState:
     fanout_stub_center_cells: set[tuple[int, int]] = field(default_factory=set)
     """Centerline cells of the static fan-out stubs. w:3 r:3,4,6"""
 
-    fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = field(
-        default_factory=dict
-    )
+    fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = field(default_factory=dict)
     """Inflated stub cells per port spec. w:3 r:3,5,7"""
 
     dense_source_port_runway_length_by_spec: dict[str, int] = field(default_factory=dict)
@@ -253,9 +247,7 @@ class SessionState:
     ] = field(default_factory=dict)
     """Owner group sharing one dense lateral window. w:4 r:4,5"""
 
-    port_state_lane_offsets: dict[tuple[str, bool], tuple[int, int]] = field(
-        default_factory=dict
-    )
+    port_state_lane_offsets: dict[tuple[str, bool], tuple[int, int]] = field(default_factory=dict)
     """Lane offset assigned to each (port spec, as_target). w:4 r:4,5"""
 
     # ---- phase 5, handoff --------------------------------------------------

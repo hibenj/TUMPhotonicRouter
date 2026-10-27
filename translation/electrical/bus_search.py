@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Iterable
+from collections.abc import Iterable
 
 from photonic_router.static_obstacle_builder import physical_to_grid
 

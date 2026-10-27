@@ -132,7 +132,7 @@ def compute_group_lifted_requirements(
         incoming_edges: list[dict[str, object]] = []
         edges_requiring_meander = 0
         adjusted_missing_values: list[float] = []
-        for (edge_timing, arrival), raw_missing in zip(edge_arrivals, base_missing):
+        for (edge_timing, arrival), raw_missing in zip(edge_arrivals, base_missing, strict=False):
             adjusted_missing = max(0.0, adjusted_target - arrival)
             if adjusted_missing <= tolerance_um:
                 adjusted_missing = 0.0

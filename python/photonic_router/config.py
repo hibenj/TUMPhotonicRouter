@@ -13,8 +13,9 @@ callers that pass no configuration.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 #: `NetNameTrace` (Rust `crate::config::NetNameTrace`), represented without a
 #: dedicated class: `None` = no trace, the literal string `"*"` = every net,
@@ -89,7 +90,7 @@ class KernelDiagnostics:
     trace_plain_route_net: int | None = None
     # `None` (no trace), `config.ALL_NETS` ("*", every net), or a tuple of
     # net-id strings -- see `NetNameTrace` above.
-    trace_endpoint_bump_nets: None | tuple[str, ...] | str = None
+    trace_endpoint_bump_nets: tuple[str, ...] | str | None = None
     trace_endpoint_correction_net: int | None = None
     crossing_mismatch_dump: bool = False
     crossing_mismatch_dump_net: int | None = None
@@ -336,7 +337,7 @@ class RouterConfig:
         )
 
     @classmethod
-    def from_environment(cls, environ: Mapping[str, str] | None = None) -> "RouterConfig":
+    def from_environment(cls, environ: Mapping[str, str] | None = None) -> RouterConfig:
         """`apply_env_overlay(RouterConfig(), environ or os.environ)` --
         imported lazily so `config.py` never depends on `env_overlay.py` at
         module-import time (the overlay module imports the dataclasses from
@@ -369,7 +370,7 @@ class RoutingConfig:
     write_gds_on_photonic_verification_failure: bool = False
 
     @classmethod
-    def from_environment(cls, environ: Mapping[str, str] | None = None) -> "RoutingConfig":
+    def from_environment(cls, environ: Mapping[str, str] | None = None) -> RoutingConfig:
         """`apply_env_overlay(RoutingConfig(), environ or os.environ)` --
         imported lazily for the same reason as `RouterConfig.from_environment`."""
         import os

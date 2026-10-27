@@ -56,7 +56,9 @@ def test_record_pipeline_timing_accumulates_repeated_phases_instead_of_replacing
     record_pipeline_timing(settings, state, "router_setup", now - 1.0)
     after_first = state.route_nets_timings_s["router_setup"]
     assert after_first >= 1.0
-    record_pipeline_timing(settings, state, "router_setup", pipeline_timer_start(settings, state) - 0.5)
+    record_pipeline_timing(
+        settings, state, "router_setup", pipeline_timer_start(settings, state) - 0.5
+    )
     assert state.route_nets_timings_s["router_setup"] >= after_first + 0.5
 
 

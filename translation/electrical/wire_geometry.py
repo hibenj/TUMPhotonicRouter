@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 
 from .types import (
@@ -111,7 +112,7 @@ def cells_from_point_path(path: tuple[tuple[float, float], ...]) -> tuple[GridCe
     if not path:
         return ()
     cells: list[GridCell] = []
-    for start, end in zip(path, path[1:]):
+    for start, end in itertools.pairwise(path):
         start_cell = point_to_cell(start)
         end_cell = point_to_cell(end)
         segment = grid_segment(start_cell, end_cell)

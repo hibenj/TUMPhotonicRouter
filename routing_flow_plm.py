@@ -1,5 +1,7 @@
 """Path-length matching metadata and reporting for routing_flow."""
 
+from __future__ import annotations
+
 from gdsfactory.component import Component
 
 
@@ -235,10 +237,7 @@ def _report_meander_commit_profile(report: dict[object, object]) -> None:
         commit_profile.items(),
         key=lambda item: -float(item[1]),
     )
-    commit_parts = [
-        f"{key[:-2] if key.endswith('_s') else key}={float(value):.4f}s"
-        for key, value in sorted_commit
-    ]
+    commit_parts = [f"{key.removesuffix('_s')}={float(value):.4f}s" for key, value in sorted_commit]
     print("        Meander commit split: " + ", ".join(commit_parts))
 
 
@@ -276,10 +275,7 @@ def _report_candidate_setup_profile(report: dict[object, object]) -> None:
         candidate_setup_profile.items(),
         key=lambda item: -float(item[1]),
     )
-    setup_parts = [
-        f"{key[:-2] if key.endswith('_s') else key}={float(value):.4f}s"
-        for key, value in sorted_setup
-    ]
+    setup_parts = [f"{key.removesuffix('_s')}={float(value):.4f}s" for key, value in sorted_setup]
     print("        Candidate setup split: " + ", ".join(setup_parts))
 
 

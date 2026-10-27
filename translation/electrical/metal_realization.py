@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from gdsfactory.component import Component
 import klayout.db as kdb
+from gdsfactory.component import Component
 
 from .rect_geometry import (
     clip_manhattan_path_at_first_bbox_entry,
@@ -32,11 +32,11 @@ RectList = list[BBox]
 
 
 def _kdb_region(*args):
-    return getattr(kdb, "Region")(*args)
+    return kdb.Region(*args)
 
 
 def _kdb_box(*args):
-    return getattr(kdb, "Box")(*args)
+    return kdb.Box(*args)
 
 
 def realize_electrical_metal(
@@ -389,7 +389,7 @@ def _merge_rects(rects: list[BBox]) -> tuple[tuple[tuple[float, float], ...], ..
 
 
 def _um_to_dbu(value: float) -> int:
-    return int(round(value * 1000.0))
+    return round(value * 1000.0)
 
 
 def _dbu_to_um(value: int) -> float:

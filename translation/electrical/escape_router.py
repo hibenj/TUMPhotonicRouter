@@ -144,10 +144,7 @@ def _choose_dogleg_target(
     targets: frozenset[GridCell],
     pad_side: str,
 ) -> GridCell:
-    if pad_side == "top":
-        target_y = min(y for _, y in targets)
-    else:
-        target_y = max(y for _, y in targets)
+    target_y = min(y for _, y in targets) if pad_side == "top" else max(y for _, y in targets)
     candidates = tuple(cell for cell in targets if cell[1] == target_y)
     target_x_mid = (min(x for x, _ in targets) + max(x for x, _ in targets)) / 2.0
     return min(

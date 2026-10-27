@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-from typing import Iterable
 
 Layer = tuple[int, int]
 

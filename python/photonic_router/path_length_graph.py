@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from graphlib import TopologicalSorter
-from typing import Any, Iterable, Mapping, Protocol
+from typing import Any, Protocol
 
 from photonic_router.port_roles import INPUT, OUTPUT, PortRole, component_port_sides
 
@@ -142,7 +143,7 @@ class PathLengthGraphAnnotations:
         cls,
         graph: PhotonicRoutingGraph,
         lengths_um: Mapping[RoutedEdgeKey, float],
-    ) -> "PathLengthGraphAnnotations":
+    ) -> PathLengthGraphAnnotations:
         annotations = cls()
         annotations.set_edge_lengths(graph, lengths_um)
         return annotations

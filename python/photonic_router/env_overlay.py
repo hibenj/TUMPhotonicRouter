@@ -28,13 +28,18 @@ from __future__ import annotations
 
 import math
 import os
-from collections import namedtuple
+from collections.abc import Callable, Mapping
 from dataclasses import replace
-from typing import Callable, Mapping
+from typing import NamedTuple
 
 from photonic_router.config import ALL_NETS, RouterConfig
 
-EnvVar = namedtuple("EnvVar", ["name", "path", "parse"])
+
+class EnvVar(NamedTuple):
+    name: str
+    path: tuple[str, ...]
+    parse: Callable[[str], object]
+
 
 _PREFIX = "PHOTONIC_ROUTER_"
 
@@ -412,7 +417,9 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
     ),
     # Diagnostics (src/py_router.rs)
     EnvVar(_PREFIX + "NATIVE_PROGRESS", ("router", "diagnostics", "native_progress"), presence),
-    EnvVar(_PREFIX + "NATIVE_REPAIR_DIAG", ("router", "diagnostics", "native_repair_diag"), presence),
+    EnvVar(
+        _PREFIX + "NATIVE_REPAIR_DIAG", ("router", "diagnostics", "native_repair_diag"), presence
+    ),
     EnvVar(
         _PREFIX + "TRACE_PLAIN_ROUTE_NET",
         ("router", "diagnostics", "trace_plain_route_net"),
@@ -420,9 +427,13 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
     ),
     EnvVar(_PREFIX + "TRACE_CROSSING", ("router", "diagnostics", "trace_crossing"), presence),
     EnvVar(
-        _PREFIX + "TRACE_CROSSING_NET", ("router", "diagnostics", "trace_crossing_net"), optional_int
+        _PREFIX + "TRACE_CROSSING_NET",
+        ("router", "diagnostics", "trace_crossing_net"),
+        optional_int,
     ),
-    EnvVar(_PREFIX + "TRACE_PARTNER_NET", ("router", "diagnostics", "trace_partner_net"), optional_int),
+    EnvVar(
+        _PREFIX + "TRACE_PARTNER_NET", ("router", "diagnostics", "trace_partner_net"), optional_int
+    ),
     EnvVar(
         _PREFIX + "TRACE_ENDPOINT_BUMP_NETS",
         ("router", "diagnostics", "trace_endpoint_bump_nets"),
@@ -460,7 +471,9 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
     EnvVar(_PREFIX + "MOVE_DIAG", ("router", "diagnostics", "move_diag_cell"), cell_pair),
     EnvVar(_PREFIX + "POP_DIAG_BELOW_Y", ("router", "diagnostics", "pop_diag_below_y"), i32),
     EnvVar(_PREFIX + "PROBE_CELLS", ("router", "diagnostics", "probe_cells"), cell_pairs_semicolon),
-    EnvVar(_PREFIX + "SEARCH_FAILURE_DIAG", ("router", "diagnostics", "search_failure_diag"), presence),
+    EnvVar(
+        _PREFIX + "SEARCH_FAILURE_DIAG", ("router", "diagnostics", "search_failure_diag"), presence
+    ),
     EnvVar(
         _PREFIX + "SEARCH_FAILURE_MAP", ("router", "diagnostics", "search_failure_map"), comma_ints
     ),
@@ -475,10 +488,14 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         presence,
     ),
     EnvVar(
-        _PREFIX + "TRACE_CROSSING_LEVEL1", ("router", "diagnostics", "trace_crossing_level1"), presence
+        _PREFIX + "TRACE_CROSSING_LEVEL1",
+        ("router", "diagnostics", "trace_crossing_level1"),
+        presence,
     ),
     EnvVar(
-        _PREFIX + "TRACE_CROSSING_PENDING", ("router", "diagnostics", "trace_crossing_pending"), presence
+        _PREFIX + "TRACE_CROSSING_PENDING",
+        ("router", "diagnostics", "trace_crossing_pending"),
+        presence,
     ),
     EnvVar(
         _PREFIX + "TRACE_CROSSING_PENDING_THRESHOLD",
@@ -585,9 +602,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("crossing_grid", "router_layers"),
         comma_digit_ints_frozenset,
     ),
-    EnvVar(
-        _PREFIX + "TRACE_COLUMN_GRID", ("crossing_grid", "trace_column_grid"), truthy
-    ),
+    EnvVar(_PREFIX + "TRACE_COLUMN_GRID", ("crossing_grid", "trace_column_grid"), truthy),
     # Fan-out access (translation/route_rust.py)
     EnvVar(
         _PREFIX + "DENSE_FANOUT_INSTANCES",
@@ -641,9 +656,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
     # Search tuning (translation/route_rust.py)
     EnvVar(_PREFIX + "MIN_BEND_WEIGHT", ("search", "min_bend_weight"), plain_float),
     EnvVar(_PREFIX + "MIN_HEURISTIC_WEIGHT", ("search", "min_heuristic_weight"), plain_float),
-    EnvVar(
-        _PREFIX + "HEAP_TIE_BREAKER", ("search", "heap_tie_breaker"), heap_tie_breaker_override
-    ),
+    EnvVar(_PREFIX + "HEAP_TIE_BREAKER", ("search", "heap_tie_breaker"), heap_tie_breaker_override),
     EnvVar(
         _PREFIX + "LONG_STRAIGHT_EXEMPT_DENSE_FANOUT",
         ("search", "long_straight_exempt_dense_fanout"),
@@ -670,9 +683,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("diagnostics", "trace_endpoint_correction_nets"),
         comma_token_frozenset,
     ),
-    EnvVar(
-        _PREFIX + "TRACE_FANOUT_STUBS", ("diagnostics", "trace_fanout_stubs"), truthy_stripped
-    ),
+    EnvVar(_PREFIX + "TRACE_FANOUT_STUBS", ("diagnostics", "trace_fanout_stubs"), truthy_stripped),
     EnvVar(_PREFIX + "TRACE_GRID", ("diagnostics", "trace_grid"), truthy),
     EnvVar(
         _PREFIX + "TRACE_RUNWAY_INSTANCE",
@@ -724,9 +735,7 @@ def _apply_astar_timeout(config: RouterConfig, environ: Mapping[str, str]) -> Ro
         try:
             ms = int(ms_raw.strip())
         except ValueError as exc:
-            raise ValueError(
-                f"{_PREFIX}ASTAR_TIMEOUT_MS must be an integer"
-            ) from exc
+            raise ValueError(f"{_PREFIX}ASTAR_TIMEOUT_MS must be an integer") from exc
         return _replace_path(config, ("search", "astar_timeout_ms"), ms)
     s_raw = environ.get(_PREFIX + "ASTAR_TIMEOUT_S")
     if s_raw is not None:
@@ -735,9 +744,7 @@ def _apply_astar_timeout(config: RouterConfig, environ: Mapping[str, str]) -> Ro
         except ValueError as exc:
             raise ValueError(f"{_PREFIX}ASTAR_TIMEOUT_S must be a number") from exc
         if not math.isfinite(seconds) or seconds < 0:
-            raise ValueError(
-                f"{_PREFIX}ASTAR_TIMEOUT_S must be finite and non-negative"
-            )
+            raise ValueError(f"{_PREFIX}ASTAR_TIMEOUT_S must be finite and non-negative")
         ms = math.ceil(seconds * 1000.0)
         return _replace_path(config, ("search", "astar_timeout_ms"), ms)
     return config
@@ -794,8 +801,8 @@ def apply_env_overlay(config: object, environ: Mapping[str, str] | None = None) 
 
 __all__ = [
     "ENV_OVERLAY",
-    "EnvVar",
     "SPECIALLY_HANDLED_NAMES",
+    "EnvVar",
     "apply_env_overlay",
     "cell_pair",
     "cell_pairs_semicolon",

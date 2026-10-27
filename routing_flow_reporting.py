@@ -4,8 +4,11 @@ This module keeps timing and debug-output formatting out of the top-level flow
 orchestrator. It should not change routing state.
 """
 
-from pathlib import Path
+from __future__ import annotations
+
+import contextlib
 import webbrowser
+from pathlib import Path
 
 from gdsfactory.component import Component
 
@@ -199,10 +202,8 @@ def cleanup_debug_artifacts(benchmark_name: str) -> None:
         f"build/electrical/{prefix}_*.svg",
     ):
         for path in Path(".").glob(pattern):
-            try:
+            with contextlib.suppress(OSError):
                 path.unlink()
-            except OSError:
-                pass
 
 
 def report_partial_debug_artifacts(

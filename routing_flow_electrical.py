@@ -1,8 +1,10 @@
 """Electrical heater-routing stage for routing_flow."""
 
+from __future__ import annotations
+
+import time
 from collections import Counter
 from pathlib import Path
-import time
 from typing import Any, cast
 
 from gdsfactory.component import Component

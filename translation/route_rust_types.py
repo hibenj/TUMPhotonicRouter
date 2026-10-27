@@ -5,13 +5,12 @@ from __future__ import annotations
 import enum
 import math
 from collections.abc import Iterable as IterableABC
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
 
 from gdsfactory.component import Component
 from gdsfactory.typings import Port
-
 from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
 
 PRIMITIVE_TRANSITION_CLASSES = (
@@ -54,7 +53,7 @@ class OpticalRouteClearancePolicy:
         grid_size_um: float,
         route_clearance_um: float,
         plm_candidate_box_clearance_radius_cells: int = 0,
-    ) -> "OpticalRouteClearancePolicy":
+    ) -> OpticalRouteClearancePolicy:
         route_width_um = float(route_width_um)
         grid_size_um = float(grid_size_um)
         route_clearance_um = max(0.0, float(route_clearance_um))
@@ -133,7 +132,7 @@ def bend_radius_cells_from_um(
 
 
 def _empty_primitive_counter_dict() -> dict[str, int]:
-    return {name: 0 for name in PRIMITIVE_TRANSITION_CLASSES}
+    return dict.fromkeys(PRIMITIVE_TRANSITION_CLASSES, 0)
 
 
 def _get_route_counter_dict(route_obj: object | None, attr: str) -> dict[str, int]:
@@ -144,7 +143,7 @@ def _get_route_counter_dict(route_obj: object | None, attr: str) -> dict[str, in
     if not isinstance(values, IterableABC):
         return counters
     sequence = list(values)
-    for name, value in zip(PRIMITIVE_TRANSITION_CLASSES, sequence):
+    for name, value in zip(PRIMITIVE_TRANSITION_CLASSES, sequence, strict=False):
         try:
             counters[name] = int(value)
         except (TypeError, ValueError):
@@ -158,21 +157,19 @@ def _add_counter_dict(target: dict[str, int], source: Mapping[str, int]) -> None
 
 
 def _as_float(value: object, default: float = 0.0) -> float:
-    try:
-        if isinstance(value, (int, float, str, bytes, bytearray)):
-            return float(value)
+    if not isinstance(value, (int, float, str, bytes, bytearray)):
         return default
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return default
 
 
 def _as_int(value: object, default: int = 0) -> int:
-    try:
-        if isinstance(value, bool):
-            return int(value)
-        if isinstance(value, (int, float, str, bytes, bytearray)):
-            return int(value)
+    if not isinstance(value, (int, float, str, bytes, bytearray)):
         return default
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return default
 
@@ -186,9 +183,9 @@ class RustRouteDebugArtifacts:
     obstacle_svg: Path | None
     route_svgs: list[Path]
     routed_edge_lengths_um: dict[RoutedEdgeKey, float]
-    routed_net_records: list["RoutedNetRecord"] = field(default_factory=list)
-    route_search_summary: "RouteSearchSummary" = field(default_factory=lambda: RouteSearchSummary())
-    route_attempt_records: list["RouteAttemptRecord"] = field(default_factory=list)
+    routed_net_records: list[RoutedNetRecord] = field(default_factory=list)
+    route_search_summary: RouteSearchSummary = field(default_factory=lambda: RouteSearchSummary())
+    route_attempt_records: list[RouteAttemptRecord] = field(default_factory=list)
     static_blocked_cells: tuple[tuple[int, int], ...] = ()
     static_obstacle_count: int = 0
     static_port_open_count: int = 0
@@ -873,7 +870,7 @@ def route_attempt_record_from_route(
 ) -> RouteAttemptRecord:
     route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
     total_length_um = (
-        _as_float(getattr(route_obj, "total_length_um"), 0.0)
+        _as_float(route_obj.total_length_um, 0.0)
         if route_obj is not None and hasattr(route_obj, "total_length_um")
         else None
     )

@@ -4,14 +4,12 @@ fan-out anchor query and the path-length-matching re-export wrappers."""
 from __future__ import annotations
 
 import time
-
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
-
 from photonic_router.config import RoutingConfig
 from photonic_router.static_obstacle_builder import (
     _load_rust_backend,
@@ -56,23 +54,21 @@ from translation.route_rust_types import (
     RouteRustPipelineResult,
     _as_float,
 )
-
 from translation.routing.crossing_plan_info import CrossingPlanInfo
+from translation.routing.obstacle_context import build_static_obstacle_context
+from translation.routing.route_jobs import build_route_jobs_and_fanout_clustering
+
+# re-exported here as part of the module-level routing API
+from translation.routing.router_setup import (  # noqa: F401
+    DENSE_OBSTACLE_CELL_CAP_MARGIN,
+    configure_router_and_grid,
+    dense_obstacle_cell_cap,
+)
 from translation.routing.session import (
     DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     _RouteNetsRustSession,
     route_nets_rust,
 )
-
-# re-exported here as part of the module-level routing API
-from translation.routing.router_setup import (  # noqa: F401
-    DENSE_OBSTACLE_CELL_CAP_MARGIN,
-    dense_obstacle_cell_cap,
-)
-
-from translation.routing.obstacle_context import build_static_obstacle_context
-from translation.routing.route_jobs import build_route_jobs_and_fanout_clustering
-from translation.routing.router_setup import configure_router_and_grid
 
 
 def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):

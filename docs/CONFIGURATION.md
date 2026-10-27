@@ -113,7 +113,7 @@ Mirrors Rust `KernelDiagnostics`. Every field is off/unset by default, except `t
 | `trace_crossing_perp_reject_threshold` | `int \| None` | `None` | `PHOTONIC_ROUTER_TRACE_CROSSING_PERP_REJECT_THRESHOLD` | -- |
 | `trace_partner_net` | `int \| None` | `None` | `PHOTONIC_ROUTER_TRACE_PARTNER_NET` | -- |
 | `trace_plain_route_net` | `int \| None` | `None` | `PHOTONIC_ROUTER_TRACE_PLAIN_ROUTE_NET` | -- |
-| `trace_endpoint_bump_nets` | `None \| tuple[str, ...] \| str` | `None` | `PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS` | `None` (no trace), `config.ALL_NETS` ("*", every net), or a tuple of net-id strings -- see `NetNameTrace` above. |
+| `trace_endpoint_bump_nets` | `tuple[str, ...] \| str \| None` | `None` | `PHOTONIC_ROUTER_TRACE_ENDPOINT_BUMP_NETS` | `None` (no trace), `config.ALL_NETS` ("*", every net), or a tuple of net-id strings -- see `NetNameTrace` above. |
 | `trace_endpoint_correction_net` | `int \| None` | `None` | `PHOTONIC_ROUTER_TRACE_ENDPOINT_CORRECTION_NET` | -- |
 | `crossing_mismatch_dump` | `bool` | `False` | `PHOTONIC_ROUTER_CROSSING_MISMATCH_DUMP` | -- |
 | `crossing_mismatch_dump_net` | `int \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_MISMATCH_DUMP` | -- |

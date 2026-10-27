@@ -4,21 +4,19 @@ from __future__ import annotations
 
 import math
 import time
-
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
-from typing import Any, Iterable, Mapping, cast
+from typing import Any, cast
 
 from gdsfactory.typings import Port
-
 from photonic_router.config import ALL_NETS
 from photonic_router.static_obstacle_builder import grid_cell_center
 
 from translation.route_order import depth_by_node_from_jobs, order_route_jobs
 from translation.route_rust_records import RouteBookkeeping
 from translation.route_rust_types import RipupRerouteConfig, RouteJob, RouteTimingBucket
-
-from translation.routing.route_jobs import _angle_to_step, _in_bounds, port_to_grid_state
 from translation.routing import timing
+from translation.routing.route_jobs import _angle_to_step, _in_bounds, port_to_grid_state
 from translation.routing.settings import SessionSettings
 from translation.routing.stages import FinalJobs
 from translation.routing.state import SessionState
@@ -624,7 +622,7 @@ def finalize_route_jobs_and_static_handoff(
     if hasattr(obstacle_map, "blocked_static_rects"):
         blocked_static_rects: list[tuple[int, int, int, int]] = []
         raw_blocked_rects = cast(
-            Iterable[tuple[int, int, int, int]], getattr(obstacle_map, "blocked_static_rects")
+            Iterable[tuple[int, int, int, int]], obstacle_map.blocked_static_rects
         )
         for rect in raw_blocked_rects:
             if len(rect) != 4:

@@ -58,7 +58,9 @@ def summarize(archive: Path) -> dict:
 
 WAVEGUIDE_LAYER = "1/0"  # the generic PDK's WG layer
 WAVEGUIDE_WIDTH_UM = 0.5
-CROSSING_CELL_PREFIX = "crossing"  # crossing components (inline or pre-placed tiles, corners, links)
+CROSSING_CELL_PREFIX = (
+    "crossing"  # crossing components (inline or pre-placed tiles, corners, links)
+)
 
 
 def gds_lengths(archive: Path) -> dict:
@@ -82,7 +84,11 @@ def gds_lengths(archive: Path) -> dict:
     dbu = layout.dbu
     top = next(cell for cell in layout.each_cell() if cell.is_top())
     wg = next(
-        (index for index in layout.layer_indexes() if str(layout.get_info(index)) == WAVEGUIDE_LAYER),
+        (
+            index
+            for index in layout.layer_indexes()
+            if str(layout.get_info(index)) == WAVEGUIDE_LAYER
+        ),
         None,
     )
     if wg is None:
@@ -156,7 +162,10 @@ def lidar_routing_loop_seconds(text: str) -> float | None:
     clean = re.sub(r"\x1b\[[0-9;]*m", "", text)
     stamp = r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+)"
     start = re.search(stamp + r" - drmanager\.py\[line:\d+\] - INFO: Start Detailed Routing", clean)
-    end = re.search(stamp + r" - drgridroute\.py\[line:\d+\] - (?:INFO|WARNING): DrGridRoute (?:succeed|fail)", clean)
+    end = re.search(
+        stamp + r" - drgridroute\.py\[line:\d+\] - (?:INFO|WARNING): DrGridRoute (?:succeed|fail)",
+        clean,
+    )
     if start is None or end is None:
         return None
     parse = lambda v: datetime.datetime.strptime(v, "%Y-%m-%d %H:%M:%S,%f")  # noqa: E731
@@ -191,7 +200,9 @@ def log_metrics(log_path: Path) -> dict:
         # the paper's routing time (owner 2026-09-19: the actual routing time on
         # both sides): the routing loop, for contribution 2 with the structure
         # construction that replaces part of the search
-        out["routing_loop_s"] = round(out["net_routing_phase_s"] + out.get("preplaced_build_s", 0.0), 3)
+        out["routing_loop_s"] = round(
+            out["net_routing_phase_s"] + out.get("preplaced_build_s", 0.0), 3
+        )
     loop = lidar_routing_loop_seconds(text)
     if loop is not None:
         out["lidar_routing_loop_s"] = loop
@@ -199,7 +210,9 @@ def log_metrics(log_path: Path) -> dict:
     if braids:
         out["braid_repairs_kept"] = braids
     # --verbose-routes: `ok astar length=2464.565um ...` / `ok simple length=146.000um ...`
-    route_lengths = [float(v) for v in re.findall(r"^ok (?:astar|simple) length=([0-9.]+)um", text, re.M)]
+    route_lengths = [
+        float(v) for v in re.findall(r"^ok (?:astar|simple) length=([0-9.]+)um", text, re.MULTILINE)
+    ]
     if route_lengths and "total_length_um" not in out:
         out["route_cost_count"] = len(route_lengths)
         out["total_length_um"] = round(sum(route_lengths), 3)
@@ -211,7 +224,9 @@ def log_metrics(log_path: Path) -> dict:
     if structure_um:
         out["structure_length_um"] = round(sum(structure_um), 3)
         if "total_length_um" in out:
-            out["total_length_with_structures_um"] = round(out["total_length_um"] + out["structure_length_um"], 3)
+            out["total_length_with_structures_um"] = round(
+                out["total_length_um"] + out["structure_length_um"], 3
+            )
     return out
 
 

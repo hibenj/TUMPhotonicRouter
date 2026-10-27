@@ -402,11 +402,13 @@ def format_path_length_acceptance_failure(summary: dict[str, object]) -> str:
     if not isinstance(failed_groups, list):
         failed_groups = []
     lines = [
-        "Path-length matching failed: "
-        f"{object_to_int(summary.get('failed_edge_count', 0))} edge(s) in "
-        f"{object_to_int(summary.get('failed_group_count', 0))} group(s) retain physical "
-        f"residual above {object_to_float(summary.get('tolerance_um', 0.0)):.6g} um "
-        f"(max {object_to_float(summary.get('max_physical_residual_um', 0.0)):.6g} um)."
+        (
+            "Path-length matching failed: "
+            f"{object_to_int(summary.get('failed_edge_count', 0))} edge(s) in "
+            f"{object_to_int(summary.get('failed_group_count', 0))} group(s) retain physical "
+            f"residual above {object_to_float(summary.get('tolerance_um', 0.0)):.6g} um "
+            f"(max {object_to_float(summary.get('max_physical_residual_um', 0.0)):.6g} um)."
+        )
     ]
     for group in failed_groups[:5]:
         if not isinstance(group, dict):

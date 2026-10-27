@@ -24,6 +24,8 @@ does not need the optical routes; the three larger heater benchmarks route
 both ways.
 """
 
+from __future__ import annotations
+
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 

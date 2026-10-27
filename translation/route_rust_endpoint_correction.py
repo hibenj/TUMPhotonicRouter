@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import itertools
 import math
+from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
 from dataclasses import replace
-from typing import Iterable, Mapping
 
 from photonic_router.config import FlowDiagnostics
+
 from translation.route_rust_crossing_components import (
     _crossing_footprint_polygon_metadata,
     _point_um_from_mapping,
 )
 from translation.route_rust_geometry import (
-    _compress_centerline,
     _point_distance_um,
     _segment_intersects_crossing_footprint_interior,
     _segment_length_um,
@@ -92,7 +93,7 @@ def _apply_endpoint_corrections_to_debug_artifacts(
 
 def _centerline_length_um(points: tuple[tuple[float, float], ...]) -> float:
     total = 0.0
-    for start, end in zip(points, points[1:]):
+    for start, end in itertools.pairwise(points):
         total += math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
     return total
 
@@ -113,7 +114,7 @@ def _closest_centerline_projection(
 ) -> tuple[int, float, tuple[float, float], float] | None:
     best: tuple[int, float, tuple[float, float], float] | None = None
     px, py = float(point[0]), float(point[1])
-    for index, (start, end) in enumerate(zip(centerline, centerline[1:])):
+    for index, (start, end) in enumerate(itertools.pairwise(centerline)):
         sx, sy = float(start[0]), float(start[1])
         ex, ey = float(end[0]), float(end[1])
         dx = ex - sx
@@ -376,7 +377,7 @@ def _centerline_intersects_crossing_footprint_specs(
 ) -> bool:
     if len(centerline) < 2 or not specs:
         return False
-    for start, end in zip(centerline, centerline[1:]):
+    for start, end in itertools.pairwise(centerline):
         segment = ((float(start[0]), float(start[1])), (float(end[0]), float(end[1])))
         if _segment_length_um(segment) <= 1.0e-9:
             continue
@@ -760,9 +761,9 @@ def _apply_crossing_aware_endpoint_correction_to_record(
         )
         if checked_prefix or checked_suffix:
             candidate = _merge_splice_segments(
-                checked_prefix if checked_prefix else baseline_prefix,
+                checked_prefix or baseline_prefix,
                 middle,
-                checked_suffix if checked_suffix else baseline_suffix,
+                checked_suffix or baseline_suffix,
             )
             source_ok = not correct_source or _terminal_anchor_matches(
                 candidate,

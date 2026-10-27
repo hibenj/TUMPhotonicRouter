@@ -31,6 +31,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
+from tests.fixtures.sessions import Pipeline, pipeline_for_test
+from tests.fixtures.synthetic_layouts import GRID_HEIGHT, GRID_WIDTH, LINKS, ObstacleMapStandIn
 from translation.routing import crossing_plan_stage as crossing_plan_stage_module
 from translation.routing import dispatch as dispatch_module
 from translation.routing import finalize as finalize_module
@@ -42,9 +44,6 @@ from translation.routing import router_setup as router_setup_module
 from translation.routing import stages
 from translation.routing import verify_repair as verify_repair_module
 from translation.routing.crossing_plan_info import CrossingPlanInfo
-
-from tests.fixtures.sessions import Pipeline, pipeline_for_test
-from tests.fixtures.synthetic_layouts import GRID_HEIGHT, GRID_WIDTH, LINKS, ObstacleMapStandIn
 
 
 def test_phase1_obstacle_context_builder_returns_the_map_and_the_grid(pipeline: Pipeline) -> None:

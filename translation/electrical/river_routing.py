@@ -26,6 +26,7 @@ back to the per-wire full-grid search.
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
 from typing import Literal
@@ -569,7 +570,7 @@ def count_direction_changes(points: tuple[GridPoint, ...]) -> int:
     previous_direction = point_direction(points[0], points[1])
     # Intentional: points[1:] and points[2:] differ in length by one, a
     # sliding window over consecutive direction segments, not a bug.
-    for start, end in zip(points[1:], points[2:], strict=False):
+    for start, end in itertools.pairwise(points):
         current_direction = point_direction(start, end)
         if current_direction != (0, 0) and previous_direction != (0, 0):
             if current_direction != previous_direction:

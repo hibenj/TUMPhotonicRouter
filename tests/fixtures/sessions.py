@@ -10,15 +10,15 @@ three-net synthetic scenario in `tests.fixtures.synthetic_layouts`.
 
 from __future__ import annotations
 
-from typing import Any
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
 from gdsfactory.component import Component
-
 from photonic_router.flow import load_benchmark
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, _load_rust_backend
+
 from translation.electrical import (
     ElectricalRoutingConfig,
     ElectricalRoutingResult,

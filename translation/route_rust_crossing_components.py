@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 from collections.abc import Iterable as IterableABC
-from typing import TYPE_CHECKING, Any, Mapping, cast
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, cast
 
 import gdsfactory as gf
 from gdsfactory.component import Component
@@ -176,10 +178,8 @@ def _shared_crossing_peer_indices(raw_crossing: Mapping[str, object]) -> set[int
                 indices.add(int(cast(object, raw_peer_index)))
             except (TypeError, ValueError):
                 continue
-    try:
+    with contextlib.suppress(TypeError, ValueError):
         indices.add(int(cast(object, raw_crossing.get("overlapping_crossing_index"))))
-    except (TypeError, ValueError):
-        pass
     return indices
 
 
@@ -362,10 +362,8 @@ def _place_realized_crossing_components(
     crossing_plan_info.realized_crossing_components = placements
     crossing_plan_info.realized_crossing_component_count = len(placements)
     crossing_plan_info.realized_crossing_component_error = None
-    try:
+    with contextlib.suppress(AttributeError, TypeError, ValueError):
         routed_layout.info["realized_crossing_components"] = placements
-    except (AttributeError, TypeError, ValueError):
-        pass
     return placements
 
 

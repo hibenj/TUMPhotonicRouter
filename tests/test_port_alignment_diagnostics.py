@@ -1,12 +1,15 @@
+from __future__ import annotations
+
+import itertools
 import math
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-
 from photonic_router.path_length_graph import PortRef
 from photonic_router.static_obstacle_builder import _load_rust_backend
+
 from translation.route_rust import (
     _apply_crossing_aware_endpoint_correction_to_record,
 )
@@ -19,7 +22,7 @@ from translation.route_rust_types import RoutedNetRecord
 
 def _centerline_length_um(centerline: tuple[tuple[float, float], ...]) -> float:
     return sum(
-        math.hypot(p1[0] - p0[0], p1[1] - p0[1]) for p0, p1 in zip(centerline, centerline[1:])
+        math.hypot(p1[0] - p0[0], p1[1] - p0[1]) for p0, p1 in itertools.pairwise(centerline)
     )
 
 
@@ -165,6 +168,7 @@ def test_heater_s_mod_pass0_characterizes_current_port_alignment():
         pytest.skip("Rust backend unavailable for heater_s_mod alignment diagnostics.")
 
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
     from routing_flow import load_benchmark
     from translation.layout_from_schematic import layout_from_schematic
     from translation.route_rust import route_nets_rust
@@ -222,9 +226,10 @@ def test_heater_s_mod_route_match_uses_corrected_records_for_realization():
     if _load_rust_backend() is None:
         pytest.skip("Rust backend unavailable for heater_s_mod endpoint correction.")
 
+    from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
     from benchmark_metadata import resolve_internal_delays_for_instances
     from benchmarks.heater_s_mod import INTERNAL_DELAYS_UM, NODE_TYPES
-    from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
     from routing_flow import load_benchmark
     from translation.layout_from_schematic import layout_from_schematic
     from translation.route_rust import route_match_and_realize
@@ -335,7 +340,7 @@ def test_py_router_corrects_full_diagonal_45_degree_centerline():
 
     assert centerline[0] == pytest.approx((1.2, 1.2))
     assert centerline[-1] == pytest.approx((10.0, 10.0))
-    for p0, p1 in zip(centerline, centerline[1:]):
+    for p0, p1 in itertools.pairwise(centerline):
         assert (p1[0] - p0[0]) == pytest.approx(p1[1] - p0[1])
         assert p1[0] > p0[0]
 
@@ -446,7 +451,7 @@ def test_checked_case4_bump_rejects_static_without_active_port_opening():
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
     router, route = _checked_case4_test_router_and_route(rust_backend)
-    router.add_static_cells([(x, y) for x in range(2, 22) for y in range(0, 4)])
+    router.add_static_cells([(x, y) for x in range(2, 22) for y in range(4)])
 
     with pytest.raises(RuntimeError, match="static_overlap"):
         router.route_port_corrected_centerline_checked_and_commit(

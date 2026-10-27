@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any
 
-Point = Tuple[float, float]
-Polygon = List[Point]
-BBox = Tuple[float, float, float, float]
+Point = tuple[float, float]
+Polygon = list[Point]
+BBox = tuple[float, float, float, float]
 
 
 @dataclass(frozen=True)
@@ -16,10 +17,10 @@ class Port:
 
     name: str
     position: Point
-    orientation: Optional[float]
-    width: Optional[float] = None
-    layer: Optional[Any] = None
-    port_type: Optional[str] = None
+    orientation: float | None
+    width: float | None = None
+    layer: Any | None = None
+    port_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -32,14 +33,14 @@ class ExtractedBenchmark:
         bbox: Bounding box `(xmin, ymin, xmax, ymax)` in micrometers.
     """
 
-    polygons: List[Polygon]
-    ports: List[Port]
+    polygons: list[Polygon]
+    ports: list[Port]
     bbox: BBox
 
 
 def extract_benchmark(
     component: Any,
-    layers: Optional[Iterable[Any]] = None,
+    layers: Iterable[Any] | None = None,
     *,
     as_bounding_boxes: bool = False,
 ) -> ExtractedBenchmark:
@@ -68,14 +69,14 @@ def extract_benchmark(
 
 def _extract_polygons(
     component: Any,
-    layers: Optional[Iterable[Any]] = None,
+    layers: Iterable[Any] | None = None,
     *,
     as_bounding_boxes: bool = False,
-) -> List[Polygon]:
+) -> list[Polygon]:
     polygon_map = component.get_polygons(merge=False, by="tuple", layers=layers)
     dbu = float(getattr(component.kcl, "dbu", 1.0))
 
-    polygons: List[Polygon] = []
+    polygons: list[Polygon] = []
     for layer_polygons in polygon_map.values():
         for polygon in layer_polygons:
             points = (
@@ -95,10 +96,10 @@ def _polygon_bbox_points_um(polygon: Any, dbu: float) -> Polygon:
         return _polygon_points_um(polygon, dbu)
 
     bbox = polygon.bbox()
-    left = float(getattr(bbox, "left")) * dbu
-    right = float(getattr(bbox, "right")) * dbu
-    bottom = float(getattr(bbox, "bottom")) * dbu
-    top = float(getattr(bbox, "top")) * dbu
+    left = float(bbox.left) * dbu
+    right = float(bbox.right) * dbu
+    bottom = float(bbox.bottom) * dbu
+    top = float(bbox.top) * dbu
     return [(left, bottom), (right, bottom), (right, top), (left, top)]
 
 
@@ -112,8 +113,8 @@ def _polygon_points_um(polygon: Any, dbu: float) -> Polygon:
     return [(float(point.x) * dbu, float(point.y) * dbu) for point in polygon.each_point_hull()]
 
 
-def _extract_ports(component: Any) -> List[Port]:
-    ports: List[Port] = []
+def _extract_ports(component: Any) -> list[Port]:
+    ports: list[Port] = []
 
     for port in component.ports:
         ports.append(_port_from_gdsfactory_port(port))
@@ -140,7 +141,7 @@ def _extract_ports(component: Any) -> List[Port]:
 def _port_from_gdsfactory_port(port: Any) -> Port:
     center = getattr(port, "dcenter", None)
     if center is None:
-        center = getattr(port, "center")
+        center = port.center
 
     return Port(
         name=str(getattr(port, "name", "")),
@@ -152,15 +153,15 @@ def _port_from_gdsfactory_port(port: Any) -> Port:
     )
 
 
-def _optional_float(value: Any) -> Optional[float]:
+def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
 
 
-def _compute_bbox(polygons: List[Polygon], ports: List[Port]) -> BBox:
-    xs: List[float] = []
-    ys: List[float] = []
+def _compute_bbox(polygons: list[Polygon], ports: list[Port]) -> BBox:
+    xs: list[float] = []
+    ys: list[float] = []
 
     for polygon in polygons:
         for x, y in polygon:

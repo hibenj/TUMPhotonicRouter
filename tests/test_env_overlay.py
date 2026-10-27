@@ -7,7 +7,6 @@ round-trip, and the environment-driven examples the milestone calls out."""
 from __future__ import annotations
 
 import pytest
-
 from photonic_router.config import ALL_NETS, RouterConfig, RoutingConfig
 from photonic_router.env_overlay import (
     ENV_OVERLAY,
@@ -418,9 +417,7 @@ def test_router_config_default_to_rust_round_trips_defaults():
     assert rust_cfg.negotiation_budget_first_retry == cfg.negotiation.budget_first_retry
     assert rust_cfg.negotiation_budget_retry == cfg.negotiation.budget_retry
     assert rust_cfg.negotiation_braid_escalation == cfg.negotiation.braid_escalation
-    assert (
-        rust_cfg.negotiation_crossing_free_unplanned == cfg.negotiation.crossing_free_unplanned
-    )
+    assert rust_cfg.negotiation_crossing_free_unplanned == cfg.negotiation.crossing_free_unplanned
     assert rust_cfg.negotiation_disable_braid_repair == cfg.negotiation.disable_braid_repair
     assert (
         rust_cfg.negotiation_pending_straight_ripup_threshold
@@ -446,7 +443,9 @@ def test_router_config_default_to_rust_round_trips_defaults():
         == cfg.crossing.disable_rust_crossing_validation
     )
     assert rust_cfg.diag_native_progress == cfg.diagnostics.native_progress
-    assert rust_cfg.diag_trace_crossing_candidate_max == cfg.diagnostics.trace_crossing_candidate_max
+    assert (
+        rust_cfg.diag_trace_crossing_candidate_max == cfg.diagnostics.trace_crossing_candidate_max
+    )
     assert rust_cfg.diag_trace_endpoint_bump_nets is None
     assert rust_cfg.diag_trace_endpoint_bump_all_nets is False
 
@@ -608,9 +607,7 @@ def test_routing_config_from_environment_applies_the_whole_table():
     # Everything else stays at its default.
     assert cfg == RoutingConfig(
         crossing_grid=RoutingConfig().crossing_grid.__class__(lane_pitch_um=20.0),
-        router=RouterConfig(
-            negotiation=RouterConfig().negotiation.__class__(budget_first=123)
-        ),
+        router=RouterConfig(negotiation=RouterConfig().negotiation.__class__(budget_first=123)),
     )
 
 
