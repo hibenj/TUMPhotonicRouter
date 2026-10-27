@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 85 `RoutingConfig` fields (85 with an overlay variable), 51 `FlowOptions` fields (43 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 173 in total.
+Totals: 90 `RoutingConfig` fields (90 with an overlay variable), 51 `FlowOptions` fields (43 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 178 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -65,6 +65,11 @@ Mirrors Rust `NegotiationConfig`.
 | `crossing_free_unplanned` | `bool` | `True` | `PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED` | -- |
 | `disable_braid_repair` | `bool` | `False` | `PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR` | -- |
 | `pending_straight_ripup_threshold` | `int` | `100` | `PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD` | -- |
+| `disable_probe_guided` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_PROBE_GUIDED` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_PROBE_GUIDED`: presence. Ablation switch (do-over phase 1): skip the probe-guided attempt (prices the probe's legal partners). |
+| `disable_direct_crossing` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_DIRECT_CROSSING` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_DIRECT_CROSSING`: presence. Ablation switch (do-over phase 1): skip the direct-crossing attempt against the probe's illegal partners. |
+| `disable_source_column_widening` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING`: presence. Ablation switch (do-over phase 1): price only the partners the probe named, without the source-column widening. |
+| `disable_simple_route_probe` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE`: presence. Ablation switch (do-over phase 1): skip the engine's straight/L/Z probe before the A* search. |
+| `history_on_first_attempt` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT` | `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT`: presence. Ablation switch (do-over phase 1): weight the history cost on every attempt, not only after a net has failed once. |
 
 ### `router.search` -- `SearchOverrides`
 

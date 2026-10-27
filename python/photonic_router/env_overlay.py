@@ -386,6 +386,31 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("router", "negotiation", "pending_straight_ripup_threshold"),
         usize_or_default(100),
     ),
+    EnvVar(
+        _PREFIX + "NEGOTIATED_DISABLE_PROBE_GUIDED",
+        ("router", "negotiation", "disable_probe_guided"),
+        presence,
+    ),
+    EnvVar(
+        _PREFIX + "NEGOTIATED_DISABLE_DIRECT_CROSSING",
+        ("router", "negotiation", "disable_direct_crossing"),
+        presence,
+    ),
+    EnvVar(
+        _PREFIX + "NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING",
+        ("router", "negotiation", "disable_source_column_widening"),
+        presence,
+    ),
+    EnvVar(
+        _PREFIX + "NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE",
+        ("router", "negotiation", "disable_simple_route_probe"),
+        presence,
+    ),
+    EnvVar(
+        _PREFIX + "NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT",
+        ("router", "negotiation", "history_on_first_attempt"),
+        presence,
+    ),
     # Search overrides (src/py_router.rs) -- ASTAR_TIMEOUT_MS/S and
     # LONG_STRAIGHT_CONGESTION_WEIGHT are applied by their own functions
     # below (precedence/unit-conversion, or raising validation).

@@ -1230,7 +1230,7 @@ impl PyPhotonicRouter {
                 // History cost steers a net that has already failed, and
                 // only such a net: any nonzero weight disables the JPS4
                 // fast path for *every* search (`astar.rs`).
-                let failed_before = failed_count != 0;
+                let failed_before = failed_count != 0 || negotiation.history_on_first_attempt;
                 self.commit_history_weight = if failed_before { history_weight } else { 0.0 };
                 // 0 for the exempt dense fan-out nets, the configured
                 // weight for every other net.
@@ -1283,14 +1283,21 @@ impl PyPhotonicRouter {
                 // free path is legal, so one more search prices exactly
                 // those partners instead of paying the crossing price. The
                 // mixed case is handled after the rip-up below.
-                if illegal_partner_ids.is_empty() && !legal_partner_ids.is_empty() {
-                    let partner_ids = self.widened_probe_partners(
-                        &legal_partner_ids,
-                        &tables,
-                        state.batch,
-                        net_id,
-                        args.trace,
-                    );
+                if !negotiation.disable_probe_guided
+                    && illegal_partner_ids.is_empty()
+                    && !legal_partner_ids.is_empty()
+                {
+                    let partner_ids = if negotiation.disable_source_column_widening {
+                        legal_partner_ids.clone()
+                    } else {
+                        self.widened_probe_partners(
+                            &legal_partner_ids,
+                            &tables,
+                            state.batch,
+                            net_id,
+                            args.trace,
+                        )
+                    };
                     let guided_budget = budget(AttemptKind::ProbeGuided);
                     let guided = PlainAttempt::probe_guided(guided_budget, &partner_ids);
                     let guided_outcome = self.run_plain_attempt(state.batch, &job, &args, guided);
@@ -1304,7 +1311,7 @@ impl PyPhotonicRouter {
 
                 // A legal crossing against the partners the probe itself
                 // blamed for an illegal one (at most three).
-                if !illegal_partner_ids.is_empty() {
+                if !negotiation.disable_direct_crossing && !illegal_partner_ids.is_empty() {
                     let direct_crossing_outcome = self.run_direct_crossing_attempt(
                         state.batch,
                         &job,

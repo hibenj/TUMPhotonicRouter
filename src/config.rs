@@ -31,6 +31,21 @@ pub struct NegotiationConfig {
     pub disable_braid_repair: bool,
     /// `PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD`: parsed `usize`.
     pub pending_straight_ripup_threshold: usize,
+    /// `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_PROBE_GUIDED`: presence. Ablation switch (do-over phase 1):
+    /// skip the probe-guided attempt (prices the probe's legal partners).
+    pub disable_probe_guided: bool,
+    /// `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_DIRECT_CROSSING`: presence. Ablation switch (do-over phase 1):
+    /// skip the direct-crossing attempt against the probe's illegal partners.
+    pub disable_direct_crossing: bool,
+    /// `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING`: presence. Ablation switch (do-over phase 1):
+    /// price only the partners the probe named, without the source-column widening.
+    pub disable_source_column_widening: bool,
+    /// `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE`: presence. Ablation switch (do-over phase 1):
+    /// skip the engine's straight/L/Z probe before the A* search.
+    pub disable_simple_route_probe: bool,
+    /// `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT`: presence. Ablation switch (do-over phase 1):
+    /// weight the history cost on every attempt, not only after a net has failed once.
+    pub history_on_first_attempt: bool,
 }
 
 impl Default for NegotiationConfig {
@@ -43,6 +58,11 @@ impl Default for NegotiationConfig {
             crossing_free_unplanned: true,
             disable_braid_repair: false,
             pending_straight_ripup_threshold: 100,
+            disable_probe_guided: false,
+            disable_direct_crossing: false,
+            disable_source_column_widening: false,
+            disable_simple_route_probe: false,
+            history_on_first_attempt: false,
         }
     }
 }

@@ -36,6 +36,16 @@ class NegotiationConfig:
     crossing_free_unplanned: bool = True
     disable_braid_repair: bool = False
     pending_straight_ripup_threshold: int = 100
+    #: `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_PROBE_GUIDED`: presence. Ablation switch (do-over phase 1): skip the probe-guided attempt (prices the probe's legal partners).
+    disable_probe_guided: bool = False
+    #: `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_DIRECT_CROSSING`: presence. Ablation switch (do-over phase 1): skip the direct-crossing attempt against the probe's illegal partners.
+    disable_direct_crossing: bool = False
+    #: `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING`: presence. Ablation switch (do-over phase 1): price only the partners the probe named, without the source-column widening.
+    disable_source_column_widening: bool = False
+    #: `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE`: presence. Ablation switch (do-over phase 1): skip the engine's straight/L/Z probe before the A* search.
+    disable_simple_route_probe: bool = False
+    #: `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT`: presence. Ablation switch (do-over phase 1): weight the history cost on every attempt, not only after a net has failed once.
+    history_on_first_attempt: bool = False
 
 
 @dataclass(frozen=True)
@@ -298,6 +308,11 @@ class RouterConfig:
             negotiation_crossing_free_unplanned=n.crossing_free_unplanned,
             negotiation_disable_braid_repair=n.disable_braid_repair,
             negotiation_pending_straight_ripup_threshold=n.pending_straight_ripup_threshold,
+            negotiation_disable_probe_guided=n.disable_probe_guided,
+            negotiation_disable_direct_crossing=n.disable_direct_crossing,
+            negotiation_disable_source_column_widening=n.disable_source_column_widening,
+            negotiation_disable_simple_route_probe=n.disable_simple_route_probe,
+            negotiation_history_on_first_attempt=n.history_on_first_attempt,
             search_astar_timeout_ms=s.astar_timeout_ms,
             search_max_dense_states=s.max_dense_states,
             search_long_straight_congestion_weight=s.long_straight_congestion_weight,

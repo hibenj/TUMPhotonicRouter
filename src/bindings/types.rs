@@ -667,6 +667,16 @@ pub struct PyRouterConfig {
     #[pyo3(get)]
     pub negotiation_pending_straight_ripup_threshold: usize,
     #[pyo3(get)]
+    pub negotiation_disable_probe_guided: bool,
+    #[pyo3(get)]
+    pub negotiation_disable_direct_crossing: bool,
+    #[pyo3(get)]
+    pub negotiation_disable_source_column_widening: bool,
+    #[pyo3(get)]
+    pub negotiation_disable_simple_route_probe: bool,
+    #[pyo3(get)]
+    pub negotiation_history_on_first_attempt: bool,
+    #[pyo3(get)]
     pub search_astar_timeout_ms: Option<u64>,
     #[pyo3(get)]
     pub search_max_dense_states: Option<usize>,
@@ -749,6 +759,11 @@ impl PyRouterConfig {
         negotiation_crossing_free_unplanned=true,
         negotiation_disable_braid_repair=false,
         negotiation_pending_straight_ripup_threshold=100,
+        negotiation_disable_probe_guided=false,
+        negotiation_disable_direct_crossing=false,
+        negotiation_disable_source_column_widening=false,
+        negotiation_disable_simple_route_probe=false,
+        negotiation_history_on_first_attempt=false,
         search_astar_timeout_ms=None,
         search_max_dense_states=None,
         search_long_straight_congestion_weight=None,
@@ -793,6 +808,11 @@ impl PyRouterConfig {
         negotiation_crossing_free_unplanned: bool,
         negotiation_disable_braid_repair: bool,
         negotiation_pending_straight_ripup_threshold: usize,
+        negotiation_disable_probe_guided: bool,
+        negotiation_disable_direct_crossing: bool,
+        negotiation_disable_source_column_widening: bool,
+        negotiation_disable_simple_route_probe: bool,
+        negotiation_history_on_first_attempt: bool,
         search_astar_timeout_ms: Option<u64>,
         search_max_dense_states: Option<usize>,
         search_long_straight_congestion_weight: Option<f64>,
@@ -841,6 +861,11 @@ impl PyRouterConfig {
             negotiation_crossing_free_unplanned,
             negotiation_disable_braid_repair,
             negotiation_pending_straight_ripup_threshold,
+            negotiation_disable_probe_guided,
+            negotiation_disable_direct_crossing,
+            negotiation_disable_source_column_widening,
+            negotiation_disable_simple_route_probe,
+            negotiation_history_on_first_attempt,
             search_astar_timeout_ms,
             search_max_dense_states,
             search_long_straight_congestion_weight,
@@ -897,6 +922,11 @@ impl From<&PyRouterConfig> for RouterConfig {
                 crossing_free_unplanned: cfg.negotiation_crossing_free_unplanned,
                 disable_braid_repair: cfg.negotiation_disable_braid_repair,
                 pending_straight_ripup_threshold: cfg.negotiation_pending_straight_ripup_threshold,
+                disable_probe_guided: cfg.negotiation_disable_probe_guided,
+                disable_direct_crossing: cfg.negotiation_disable_direct_crossing,
+                disable_source_column_widening: cfg.negotiation_disable_source_column_widening,
+                disable_simple_route_probe: cfg.negotiation_disable_simple_route_probe,
+                history_on_first_attempt: cfg.negotiation_history_on_first_attempt,
             },
             search: SearchOverrides {
                 astar_timeout_ms: cfg.search_astar_timeout_ms,

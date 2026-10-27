@@ -883,6 +883,11 @@ class RouterConfig:
         negotiation_crossing_free_unplanned: Any = True,
         negotiation_disable_braid_repair: Any = False,
         negotiation_pending_straight_ripup_threshold: Any = 100,
+        negotiation_disable_probe_guided: Any = False,
+        negotiation_disable_direct_crossing: Any = False,
+        negotiation_disable_source_column_widening: Any = False,
+        negotiation_disable_simple_route_probe: Any = False,
+        negotiation_history_on_first_attempt: Any = False,
         search_astar_timeout_ms: Any = None,
         search_max_dense_states: Any = None,
         search_long_straight_congestion_weight: Any = None,
@@ -990,6 +995,16 @@ class RouterConfig:
     def negotiation_crossing_free_unplanned(self) -> Any: ...
     @property
     def negotiation_disable_braid_repair(self) -> Any: ...
+    @property
+    def negotiation_disable_direct_crossing(self) -> Any: ...
+    @property
+    def negotiation_disable_probe_guided(self) -> Any: ...
+    @property
+    def negotiation_disable_simple_route_probe(self) -> Any: ...
+    @property
+    def negotiation_disable_source_column_widening(self) -> Any: ...
+    @property
+    def negotiation_history_on_first_attempt(self) -> Any: ...
     @property
     def negotiation_pending_straight_ripup_threshold(self) -> Any: ...
     @property

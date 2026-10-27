@@ -834,7 +834,9 @@ impl PyPhotonicRouter {
         let mut probe_halo_only_conflict = false;
         {
             let simple_start = collect_timing.then(Instant::now);
-            let simple_result = if block_radius_cells > 0 {
+            let simple_result = if self.router_config.negotiation.disable_simple_route_probe {
+                None
+            } else if block_radius_cells > 0 {
                 try_simple_route_with_dynamic_expansion_config(
                     &self.obstacle_map,
                     &self.primitives,
