@@ -34,6 +34,10 @@ else
     .venv/bin/python -m ruff check .
 fi
 
+echo "== generated files =="
+.venv/bin/python scripts/generate_config_reference.py --check
+.venv/bin/python scripts/generate_rust_stubs.py --check
+
 echo "== mypy =="
 .venv/bin/python -m mypy
 

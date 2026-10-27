@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "do-over/**", "restructure/**"]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *" # nightly: the nine-cell reproduction gate
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --release --lib --tests -- -D warnings
+        env:
+          PYO3_PYTHON: ${{ env.pythonLocation }}/bin/python
+      - run: cargo test --release --lib
+        env:
+          PYO3_PYTHON: ${{ env.pythonLocation }}/bin/python
+
+  python:
+    name: Python (ruff, generated files, fast tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the package and the development tools
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]" pytest
+      - run: .venv/bin/ruff check .
+      - run: .venv/bin/ruff format --check .
+      - run: .venv/bin/python scripts/generate_config_reference.py --check
+      - run: .venv/bin/python scripts/generate_rust_stubs.py --check
+      - name: mypy (informational until the Python side is typed; see docs/ARCHITECTURE.md)
+        run: .venv/bin/mypy || true
+      - run: .venv/bin/python -m pytest -q -m "not e2e" tests
+
+  reproduction-gate:
+    name: Nine-cell paper reproduction (nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]" pytest
+      - run: scripts/results/gate_short.sh
