@@ -1,58 +1,53 @@
-# Windows Rust Toolchain
+# Building on Windows without Visual Studio
 
-This repository builds the Python extension through PyO3/maturin. On this
-Windows workspace, the normal Rust default host was `x86_64-pc-windows-msvc`,
-but the Visual Studio C++ linker (`link.exe`) is not installed. That makes plain
-MSVC builds fail during dependency build scripts.
+`rust-toolchain.toml` pins `stable`, which on Windows resolves to the MSVC
+host toolchain. That toolchain needs the Visual Studio C++ linker
+(`link.exe`). On a machine without Visual Studio Build Tools the build fails
+in the first dependency's build script with `link.exe not found`.
 
-The repository therefore pins the local Rust toolchain to:
+The repository does not pin a Windows-specific toolchain or linker path, so
+that Linux and macOS hosts build with plain `cargo` and `maturin`. A Windows
+host without MSVC instead selects the GNU/LLVM toolchain locally, in two
+files that git ignores:
 
-```text
-stable-x86_64-pc-windows-gnullvm
-```
+1. Install the toolchain once:
 
-and configures Cargo to link with the `rust-lld.exe` shipped by that toolchain.
-This avoids any dependency on Visual Studio Build Tools.
+   ```powershell
+   rustup toolchain install stable-x86_64-pc-windows-gnullvm
+   ```
 
-## Files That Make This Work
+2. Create `.cargo/config.toml` in the repository root (git-ignored) with
+   the linker that toolchain ships and the virtualenv interpreter PyO3
+   should build against. Replace `<user>` with your account name:
 
-- `rust-toolchain.toml` selects `stable-x86_64-pc-windows-gnullvm`.
-- `.cargo/config.toml` sets:
-  - `target.x86_64-pc-windows-gnullvm.linker` to the toolchain's `rust-lld.exe`.
-  - `PYO3_PYTHON` to the project virtualenv Python.
+   ```toml
+   [target.x86_64-pc-windows-gnullvm]
+   linker = "C:\\Users\\<user>\\.rustup\\toolchains\\stable-x86_64-pc-windows-gnullvm\\lib\\rustlib\\x86_64-pc-windows-gnullvm\\bin\\rust-lld.exe"
 
-## Expected Commands
+   [env]
+   PYO3_PYTHON = { value = ".venv/Scripts/python.exe", relative = true }
+   ```
 
-From the repository root:
+3. Build with the toolchain selected for the command:
 
-```powershell
-C:\Users\benja\.cargo\bin\cargo.exe check
-.\.venv\Scripts\python.exe -m maturin develop --release
-```
+   ```powershell
+   $env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-gnullvm'
+   cargo check
+   .\.venv\Scripts\python.exe -m maturin develop --release
+   ```
 
-The second command rebuilds and reinstalls `photonic_router._rust` into the
-project virtualenv/editable package.
+   or make it the machine default with
+   `rustup default stable-x86_64-pc-windows-gnullvm`, after which the
+   repository's `stable` pin resolves to it.
 
-## If It Fails Again
+## If it fails
 
-Check these first:
+- `link.exe not found`: Cargo is using the MSVC toolchain; set
+  `RUSTUP_TOOLCHAIN` as above or change the rustup default.
+- `x86_64-w64-mingw32-clang not found`: the gnullvm toolchain is active but
+  the local `.cargo/config.toml` linker override is missing.
+- `no Python 3.x interpreter found`: PyO3 cannot see the virtualenv; check
+  the `PYO3_PYTHON` entry in the local `.cargo/config.toml`.
 
-```powershell
-C:\Users\benja\.cargo\bin\rustup.exe show
-C:\Users\benja\.cargo\bin\rustup.exe component list --toolchain stable-x86_64-pc-windows-gnullvm --installed
-Test-Path C:\Users\benja\.rustup\toolchains\stable-x86_64-pc-windows-gnullvm\lib\rustlib\x86_64-pc-windows-gnullvm\bin\rust-lld.exe
-Test-Path .\.venv\Scripts\python.exe
-```
-
-The known bad states are:
-
-- `link.exe not found`: Cargo/maturin is using the MSVC toolchain instead of
-  the pinned gnullvm toolchain.
-- `x86_64-w64-mingw32-clang not found`: Cargo is using gnullvm without the
-  repository linker override.
-- `no Python 3.x interpreter found`: PyO3 cannot see the virtualenv Python;
-  verify `.cargo/config.toml` still sets `PYO3_PYTHON`.
-
-Do not fix these by switching back to MSVC unless Visual Studio Build Tools with
-the C++ toolchain are intentionally installed. The repo-local path is gnullvm
-plus `rust-lld.exe`.
+Do not switch back to MSVC unless Visual Studio Build Tools with the C++
+workload are intentionally installed.

@@ -23,9 +23,9 @@ Hard rules:
   ExecPlan's Decision Log. If the work turns out to be decision-gated,
   stop and report.
 - Toolchain: after any `src/*.rs` change run
-  `RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --lib`
+  `PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --lib`
   and rebuild the extension with
-  `RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python3" .venv/bin/maturin develop --release`
+  `PYO3_PYTHON="$PWD/.venv/bin/python3" .venv/bin/maturin develop --release`
   before any Python-side validation. `cargo fmt` before testing.
 - Long-running validation (benchmarks: 1-20 min) runs in the FOREGROUND
   with `timeout`. NEVER use `run_in_background` or

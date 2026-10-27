@@ -828,17 +828,17 @@ contribution 1 with the crossing mode overridden
 
 ## 8. Build and test commands
 
-From the repository root, with `.venv` present. `rust-toolchain.toml` pins a
-Windows channel, so the Linux host overrides the toolchain, and `cargo test`
-additionally needs `PYO3_PYTHON`:
+From the repository root, with `.venv` present. `rust-toolchain.toml` pins
+the host's stable toolchain; `cargo test` additionally needs `PYO3_PYTHON`
+because the crate links the Python it is built for:
 
 ```bash
 # Build the kernel into python/photonic_router/_rust.abi3.so
-RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python3" \
+PYO3_PYTHON="$PWD/.venv/bin/python3" \
   .venv/bin/maturin develop --release
 
 # Rust unit tests
-RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python" \
+PYO3_PYTHON="$PWD/.venv/bin/python" \
   cargo test --release --lib
 cargo fmt            # before testing; cargo fmt --check in review
 

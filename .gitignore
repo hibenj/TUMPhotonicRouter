@@ -28,3 +28,9 @@ dist/
 # Benchmarks extracted from the owner's confidential tape-out circuits
 # (.agent/execplans/2026-10-05-private-circuits-from-gds.md): never versioned.
 /benchmarks/private/
+
+# Editor and per-machine build settings (the Windows linker and PYO3_PYTHON
+# overrides live in a local .cargo/config.toml, see docs/WINDOWS_RUST_TOOLCHAIN.md)
+.idea/
+.vscode/
+.cargo/config.toml

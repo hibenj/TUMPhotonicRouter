@@ -25,8 +25,8 @@ is final; this branch exists so the numbers can be regenerated.
   contribution 2 rows, which were archived with it in the kernel.
 - Baseline (`--crossing-mode lidar-pure`) and contribution 1
   (`--crossing-mode lidar-guided`) run the kernel with no extra environment.
-- Build: `RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu .venv/bin/maturin develop --release`
-  (`rust-toolchain.toml` pins a Windows channel; the Linux host needs the override).
+- Build: `.venv/bin/maturin develop --release` (`rust-toolchain.toml` pins
+  the host's stable toolchain).
 
 ## Provenance of the archived rows (results/)
 

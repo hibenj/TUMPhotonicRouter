@@ -223,9 +223,10 @@ Current checked-in baseline: `docs/photonic_baseline.md`.
 cargo test --release --lib
 ```
 
-The exact toolchain overrides this host needs (`RUSTUP_TOOLCHAIN`,
-`PYO3_PYTHON`), the pinned baseline script and the reproduction gate are in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) section 8.
+The `PYO3_PYTHON` setting `cargo test` needs, the pinned baseline script and
+the reproduction gate are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+section 8; Windows hosts without Visual Studio see
+[`docs/WINDOWS_RUST_TOOLCHAIN.md`](docs/WINDOWS_RUST_TOOLCHAIN.md).
 
 Useful targeted checks:
 
@@ -252,4 +253,3 @@ cargo test crossing
   comparison with the local LiDAR 2.0 paper.
 - `docs/profiling.md` - profiling workflow and optimization notes.
 - `docs/photonic_baseline.md` - local baseline timing snapshot.
-- `Agent_implementation_files/ROUTING_FLOW_ARCHITECTURE.md` - older architecture notes.

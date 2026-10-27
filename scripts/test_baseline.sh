@@ -8,7 +8,6 @@
 #   TEST_BASELINE_UPDATE=1  rewrites the pinned file from this run instead.
 set -u
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$R" || exit 1
-export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-stable-x86_64-unknown-linux-gnu}"
 export PYO3_PYTHON="${PYO3_PYTHON:-$R/.venv/bin/python}"
 pin="$R/tests/baselines/test_baseline.txt"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/test_baseline_XXXX")"

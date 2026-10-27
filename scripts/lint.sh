@@ -39,17 +39,17 @@ echo "== mypy =="
 
 echo "== cargo fmt =="
 if [[ "$FIX" == 1 ]]; then
-    RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu cargo fmt
+    cargo fmt
 else
-    RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu cargo fmt -- --check
+    cargo fmt -- --check
 fi
 
 echo "== cargo clippy =="
 if [[ "$FIX" == 1 ]]; then
-    RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python" \
+    PYO3_PYTHON="$PWD/.venv/bin/python" \
         cargo clippy --fix --lib -p photonic-router --allow-dirty
 else
-    RUSTUP_TOOLCHAIN=stable-x86_64-unknown-linux-gnu PYO3_PYTHON="$PWD/.venv/bin/python" \
+    PYO3_PYTHON="$PWD/.venv/bin/python" \
         cargo clippy --lib -- -D warnings
 fi
 

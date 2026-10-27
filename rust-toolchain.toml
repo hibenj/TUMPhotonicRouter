@@ -1,2 +1,5 @@
+# The host's stable toolchain on every platform. Windows hosts without the
+# MSVC linker select the gnullvm toolchain locally; see
+# docs/WINDOWS_RUST_TOOLCHAIN.md.
 [toolchain]
-channel = "stable-x86_64-pc-windows-gnullvm"
+channel = "stable"
