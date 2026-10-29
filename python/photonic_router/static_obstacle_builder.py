@@ -123,9 +123,8 @@ def build_static_obstacle_map(
 ) -> StaticObstacleMapData:
     """Extract and rasterize fixed geometry from a gdsfactory component.
 
-    The default path uses the Rust backend when the PyO3 extension is installed.
-    If the extension is not importable, this falls back to the pure-Python
-    implementation so tests and development flows still work.
+    Rasterisation runs in the Rust extension (`photonic_router._rust`); there
+    is no Python fallback, the routing flow needs the extension anyway.
     """
 
     config = config or StaticObstacleMapConfig()
@@ -151,11 +150,7 @@ def _build_static_obstacle_map_data(
         as_bounding_boxes=config.obstacle_mode == "bounding_boxes",
     )
 
-    rust_backend = _load_rust_backend()
-    if rust_backend is not None:
-        return _build_static_obstacle_map_rust(benchmark, config, rust_backend)
-
-    return build_static_obstacle_map_python_from_extracted(benchmark, config)
+    return _build_static_obstacle_map_rust(benchmark, config, _require_rust_backend())
 
 
 def _attach_chip_boundary_keepout(
@@ -206,7 +201,7 @@ def _build_static_obstacle_map_split_by_heater_clearance(
     )
     shared_die_bbox = resolve_die_bbox(all_benchmark, config)
 
-    rust_backend = _load_rust_backend()
+    rust_backend = _require_rust_backend()
     waveguide_data = _build_layer_group_static_obstacles(
         component,
         all_benchmark,
@@ -239,7 +234,7 @@ def _build_static_obstacle_map_split_by_heater_clearance(
         all_benchmark,
         waveguide_data,
         heater_data,
-        backend="rust-split" if rust_backend is not None else "python-split",
+        backend="rust-split",
         rust_backend=rust_backend,
     )
 
@@ -248,7 +243,7 @@ def _build_layer_group_static_obstacles(
     component: object,
     all_benchmark: ExtractedBenchmark,
     config: StaticObstacleMapConfig,
-    rust_backend: Any | None,
+    rust_backend: Any,
 ) -> StaticObstacleMapData:
     if config.obstacle_layers:
         benchmark = extract_benchmark(
@@ -264,11 +259,8 @@ def _build_layer_group_static_obstacles(
         )
 
     if not benchmark.polygons:
-        return build_static_obstacle_map_python_from_extracted(benchmark, config)
-
-    if rust_backend is not None:
-        return _build_static_obstacle_map_rust(benchmark, config, rust_backend)
-    return build_static_obstacle_map_python_from_extracted(benchmark, config)
+        return _empty_layer_group_static_obstacles(benchmark, config)
+    return _build_static_obstacle_map_rust(benchmark, config, rust_backend)
 
 
 def _apply_perpendicular_heater_clearance(
@@ -424,13 +416,17 @@ def _normalize_layers(layers: Iterable[Any]) -> tuple[tuple[int, int], ...]:
     return tuple(normalized)
 
 
-def build_static_obstacle_map_python_from_extracted(
+def _empty_layer_group_static_obstacles(
     benchmark: ExtractedBenchmark,
-    config: StaticObstacleMapConfig | None = None,
+    config: StaticObstacleMapConfig,
 ) -> StaticObstacleMapData:
-    """Pure-Python fallback builder from already extracted benchmark geometry."""
+    """Obstacle data for a layer group without geometry: only the port openings.
 
-    config = config or StaticObstacleMapConfig()
+    Used by the heater-clearance split when one of the two layer groups has no
+    polygons; the grid and the port-opening cells match what the Rust builder
+    produces for the other group, so the two merge cell for cell.
+    """
+
     grid = make_grid_spec(
         benchmark,
         grid_size_um=config.grid_size_um,
@@ -439,42 +435,15 @@ def build_static_obstacle_map_python_from_extracted(
         chip_add_x_um=config.chip_add_x_um,
         chip_add_y_um=config.chip_add_y_um,
     )
-
-    raw_blocked: set[GridCell] = set()
-    if config.obstacle_mode == "rasterized_polygons":
-        for polygon in benchmark.polygons:
-            raw_blocked.update(rasterize_polygon(polygon, grid))
-    elif config.obstacle_mode == "bounding_boxes":
-        for polygon in benchmark.polygons:
-            raw_blocked.update(polygon_to_bbox_cells(polygon, grid))
-    else:
-        raise ValueError("obstacle_mode must be 'rasterized_polygons' or 'bounding_boxes'")
-
-    clearance_radius = math.ceil(config.clearance_um / config.grid_size_um)
-    blocked = inflate_cells(
-        raw_blocked,
-        grid.width,
-        grid.height,
-        clearance_radius,
-        metric=config.clearance_metric,
-    )
-
     port_radius = math.ceil(config.port_open_radius_um / config.grid_size_um)
     port_open_cells = build_port_open_cells(benchmark, grid, port_radius)
-
-    if config.clear_port_open_cells_from_static:
-        blocked.difference_update(port_open_cells)
-
     return StaticObstacleMapData(
         grid=grid,
-        raw_blocked_cells=raw_blocked,
-        blocked_cells=blocked,
+        raw_blocked_cells=set(),
+        blocked_cells=set(),
         port_open_cells=port_open_cells,
-        raw_static_rects=(),
-        blocked_static_rects=(),
         benchmark=benchmark,
         backend="python",
-        build_stats=None,
     )
 
 
@@ -487,121 +456,22 @@ def _build_static_obstacle_map_rust(
         (port.name, port.position[0], port.position[1], port.orientation)
         for port in benchmark.ports
     ]
-    fallback_without_clear_port_flag = False
-    used_legacy_builder_signature = False
     effective_die_bbox = resolve_die_bbox(benchmark, config)
-
-    def _call_rust_builder() -> dict[str, Any]:
-        positional_compat_message = (
-            "clear_port_open_cells_from_static",
-            "positional argument",
-            "positional arguments",
-            "takes from",
-            "unexpected argument count",
-        )
-
-        def _is_compat_error(message: str) -> bool:
-            return any(token in message for token in positional_compat_message)
-
-        try:
-            result_obj = rust_backend.build_static_obstacle_map_rs(
-                benchmark.polygons,
-                ports,
-                config.grid_size_um,
-                config.security_margin_um,
-                config.clearance_um,
-                config.clearance_metric,
-                config.port_open_radius_um,
-                effective_die_bbox,
-                config.obstacle_mode,
-                config.clear_port_open_cells_from_static,
-                config.materialize_bbox_cells,
-                config.populate_obstacle_map,
-                config.materialize_cell_sets,
-            )
-            return result_obj  # noqa: TRY300 (compat shim for older wheels; removed with the Python builder)
-        except TypeError as exc:
-            # Backward compatibility with older local wheels/extensions.
-            msg = str(exc)
-            if not _is_compat_error(msg):
-                raise
-            nonlocal used_legacy_builder_signature
-            used_legacy_builder_signature = True
-            try:
-                return rust_backend.build_static_obstacle_map_rs(
-                    benchmark.polygons,
-                    ports,
-                    config.grid_size_um,
-                    config.security_margin_um,
-                    config.clearance_um,
-                    config.clearance_metric,
-                    config.port_open_radius_um,
-                    effective_die_bbox,
-                    config.obstacle_mode,
-                    config.clear_port_open_cells_from_static,
-                    config.materialize_bbox_cells,
-                )
-            except TypeError as exc_without_populate:
-                if not _is_compat_error(str(exc_without_populate)):
-                    raise
-                try:
-                    return rust_backend.build_static_obstacle_map_rs(
-                        benchmark.polygons,
-                        ports,
-                        config.grid_size_um,
-                        config.security_margin_um,
-                        config.clearance_um,
-                        config.clearance_metric,
-                        config.port_open_radius_um,
-                        effective_die_bbox,
-                        config.obstacle_mode,
-                        config.clear_port_open_cells_from_static,
-                    )
-                except TypeError as exc_without_materialize:
-                    if not _is_compat_error(str(exc_without_materialize)):
-                        raise
-                    nonlocal fallback_without_clear_port_flag
-                    fallback_without_clear_port_flag = True
-                    try:
-                        return rust_backend.build_static_obstacle_map_rs(
-                            benchmark.polygons,
-                            ports,
-                            config.grid_size_um,
-                            config.security_margin_um,
-                            config.clearance_um,
-                            config.clearance_metric,
-                            config.port_open_radius_um,
-                            effective_die_bbox,
-                            config.obstacle_mode,
-                        )
-                    except TypeError as exc_without_mode:
-                        if not _is_compat_error(str(exc_without_mode)):
-                            raise
-                        try:
-                            return rust_backend.build_static_obstacle_map_rs(
-                                benchmark.polygons,
-                                ports,
-                                config.grid_size_um,
-                                config.security_margin_um,
-                                config.clearance_um,
-                                config.clearance_metric,
-                                config.port_open_radius_um,
-                                effective_die_bbox,
-                            )
-                        except TypeError as exc_without_die_bbox:
-                            if not _is_compat_error(str(exc_without_die_bbox)):
-                                raise
-                            return rust_backend.build_static_obstacle_map_rs(
-                                benchmark.polygons,
-                                ports,
-                                config.grid_size_um,
-                                config.security_margin_um,
-                                config.clearance_um,
-                                config.clearance_metric,
-                                config.port_open_radius_um,
-                            )
-
-    result = _call_rust_builder()
+    result = rust_backend.build_static_obstacle_map_rs(
+        benchmark.polygons,
+        ports,
+        config.grid_size_um,
+        config.security_margin_um,
+        config.clearance_um,
+        config.clearance_metric,
+        config.port_open_radius_um,
+        effective_die_bbox,
+        config.obstacle_mode,
+        config.clear_port_open_cells_from_static,
+        config.materialize_bbox_cells,
+        config.populate_obstacle_map,
+        config.materialize_cell_sets,
+    )
 
     width_raw, height_raw, grid_size_raw, origin_raw, die_bbox_raw = result["grid"]
     width = int(width_raw)
@@ -636,21 +506,6 @@ def _build_static_obstacle_map_rust(
     compact_bbox_requested = (
         config.obstacle_mode == "bounding_boxes" and not config.materialize_bbox_cells
     )
-    if compact_bbox_requested and used_legacy_builder_signature:
-        extension_path = getattr(rust_backend, "__file__", "<unknown>")
-        router_cls = getattr(rust_backend, "PyPhotonicRouter", None)
-        has_static_rect_router = bool(
-            router_cls is not None and hasattr(router_cls, "set_static_rects")
-        )
-        raise RuntimeError(
-            "The loaded photonic_router._rust extension does not support compact "
-            "bounding-box obstacle payloads. "
-            f"Loaded extension: {extension_path}. "
-            f"PyPhotonicRouter.set_static_rects available: {has_static_rect_router}. "
-            "Rebuild the extension with `python3 -m maturin develop --release` "
-            "using the same Python interpreter that runs routing_flow.py; "
-            "otherwise bbox mode falls back to materialized cells and will be slow."
-        )
     if compact_bbox_requested and not blocked_static_rects:
         extension_path = getattr(rust_backend, "__file__", "<unknown>")
         raise RuntimeError(
@@ -661,35 +516,19 @@ def _build_static_obstacle_map_rust(
             "`python3 -m maturin develop --release` and verify the active extension path."
         )
 
-    if fallback_without_clear_port_flag and not config.clear_port_open_cells_from_static:
-        if not config.materialize_cell_sets:
-            raise RuntimeError(
-                "The loaded photonic_router._rust extension cannot build a strict "
-                "handle-only obstacle map with port openings preserved in static cells. "
-                "Rebuild the extension or enable materialize_cell_sets."
-            )
-        # Older builders always clear port opening cells from static blockers.
-        # Emulate the strict-per-net mode by re-adding those cells on the Python
-        # side to keep routing behavior usable with stale backends.
-        blocked_cells |= port_open_cells
-        rust_blocked_cell_handle = None
-    else:
-        rust_blocked_cell_handle = result.get("blocked_cell_handle")
-        if not config.materialize_cell_sets and rust_blocked_cell_handle is None:
-            extension_path = getattr(rust_backend, "__file__", "<unknown>")
-            raise RuntimeError(
-                "Handle-only static obstacle mode requested, but the Rust obstacle "
-                "builder returned no blocked_cell_handle. "
-                f"Loaded extension: {extension_path}. "
-                "Rebuild photonic_router._rust with "
-                "`python3 -m maturin develop --release` or enable "
-                "materialize_cell_sets."
-            )
+    rust_blocked_cell_handle = result.get("blocked_cell_handle")
+    if not config.materialize_cell_sets and rust_blocked_cell_handle is None:
+        extension_path = getattr(rust_backend, "__file__", "<unknown>")
+        raise RuntimeError(
+            "Handle-only static obstacle mode requested, but the Rust obstacle "
+            "builder returned no blocked_cell_handle. "
+            f"Loaded extension: {extension_path}. "
+            "Rebuild photonic_router._rust with "
+            "`python3 -m maturin develop --release` or enable "
+            "materialize_cell_sets."
+        )
 
     stats_raw = result.get("stats")
-    if fallback_without_clear_port_flag and isinstance(stats_raw, dict):
-        stats_raw["clear_port_open_cells_from_static"] = False
-        stats_raw["blocked_cells_after_port_opening"] = len(blocked_cells)
     build_stats = (
         {str(key): value for key, value in stats_raw.items()}
         if isinstance(stats_raw, dict)
@@ -755,6 +594,16 @@ def _load_rust_backend() -> Any | None:
             return module
 
     return None
+
+
+def _require_rust_backend() -> Any:
+    backend = _load_rust_backend()
+    if backend is None:
+        raise ImportError(
+            "photonic_router._rust is not importable; build the extension with "
+            "`maturin develop --release` using the interpreter that runs the flow"
+        )
+    return backend
 
 
 def make_grid_spec(
@@ -954,45 +803,6 @@ def grid_cell_center(gx: int, gy: int, grid: GridSpec) -> Point:
     )
 
 
-def rasterize_polygon(polygon: Polygon, grid: GridSpec) -> set[GridCell]:
-    """Rasterize a polygon by testing grid-cell centers inside its bbox."""
-
-    if len(polygon) < 3:
-        return set()
-
-    min_x = min(point[0] for point in polygon)
-    min_y = min(point[1] for point in polygon)
-    max_x = max(point[0] for point in polygon)
-    max_y = max(point[1] for point in polygon)
-
-    gx_min, gy_min = physical_to_grid(min_x, min_y, grid)
-    gx_max, gy_max = physical_to_grid(max_x, max_y, grid)
-
-    gx_min = max(gx_min, 0)
-    gy_min = max(gy_min, 0)
-    gx_max = min(gx_max, grid.width - 1)
-    gy_max = min(gy_max, grid.height - 1)
-
-    cells: set[GridCell] = set()
-    for gx in range(gx_min, gx_max + 1):
-        for gy in range(gy_min, gy_max + 1):
-            center = grid_cell_center(gx, gy, grid)
-            if point_in_polygon(center, polygon):
-                cells.add((gx, gy))
-
-    return cells
-
-
-def polygon_to_bbox_cells(polygon: Polygon, grid: GridSpec) -> set[GridCell]:
-    """Conservatively mark polygon bounding-box cell range."""
-
-    rect = polygon_to_grid_rect(polygon, grid)
-    if rect is None:
-        return set()
-    gx_min, gy_min, gx_max, gy_max = rect
-    return {(gx, gy) for gx in range(gx_min, gx_max + 1) for gy in range(gy_min, gy_max + 1)}
-
-
 def polygon_to_grid_rect(polygon: Polygon, grid: GridSpec) -> GridRect | None:
     """Conservatively map a polygon bbox to an inclusive grid rectangle."""
 
@@ -1018,29 +828,6 @@ def polygon_to_grid_rect(polygon: Polygon, grid: GridSpec) -> GridRect | None:
         return None
 
     return gx_min, gy_min, gx_max, gy_max
-
-
-def point_in_polygon(point: Point, polygon: Sequence[Point]) -> bool:
-    """Return true when `point` is inside or on the boundary of `polygon`."""
-
-    x, y = point
-    inside = False
-    count = len(polygon)
-
-    for i in range(count):
-        x1, y1 = polygon[i]
-        x2, y2 = polygon[(i + 1) % count]
-
-        if _point_on_segment(x, y, x1, y1, x2, y2):
-            return True
-
-        crosses = (y1 > y) != (y2 > y)
-        if crosses:
-            x_intersection = (x2 - x1) * (y - y1) / (y2 - y1) + x1
-            if x <= x_intersection:
-                inside = not inside
-
-    return inside
 
 
 def inflate_cells(
@@ -1142,23 +929,3 @@ def grid_to_svg(
 
     parts.append("</svg>")
     return "\n".join(parts) + "\n"
-
-
-def _point_on_segment(
-    px: float,
-    py: float,
-    x1: float,
-    y1: float,
-    x2: float,
-    y2: float,
-    *,
-    eps: float = 1e-9,
-) -> bool:
-    cross = (px - x1) * (y2 - y1) - (py - y1) * (x2 - x1)
-    if abs(cross) > eps:
-        return False
-
-    return (
-        min(x1, x2) - eps <= px <= max(x1, x2) + eps
-        and min(y1, y2) - eps <= py <= max(y1, y2) + eps
-    )

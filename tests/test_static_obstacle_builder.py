@@ -20,10 +20,10 @@ from photonic_router.static_obstacle_builder import (
     _apply_perpendicular_heater_clearance,
     _build_static_obstacle_map_rust,
     _expand_rect_perpendicular_to_long_axis,
+    _load_rust_backend,
     _materialize_grid_rects,
     build_port_open_cells,
     build_static_obstacle_map,
-    build_static_obstacle_map_python_from_extracted,
     chip_boundary_keepout_rects,
     expand_bbox,
     grid_cell_center,
@@ -31,7 +31,6 @@ from photonic_router.static_obstacle_builder import (
     inflate_cells,
     make_grid_spec,
     physical_to_grid,
-    rasterize_polygon,
     resolve_routable_bbox,
 )
 
@@ -198,19 +197,6 @@ def test_obstacle_map_builder_protocol_is_structural_at_runtime():
     builder: ObstacleMapBuilder = _MinimalBuilder()
 
     assert isinstance(builder, ObstacleMapBuilder)
-
-
-def test_rasterizes_polygon_by_cell_centers():
-    grid = GridSpec(
-        width=2,
-        height=2,
-        grid_size_um=1.0,
-        origin=(0.0, 0.0),
-        die_bbox=(0.0, 0.0, 2.0, 2.0),
-    )
-    polygon = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]
-
-    assert rasterize_polygon(polygon, grid) == {(0, 0), (1, 0), (0, 1), (1, 1)}
 
 
 def test_clearance_expansion_manhattan_and_chebyshev():
@@ -562,7 +548,7 @@ def test_clear_port_open_cells_default_is_strict():
         bbox=(1.0, 1.0, 3.0, 3.0),
     )
 
-    data = build_static_obstacle_map_python_from_extracted(
+    data = _build_static_obstacle_map_rust(
         benchmark,
         StaticObstacleMapConfig(
             grid_size_um=1.0,
@@ -571,71 +557,11 @@ def test_clear_port_open_cells_default_is_strict():
             port_open_radius_um=0.0,
             die_bbox=(0.0, 0.0, 4.0, 4.0),
         ),
+        _load_rust_backend(),
     )
 
     assert (1, 1) in data.port_open_cells
     assert (1, 1) in data.blocked_cells
-
-
-def test_rust_obstacle_builder_compat_with_legacy_signature_keeps_default_behavior():
-    benchmark = ExtractedBenchmark(
-        polygons=[[(0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)]],
-        ports=[Port(name="o1", position=(1.0, 1.0), orientation=0.0)],
-        bbox=(0.0, 0.0, 3.0, 3.0),
-    )
-
-    class _LegacyRustBackend:
-        def build_static_obstacle_map_rs(self, *args):
-            # Simulate older extension signatures without the strict-port flag.
-            if len(args) in (9, 10):
-                raise TypeError(
-                    "build_static_obstacle_map_rs() takes from 7 to 8 positional arguments"
-                    f" but {len(args)} were given"
-                )
-            if len(args) == 8:
-                return {
-                    "grid": (3, 3, 1.0, (0.0, 0.0), (0.0, 0.0, 3.0, 3.0)),
-                    "raw_blocked_cells": [(0, 0), (1, 0), (0, 1), (1, 1), (2, 1), (1, 2)],
-                    "blocked_cells": [(0, 0), (1, 0), (0, 1), (2, 1), (1, 2)],
-                    "port_open_cells": [(1, 1)],
-                    "stats": {
-                        "blocked_cells_after_port_opening": 5,
-                        "raw_blocked_cell_count": 6,
-                    },
-                }
-            raise TypeError(f"unexpected argument count {len(args)}")
-
-    backend = _LegacyRustBackend()
-
-    default_data = _build_static_obstacle_map_rust(
-        benchmark,
-        StaticObstacleMapConfig(
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            obstacle_mode="rasterized_polygons",
-            die_bbox=(0.0, 0.0, 3.0, 3.0),
-        ),
-        backend,
-    )
-
-    strict_data = _build_static_obstacle_map_rust(
-        benchmark,
-        StaticObstacleMapConfig(
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            obstacle_mode="rasterized_polygons",
-            clear_port_open_cells_from_static=False,
-            die_bbox=(0.0, 0.0, 3.0, 3.0),
-        ),
-        backend,
-    )
-
-    assert (1, 1) in default_data.blocked_cells
-    assert (1, 1) in strict_data.blocked_cells
 
 
 def test_chip_boundary_keepout_covers_only_cells_outside_the_routable_bbox():

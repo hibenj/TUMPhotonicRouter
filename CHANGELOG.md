@@ -40,6 +40,13 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
   plain 4-connected unit primitive library, which the photonic library never
   is, so no production run could reach it; the `jps4_*` route-stat fields go
   with it.
+- The pure-Python static obstacle builder
+  (`build_static_obstacle_map_python_from_extracted`, its rasterise and
+  point-in-polygon helpers) and the legacy-signature retry shim around the
+  Rust builder (phase 2 slice A2). Routing needs the extension anyway;
+  without it `build_static_obstacle_map` now raises an `ImportError` with a
+  rebuild hint. A heater layer group without geometry keeps a 20-line
+  port-opening constructor so the split merge is unchanged.
 - Tracked IDE settings (`.idea/`, `.vscode/`) and the per-machine
   `.cargo/config.toml`; `Agent_implementation_files/` (superseded by
   `docs/ARCHITECTURE.md`); `benes_test/` (an early experiment with three GDS
