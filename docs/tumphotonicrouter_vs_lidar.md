@@ -122,7 +122,7 @@ A*, but easy nets should not.
 
 Relevant file:
 
-- `src/simple_routes.rs`
+- `src/search/astar/simple_route.rs`
 
 ## Crossing Handling
 
@@ -262,7 +262,7 @@ TUMPhotonicRouter source areas inspected:
 - `python/photonic_router/topology_analysis.py`
 - `python/photonic_router/crossing_plan.py`
 - `src/astar.rs`
-- `src/simple_routes.rs`
+- `src/search/astar/simple_route.rs`
 - `src/obstacle_map.rs`
 - `src/static_obstacle_builder.rs`
 - `src/crossings.rs`

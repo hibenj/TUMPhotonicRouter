@@ -47,6 +47,19 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
   static-only probe clone costs what it did before. Public API unchanged;
   the per-cell accessors now iterate in grid order (all callers sort or
   build sets). Nine-cell gate identical.
+- One simple-route module (phase 2 slice F): `src/simple_routes.rs` (the
+  straight/L/Z/turnaround candidates, their obstacle-query trait and the grid
+  geometry) and `src/search/astar/simple.rs` (the adapter to a `RouteResult`)
+  are merged into `src/search/astar/simple_route.rs`. The two engine entry
+  points keep their names and signatures but share one body, differing only
+  in the obstacle query the candidates are checked against; the fifteen
+  thin `ObstacleMap` wrappers that only tests used, the unused `rect_free`
+  query method and the crate-root re-exports nothing consumed are gone, and
+  everything in the module is `pub(crate)`. The module doc states the one
+  deliberate difference to the kernel's legality (congested cells are
+  rejected; the expanded query checks core cells plus a diagonal halo),
+  kept as is until phase 5. No legality rule, candidate order or returned
+  route changed; nine-cell gate identical.
 
 ### Added
 

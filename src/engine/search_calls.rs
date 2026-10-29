@@ -11,7 +11,7 @@ use crate::obstacle_map::{pack_xy, unpack_xy, CellKey};
 use crate::primitives::PrimitiveLibrary;
 use crate::search::astar::config::{AStarConfig, HeapTieBreaker, HeuristicMode, PrimitiveOrdering};
 use crate::search::astar::crossing_rules::{CrossingSearchConfig, CrossingSearchPartner};
-use crate::search::astar::simple::{
+use crate::search::astar::simple_route::{
     try_simple_route_with_config, try_simple_route_with_dynamic_expansion_config,
 };
 use crate::search::state::{RouteResult, RouteSearchStats, State};

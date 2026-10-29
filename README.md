@@ -103,7 +103,7 @@ field is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 | `src/bindings/` | The PyO3 surface: the `#[pymethods]` block, the config/result types, the converters |
 | `src/obstacle_map.rs` | Static/dynamic route database, packed cells, rip-up, history costs |
 | `src/crossings.rs` | Crossing constraints and expected-pair context |
-| `src/simple_routes.rs` | Deterministic straight/L/Z/turnaround route candidates |
+| `src/search/astar/simple_route.rs` | The simple route: straight/L/Z/turnaround candidates tried before the kernel |
 | `src/primitives.rs` | Photonic movement primitives and footprint metadata |
 | `src/geometry_realization.rs` | Route polygons, port access, and meander geometry |
 | `translation/electrical/` | Heater electrical routing stack |

@@ -849,7 +849,7 @@ mod tests {
     use crate::search::astar::crossing_rules::{CrossingSearchConfig, CrossingSearchPartner};
     use crate::search::astar::expansion::compact_diagonal_halo_cells;
     use crate::search::astar::route_single_net_with_config;
-    use crate::search::astar::simple::{
+    use crate::search::astar::simple_route::{
         try_simple_route_with_config, try_simple_route_with_dynamic_expansion_config,
     };
     use crate::search::test_support::*;

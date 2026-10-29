@@ -14,18 +14,8 @@ pub mod obstacle_map;
 pub mod plm;
 pub mod primitives;
 pub mod search;
-pub mod simple_routes;
 pub mod static_obstacle_builder;
 
-pub use crate::simple_routes::{
-    check_simple_candidate, compact_offset_order, direction_between,
-    expand_candidate_to_grid_points, grid_point_from_state, heading_delta_is_perpendicular,
-    is_cardinal_heading, opposite_heading, state_from_grid_point, try_l_candidate,
-    try_straight_candidate, try_straight_l_or_z_candidate,
-    try_straight_l_or_z_candidate_with_config, try_straight_or_l_candidate, try_z_candidate,
-    try_z_candidate_with_config, GridPoint, Segment, SimpleRouteCandidate, SimpleRouteKind,
-    SimpleZRouteConfig,
-};
 pub use auto_meander::{
     cells_in_grid_rect, check_meander_box_free, check_meander_box_free_with_prefix,
     meander_box_to_grid_rect, probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix,

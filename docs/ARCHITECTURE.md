@@ -103,8 +103,10 @@ routing-window bookkeeping and the progressively-larger-window driver.
 bitsets, owner grids). `crossing_rules.rs` (2,254 lines,
 plus `crossing_rules/tests.rs` 3,368) owns crossing legality and the
 `CrossingLegalityHook` trait with its `NoCrossingHook` / `LiveCrossingHook`
-implementations. `simple.rs` (915 lines) owns the straight/L/Z shortcut tried
-before full A*. `diagnostics.rs` (833 lines) owns the tracing and report
+implementations. `simple_route.rs` (3,341 lines) owns the simple route tried
+before full A*: the straight/L/Z/turnaround candidates, the obstacle queries
+they are checked against and the conversion to a `RouteResult` (phase 2 slice
+F merged the former `src/simple_routes.rs` into it). `diagnostics.rs` (833 lines) owns the tracing and report
 printers (which take a `&mut dyn Write`, stderr in production, so tests can
 read them). `svg.rs` (116 lines) owns debug SVG export. None of these modules
 may read configuration from the environment or commit anything to the obstacle
@@ -177,9 +179,9 @@ from rasterized geometry (Python extracts the polygons and ports).
 footprint metadata. `src/crossings.rs` (374 lines) owns the crossing
 constraints and the expected-pair context, deliberately independent of the A*
 hot path. `src/geometry_realization.rs` (6,817 lines) owns centerline-to-polygon
-realization and port access. `src/simple_routes.rs` (2,510 lines) owns the
-straight/L/Z candidate representation and validation (no search).
-`src/meander.rs` (988) and `src/auto_meander.rs` (1,895) own analytic and
+realization and port access. (The simple-route candidates that lived in
+`src/simple_routes.rs` are in `src/search/astar/simple_route.rs` since phase 2
+slice F.) `src/meander.rs` (988) and `src/auto_meander.rs` (1,895) own analytic and
 obstacle-aware meander planning; `src/plm.rs` (2,435) owns the path-length
 matching planner. `src/config.rs` (302 lines) owns the typed configuration tree
 (`RouterConfig` and its four groups) -- since Milestone 1, `grep -rn

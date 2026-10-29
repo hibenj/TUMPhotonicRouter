@@ -62,7 +62,7 @@ loss optimization.
 | Capability area | Main local files |
 | --- | --- |
 | End-to-end flow | `routing_flow.py`, `translation/layout_from_schematic.py`, `translation/route_rust.py` |
-| Rust A* and primitives | `src/astar.rs`, `src/primitives.rs`, `src/simple_routes.rs` |
+| Rust A* and primitives | `src/astar.rs`, `src/primitives.rs`, `src/search/astar/simple_route.rs` |
 | Obstacle and dynamic routing database | `src/obstacle_map.rs`, `src/static_obstacle_builder.rs`, `python/photonic_router/static_obstacle_builder.py` |
 | Crossing constraints and topology planning | `src/crossings.rs`, `src/py_router.rs`, `python/photonic_router/topology_analysis.py`, `python/photonic_router/crossing_plan.py` |
 | Geometry realization and endpoint handling | `src/geometry_realization.rs`, `translation/route_rust.py` |

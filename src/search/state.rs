@@ -1,6 +1,6 @@
 //! Search state and result types: `State` (grid position plus heading),
-//! `RouteResult`, `RouteSearchStats`, and the small helpers that convert
-//! between a `State` and a `GridPoint` or look up a primitive by id.
+//! `RouteResult`, `RouteSearchStats`, and the small helper that looks up a
+//! primitive by id.
 //! Moved out of `src/astar.rs` (Milestone 3, Slice 2 of
 //! `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`);
 //! pure code motion, no behaviour change.
@@ -8,7 +8,6 @@
 use crate::obstacle_map::NetId;
 use crate::primitives::PrimitiveLibrary;
 use crate::search::astar::config::PRIMITIVE_TRANSITION_CLASS_COUNT;
-use crate::simple_routes::GridPoint;
 use rustc_hash::FxHashMap;
 
 /// Router search state: grid position plus 45-degree heading index.
@@ -146,11 +145,6 @@ pub struct RouteSearchStats {
     /// `crossing` part). 0 everywhere else, including every ordinary search
     /// failure. Nothing but the engine's own tests reads it.
     pub unsupported_request: u32,
-}
-
-#[inline]
-pub(crate) fn grid_point_from_state(state: State) -> GridPoint {
-    GridPoint::new(state.x, state.y)
 }
 
 pub(crate) fn find_primitive(

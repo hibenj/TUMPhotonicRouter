@@ -3,7 +3,7 @@
 //! `route_single_net_with_config`), and `run_search`, the one search body
 //! `AStarSearch::search` is a straight call into. The submodules it uses:
 //! `config` (types and constants), `heuristic`, `cost`, `expansion`,
-//! `crossing_rules`, `window`, `dense`, `kernel`, `simple`, `svg`,
+//! `crossing_rules`, `window`, `dense`, `kernel`, `simple_route`, `svg`,
 //! `diagnostics`; `state` and `geometry` live one level up in
 //! `crate::search` since they are shared with a future second engine.
 //!
@@ -22,7 +22,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod expansion;
 pub(crate) mod heuristic;
 pub(crate) mod kernel;
-pub(crate) mod simple;
+pub(crate) mod simple_route;
 pub mod svg;
 pub(crate) mod window;
 
