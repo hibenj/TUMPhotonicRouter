@@ -13,6 +13,13 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- `translation/routing/dispatch.py` is the kernel dispatch only (1,941 ->
+  569 lines, phase 3 slice C): its two near-identical branches are one
+  (`max_rounds=1, no_ripup=True` for the test-only no-repair baseline), and
+  the fourteen route/attempt/failure write-up functions moved verbatim to
+  `translation/routing/diagnostics.py`. The timing printout and the bucket
+  table name only the buckets the kernel produces (`normal_route`,
+  `probe_route`, `braid_ripup`, `endpoint_correction`).
 - `rust-toolchain.toml` pins the host's `stable` toolchain. Linux and macOS
   build with plain `cargo` and `maturin`; the Windows-without-Visual-Studio
   setup is a local, git-ignored configuration described in

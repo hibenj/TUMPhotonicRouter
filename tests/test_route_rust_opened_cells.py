@@ -30,7 +30,7 @@ from tests.fixtures.synthetic_layouts import (
 )
 from translation import route_rust
 from translation.routing import crossing_plan_stage as routing_crossing_plan_stage
-from translation.routing import dispatch as routing_dispatch
+from translation.routing import diagnostics as routing_diagnostics
 from translation.routing import finalize as routing_finalize
 from translation.routing import obstacle_context as routing_obstacle_context
 from translation.routing import route_jobs as routing_route_jobs
@@ -337,7 +337,7 @@ def test_corridor_clearance_reports_no_bare_centerline_path():
     state = _corridor_state(width=12, height=6)
     blocked_cells = {(5, y) for y in range(6)}
 
-    diagnostic = routing_dispatch._corridor_clearance_diagnostic(
+    diagnostic = routing_diagnostics._corridor_clearance_diagnostic(
         settings_for_test(),
         state,
         _state(2, 3),
@@ -357,7 +357,7 @@ def test_corridor_clearance_reports_narrow_gap_closed_by_one_cell_clearance():
     state = _corridor_state(width=12, height=6)
     blocked_cells = {(8, y) for y in range(6) if y != 3}
 
-    diagnostic = routing_dispatch._corridor_clearance_diagnostic(
+    diagnostic = routing_diagnostics._corridor_clearance_diagnostic(
         settings_for_test(),
         state,
         _state(2, 3),
@@ -377,7 +377,7 @@ def test_corridor_clearance_reports_narrow_gap_closed_by_one_cell_clearance():
 def test_corridor_clearance_reports_open_grid_stays_connected():
     state = _corridor_state(width=12, height=6)
 
-    diagnostic = routing_dispatch._corridor_clearance_diagnostic(
+    diagnostic = routing_diagnostics._corridor_clearance_diagnostic(
         settings_for_test(),
         state,
         _state(2, 3),

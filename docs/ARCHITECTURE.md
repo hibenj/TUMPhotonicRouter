@@ -254,9 +254,11 @@ report boundaries. `timing.py` (38 lines) owns the pipeline timers.
 
 The nine stage modules own one phase each and are named for it:
 `obstacle_context.py` (94), `router_setup.py` (280), `route_jobs.py` (1,664),
-`crossing_plan_stage.py` (669), `handoff.py` (766), `dispatch.py` (1,949),
-`finalize.py` (1,161), `verify_repair.py` (1,112), `realize.py` (123); the
-optional `detour_pass.py` (199) sits between finalize and verify. A stage
+`crossing_plan_stage.py` (656), `handoff.py` (794), `dispatch.py` (569; its
+route/attempt/failure write-ups live in `diagnostics.py`, 1,205, behind the
+debug path and take no routing decision), `finalize.py` (1,161),
+`verify_repair.py` (1,112), `realize.py` (123); the optional
+`detour_pass.py` (199) sits between finalize and verify. A stage
 takes `(settings, state, <its input>)` and returns its product; it calls its
 own helpers by name and another stage's helper through an explicit import. A
 stage must not know the command line, must not read the environment, and must
