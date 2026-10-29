@@ -1,7 +1,10 @@
 """Fixtures of the path-length-matching tests (phase 6 slice C of the 2026-10
 do-over).
 
-The fake Rust backend, router and `MeanderPlanner` the planner
+The link-based netlists the graph, requirements, diagnostics and flow tests
+build (`schematic_from_links`; four copies of `_Bundle`/`_Netlist`/`_Schematic`
+lived in `test_path_length_graph.py` before), the records and edge keys made
+from them, the fake Rust backend, router and `MeanderPlanner` the planner
 tests drive the Python side with (`fake_backend`, `FakeRouter`,
 `FakePlanner`; seven fake routers before), the real-backend helpers the
 other planner tests need, and the small report/config builders around them.
@@ -12,21 +15,91 @@ and e2e tests use it too.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Mapping
+from types import SimpleNamespace
+from typing import Any, Protocol
 
 import pytest
-from photonic_router.path_length_graph import RoutedEdgeKey
+from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
 from photonic_router.static_obstacle_builder import _load_rust_backend
 
 from translation.route_rust_meanders import _MeanderSearchConfig
 from translation.route_rust_types import (
     MeanderEdgeReport,
     MeanderInsertionReport,
+    RoutedNetRecord,
 )
 
 GridCell = tuple[int, int]
 Centerline = list[tuple[float, float]]
+
+
+class SchematicLike(Protocol):
+    netlist: Any
+    placements: dict[str, object]
+
+
+# --- netlists from links ----------------------------------------------------
+
+
+class _Bundle:
+    def __init__(self, links: dict[str, str]):
+        self.links = links
+
+
+class _Netlist:
+    def __init__(self, instances: dict[str, object], routes: dict[str, _Bundle]):
+        self.instances = instances
+        self.routes = routes
+
+
+class _Schematic:
+    def __init__(self, netlist: _Netlist):
+        self.netlist = netlist
+        self.placements: dict[str, object] = {}
+
+
+def schematic_from_links(
+    instances: list[str] | Mapping[str, str],
+    links_by_net: Mapping[str, Mapping[str, str]],
+) -> SchematicLike:
+    """A netlist-only schematic: the instances by name (with a `component`
+    name each when a mapping is given, for the tests that tell nodes by
+    structure rather than by name) and one bundle per net, its links
+    `{"inst,port": "inst,port"}`."""
+    if isinstance(instances, Mapping):
+        instance_objects: dict[str, object] = {
+            name: SimpleNamespace(component=component, settings={})
+            for name, component in instances.items()
+        }
+    else:
+        instance_objects = {name: object() for name in instances}
+    routes = {net_name: _Bundle(dict(links)) for net_name, links in links_by_net.items()}
+    return _Schematic(_Netlist(instance_objects, routes))
+
+
+def edge_key(net_name: str, p1: str, p2: str) -> RoutedEdgeKey:
+    """The edge key of net `net_name` from `"inst,port"` to `"inst,port"`."""
+    a, pa = p1.split(",")
+    b, pb = p2.split(",")
+    return RoutedEdgeKey(net_name=net_name, source=PortRef(a, pa), target=PortRef(b, pb))
+
+
+def records_from_links(
+    nets: Mapping[str, tuple[str, str]],
+    lengths: Mapping[str, float],
+) -> list[RoutedNetRecord]:
+    """One unrouted record per net (`route_obj=None`) at the given length."""
+    return [
+        RoutedNetRecord(
+            net_name=name,
+            source=edge_key(name, *ends).source,
+            target=edge_key(name, *ends).target,
+            route_obj=None,
+            total_length_um=lengths[name],
+        )
+        for name, ends in nets.items()
+    ]
 
 
 # --- the fake Rust backend --------------------------------------------------
@@ -223,6 +296,19 @@ def planned_result(
     else:
         result["plan_input_indices"] = plan_input_indices
     return result
+
+
+class FakeLayout:
+    """The layout `layout_from_schematic` is patched to return in the flow
+    tests: a name, a bbox and the `info` dict the flow fills."""
+
+    def __init__(self, name: str = "dummy_layout") -> None:
+        self.name = name
+        self.bbox = (0, 0, 1, 1)
+        self.info: dict[str, object] = {}
+
+    def show(self) -> None:
+        return None
 
 
 # --- the real backend -------------------------------------------------------

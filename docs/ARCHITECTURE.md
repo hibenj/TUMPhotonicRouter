@@ -428,7 +428,14 @@ a `MeanderInsertionReport` that `path_length_diagnostics.py` and the flow's
 the GDS meta info `meander_insertion_report`. The timers, counters and
 per-candidate attempts (`MeanderPlanningProfile`) are built only under
 `--debug-meanders`; the SUMMARY tokens and the acceptance decision never
-depend on the flag.
+depend on the flag. Its tests are five files by concern on one fixture module
+(phase 6 slice C): `tests/test_path_length_graph.py` (the graph and arrival
+analysis), `test_path_length_requirements.py` (requirements and the upstream
+delay candidates), `test_meander_planner.py` (the planner, through the fake
+backend and `MeanderPlanner` of `tests/fixtures/path_length.py` or the real
+one), `test_path_length_diagnostics.py` and `test_path_length_flow.py` (the
+monkeypatched flow); the fixture module also builds the link-based netlists
+(`schematic_from_links`) and the records those tests analyse.
 
 Since 2026-10-05 two modules turn a foundry GDS into a benchmark:
 `gds_circuit_extraction.py` (about 550 lines) walks the hierarchy of a

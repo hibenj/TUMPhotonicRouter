@@ -107,6 +107,17 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
   `tests/fixtures/path_length.py` (`fake_backend`, `FakeRouter`, `FakePlanner`,
   `planned_meander`, `planned_result`, the real-backend, report and search-config
   helpers; seven fake routers in `tests/test_path_length_graph.py` before).
+  Tests: `tests/test_path_length_graph.py` (3,268 lines, 43 tests across five
+  concerns) and `tests/test_path_length_candidates.py` (141 lines, 3 tests) are
+  five files on that one fixture module, the same 46 tests with the same
+  assertions: `test_path_length_graph.py` (the graph and arrival analysis, 5),
+  `test_path_length_requirements.py` (requirements and the upstream delay
+  candidates, 12, the former candidates file merged in),
+  `test_meander_planner.py` (the planner with the fakes and the real backend,
+  19), `test_path_length_diagnostics.py` (residuals and acceptance, 6) and
+  `test_path_length_flow.py` (the monkeypatched flow, 4); the four copies of
+  `_Bundle`/`_Netlist`/`_Schematic` are `schematic_from_links` (with `edge_key`
+  and `records_from_links`), the two `_Layout`s are `FakeLayout`.
 
 - Rust decides the meander cascade, the PLM reports go behind `--debug-meanders`
   (phase 6 slice B; the thirteen PLM cells of `docs/plm_baseline.json`, the two-cell
