@@ -50,6 +50,28 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- Contribution 2 takes a `StageSchedule` and refuses non-layered designs
+  (phase 4 slice D). `CrossingDemand.stage_schedule()` (new type
+  `StageSchedule` in `python/photonic_router/crossing_demand.py`) is the
+  ordered list of bands with crossing events, each with its x-extent (wall
+  face to wall face), wall orders, confined nets and `CrossingStagePlan`;
+  `translation/preplaced_crossing_grids.py` (`_derive_crossing_tiles`,
+  `derive_preplaced_crossing_layout(schematic, unrouted_layout, schedule)`,
+  `build_stage_schedule_for_benchmark` replacing
+  `build_crossing_plan_for_benchmark`) iterates over it instead of the
+  plan's stage dictionary. `CrossingDemand.require_band_layered()` raises
+  `ValueError` naming the nets outside the band model by reason
+  (`same_wall`, `non_adjacent_walls`, `vertical_port`, `chip_boundary`);
+  the flow's `_preplaced_crossing_grids_stage` calls it first and fails
+  with "pre-placed crossing grids need a band-layered design: ...; route
+  with --crossing-mode lidar-pure or lidar-guided" instead of crashing or
+  misplacing. The tiles builder still measures each stage's free band
+  between the lanes' port faces (equal to the schedule band on Benes, 15.9
+  um past the right wall face on three multiport-MMI stages; a test pins
+  the relation), so no tile moves; `CrossingStagePlan` documents that
+  `source_depth`/`target_depth` are column indices. The four
+  `scripts/path_investigation/*_sim.py` / `column_grid_budget.py` scripts
+  read `build_crossing_demand(...).plan` directly. Nine-cell gate exact.
 - The crossing plan comes from the placement, not from the layered-DAG
   depth/rank analysis (phase 4 slice C). New
   `python/photonic_router/crossing_demand.py`: `build_crossing_demand(

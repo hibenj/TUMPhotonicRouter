@@ -17,8 +17,8 @@ import sys
 import time
 
 import gdsfactory as gf
+from photonic_router.crossing_demand import build_crossing_demand
 
-from translation import preplaced_crossing_grids as pcg
 from translation.layout_from_schematic import layout_from_schematic
 
 PORT_STRAIGHT = 6.0  # straight at each port before the first bend (um)
@@ -516,7 +516,7 @@ def run(name, want_svg=(), outdir="."):
         bbox[ref.name] = (b.left, b.right)
         for p in ref.ports:
             ports[(ref.name, p.name)] = (float(p.dcenter[0]), float(p.dcenter[1]))
-    plan = pcg.build_crossing_plan_for_benchmark(s, lay)
+    plan = build_crossing_demand(s, lay).plan
     rows = []
     for key, st in sorted(plan.stages.items()):
         if not st.events:

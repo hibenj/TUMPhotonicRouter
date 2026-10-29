@@ -29,11 +29,11 @@ def _decisions(name: str) -> list[cs.LayerDecision]:
         module.register_benes_cells()
     schematic = module.build_schematic()
     layout = layout_from_schematic(schematic)
-    plan = pcg.build_crossing_plan_for_benchmark(schematic, layout)
+    schedule = pcg.build_stage_schedule_for_benchmark(schematic, layout)
     # the probe must see the routing run's configuration (2 um grid, static
     # stubs, bend radius 5), or the anchors differ from the run's
     derived = pcg.derive_preplaced_crossing_layout(
-        schematic, layout, plan, router_probe_kwargs=PROBE_KWARGS
+        schematic, layout, schedule, router_probe_kwargs=PROBE_KWARGS
     )
     return [d for d in derived.layer_decisions if isinstance(d, cs.LayerDecision)]
 
@@ -72,15 +72,15 @@ def test_a_layer_nothing_fits_is_a_router_fallback_with_reasons(monkeypatch) -> 
     importlib.reload(synth)
     schematic = synth.build_schematic()
     layout = layout_from_schematic(schematic)
-    plan = pcg.build_crossing_plan_for_benchmark(schematic, layout)
-    stage = next(s for s in plan.stages.values() if s.events)
+    schedule = pcg.build_stage_schedule_for_benchmark(schematic, layout)
+    stage = schedule.stages[0].stage
     decision = cs.select_layer_structure(
         schematic, layout, stage, pcg.CrossingGridGeometry(), {}, stage_key=(0, 1)
     )
     assert decision.chosen == cs.ROUTER
     assert all(not c.feasible and c.reason for c in decision.candidates)
     # default: the layer's nets are left to the guided router, unsplit
-    derived = pcg.derive_preplaced_crossing_layout(schematic, layout, plan)
+    derived = pcg.derive_preplaced_crossing_layout(schematic, layout, schedule)
     assert derived.router_fallback_net_names == {e.net_name for e in stage.initial_edge_order}
     assert derived.placed_crossing_count == 0
     assert all(
@@ -88,5 +88,5 @@ def test_a_layer_nothing_fits_is_a_router_fallback_with_reasons(monkeypatch) -> 
     )
     with pytest.raises(ValueError, match="no pre-placed crossing structure fits"):
         pcg.derive_preplaced_crossing_layout(
-            schematic, layout, plan, geometry=pcg.CrossingGridGeometry(router_fallback=False)
+            schematic, layout, schedule, geometry=pcg.CrossingGridGeometry(router_fallback=False)
         )

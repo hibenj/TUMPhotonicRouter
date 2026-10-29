@@ -66,6 +66,17 @@ class CrossingEvent:
 
 @dataclass(frozen=True)
 class CrossingStagePlan:
+    """One stage: its lanes in entry and exit order and the swap events between them.
+
+    `source_depth`/`target_depth` are the stage key. Since phase 4 slice C of
+    the 2026-10 do-over (placement-derived demand) they are the *column
+    indices* of the band's left and right wall (`Band.index`,
+    `Band.index + 1` in `photonic_router.crossing_demand`), not the graph
+    depths of `topology_analysis.py` they were named for. The names stay
+    because contribution 2's tile names (`crossing_tile_stage<source_depth>_...`)
+    and its info records are built from them byte for byte.
+    """
+
     source_depth: int
     target_depth: int
     initial_edge_order: tuple[RoutedEdgeKey, ...]

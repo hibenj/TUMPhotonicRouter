@@ -4,7 +4,9 @@ For a Benes-style network the set of waveguide crossings in every interstage
 layer is fully determined by the placement before routing starts (the
 ``CrossingDemand`` of the bands between the component columns,
 `photonic_router.crossing_demand`). This module turns that precomputed
-information (its ``CrossingPlan``) into placed PDK crossing
+information (its ``StageSchedule``: the bands with crossing events, left to
+right, each with its wall extent, wall orders and ``CrossingStagePlan``) into
+placed PDK crossing
 tiles -- one small tile per planned crossing (contribution 2, owner rule
 2026-09-07) -- and derives a second schematic/layout pair in which those tiles
 are placed as ordinary instances and every crossing lane is split into
@@ -24,6 +26,16 @@ Tile placement
 A ``CrossingStagePlan`` describes each layer as a bubble-sort network: lanes
 enter in ``initial_edge_order`` (top to bottom), a sequence of *adjacent swaps*
 grouped into ``level``s is applied, and lanes leave in ``final_edge_order``.
+The layer's free band is measured between the lanes' own port faces
+(``max`` source port x to ``min`` target port x), not from the schedule
+band's wall extent: the two start at the same left face but the port band
+reaches past the right wall face where a stage's target ports sit recessed
+inside their column (15.9 um in three of the five multiport-MMI stages,
+whose column face is set by a longer instance; equal on the Benes cells;
+``tests/test_preplaced_crossing_grids.py`` pins the relation), and the
+column grid centres its columns on that band. A design with nets outside
+the band model never reaches this module: the flow refuses it with
+``CrossingDemand.require_band_layered`` (phase 4 slice D).
 Per layer, ``translation.crossing_structures.select_layer_structure`` picks the
 X array (the swap levels are columns spread evenly over the layer's free band,
 each crossing at the midpoint of the two rows it swaps) or the column grid
@@ -44,7 +56,8 @@ import gdsfactory as gf
 from gdsfactory.component import Component
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 from photonic_router.config import CrossingGridConfig, RoutingConfig
-from photonic_router.crossing_plan import CrossingPlan, CrossingStagePlan
+from photonic_router.crossing_demand import StageSchedule, build_crossing_demand
+from photonic_router.crossing_plan import CrossingStagePlan
 from photonic_router.routing_layers import (
     ComponentPortAccessRule,
     register_component_port_access_rule,
@@ -437,7 +450,7 @@ def _snap_x_tile_center(
 def _derive_crossing_tiles(
     schematic: Schematic,
     unrouted_layout: Component,
-    crossing_plan: CrossingPlan,
+    schedule: StageSchedule,
     geometry: CrossingGridGeometry,
     derived: Schematic,
     router_probe_kwargs: Mapping[str, object] | None = None,
@@ -469,9 +482,8 @@ def _derive_crossing_tiles(
     # rows and a stub would move the lane away from them.
 
     dense: set[str] = set()
-    for stage_plan in crossing_plan.stages.values():
-        if not stage_plan.events:
-            continue
+    for band in schedule:
+        stage_plan = band.stage
         # A layer the X array can take keeps the router's default stubs
         # (its tiles sit on the natural rows); every other crossing layer
         # is a column-grid candidate and needs its lanes on spread rows.
@@ -508,10 +520,10 @@ def _derive_crossing_tiles(
     decisions: list[object] = []
     fallback_layers: list[object] = []
     fallback_nets: set[str] = set()
-    for stage_key in sorted(crossing_plan.stages):
-        stage_plan = crossing_plan.stages[stage_key]
-        if not stage_plan.initial_edge_order or not stage_plan.events:
-            continue
+    for band in schedule:
+        # the schedule holds only bands with events, left to right
+        stage_plan = band.stage
+        stage_key = band.key
         lanes = list(stage_plan.initial_edge_order)
         rows: list[float] = []
         source_xs: list[float] = []
@@ -539,7 +551,7 @@ def _derive_crossing_tiles(
             stage_plan,
             geometry,
             anchors,
-            stage_key=tuple(stage_key),
+            stage_key=stage_key,
             allowed=allowed,
             config=config,
         )
@@ -1276,13 +1288,16 @@ def _column_grid_stage(
 def derive_preplaced_crossing_layout(
     schematic: Schematic,
     unrouted_layout: Component,
-    crossing_plan: CrossingPlan,
+    schedule: StageSchedule,
     *,
     geometry: CrossingGridGeometry | None = None,
     router_probe_kwargs: Mapping[str, object] | None = None,
     config: CrossingGridConfig | None = None,
 ) -> DerivedCrossingLayout:
     """Derive a schematic/layout pair with crossing grids placed and nets split.
+
+    ``schedule`` is the placement's `CrossingDemand.stage_schedule()`: the
+    bands with crossing events, left to right (`build_stage_schedule_for_benchmark`).
 
     ``router_probe_kwargs`` (tiles mode, column grid): the routing run's
     configuration (obstacle config, fan-out access mode, bend radius), so the
@@ -1303,7 +1318,7 @@ def derive_preplaced_crossing_layout(
     tiles_result = _derive_crossing_tiles(
         schematic,
         unrouted_layout,
-        crossing_plan,
+        schedule,
         geometry,
         derived,
         router_probe_kwargs,
@@ -1341,7 +1356,7 @@ def derive_preplaced_crossing_layout(
         grid_builds=grid_builds,
         layer_decisions=layer_decisions,
         router_fallback_net_names=fallback_net_names,
-        plan_event_count=sum(len(stage.events) for stage in crossing_plan.stages.values()),
+        plan_event_count=schedule.event_count,
         dense_fanout_instances=dense_fanout_instances,
     )
 
@@ -1369,11 +1384,15 @@ def preplaced_crossing_grid_metrics(derived: DerivedCrossingLayout) -> dict[str,
     }
 
 
-def build_crossing_plan_for_benchmark(
+def build_stage_schedule_for_benchmark(
     schematic: Schematic,
     unrouted_layout: Component,
-) -> CrossingPlan:
-    """The crossing plan of the placed benchmark: its `CrossingDemand`'s stages, one per band."""
-    from photonic_router.crossing_demand import build_crossing_demand
+) -> StageSchedule:
+    """The stage schedule of the placed benchmark: its `CrossingDemand`'s bands with events.
 
-    return build_crossing_demand(schematic, unrouted_layout).plan
+    Raises `ValueError` (the nets and reasons) when the design is not
+    band-layered; the flow stage wraps that into its own failure message.
+    """
+    demand = build_crossing_demand(schematic, unrouted_layout)
+    demand.require_band_layered()
+    return demand.stage_schedule()

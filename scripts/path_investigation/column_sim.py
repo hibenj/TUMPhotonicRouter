@@ -15,8 +15,8 @@ import math
 import sys
 
 import gdsfactory as gf
+from photonic_router.crossing_demand import build_crossing_demand
 
-from translation import preplaced_crossing_grids as pcg
 from translation.layout_from_schematic import layout_from_schematic
 
 gf.gpdk.PDK.activate()
@@ -52,7 +52,7 @@ def run(name, col_pitch=16.0):
         bbox[ref.name] = (b.left, b.right)
         for p in ref.ports:
             ports[(ref.name, p.name)] = (float(p.dcenter[0]), float(p.dcenter[1]))
-    plan = pcg.build_crossing_plan_for_benchmark(s, lay)
+    plan = build_crossing_demand(s, lay).plan
     for key, st in sorted(plan.stages.items()):
         if not st.events:
             continue

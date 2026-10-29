@@ -269,7 +269,7 @@ strings; `config_loading.py` (37 lines) owns `build_config(stable_env)`, the
 precedence of section 6. `static_obstacle_builder.py` (1,162 lines) owns
 obstacle extraction and the `ObstacleMapBuilder` Protocol;
 `primitive_library.py` (179) owns the 1:1 map from Rust primitive ids to
-gdsfactory components; `crossing_demand.py` (about 390) and `crossing_plan.py`
+gdsfactory components; `crossing_demand.py` (about 470) and `crossing_plan.py`
 (about 280) own the crossing plan: the demand cuts the placed layout into
 *bands* between the component *columns* (a column is a maximal set of
 instances whose placed x-extents overlap or touch; a net whose two terminals
@@ -353,8 +353,9 @@ types), `route_rust_records.py` (477, the route bookkeeping),
 `route_rust_crossing_plan.py` (689), `route_rust_crossing_components.py` (461),
 `route_rust_crossing_verification.py` (918), `route_rust_debug_artifacts.py`
 (342), `route_rust_analysis.py` (59) and `route_rust_obstacle_config.py` (164).
-Beside them: `preplaced_crossing_grids.py` (2,640, contribution 2's
-crossing-structure placement), `crossing_structures.py` (248),
+Beside them: `preplaced_crossing_grids.py` (about 1,400 since phase 4
+slice A, contribution 2's crossing-structure placement),
+`crossing_structures.py` (248),
 `crossing_modes.py` (57, the mode vocabulary), `crossing_verification_report.py`
 (803), `photonic_verification.py` (1,155, the authoritative geometry
 verifier), the three `path_length_*.py` modules (about 1,200 together;
@@ -719,6 +720,33 @@ crossing grid stage (contribution 2), `run_photonic_routing_stage` (the routing
 session below), `verify_and_attach_photonic_reports`,
 `attach_and_report_path_length_matching`, optionally
 `run_electrical_routing_step`, then `write_or_show_routed_layout`.
+
+The pre-placed crossing grid stage (`_preplaced_crossing_grids_stage`,
+contribution 2) builds the placement's `CrossingDemand` and, since phase 4
+slice D of the 2026-10 do-over, works from its `StageSchedule`
+(`CrossingDemand.stage_schedule()`, `python/photonic_router/crossing_demand.py`):
+the bands with crossing events, left to right, each a `Band` with its
+x-extent (the right face of the left wall column to the left face of the
+right one), its two wall orders, the nets confined to it and its
+`CrossingStagePlan` (the events in bubble-sort order, keyed by the two
+column indices, which the stage plan still calls `source_depth` /
+`target_depth` because the tile names are built from them). The tiles
+builder of `translation/preplaced_crossing_grids.py`
+(`derive_preplaced_crossing_layout(schematic, unrouted_layout, schedule)`)
+iterates over that schedule instead of the plan's stage dictionary; it keeps
+measuring each stage's free band between the lanes' own port faces, which
+equals the schedule band on the Benes cells and reaches 15.9 um past the
+right wall face on three multiport-MMI stages whose target ports sit
+recessed inside their column (`tests/test_preplaced_crossing_grids.py` pins
+the relation; switching would move the column grid). Before anything is
+placed the stage calls `CrossingDemand.require_band_layered()`: a design with
+nets outside the band model (same wall, non-adjacent walls, a vertical port,
+a port pointing off the chip) is refused with a `RuntimeError` naming the
+nets and reasons -- "pre-placed crossing grids need a band-layered design:
+2 net(s) outside the band model (non_adjacent_walls: n_12; same_wall: n_7);
+route with --crossing-mode lidar-pure or lidar-guided" -- instead of
+crashing in the tile placement or silently leaving those crossings
+unplaced. The 17 paper benchmarks have no such net.
 
 The routing session itself is `translation/routing/session.py::run`. The
 calls below are that function (nine phases, and the optional detour pass 7b);

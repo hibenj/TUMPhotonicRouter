@@ -25,6 +25,10 @@ Nets the band model does not cover (terminals on the same wall, on
 non-adjacent walls, a vertical port, a port pointing off the chip) are
 listed in `outside` with a reason; they get no invariant pairs and no
 events. On the 17 paper benchmarks there are none.
+`CrossingDemand.require_band_layered()` refuses such a design with a
+`ValueError` naming the nets and reasons; `CrossingDemand.stage_schedule()`
+is the `StageSchedule` contribution 2 places its tiles from: the bands with
+crossing events, left to right (phase 4 slice D).
 
 Terminals with equal y on a wall are ordered by x, then net name, as the
 depth/rank plan did; a terminal recessed from its wall face (the short MMIs
@@ -34,7 +38,7 @@ of a multiport column) is ordered by y as if it sat on the wall.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -98,6 +102,11 @@ class Band:
     stage: CrossingStagePlan
 
     @property
+    def key(self) -> tuple[int, int]:
+        """The stage key of `CrossingPlan.stages`: the two wall column indices."""
+        return (self.index, self.index + 1)
+
+    @property
     def nets(self) -> tuple[RoutedEdgeKey, ...]:
         return self.left_order
 
@@ -136,6 +145,46 @@ class OutsideNet:
 
 
 @dataclass(frozen=True)
+class StageSchedule:
+    """The bands with crossing events, left to right: contribution 2's stage list.
+
+    Each stage is a `Band`: its x-extent (`x_min`, the right face of the left
+    wall column, to `x_max`, the left face of the right wall column), the wall
+    orders (`left_order`, `right_order`, top to bottom), the nets confined to
+    it (`nets`) and its `CrossingStagePlan` (`stage`: the events in the
+    bubble-sort order of `build_crossing_plan`, keyed `key == (index,
+    index + 1)`). A band without an event is not a stage: nothing is placed
+    in it. Built by `CrossingDemand.stage_schedule()`; the tiles builder of
+    `translation/preplaced_crossing_grids.py` iterates over it instead of the
+    plan's stage dictionary (phase 4 slice D).
+    """
+
+    stages: tuple[Band, ...]
+
+    def __iter__(self) -> Iterator[Band]:
+        return iter(self.stages)
+
+    def __len__(self) -> int:
+        return len(self.stages)
+
+    @property
+    def keys(self) -> tuple[tuple[int, int], ...]:
+        return tuple(band.key for band in self.stages)
+
+    @property
+    def event_count(self) -> int:
+        return sum(len(band.stage.events) for band in self.stages)
+
+    def to_text(self, *, include_orders: bool = True) -> str:
+        lines = [f"StageSchedule: {self.event_count} crossing(s) in {len(self)} stage(s)"]
+        lines.extend(band.to_text(include_orders=include_orders) for band in self.stages)
+        return "\n".join(lines)
+
+    def __str__(self) -> str:
+        return self.to_text()
+
+
+@dataclass(frozen=True)
 class CrossingDemand:
     columns: tuple[Column, ...]
     bands: dict[int, Band]  # band index -> band; only bands with confined nets
@@ -164,6 +213,32 @@ class CrossingDemand:
         for net in self.outside:
             grouped.setdefault(net.reason, []).append(net)
         return grouped
+
+    def outside_summary(self) -> str:
+        """One line naming the outside nets by reason, e.g. `3 net(s) outside the
+        band model (non_adjacent_walls: n_12, n_40; vertical_port: n_7)`;
+        reasons sorted, nets in netlist order."""
+        groups = "; ".join(
+            f"{reason}: " + ", ".join(net.edge_key.net_name for net in nets)
+            for reason, nets in sorted(self.outside_by_reason().items())
+        )
+        return f"{len(self.outside)} net(s) outside the band model ({groups})"
+
+    def require_band_layered(self) -> None:
+        """Raise `ValueError` (the `outside_summary`) unless every net is confined to a band.
+
+        Contribution 2 places a tile for every crossing event of a band; a
+        net outside the band model has no events, so its crossings would be
+        missed silently. The flow turns this error into its failure path.
+        """
+        if self.outside:
+            raise ValueError(self.outside_summary())
+
+    def stage_schedule(self) -> StageSchedule:
+        """The bands with crossing events, left to right (see `StageSchedule`)."""
+        return StageSchedule(
+            tuple(band for _index, band in sorted(self.bands.items()) if band.stage.events)
+        )
 
     @property
     def events(self):

@@ -234,20 +234,33 @@ def _preplaced_crossing_grids_stage(
     in the layer's free band, and the interstage nets are split into
     crossing-free stubs. Downstream stages see an ordinary schematic and
     layout.
+
+    The stage needs a band-layered design: every net confined to the band
+    between two adjacent component columns. A design with nets outside that
+    model (`CrossingDemand.require_band_layered`) is refused here with the
+    nets and reasons, before anything is placed; those designs route with
+    `--crossing-mode lidar-pure` or `lidar-guided`.
     """
+    from photonic_router.crossing_demand import build_crossing_demand
     from translation.preplaced_crossing_grids import (
-        build_crossing_plan_for_benchmark,
         derive_preplaced_crossing_layout,
         preplaced_crossing_grid_metrics,
     )
 
     print(f"\n[2b/{total_steps}] Placing placement-derived crossing grids...")
     t_start = time.perf_counter()
-    crossing_plan = build_crossing_plan_for_benchmark(schematic, unrouted_layout)
+    demand = build_crossing_demand(schematic, unrouted_layout)
+    try:
+        demand.require_band_layered()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"pre-placed crossing grids need a band-layered design: {exc}; "
+            "route with --crossing-mode lidar-pure or lidar-guided"
+        ) from exc
     derived = derive_preplaced_crossing_layout(
         schematic,
         unrouted_layout,
-        crossing_plan,
+        demand.stage_schedule(),
         router_probe_kwargs=router_probe_kwargs,
         config=config.crossing_grid,
     )

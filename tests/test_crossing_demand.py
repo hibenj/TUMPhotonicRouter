@@ -246,3 +246,106 @@ def test_lower_bound_helper_of_the_reproduction_tooling() -> None:
     assert mesh.bound == 33 and mesh.outside_count == 0
     assert module.paper_benchmarks()[:2] == ["benes_4x4_flat", "benes_8x8_flat"]
     assert len(module.paper_benchmarks()) == 11
+
+
+# ---------------------------------------------------------------------------
+# phase 4 slice D: the stage schedule and the band-layered refusal
+# ---------------------------------------------------------------------------
+
+_THREE_COLUMNS = (
+    Column(0, 0.0, 10.0, ("l0", "l1")),
+    Column(1, 50.0, 60.0, ("m0", "m1")),
+    Column(2, 100.0, 110.0, ("r0", "r1")),
+)
+
+
+def _layered_links() -> list[_Link]:
+    """Band 0: two nets that swap (one event); band 1: two parallel nets (none)."""
+    return [
+        _link("a", _terminal("l0", "o", 10.0, 20.0, 0.0), _terminal("m0", "i", 50.0, 10.0, 180.0)),
+        _link("b", _terminal("l1", "o", 10.0, 10.0, 0.0), _terminal("m1", "i", 50.0, 20.0, 180.0)),
+        _link("c", _terminal("m0", "o", 60.0, 20.0, 0.0), _terminal("r0", "i", 100.0, 20.0, 180.0)),
+        _link("d", _terminal("m1", "o", 60.0, 10.0, 0.0), _terminal("r1", "i", 100.0, 10.0, 180.0)),
+    ]
+
+
+def _outside_link(reason: str) -> _Link:
+    return {
+        SAME_WALL: _link(
+            "x_same",
+            _terminal("l0", "o2", 10.0, 30.0, 0.0),
+            _terminal("l1", "o2", 10.0, 25.0, 0.0),
+        ),
+        NON_ADJACENT_WALLS: _link(
+            "x_skip",
+            _terminal("l1", "o3", 10.0, -10.0, 0.0),
+            _terminal("r0", "i2", 100.0, -10.0, 180.0),
+        ),
+        VERTICAL_PORT: _link(
+            "x_vertical",
+            _terminal("l1", "u", 5.0, 5.0, 90.0),
+            _terminal("m0", "i3", 50.0, 5.0, 180.0),
+        ),
+        CHIP_BOUNDARY: _link(
+            "x_off_chip",
+            _terminal("l0", "w", 0.0, 20.0, 180.0),
+            _terminal("r1", "e", 110.0, 20.0, 0.0),
+        ),
+    }[reason]
+
+
+def test_stage_schedule_lists_only_the_bands_with_events_left_to_right() -> None:
+    demand = demand_from_geometry(_THREE_COLUMNS, _layered_links())
+    assert sorted(demand.bands) == [0, 1] and demand.bands[1].stage.events == ()
+    demand.require_band_layered()  # every net is confined: no error
+    schedule = demand.stage_schedule()
+    assert len(schedule) == 1 and schedule.keys == ((0, 1),)
+    (band,) = schedule
+    # the x-extent is the wall faces: right face of column 0, left face of column 1
+    assert (band.x_min, band.x_max) == (10.0, 50.0)
+    assert band.key == (0, 1) == (band.stage.source_depth, band.stage.target_depth)
+    assert [edge.net_name for edge in band.nets] == ["a", "b"]
+    assert [edge.net_name for edge in band.left_order] == ["a", "b"]
+    assert [edge.net_name for edge in band.right_order] == ["b", "a"]
+    # the stage plan is the plan's own stage object, events in bubble-sort order
+    assert band.stage is demand.plan.stages[(0, 1)]
+    assert schedule.event_count == len(demand.plan.events) == 1
+    assert schedule.to_text().startswith("StageSchedule: 1 crossing(s) in 1 stage(s)\nband 0->1")
+    # a demand without any event has an empty schedule
+    assert len(demand_from_geometry(_THREE_COLUMNS, _layered_links()[2:]).stage_schedule()) == 0
+
+
+@pytest.mark.parametrize("reason", [SAME_WALL, NON_ADJACENT_WALLS, VERTICAL_PORT, CHIP_BOUNDARY])
+def test_require_band_layered_names_the_net_and_its_reason(reason: str) -> None:
+    outside = _outside_link(reason)
+    demand = demand_from_geometry(_THREE_COLUMNS, [*_layered_links(), outside])
+    assert [net.reason for net in demand.outside] == [reason]
+    with pytest.raises(ValueError) as info:
+        demand.require_band_layered()
+    assert str(info.value) == (
+        f"1 net(s) outside the band model ({reason}: {outside.edge_key.net_name})"
+    )
+    # the schedule itself is still built from the confined nets
+    assert demand.stage_schedule().keys == ((0, 1),)
+
+
+def test_outside_summary_groups_the_nets_by_sorted_reason_in_netlist_order() -> None:
+    links = [
+        *_layered_links(),
+        _outside_link(VERTICAL_PORT),
+        _outside_link(NON_ADJACENT_WALLS),
+        _outside_link(SAME_WALL),
+        _outside_link(CHIP_BOUNDARY),
+        _link(
+            "x_skip2",
+            _terminal("l0", "o4", 10.0, -20.0, 0.0),
+            _terminal("r1", "i4", 100.0, -20.0, 180.0),
+        ),
+    ]
+    demand = demand_from_geometry(_THREE_COLUMNS, links)
+    assert demand.outside_summary() == (
+        "5 net(s) outside the band model (chip_boundary: x_off_chip; "
+        "non_adjacent_walls: x_skip, x_skip2; same_wall: x_same; vertical_port: x_vertical)"
+    )
+    with pytest.raises(ValueError, match="5 net\\(s\\) outside the band model"):
+        demand.require_band_layered()
