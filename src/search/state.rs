@@ -140,11 +140,6 @@ pub struct RouteSearchStats {
     pub heap_operation_time_us: u128,
     pub legality_check_time_us: u128,
     pub reconstruction_time_us: u128,
-    pub jps4_requested: bool,
-    pub jps4_eligible: bool,
-    pub jps4_used: bool,
-    pub jps4_fallbacks: usize,
-    pub jps4_fallback_reason: String,
     /// 1 when the engine that handled the request cannot serve that kind of
     /// request at all and returned no route for that reason alone (today:
     /// `crate::search::GridDijkstraSearch` given a `SearchRequest` with a
@@ -224,11 +219,6 @@ mod tests {
         assert_eq!(stats.crossing_accepted, 0);
         assert_eq!(stats.route_search_total_time_us, 0);
         assert_eq!(stats.crossing_hotpath_total_time_us, 0);
-        assert!(!stats.jps4_requested);
-        assert!(!stats.jps4_eligible);
-        assert!(!stats.jps4_used);
-        assert_eq!(stats.jps4_fallbacks, 0);
-        assert_eq!(stats.jps4_fallback_reason, "");
         assert!(stats.crossing_perpendicular_reject_by_partner.is_empty());
         assert!(stats.crossing_after_margin_by_partner.is_empty());
         assert!(stats.crossing_pending_straight_by_partner.is_empty());

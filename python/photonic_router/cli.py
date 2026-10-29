@@ -569,16 +569,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(f"Electrical bondpad pitch (default: {SCRIPT_ELECTRICAL_PAD_PITCH_UM})."),
     )
     parser.add_argument(
-        "--enable-jps4",
-        type=_parse_bool_flag,
-        default=False,
-        metavar="BOOL",
-        help=(
-            "Request the experimental Manhattan JPS4 accelerator when eligible "
-            "(default: false). Pass 3A still falls back to baseline A*."
-        ),
-    )
-    parser.add_argument(
         "--use-indexed-heap",
         type=_parse_bool_flag,
         default=False,
@@ -774,7 +764,6 @@ def _flow_options(args: argparse.Namespace) -> FlowOptions:
             fanout_access_mode=args.fanout_access_mode,
             proactive_congestion_weight=args.proactive_congestion_weight,
             proactive_congestion_radius_cells=args.proactive_congestion_radius_cells,
-            enable_jps4=args.enable_jps4,
             use_indexed_heap=args.use_indexed_heap,
             enable_simple_routes=args.enable_simple_routes,
             primitive_ordering=args.primitive_ordering,

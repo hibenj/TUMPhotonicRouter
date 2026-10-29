@@ -23,23 +23,19 @@ def test_scenario_catalog_contains_expected_smoke_cases():
     assert {"straight_simple", "straight_astar", "wall_gap_astar"} <= set(catalog)
     assert "object_ports_n_n" in catalog
     assert "object_ports_w_s" in catalog
-    assert "jps4_empty_grid" in catalog
-    assert "jps4_corridor" in catalog
-    assert "jps4_forced_detour" in catalog
     assert catalog["straight_simple"].enable_simple_routes is True
     assert catalog["straight_astar"].enable_simple_routes is False
-    assert catalog["jps4_empty_grid"].primitive_mode == "jps4_unit"
     assert len(catalog["wall_gap_astar"].static_cells) > 0
 
 
-def test_default_scenario_names_exclude_jps4_experiments():
+def test_default_scenario_names_cover_the_whole_catalog():
     module = _load_profile_astar_module()
     catalog = module._scenario_catalog()
     defaults = module._default_scenario_names(catalog)
 
     assert "straight_astar" in defaults
     assert "object_ports_n_n" in defaults
-    assert "jps4_empty_grid" not in defaults
+    assert set(defaults) == set(catalog)
 
 
 def test_parser_defaults_keep_losing_experiments_gated(monkeypatch):
@@ -104,11 +100,6 @@ def test_markdown_report_contains_route_stats_columns():
                 "heap_operation_s": 0.0002,
                 "legality_check_s": 0.0003,
                 "reconstruction_s": 0.0004,
-                "jps4_requested": True,
-                "jps4_eligible": False,
-                "jps4_used": False,
-                "jps4_fallbacks": 1,
-                "jps4_fallback_reason": "primitive library is not plain 4-connected unit grid",
                 "full_grid_fallback": False,
                 "target_state_ok": True,
                 "route_cells": 5,
@@ -122,8 +113,6 @@ def test_markdown_report_contains_route_stats_columns():
     assert "Footprint checks" in report
     assert "Heap push/pop" in report
     assert "Legality checks" in report
-    assert "JPS4 fallback" in report
-    assert "primitive library is not plain 4-connected unit grid" in report
     assert "| case | 10x10 | 2 |" in report
 
 
@@ -133,9 +122,10 @@ def test_paired_report_contains_acceleration_columns():
     report = module._markdown_paired_report(
         [
             {
-                "scenario": "jps4_empty_grid",
-                "primitive_mode": "jps4_unit",
+                "scenario": "wall_gap_astar",
+                "accelerator": "heading_aware",
                 "baseline": {
+                    "heuristic_mode": "distance",
                     "median_s": 0.002,
                     "expanded_states": 100,
                     "generated_neighbors": 400,
@@ -144,16 +134,13 @@ def test_paired_report_contains_acceleration_columns():
                     "route_length_um": 20.0,
                 },
                 "accelerated": {
+                    "heuristic_mode": "heading_aware",
                     "median_s": 0.001,
                     "expanded_states": 10,
                     "generated_neighbors": 40,
                     "heap_pushes": 20,
                     "heap_pops": 10,
                     "route_length_um": 20.0,
-                    "jps4_requested": True,
-                    "jps4_eligible": True,
-                    "jps4_used": True,
-                    "jps4_fallback_reason": "eligible",
                 },
                 "length_delta_um": 0.0,
                 "target_cell_match": True,
@@ -165,9 +152,8 @@ def test_paired_report_contains_acceleration_columns():
 
     assert "Paired Rust A* Accelerator Comparison" in report
     assert "Expanded ratio" in report
-    assert "jps4_empty_grid" in report
-    assert "| jps4_empty_grid | jps4_unit |" in report
-    assert "| used | eligible |" in report
+    assert "| wall_gap_astar | distance | heading_aware |" in report
+    assert "| 150/100 | 20/10 | 0.000 | True |" in report
 
 
 def test_baseline_check_accepts_matching_route_quality():

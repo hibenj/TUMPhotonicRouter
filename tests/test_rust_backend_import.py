@@ -20,16 +20,6 @@ def test_rust_backend_exposes_router_class():
     assert hasattr(backend, "build_static_obstacle_map_rs")
 
 
-def test_astar_config_exposes_jps4_flag():
-    backend = _load_rust_backend()
-    assert backend is not None
-    cfg = backend.AStarConfig()
-
-    assert cfg.enable_jps4 is False
-    cfg.enable_jps4 = True
-    assert cfg.enable_jps4 is True
-
-
 def test_astar_config_exposes_proactive_congestion_fields():
     backend = _load_rust_backend()
     assert backend is not None
@@ -41,19 +31,6 @@ def test_astar_config_exposes_proactive_congestion_fields():
     cfg.proactive_congestion_radius_cells = 4
     assert cfg.proactive_congestion_weight == 2.5
     assert cfg.proactive_congestion_radius_cells == 4
-
-
-def test_primitive_config_exposes_grid_experiment_flags():
-    backend = _load_rust_backend()
-    assert backend is not None
-    cfg = backend.PrimitiveLibraryConfig()
-
-    assert cfg.jps4_unit_grid is False
-    assert cfg.grid4_unit_grid is False
-    cfg.jps4_unit_grid = True
-    cfg.grid4_unit_grid = True
-    assert cfg.jps4_unit_grid is True
-    assert cfg.grid4_unit_grid is True
 
 
 def test_router_crossing_context_is_disabled_by_default():
@@ -241,7 +218,6 @@ def test_route_debug_svg_can_use_obstacle_snapshot():
     assert backend is not None
 
     primitive = backend.PrimitiveLibraryConfig()
-    primitive.grid4_unit_grid = True
     router = backend.PyPhotonicRouter(
         backend.GridSpec(32, 32, 1.0, 0.0, 0.0),
         primitive,

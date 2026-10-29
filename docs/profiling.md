@@ -103,7 +103,6 @@ Useful variants:
 .venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --use-indexed-heap --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --primitive-ordering long_straight_first --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py wall_gap_astar slalom_astar --heuristic-mode distance --iterations 25 --warmup 3
-.venv/bin/python scripts/profile_astar.py --paired-comparison --paired-accelerator heading_aware --iterations 25 --warmup 3
 .venv/bin/python scripts/profile_astar.py --paired-comparison --iterations 25 --warmup 3
 ```
 
@@ -134,12 +133,12 @@ Primitive-class counters use four buckets: short straight (`s`), long straight
 accepted, and footprint-rejected mixes to decide whether a later pass should
 reorder primitives, add early filters, or remove dominated primitive variants.
 
-Use `--paired-comparison` to run selected scenarios twice: once with baseline
-A* and once with the accelerator flag requested. When no scenario names are
-provided, paired mode defaults to synthetic `jps4_*` scenarios that use a
-plain 4-connected grid baseline and the JPS4 unit-grid accelerator mode. The
-paired report shows time, expansion, generated-neighbor, heap-operation, route
-length, target-cell, and fallback deltas side by side.
+Use `--paired-comparison` to run selected scenarios twice: once with the
+`distance` heuristic as the baseline and once with the `heading_aware`
+heuristic. When no scenario names are provided, paired mode defaults to
+`wall_gap_astar`, `slalom_astar` and `full_grid_fallback`. The paired report
+shows time, expansion, generated-neighbor, heap-operation, route length and
+target-cell deltas side by side.
 
 The baseline check compares the current route length and reached target state
 against `docs/astar_quality_baseline.json`. Use it before and after heuristic

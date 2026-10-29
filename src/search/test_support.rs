@@ -8,7 +8,8 @@
 
 use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::{
-    create_photonic_primitive_library, PrimitiveLibrary, PrimitiveLibraryConfig,
+    create_photonic_primitive_library, Primitive, PrimitiveGeometry, PrimitiveLibrary,
+    PrimitiveLibraryConfig,
 };
 use crate::search;
 use crate::search::astar::config::AStarConfig;
@@ -25,6 +26,37 @@ pub(crate) fn primitive_library() -> PrimitiveLibrary {
         bend_radius_cells: 1,
         allow_45_degree_turns: true,
     })
+}
+
+/// A plain 4-connected unit-step grid library: every state can step one
+/// cell in any cardinal direction at uniform cost, with no bends and no
+/// diagonal moves. Not photonic; it gives crossing-rule tests a topology in
+/// which a straight corridor is the only route shape.
+pub(crate) fn grid4_unit_grid_primitive_library_for_tests(grid_size_um: f64) -> PrimitiveLibrary {
+    assert!(grid_size_um > 0.0, "grid_size_um must be positive");
+    let mut next_id = 0u16;
+    let mut primitives_per_angle = Vec::with_capacity(8);
+    for start_angle in 0..8u8 {
+        let mut primitives = Vec::with_capacity(4);
+        for (end_angle, dir) in [(0u8, (1, 0)), (2, (0, 1)), (4, (-1, 0)), (6, (0, -1))] {
+            primitives.push(Primitive {
+                id: next_id,
+                start_angle,
+                end_angle,
+                dx: dir.0,
+                dy: dir.1,
+                footprint: vec![(0, 0), dir],
+                length_um: grid_size_um,
+                bend_cost: 0.0,
+                geometry: PrimitiveGeometry::Straight {
+                    length_um: grid_size_um,
+                },
+            });
+            next_id += 1;
+        }
+        primitives_per_angle.push(primitives);
+    }
+    PrimitiveLibrary::new(primitives_per_angle, grid_size_um)
 }
 
 /// Benchmark-like library: grid 1.0, bend radius 3, 45-degree turns.

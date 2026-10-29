@@ -99,8 +99,8 @@ estimates. `expansion.rs` (2,459 lines) owns move generation
 (`candidate_moves`), the reject rules (`move_is_legal` returning a
 `MoveVerdict`) and the push-or-improve steps. `window.rs` (664 lines) owns
 routing-window bookkeeping and the progressively-larger-window driver.
-`dense.rs` (2,147 lines) owns the dense per-search storage (`DenseRoutingGrid`,
-bitsets, owner grids) and the JPS4 shortcut. `crossing_rules.rs` (2,254 lines,
+`dense.rs` owns the dense per-search storage (`DenseRoutingGrid`,
+bitsets, owner grids). `crossing_rules.rs` (2,254 lines,
 plus `crossing_rules/tests.rs` 3,368) owns crossing legality and the
 `CrossingLegalityHook` trait with its `NoCrossingHook` / `LiveCrossingHook`
 implementations. `simple.rs` (915 lines) owns the straight/L/Z shortcut tried
@@ -677,8 +677,8 @@ pub trait NetSearch {
   crossing, config }` -- one net's question. The two optional members are the
   request *shape*: `DynamicExpansion { radius_cells, clearance_exempt_cells }`
   widens the clearance halo (used by repair to let a route brush past a net it
-  is about to rip up) and, being present, forgoes the JPS4 and simple-route
-  shortcuts; `CrossingSearch { config, reservation_open_cells }` asks for a
+  is about to rip up) and, being present, forgoes the simple-route
+  shortcut; `CrossingSearch { config, reservation_open_cells }` asks for a
   route that crosses named partner nets, with `Some(_)` selecting the
   collision-crossing reservation anchor set and `None` reusing
   `port_open_cells` for it.

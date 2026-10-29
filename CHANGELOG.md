@@ -34,6 +34,12 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Removed
 
+- The JPS4 accelerator (`src/search/astar/dense.rs`), the two unit-grid
+  primitive libraries (`jps4_unit_grid`, `grid4_unit_grid`) and the
+  `--enable-jps4` flag (phase 2 slice A1). JPS4 was eligible only for a
+  plain 4-connected unit primitive library, which the photonic library never
+  is, so no production run could reach it; the `jps4_*` route-stat fields go
+  with it.
 - Tracked IDE settings (`.idea/`, `.vscode/`) and the per-machine
   `.cargo/config.toml`; `Agent_implementation_files/` (superseded by
   `docs/ARCHITECTURE.md`); `benes_test/` (an early experiment with three GDS

@@ -7,7 +7,6 @@
 
 use super::*;
 use crate::config::KernelDiagnostics;
-use crate::primitives::create_grid4_unit_grid_primitive_library;
 use crate::search::astar::kernel;
 use crate::search::astar::route_single_net_with_config;
 use crate::search::state::RouteResult;
@@ -361,7 +360,7 @@ fn proactive_congestion_discourages_crowded_straights() {
     for x in 1..=8 {
         assert!(map.add_static_cell(x, 2));
     }
-    let library = create_grid4_unit_grid_primitive_library(1.0);
+    let library = grid4_unit_grid_primitive_library_for_tests(1.0);
     let source = State::new(1, 3, 0);
     let target = State::new(9, 3, 0);
 

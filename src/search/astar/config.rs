@@ -43,7 +43,6 @@ pub struct AStarConfig {
     pub proactive_congestion_weight: f64,
     pub proactive_congestion_radius_cells: i32,
     pub collect_detailed_timing: bool,
-    pub enable_jps4: bool,
     pub use_indexed_heap: bool,
     pub primitive_ordering: PrimitiveOrdering,
     pub heuristic_mode: HeuristicMode,
@@ -101,7 +100,6 @@ impl Default for AStarConfig {
             proactive_congestion_weight: 0.0,
             proactive_congestion_radius_cells: 0,
             collect_detailed_timing: false,
-            enable_jps4: false,
             use_indexed_heap: false,
             primitive_ordering: PrimitiveOrdering::Library,
             heuristic_mode: HeuristicMode::HeadingAware,
@@ -148,8 +146,6 @@ pub(crate) const NO_GENERATION: u32 = u32::MAX;
 pub(crate) const BITSET_WORD_BITS: usize = u64::BITS as usize;
 
 pub(crate) const NO_HEAP_POSITION: usize = usize::MAX;
-
-pub(crate) const JPS4_DIRECTIONS: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
 
 // `DiagonalAware` carries its 64 terminal approaches inline so the mode stays
 // `Copy` and is built once per search; the size difference is deliberate.

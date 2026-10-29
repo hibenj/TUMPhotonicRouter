@@ -49,12 +49,10 @@ class AStarScenario:
     use_routing_window: bool = True
     routing_window_fallback_full_grid: bool = True
     max_iterations: int = 500_000
-    enable_jps4: bool = False
     use_indexed_heap: bool = False
     primitive_ordering: str = "library"
     heuristic_mode: str = "heading_aware"
     heap_tie_breaker: str = "smaller_g"
-    primitive_mode: str = "photonic"
 
 
 class RustBackend(Protocol):
@@ -159,10 +157,6 @@ def _slalom_walls() -> tuple[tuple[int, int], ...]:
         gap_min, gap_max = (12, 20) if x in (45, 105) else (50, 58)
         cells.extend((x, y) for y in range(4, 68) if not gap_min <= y <= gap_max)
     return tuple(cells)
-
-
-def _jps4_detour_wall() -> tuple[tuple[int, int], ...]:
-    return tuple((90, y) for y in range(4, 76) if y != 62)
 
 
 PORT_ANGLES = {
@@ -291,48 +285,13 @@ def _scenario_catalog() -> dict[str, AStarScenario]:
             use_routing_window=True,
             routing_window_fallback_full_grid=True,
         ),
-        "jps4_empty_grid": AStarScenario(
-            name="jps4_empty_grid",
-            width=180,
-            height=90,
-            source=(10, 12, 0),
-            target=(160, 72, 0),
-            enable_simple_routes=False,
-            require_target_angle=False,
-            use_routing_window=False,
-            primitive_mode="jps4_unit",
-        ),
-        "jps4_corridor": AStarScenario(
-            name="jps4_corridor",
-            width=180,
-            height=48,
-            source=(8, 24, 0),
-            target=(170, 24, 0),
-            static_cells=tuple((x, y) for y in range(48) if y != 24 for x in range(180)),
-            enable_simple_routes=False,
-            require_target_angle=False,
-            use_routing_window=False,
-            primitive_mode="jps4_unit",
-        ),
-        "jps4_forced_detour": AStarScenario(
-            name="jps4_forced_detour",
-            width=180,
-            height=90,
-            source=(12, 18, 0),
-            target=(165, 18, 0),
-            static_cells=_jps4_detour_wall(),
-            enable_simple_routes=False,
-            require_target_angle=False,
-            use_routing_window=False,
-            primitive_mode="jps4_unit",
-        ),
     }
     scenarios.update(_two_object_port_scenarios())
     return scenarios
 
 
 def _default_scenario_names(catalog: dict[str, AStarScenario]) -> list[str]:
-    return [name for name in catalog if not name.startswith("jps4_")]
+    return list(catalog)
 
 
 def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
@@ -348,12 +307,6 @@ def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
         bend_radius_cells=2,
         allow_45_degree_turns=scenario.allow_45_degree_turns,
     )
-    if scenario.primitive_mode == "jps4_unit":
-        primitive.jps4_unit_grid = True
-    elif scenario.primitive_mode == "grid4_unit":
-        primitive.grid4_unit_grid = True
-    elif scenario.primitive_mode != "photonic":
-        raise ValueError(f"unknown primitive mode: {scenario.primitive_mode}")
     astar = rust_backend.AStarConfig(
         max_iterations=scenario.max_iterations,
         require_target_angle=scenario.require_target_angle,
@@ -366,7 +319,6 @@ def _build_router(rust_backend: RustBackend, scenario: AStarScenario) -> Any:
     )
     astar.heap_tie_breaker = scenario.heap_tie_breaker
     astar.enable_simple_routes = scenario.enable_simple_routes
-    astar.enable_jps4 = scenario.enable_jps4
     router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
     if scenario.static_cells:
         router.set_static_cells(list(scenario.static_cells))
@@ -493,11 +445,6 @@ def run_scenario(
         "heap_operation_s": float(_route_stat(last_route, "heap_operation_time_us")) / 1_000_000.0,
         "legality_check_s": float(_route_stat(last_route, "legality_check_time_us")) / 1_000_000.0,
         "reconstruction_s": float(_route_stat(last_route, "reconstruction_time_us")) / 1_000_000.0,
-        "jps4_requested": bool(_route_stat(last_route, "jps4_requested")),
-        "jps4_eligible": bool(_route_stat(last_route, "jps4_eligible")),
-        "jps4_used": bool(_route_stat(last_route, "jps4_used")),
-        "jps4_fallbacks": _route_stat(last_route, "jps4_fallbacks"),
-        "jps4_fallback_reason": str(getattr(last_route, "jps4_fallback_reason", "")),
         "indexed_heap": scenario.use_indexed_heap,
         "primitive_ordering": scenario.primitive_ordering,
         "heuristic_mode": scenario.heuristic_mode,
@@ -589,12 +536,12 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         f"- Heuristic mode: `{getattr(args, 'heuristic_mode', 'heading_aware')}`",
         f"- Heap tie-breaker: `{getattr(args, 'heap_tie_breaker', 'smaller_g')}`",
         "",
-        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Primitive gen | Primitive accepted | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Dense MiB | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | JPS4 | JPS4 fallback | Full grid | Target ok | Route cells | Length um |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- | ---: | ---: |",
+        "| Scenario | Grid | Obstacles | Median s | P95 s | Expanded | Generated | Primitive gen | Primitive accepted | Heap push/pop | Dup skips | Stale gen/closed | Max heap | Dense states | Dense MiB | Cost/parent updates | Legality checks | Footprint checks | Dense build s | Neighbor s | Heap s | Legality s | Reconstruct s | Full grid | Target ok | Route cells | Length um |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {primitive_generated} | {primitive_accepted} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_states} | {dense_search_storage_mib} | {best_cost_updates}/{parent_updates} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {jps4_status} | {jps4_fallback_reason} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
+            "| {scenario} | {grid} | {static_cells} | {median_s} | {p95_s} | {expanded_states} | {generated_neighbors} | {primitive_generated} | {primitive_accepted} | {heap_pushes}/{heap_pops} | {duplicate_heap_skips} | {stale_generation_heap_entries}/{closed_heap_entries} | {max_heap_size} | {dense_search_states} | {dense_search_storage_mib} | {best_cost_updates}/{parent_updates} | {obstacle_clearance_checks} | {footprint_checks} | {dense_build_s} | {neighbor_generation_s} | {heap_operation_s} | {legality_check_s} | {reconstruction_s} | {full_grid_fallback} | {target_state_ok} | {route_cells} | {route_length_um:.3f} |".format(
                 scenario=row["scenario"],
                 grid=row["grid"],
                 static_cells=row["static_cells"],
@@ -627,14 +574,6 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                 heap_operation_s=_format_seconds(_object_to_float(row["heap_operation_s"])),
                 legality_check_s=_format_seconds(_object_to_float(row["legality_check_s"])),
                 reconstruction_s=_format_seconds(_object_to_float(row["reconstruction_s"])),
-                jps4_status=(
-                    "used"
-                    if row.get("jps4_used")
-                    else "eligible"
-                    if row.get("jps4_eligible")
-                    else ("requested" if row.get("jps4_requested") else "off")
-                ),
-                jps4_fallback_reason=row.get("jps4_fallback_reason", ""),
                 full_grid_fallback=row["full_grid_fallback"],
                 target_state_ok=row.get("target_state_ok", ""),
                 route_cells=row["route_cells"],
@@ -665,31 +604,13 @@ def _paired_comparison_rows(
     *,
     iterations: int,
     warmup: int,
-    accelerator: str = "jps4",
 ) -> list[dict[str, object]]:
+    """Run every scenario with the `distance` heuristic (baseline) and with
+    `heading_aware` (the accelerator) and pair the two results."""
     rows: list[dict[str, object]] = []
     for scenario in scenarios:
-        if accelerator == "heading_aware":
-            baseline_scenario = replace(
-                scenario,
-                enable_jps4=False,
-                heuristic_mode="distance",
-            )
-            accelerated_scenario = replace(
-                scenario,
-                enable_jps4=False,
-                heuristic_mode="heading_aware",
-            )
-        else:
-            baseline_primitive_mode = (
-                "grid4_unit" if scenario.primitive_mode == "jps4_unit" else scenario.primitive_mode
-            )
-            baseline_scenario = replace(
-                scenario,
-                enable_jps4=False,
-                primitive_mode=baseline_primitive_mode,
-            )
-            accelerated_scenario = replace(scenario, enable_jps4=True)
+        baseline_scenario = replace(scenario, heuristic_mode="distance")
+        accelerated_scenario = replace(scenario, heuristic_mode="heading_aware")
         baseline = run_scenario(
             rust_backend,
             baseline_scenario,
@@ -707,8 +628,7 @@ def _paired_comparison_rows(
         rows.append(
             {
                 "scenario": scenario.name,
-                "accelerator": accelerator,
-                "primitive_mode": scenario.primitive_mode,
+                "accelerator": "heading_aware",
                 "baseline": baseline,
                 "accelerated": accelerated,
                 "length_delta_um": _object_to_float(accelerated["route_length_um"])
@@ -729,10 +649,10 @@ def _markdown_paired_report(rows: Iterable[dict[str, object]], args: argparse.Na
         f"- Python: `{platform.python_version()}`",
         f"- Iterations: `{args.iterations}`",
         f"- Warmup: `{args.warmup}`",
-        f"- Paired accelerator: `{getattr(args, 'paired_accelerator', 'jps4')}`",
+        "- Paired accelerator: `heading_aware` heuristic (baseline: `distance`)",
         "",
-        "| Scenario | Primitive mode | Base mode | Accel mode | Base median s | Accel median s | Time delta | Base expanded | Accel expanded | Expanded ratio | Base generated | Accel generated | Generated ratio | Base heap | Accel heap | JPS4 | Fallback | Length delta um | Target cell |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |",
+        "| Scenario | Base mode | Accel mode | Base median s | Accel median s | Time delta | Base expanded | Accel expanded | Expanded ratio | Base generated | Accel generated | Generated ratio | Base heap | Accel heap | Length delta um | Target cell |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for row in rows:
         baseline = row["baseline"]
@@ -741,17 +661,9 @@ def _markdown_paired_report(rows: Iterable[dict[str, object]], args: argparse.Na
         assert isinstance(accelerated, dict)
         base_heap = f"{baseline['heap_pushes']}/{baseline['heap_pops']}"
         accel_heap = f"{accelerated['heap_pushes']}/{accelerated['heap_pops']}"
-        jps4_status = (
-            "used"
-            if accelerated.get("jps4_used")
-            else "eligible"
-            if accelerated.get("jps4_eligible")
-            else ("requested" if accelerated.get("jps4_requested") else "off")
-        )
         lines.append(
-            "| {scenario} | {primitive_mode} | {base_mode} | {accel_mode} | {base_median} | {accel_median} | {time_delta} | {base_expanded} | {accel_expanded} | {expanded_ratio} | {base_generated} | {accel_generated} | {generated_ratio} | {base_heap} | {accel_heap} | {jps4_status} | {fallback} | {length_delta:.3f} | {target_cell_match} |".format(
+            "| {scenario} | {base_mode} | {accel_mode} | {base_median} | {accel_median} | {time_delta} | {base_expanded} | {accel_expanded} | {expanded_ratio} | {base_generated} | {accel_generated} | {generated_ratio} | {base_heap} | {accel_heap} | {length_delta:.3f} | {target_cell_match} |".format(
                 scenario=row["scenario"],
-                primitive_mode=row["primitive_mode"],
                 base_mode=str(baseline.get("heuristic_mode", "")),
                 accel_mode=str(accelerated.get("heuristic_mode", "")),
                 base_median=_format_seconds(_object_to_float(baseline["median_s"])),
@@ -774,8 +686,6 @@ def _markdown_paired_report(rows: Iterable[dict[str, object]], args: argparse.Na
                 ),
                 base_heap=base_heap,
                 accel_heap=accel_heap,
-                jps4_status=jps4_status,
-                fallback=accelerated.get("jps4_fallback_reason", ""),
                 length_delta=_object_to_float(row["length_delta_um"]),
                 target_cell_match=row["target_cell_match"],
             )
@@ -802,14 +712,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE_PATH)
     parser.add_argument("--check-baseline", action="store_true")
     parser.add_argument("--length-tolerance-um", type=float, default=None)
-    parser.add_argument(
-        "--enable-jps4",
-        action="store_true",
-        help=(
-            "Request the experimental Manhattan JPS4 accelerator for every "
-            "scenario. Pass 3A reports eligibility and falls back to baseline A*."
-        ),
-    )
     parser.add_argument(
         "--use-indexed-heap",
         action="store_true",
@@ -846,22 +748,13 @@ def _parse_args() -> argparse.Namespace:
         "--paired-comparison",
         action="store_true",
         help=(
-            "Run each selected scenario twice, baseline and accelerator-requested, "
-            "and report side-by-side deltas."
+            "Run each selected scenario twice, with the distance heuristic and "
+            "with the heading-aware heuristic, and report side-by-side deltas."
         ),
-    )
-    parser.add_argument(
-        "--paired-accelerator",
-        choices=("jps4", "heading_aware"),
-        default="jps4",
-        help="Accelerator to compare when --paired-comparison is set.",
     )
     args = parser.parse_args()
     if args.paired_comparison and args.scenarios == default_scenarios:
-        if args.paired_accelerator == "heading_aware":
-            args.scenarios = ["wall_gap_astar", "slalom_astar", "full_grid_fallback"]
-        else:
-            args.scenarios = sorted(name for name in catalog if name.startswith("jps4_"))
+        args.scenarios = ["wall_gap_astar", "slalom_astar", "full_grid_fallback"]
     unknown = sorted(set(args.scenarios) - set(catalog))
     if unknown:
         parser.error(
@@ -892,7 +785,6 @@ def main() -> int:
             [catalog[name] for name in args.scenarios],
             iterations=args.iterations,
             warmup=args.warmup,
-            accelerator=args.paired_accelerator,
         )
         report = _markdown_paired_report(paired_rows, args)
         print(report)
@@ -907,8 +799,6 @@ def main() -> int:
             _write_text(args.json_output, json.dumps(paired_rows, indent=2, sort_keys=True) + "\n")
         return 0
 
-    if args.enable_jps4:
-        catalog = {name: replace(scenario, enable_jps4=True) for name, scenario in catalog.items()}
     if args.use_indexed_heap:
         catalog = {
             name: replace(scenario, use_indexed_heap=True) for name, scenario in catalog.items()

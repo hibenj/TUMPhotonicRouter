@@ -23,7 +23,7 @@
 //!   (crossing) machinery is unreachable. A `SearchRequest` carrying a
 //!   `crossing` part is refused outright, with
 //!   `RouteSearchStats::unsupported_request = 1`.
-//! * **No JPS4 or simple-route shortcut.** Every request runs the real
+//! * **No simple-route shortcut.** Every request runs the real
 //!   search, so a fixture's cost is the search's own answer, not a
 //!   shortcut's.
 //!

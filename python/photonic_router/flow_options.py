@@ -100,7 +100,6 @@ class OpticalStageOptions:
     fanout_access_mode: str | None = SCRIPT_FANOUT_ACCESS_MODE
     proactive_congestion_weight: float = SCRIPT_PROACTIVE_CONGESTION_WEIGHT
     proactive_congestion_radius_cells: int = SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS
-    enable_jps4: bool = False
     use_indexed_heap: bool = False
     enable_simple_routes: bool = True
     primitive_ordering: str = "library"

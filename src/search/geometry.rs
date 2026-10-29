@@ -1,5 +1,5 @@
-//! Grid-polyline geometry helpers shared by the simple-route candidates, the
-//! dense JPS4 search and the unified kernel's reconstruction step: waypoint
+//! Grid-polyline geometry helpers shared by the simple-route candidates and
+//! the unified kernel's reconstruction step: waypoint
 //! compression, orientation/segment-intersection primitives and the
 //! self-intersection check. Moved out of `src/astar.rs` (Milestone 3, Slice
 //! 2); pure code motion, no behaviour change.

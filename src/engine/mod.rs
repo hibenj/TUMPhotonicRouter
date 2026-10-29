@@ -9,7 +9,6 @@ use crate::crossings::CrossingContext;
 use crate::obstacle_map::{CellKey, ObstacleMap};
 use crate::plm::RegisteredPlmContext;
 use crate::primitives::{
-    create_grid4_unit_grid_primitive_library, create_jps4_unit_grid_primitive_library,
     create_photonic_primitive_library, PrimitiveLibrary, PrimitiveLibraryConfig,
 };
 use crate::search::astar::config::AStarConfig;
@@ -229,19 +228,13 @@ impl PyPhotonicRouter {
             .as_ref()
             .map(RouterConfig::from)
             .unwrap_or_default();
-        let primitives = if primitive_config.jps4_unit_grid {
-            create_jps4_unit_grid_primitive_library(primitive_config.grid_size_um)
-        } else if primitive_config.grid4_unit_grid {
-            create_grid4_unit_grid_primitive_library(primitive_config.grid_size_um)
-        } else {
-            create_photonic_primitive_library(PrimitiveLibraryConfig {
-                grid_size_um: primitive_config.grid_size_um,
-                straight_short_cells: primitive_config.straight_short_cells,
-                straight_long_cells: primitive_config.straight_long_cells,
-                bend_radius_cells: primitive_config.bend_radius_cells,
-                allow_45_degree_turns: primitive_config.allow_45_degree_turns,
-            })
-        };
+        let primitives = create_photonic_primitive_library(PrimitiveLibraryConfig {
+            grid_size_um: primitive_config.grid_size_um,
+            straight_short_cells: primitive_config.straight_short_cells,
+            straight_long_cells: primitive_config.straight_long_cells,
+            bend_radius_cells: primitive_config.bend_radius_cells,
+            allow_45_degree_turns: primitive_config.allow_45_degree_turns,
+        });
         let astar_cfg_cached = astar_config_from_py(
             &astar_config,
             &primitive_config,

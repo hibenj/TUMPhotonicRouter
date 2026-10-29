@@ -30,7 +30,7 @@ def configure_router_and_grid(
 ) -> None:
     """Build the Rust grid/primitive/A* configs, construct `self.router`, and extract raw static geometry.
 
-    Tunes `self.astar_cfg` (JPS4, heuristic mode/weight, bend weight, heap tie-breaker,
+    Tunes `self.astar_cfg` (heuristic mode/weight, bend weight, heap tie-breaker,
     proactive congestion, routing-window sizing) based on `self.allow_45_degree_turns`,
     `self.crossing_mode`, and related settings, resolves `self.clearance_policy` and the
     block/commit/core radii, constructs `self.router` (`PyPhotonicRouter`), and extracts
@@ -77,7 +77,6 @@ def configure_router_and_grid(
         int(state.grid.width), int(state.grid.height), int(state.astar_cfg.max_dense_obstacle_cells)
     )
     state.astar_cfg.enable_simple_routes = bool(settings.enable_simple_routes)
-    state.astar_cfg.enable_jps4 = bool(settings.enable_jps4)
     state.astar_cfg.use_indexed_heap = bool(
         settings.use_indexed_heap or settings.allow_45_degree_turns
     )

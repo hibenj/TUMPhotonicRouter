@@ -313,11 +313,6 @@ pub(crate) fn convert_result(
             let clamped = r.stats.reconstruction_time_us.min(u64::MAX as u128);
             clamped as u64
         },
-        jps4_requested: r.stats.jps4_requested,
-        jps4_eligible: r.stats.jps4_eligible,
-        jps4_used: r.stats.jps4_used,
-        jps4_fallbacks: r.stats.jps4_fallbacks,
-        jps4_fallback_reason: r.stats.jps4_fallback_reason.clone(),
     })
 }
 
@@ -454,11 +449,6 @@ pub(crate) fn to_route_result(route: &PyRouteResult) -> RouteResult {
             heap_operation_time_us: u128::from(route.heap_operation_time_us),
             legality_check_time_us: u128::from(route.legality_check_time_us),
             reconstruction_time_us: u128::from(route.reconstruction_time_us),
-            jps4_requested: route.jps4_requested,
-            jps4_eligible: route.jps4_eligible,
-            jps4_used: route.jps4_used,
-            jps4_fallbacks: route.jps4_fallbacks,
-            jps4_fallback_reason: route.jps4_fallback_reason.clone(),
             // A `PyRouteResult` always describes a route that was found, so
             // it can never carry an unsupported-request marker.
             unsupported_request: 0,

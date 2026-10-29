@@ -143,7 +143,6 @@ pub(crate) fn astar_config_from_py(
         proactive_congestion_weight: astar_cfg.proactive_congestion_weight,
         proactive_congestion_radius_cells: astar_cfg.proactive_congestion_radius_cells,
         collect_detailed_timing: astar_cfg.collect_detailed_timing,
-        enable_jps4: astar_cfg.enable_jps4,
         use_indexed_heap: astar_cfg.use_indexed_heap,
         primitive_ordering,
         heuristic_mode,
@@ -455,7 +454,6 @@ impl PyPhotonicRouter {
             .collect();
         let mut crossing_search_cfg = search_cfg.clone();
         crossing_search_cfg.enable_simple_routes = false;
-        crossing_search_cfg.enable_jps4 = false;
         crossing_search_cfg.routing_window_fallback_full_grid = false;
         let trace_crossing = self
             .router_config
@@ -1097,9 +1095,8 @@ impl PyPhotonicRouter {
         } else {
             cfg
         };
-        let zero_radius_overlay = block_radius_cells <= 0
-            && dynamic_clearance_exempt_keys.is_some()
-            && !search_cfg.enable_jps4;
+        let zero_radius_overlay =
+            block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some();
         let mut opened_dynamic_obstacle_map;
         let outcome = if block_radius_cells > 0 || zero_radius_overlay {
             let env = SearchEnvironment {
@@ -1456,7 +1453,7 @@ impl PyPhotonicRouter {
             }
         }
         let zero_radius_overlay =
-            block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some() && !cfg.enable_jps4;
+            block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some();
         let mut opened_dynamic_obstacle_map;
         let mut result = if block_radius_cells > 0 || zero_radius_overlay {
             let env = SearchEnvironment {

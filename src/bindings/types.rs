@@ -69,10 +69,6 @@ pub struct PyPrimitiveLibraryConfig {
     pub allow_45_degree_turns: bool,
     #[pyo3(get, set)]
     pub bend_weight: f64,
-    #[pyo3(get, set)]
-    pub jps4_unit_grid: bool,
-    #[pyo3(get, set)]
-    pub grid4_unit_grid: bool,
 }
 
 #[pymethods]
@@ -94,8 +90,6 @@ impl PyPrimitiveLibraryConfig {
             bend_radius_cells,
             allow_45_degree_turns,
             bend_weight,
-            jps4_unit_grid: false,
-            grid4_unit_grid: false,
         }
     }
 
@@ -162,8 +156,6 @@ pub struct PyAStarConfig {
     #[pyo3(get, set)]
     pub collect_detailed_timing: bool,
     #[pyo3(get, set)]
-    pub enable_jps4: bool,
-    #[pyo3(get, set)]
     pub use_indexed_heap: bool,
     #[pyo3(get, set)]
     pub primitive_ordering: String,
@@ -225,7 +217,6 @@ impl PyAStarConfig {
             proactive_congestion_weight,
             proactive_congestion_radius_cells,
             collect_detailed_timing,
-            enable_jps4: false,
             use_indexed_heap,
             primitive_ordering,
             heuristic_mode,
@@ -584,16 +575,6 @@ pub struct PyRouteResult {
     pub legality_check_time_us: u64,
     #[pyo3(get)]
     pub reconstruction_time_us: u64,
-    #[pyo3(get)]
-    pub jps4_requested: bool,
-    #[pyo3(get)]
-    pub jps4_eligible: bool,
-    #[pyo3(get)]
-    pub jps4_used: bool,
-    #[pyo3(get)]
-    pub jps4_fallbacks: usize,
-    #[pyo3(get)]
-    pub jps4_fallback_reason: String,
 }
 
 #[pyclass(name = "PortAccess")]

@@ -1228,8 +1228,8 @@ impl PyPhotonicRouter {
                 let budget = |kind| budgets.budget(kind, failed_count, round, max_rounds);
                 let crossing_free = crossing_free_policy.crossing_free(net_id, round, max_rounds);
                 // History cost steers a net that has already failed, and
-                // only such a net: any nonzero weight disables the JPS4
-                // fast path for *every* search (`astar.rs`).
+                // only such a net: a net's first attempt each epoch runs
+                // without it.
                 let failed_before = failed_count != 0 || negotiation.history_on_first_attempt;
                 self.commit_history_weight = if failed_before { history_weight } else { 0.0 };
                 // 0 for the exempt dense fan-out nets, the configured

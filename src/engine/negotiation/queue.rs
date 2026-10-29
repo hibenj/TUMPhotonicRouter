@@ -77,8 +77,8 @@ impl NetQueue {
     /// displaced it -- LiDAR's "ripped nets go back to the queue and route
     /// after it". The `failed_counts` bump is what turns history cost on
     /// for that reroute (see the loop's `commit_history_weight` gate); it
-    /// must stay off for a net's first attempt each epoch, or the JPS4 fast
-    /// path is disabled for every search, not just contested ones. They are
+    /// must stay off for a net's first attempt each epoch, so that only
+    /// contested nets pay the history cost. They are
     /// marked as ripped this epoch, which for the local rip-up's victims
     /// the rip-up itself has already done.
     pub(crate) fn requeue_front_preserving_order(&mut self, victims: &[u64]) {

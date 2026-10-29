@@ -8,8 +8,8 @@
 //! Two implementations exist:
 //!
 //! * `AStarSearch` (`astar/mod.rs`), the production engine: the full A*
-//!   with its heuristic, routing windows, JPS4 and simple-route shortcuts
-//!   and crossing support, all reached through one `run_search` body.
+//!   with its heuristic, routing windows, simple-route shortcut and
+//!   crossing support, all reached through one `run_search` body.
 //! * `GridDijkstraSearch` (`grid_dijkstra.rs`), a uniform-cost search over
 //!   the same state space, built by calling the A* kernel's own building
 //!   blocks with a zero heuristic, no routing window and no crossing hook.
@@ -74,7 +74,7 @@ pub struct SearchEnvironment<'a> {
 /// `clearance_exempt_cells` are the cells exempt from the ordinary
 /// clearance check regardless of radius. Absent (`SearchRequest::dynamic_expansion
 /// == None`) means the plain clearance rule applies, which also unlocks the
-/// JPS4 and simple-route shortcuts that the dynamic-expansion path forgoes.
+/// simple-route shortcut that the dynamic-expansion path forgoes.
 pub struct DynamicExpansion<'a> {
     pub radius_cells: i32,
     pub clearance_exempt_cells: Option<&'a FxHashSet<CellKey>>,

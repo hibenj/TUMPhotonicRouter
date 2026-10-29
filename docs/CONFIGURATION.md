@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 90 `RoutingConfig` fields (90 with an overlay variable), 51 `FlowOptions` fields (43 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 178 in total.
+Totals: 90 `RoutingConfig` fields (90 with an overlay variable), 50 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 177 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -266,7 +266,6 @@ Contribution 2: the pre-placed crossing grid stage (stage 2b).
 | `fanout_access_mode` | `str \| None` | `'legacy-runway'` | `--fanout-access-mode` | -- |
 | `proactive_congestion_weight` | `float` | `0.0` | `--proactive-congestion-weight` | -- |
 | `proactive_congestion_radius_cells` | `int` | `0` | `--proactive-congestion-radius-cells` | -- |
-| `enable_jps4` | `bool` | `False` | `--enable-jps4` | -- |
 | `use_indexed_heap` | `bool` | `False` | `--use-indexed-heap` | -- |
 | `enable_simple_routes` | `bool` | `True` | `--enable-simple-routes` | -- |
 | `primitive_ordering` | `str` | `'library'` | `--primitive-ordering` | -- |

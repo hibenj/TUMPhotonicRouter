@@ -57,7 +57,6 @@ class SessionSettings:
     # ---- search ---------------------------------------------------------------
     # Consumed by the router setup (A* config) and the kernel dispatch.
     allow_45_degree_turns: bool
-    enable_jps4: bool
     use_indexed_heap: bool
     enable_simple_routes: bool
     primitive_ordering: str
@@ -119,7 +118,6 @@ class SessionSettings:
         route_layer: tuple[int, int] = (1, 0),
         allow_45_degree_turns: bool = True,
         bend_radius_um: float | None = None,
-        enable_jps4: bool = False,
         use_indexed_heap: bool = False,
         enable_simple_routes: bool = True,
         primitive_ordering: str = "library",
@@ -247,7 +245,6 @@ class SessionSettings:
                 debug_timing or collect_route_stats or collect_attempt_diagnostics
             ),
             allow_45_degree_turns=allow_45_degree_turns,
-            enable_jps4=enable_jps4,
             use_indexed_heap=use_indexed_heap,
             enable_simple_routes=enable_simple_routes,
             primitive_ordering=primitive_ordering,

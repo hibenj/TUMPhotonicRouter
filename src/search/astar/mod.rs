@@ -30,7 +30,6 @@ use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::PrimitiveLibrary;
 use config::AStarConfig;
 use crossing_rules::{CrossingHookContext, NoCrossingHook};
-use dense::{evaluate_jps4_eligibility, route_single_net_jps4};
 use simple::try_simple_route_with_config;
 use window::{run_windowed_single_net_search, RoutingBounds};
 
@@ -128,11 +127,9 @@ fn rejected_outcome() -> SearchOutcome {
 /// * the crossing-partner entry guard runs only for `crossing: Some(_)`;
 ///   the four config/geometry guards run for every request, with the same
 ///   message-free `None` results as before;
-/// * the JPS4 and simple-route shortcuts are the *plain* path's alone
+/// * the simple-route shortcut is the *plain* path's alone
 ///   (`crossing: None && dynamic_expansion: None`) -- exactly the wrapper
-///   that had them; every other path goes straight to the windowed kernel
-///   with the fixed `jps4_*` stats its wrapper set ("unified kernel uses
-///   dense A*" without crossing, "unified kernel uses augmented A*" with);
+///   that had it; every other path goes straight to the windowed kernel;
 /// * the separate *reservation* anchor set exists only when the crossing
 ///   part carries `reservation_open_cells: Some(_)` -- the old
 ///   collision-crossing wrapper's case. With `None` the old crossing-config
@@ -213,34 +210,6 @@ fn run_search(env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome
 
     let takes_shortcuts = request.crossing.is_none() && request.dynamic_expansion.is_none();
     if takes_shortcuts {
-        let jps4_eligibility = evaluate_jps4_eligibility(primitives, source, target, config);
-        stats.jps4_requested = config.enable_jps4;
-        stats.jps4_eligible = jps4_eligibility.eligible;
-        stats.jps4_fallback_reason = jps4_eligibility.reason.to_string();
-        if config.enable_jps4 && jps4_eligibility.eligible {
-            if let Some(route) = route_single_net_jps4(
-                obstacle_map,
-                source,
-                target,
-                Some(&anchor_open_cells),
-                config,
-                primitives.grid_size_um(),
-                stats.clone(),
-            ) {
-                return SearchOutcome {
-                    route: Some(with_route_search_total_time(
-                        route,
-                        route_search_total_start.as_ref(),
-                    )),
-                    stats,
-                };
-            }
-            stats.jps4_fallbacks += 1;
-            stats.jps4_fallback_reason = "jps4 search failed".to_string();
-        } else if config.enable_jps4 {
-            stats.jps4_fallbacks += 1;
-        }
-
         let simple_route_start = if config.collect_detailed_timing {
             Some(Instant::now())
         } else {
@@ -266,17 +235,6 @@ fn run_search(env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome
                 )),
                 stats,
             };
-        }
-    } else {
-        stats.jps4_requested = config.enable_jps4;
-        stats.jps4_eligible = false;
-        stats.jps4_fallback_reason = if crossing.is_some() {
-            "unified kernel uses augmented A*".to_string()
-        } else {
-            "unified kernel uses dense A*".to_string()
-        };
-        if config.enable_jps4 {
-            stats.jps4_fallbacks += 1;
         }
     }
 
@@ -360,9 +318,8 @@ mod tests {
     use crate::search::test_support::*;
 
     /// The plain request (no crossing part, no dynamic expansion) is the
-    /// only one `run_search` lets take the JPS4/simple-route shortcuts, so
-    /// its `jps4_*` stats come from `evaluate_jps4_eligibility` rather than
-    /// from one of the two fixed unified-kernel reasons.
+    /// only one `run_search` lets take the simple-route shortcut; it must
+    /// route like every other path.
     #[test]
     fn net_search_plain_request_takes_the_shortcut_path() {
         let (map, library, source, target, config) = plain_request_fixture();
@@ -379,17 +336,12 @@ mod tests {
             config: &config,
         };
         let outcome = search::AStarSearch.search(&env, &request);
-        let eligibility = evaluate_jps4_eligibility(&library, source, target, &config);
 
         assert!(outcome.route.is_some(), "plain request should route");
-        assert_eq!(outcome.stats.jps4_requested, config.enable_jps4);
-        assert_eq!(outcome.stats.jps4_eligible, eligibility.eligible);
-        assert_eq!(outcome.stats.jps4_fallback_reason, eligibility.reason);
     }
 
-    /// A dynamic-expansion request forgoes the shortcuts and goes straight
-    /// to the windowed dense kernel with `NoCrossingHook`, which
-    /// `run_search` records in the stats as a fixed fallback reason.
+    /// A dynamic-expansion request forgoes the shortcut and goes straight
+    /// to the windowed dense kernel with `NoCrossingHook`.
     #[test]
     fn net_search_dynamic_expansion_request_takes_the_dense_kernel_path() {
         let (map, library, source, target, config, exempt_cells) =
@@ -414,11 +366,6 @@ mod tests {
         assert!(
             outcome.route.is_some(),
             "dynamic expansion request should route"
-        );
-        assert!(!outcome.stats.jps4_eligible);
-        assert_eq!(
-            outcome.stats.jps4_fallback_reason,
-            "unified kernel uses dense A*"
         );
         assert!(
             outcome.stats.expanded_states > 0,
@@ -458,11 +405,6 @@ mod tests {
             outcome.route.is_some(),
             "collision crossing request should route"
         );
-        assert!(!outcome.stats.jps4_eligible);
-        assert_eq!(
-            outcome.stats.jps4_fallback_reason,
-            "unified kernel uses augmented A*"
-        );
         assert!(
             outcome.stats.expanded_states > 0,
             "collision crossing request should enter the kernel loop"
@@ -497,11 +439,6 @@ mod tests {
         assert!(
             outcome.route.is_some(),
             "crossing config request should route"
-        );
-        assert!(!outcome.stats.jps4_eligible);
-        assert_eq!(
-            outcome.stats.jps4_fallback_reason,
-            "unified kernel uses augmented A*"
         );
         assert!(
             outcome.stats.expanded_states > 0,

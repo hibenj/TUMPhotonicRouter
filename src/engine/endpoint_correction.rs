@@ -1137,11 +1137,6 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
-            jps4_requested: false,
-            jps4_eligible: false,
-            jps4_used: false,
-            jps4_fallbacks: 0,
-            jps4_fallback_reason: String::new(),
             ..PyRouteResult::default()
         };
         let err = router
@@ -1262,11 +1257,6 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
-            jps4_requested: false,
-            jps4_eligible: false,
-            jps4_used: false,
-            jps4_fallbacks: 0,
-            jps4_fallback_reason: String::new(),
             ..PyRouteResult::default()
         };
 
@@ -1404,11 +1394,6 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
-            jps4_requested: false,
-            jps4_eligible: false,
-            jps4_used: false,
-            jps4_fallbacks: 0,
-            jps4_fallback_reason: String::new(),
             ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
@@ -1538,11 +1523,6 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
-            jps4_requested: false,
-            jps4_eligible: false,
-            jps4_used: false,
-            jps4_fallbacks: 0,
-            jps4_fallback_reason: String::new(),
             ..PyRouteResult::default()
         };
         let err = router
@@ -1710,11 +1690,6 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
-            jps4_requested: false,
-            jps4_eligible: false,
-            jps4_used: false,
-            jps4_fallbacks: 0,
-            jps4_fallback_reason: String::new(),
             ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
@@ -1852,11 +1827,6 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
-            jps4_requested: false,
-            jps4_eligible: false,
-            jps4_used: false,
-            jps4_fallbacks: 0,
-            jps4_fallback_reason: String::new(),
             ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
@@ -1983,11 +1953,6 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
-            jps4_requested: false,
-            jps4_eligible: false,
-            jps4_used: false,
-            jps4_fallbacks: 0,
-            jps4_fallback_reason: String::new(),
             ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
@@ -2236,11 +2201,6 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
-            jps4_requested: false,
-            jps4_eligible: false,
-            jps4_used: false,
-            jps4_fallbacks: 0,
-            jps4_fallback_reason: String::new(),
             ..PyRouteResult::default()
         };
         Python::with_gil(|py| {
@@ -2413,11 +2373,6 @@ mod tests {
             heap_operation_time_us: 0,
             legality_check_time_us: 0,
             reconstruction_time_us: 0,
-            jps4_requested: false,
-            jps4_eligible: false,
-            jps4_used: false,
-            jps4_fallbacks: 0,
-            jps4_fallback_reason: String::new(),
             ..PyRouteResult::default()
         };
         Python::with_gil(|py| {

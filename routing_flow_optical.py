@@ -44,7 +44,6 @@ class OpticalRoutingStageConfig:
     proactive_congestion_radius_cells: int
     allow_45_degree_turns: bool
     bend_radius_um: float
-    enable_jps4: bool
     use_indexed_heap: bool
     enable_simple_routes: bool
     primitive_ordering: str
@@ -129,7 +128,6 @@ def run_photonic_routing_stage(
             verbose_route_diagnostics=config.verbose_routes or config.debug_meanders,
             allow_45_degree_turns=config.allow_45_degree_turns,
             bend_radius_um=config.bend_radius_um,
-            enable_jps4=config.enable_jps4,
             use_indexed_heap=config.use_indexed_heap,
             enable_simple_routes=config.enable_simple_routes,
             primitive_ordering=config.primitive_ordering,
