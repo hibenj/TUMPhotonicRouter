@@ -69,6 +69,17 @@ on the machine. `paper_table.py results_date2027 <main.tex>` would regenerate
 the table from a full reproduction (the LiDAR columns then need the LiDAR
 archives copied or linked into that root).
 
+`compare_date2027.py ... --with-bounds` adds two columns: the
+placement-derived lower bound on crossings (band inversions between the
+component columns, `scripts/results/crossing_lower_bound.py`, stored in
+`docs/date2027_crossing_bounds.json`) and the excess of the reproduced count
+over it, "realised minus unavoidable". The bound is exact for any routing
+that keeps every net inside the band between its two component columns,
+which all 17 paper benchmarks allow (no net joins non-adjacent columns). On
+the 27 cells the excess is 0 everywhere except multiportmmi_64x64 in
+lidar-pure (217 realised, 209 unavoidable, +8), which both contributions
+close.
+
 ## Verification (2026-09-22, commits bb317c9..bcc86e8, `results_date2027/`)
 
 `reproduce_date2027.sh` in the order ladder, c2-mesh, mesh-base,

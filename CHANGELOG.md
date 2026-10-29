@@ -13,6 +13,11 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Added
 
+- `scripts/results/compare_date2027.py --with-bounds` adds the placement-derived
+  lower bound on crossings (band inversions, `scripts/results/crossing_lower_bound.py`,
+  table `docs/date2027_crossing_bounds.json` written by its `--json` option) and the
+  excess "realised minus unavoidable" per cell (phase 4 slice E). On the 27 paper
+  cells the excess is 0 everywhere except ADEPT 64x64 lidar-pure (+8).
 - One crossing-legality predicate behind a switch (phase 4 slice B).
   `RouterConfig.crossing.unified_legality` (`PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`,
   presence; Rust `CrossingEngineConfig`, `PyRouterConfig.crossing_unified_legality`,

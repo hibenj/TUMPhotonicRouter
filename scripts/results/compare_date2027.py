@@ -2,6 +2,7 @@
 scripts/results/reproduce_date2027.sh) with the paper's sources, cell by cell.
 
 Usage: compare_date2027.py <results_root> <EXPERIMENTS_TABLE_SOURCES.json> [--only-present]
+       [--with-bounds [<crossing_bounds.json>]]
 
 `--only-present` compares only the cells that have a run under <results_root>
 (the short gate routes nine of the 27 cells); without it every cell the paper
@@ -13,7 +14,13 @@ is read (scripts/results/table.py) and compared on the reproducible
 quantities: crossing count, GDS waveguide length (um, exact to 0.01), verifier
 errors (must be 0), and rc. Routing-loop time is printed as a ratio only:
 it varies with the machine and is not part of the comparison. Cells without
-a reproduction run are listed as missing. Exit code 1 on any mismatch."""
+a reproduction run are listed as missing. Exit code 1 on any mismatch.
+
+`--with-bounds` adds two columns: the placement-derived lower bound on
+crossings (band inversions, `scripts/results/crossing_lower_bound.py`, stored
+in docs/date2027_crossing_bounds.json) and the excess of the reproduced count
+over it, "realised minus unavoidable". The bound is per benchmark, not per
+configuration, and is not part of the pass/fail comparison."""
 
 from __future__ import annotations
 
@@ -32,15 +39,41 @@ CONFIGS = {
 LENGTH_TOL_UM = 0.01
 
 
+def load_bounds(options: list[str]) -> dict[str, dict] | None:
+    """The crossing-bound table for `--with-bounds [path]`, or None without the flag."""
+    if "--with-bounds" not in options:
+        return None
+    index = options.index("--with-bounds")
+    path = (
+        Path(options[index + 1])
+        if index + 1 < len(options) and not options[index + 1].startswith("--")
+        else Path(__file__).resolve().parents[2] / "docs" / "date2027_crossing_bounds.json"
+    )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def bound_columns(bounds: dict[str, dict] | None, benchmark: str, crossings: object) -> str:
+    if bounds is None:
+        return ""
+    entry = bounds.get(benchmark)
+    if entry is None or crossings in (None, "?"):
+        return " -- | -- |"
+    bound = int(entry["bound"])
+    return f" {bound} | {int(crossings) - bound:+d} |"
+
+
 def main() -> int:
     root = Path(sys.argv[1])
     sources = json.loads(Path(sys.argv[2]).read_text())["sources"]
     only_present = "--only-present" in sys.argv[3:]
+    bounds = load_bounds(sys.argv[3:])
     runs = {(b, c): run for b, c, run in latest_runs(root)}
+    bound_header = " bound | excess |" if bounds is not None else ""
     print(
-        "| benchmark | config | crossings paper/repro | GDS length um paper/repro | errors | t_loop ratio | status |"
+        "| benchmark | config | crossings paper/repro | GDS length um paper/repro | errors | t_loop ratio |"
+        f"{bound_header} status |"
     )
-    print("|---|---|---|---|---|---|---|")
+    print("|---|---|---|---|---|---|" + ("---|---|" if bounds is not None else "") + "---|")
     bad = 0
     for bench, cells in sources.items():
         ours_bench = cells.get("ours_benchmark", bench)
@@ -81,13 +114,11 @@ def main() -> int:
             )
             status = "ok" if not problems else "MISMATCH " + ",".join(problems)
             bad += bool(problems)
+            t_text = f"{t_ratio:.2f}" if t_ratio is not None else "--"
             print(
                 f"| {ours_bench} | {config} | {cell.get('crossing_count')} / {m.get('crossing_count')} | "
                 f"{cell.get('gds_length_um')} / {length} | {m.get('photonic_error_count')} | "
-                f"{t_ratio:.2f} | {status} |"
-                if t_ratio is not None
-                else f"| {ours_bench} | {config} | {cell.get('crossing_count')} / {m.get('crossing_count')} | "
-                f"{cell.get('gds_length_um')} / {length} | {m.get('photonic_error_count')} | -- | {status} |"
+                f"{t_text} |{bound_columns(bounds, ours_bench, m.get('crossing_count'))} {status} |"
             )
     print(f"\n{bad} cell(s) missing or mismatched" if bad else "\nall reproduced cells match")
     return 1 if bad else 0

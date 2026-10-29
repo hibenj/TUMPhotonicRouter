@@ -86,6 +86,13 @@ def main(argv: list[str] | None = None) -> int:
         help="append every paper cell's benchmark from docs/date2027_table_sources.json",
     )
     parser.add_argument("--per-net", action="store_true", help="print the per-net bounds")
+    parser.add_argument(
+        "--json",
+        type=Path,
+        default=None,
+        help="also write {benchmark: {bound, bands, outside, per_net}} to this file "
+        "(docs/date2027_crossing_bounds.json is what compare_date2027.py --with-bounds reads)",
+    )
     args = parser.parse_args(argv)
     benchmarks = list(args.benchmarks)
     if args.all_paper_cells:
@@ -95,11 +102,21 @@ def main(argv: list[str] | None = None) -> int:
 
     print("| benchmark | unavoidable crossings | bands | nets outside the band model |")
     print("|---|---:|---:|---:|")
+    table: dict[str, dict[str, object]] = {}
     for benchmark in benchmarks:
         bound = lower_bound_for_benchmark(benchmark)
         print(f"| {benchmark} | {bound.bound} | {bound.band_count} | {bound.outside_count} |")
         if args.per_net:
             print("  per net: " + ", ".join(f"{n}={c}" for n, c in bound.per_net.items()))
+        table[benchmark] = {
+            "bound": bound.bound,
+            "bands": bound.band_count,
+            "outside": bound.outside_count,
+            "per_net": dict(sorted(bound.per_net.items())),
+        }
+    if args.json is not None:
+        args.json.write_text(json.dumps(table, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        print(f"\nwritten {args.json}")
     return 0
 
 
