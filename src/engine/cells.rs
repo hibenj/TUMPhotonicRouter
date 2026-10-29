@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::auto_meander::{DenseOccupancyPrefix, SparseCellIndex};
+use crate::meander::search::{DenseOccupancyPrefix, SparseCellIndex};
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, ObstacleMap};
 use crate::static_obstacle_builder::{physical_to_grid, StaticGridSpec};
 

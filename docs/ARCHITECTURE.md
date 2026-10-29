@@ -213,17 +213,30 @@ one). Section 5 reads the loop in full.
 
 ### `src/bindings/` -- the PyO3 surface
 
-`mod.rs` (2,104 lines) owns the single `#[pymethods]` block of
-`PyPhotonicRouter` (57 methods): every method Python can call, and nothing
-else; the seven helpers the block and the engine share (the meander-cache
-invalidation, `clear_static_cells`, `add_history_cells`, the long-straight
-record conversion, `effective_bend_radius_um`) sit in a plain `impl` block
-below it, out of Python's sight.
+`mod.rs` (1,221 lines) owns the `#[pymethods]` block of
+`PyPhotonicRouter` (42 methods): every method Python can call on the
+router, and nothing else; the five helpers the block and the engine share
+(`invalidate_meander_base_prefix`, `clear_static_cells`, `add_history_cells`,
+the long-straight record conversion, `effective_bend_radius_um`) sit in a
+plain `impl` block below it, out of Python's sight.
 `types.rs` (859 lines) owns the `#[pyclass]` configuration, job and result types
 (including `PyRouterConfig`, which validates the search engine name at
 construction). `convert.rs` (578 lines) owns the conversions in both directions
 (route results, batch timing dictionaries, primitive descriptions).
-`meander_py.rs` (559 lines) owns the meander-planning bindings. The rule that
+`meander_py.rs` (1,447 lines) owns the meander bindings: the `#[pyclass]
+MeanderPlanner` (phase 6 slice C of the 2026-10 do-over) that holds one
+router's path-length-matching state -- the registered routes with their
+open cells, the route geometries, the reserved cells, the occupancy-prefix
+and reserved-index caches, the registration profile -- behind `register`,
+`register_geometries`, `reserve_rect`, `clear_reserved`, `open_cell_count`,
+`profile`, `plan_requests`, `plan_final`, `plan_centerline` (the depth
+sweep) and the static `realize`, plus the result-to-dict conversions and
+the search policy `auto_meander_search_config_rs`. The router keeps two
+counters the planner syncs on at every call (`obstacle_generation`, bumped
+wherever the obstacle map changes; `static_reset_generation`, bumped by
+`clear_static_cells`), so a commit after registration still drops the
+prefix and a static reset still drops the registration, as they did while
+the state lived on the router. The rule that
 makes this tree readable: bindings convert and delegate, they do not decide.
 Anything that decides belongs in `engine/` or `search/`.
 
@@ -243,10 +256,13 @@ realization and the endpoint-correction geometry (phase 6 slice A of the
 2026-10 do-over deleted the box-planner meander generation and the
 pre-routing port-access connector that lived beside them). (The simple-route candidates that lived in
 `src/simple_routes.rs` are in `src/search/astar/simple_route.rs` since phase 2
-slice F.) `src/meander.rs` (988) and `src/auto_meander.rs` (1,641) own analytic and
-obstacle-aware meander planning; `src/plm.rs` (2,760) owns the path-length
-matching planner and, since phase 6 slice B of the 2026-10 do-over, every
-decision in it: `plan_registered_geometry_requirement_requests` takes one
+slice F.) `src/meander/` is the meander stage (phase 6 slice C gathered the
+three former top-level files into one tree; `mod.rs` re-exports every public
+item, so `crate::meander::X` names any of them): `geometry.rs` (988 lines)
+the analytic comb planner, `search.rs` (1,641) the obstacle-aware run
+extraction, occupancy prefix and depth sweep, `plan.rs` (2,572) the
+registered path-length-matching planner and, since phase 6 slice B of the
+2026-10 do-over, every decision in it: `plan_registered_geometry_requirement_requests` takes one
 requirement's request vector (its candidate bundles in order, one requested
 extra length per edge, and the requiring edge as the same-edge split
 fallback) and answers which candidate planned, or the split, or nothing;
@@ -391,9 +407,12 @@ gdsfactory reference router) and `gds_write_options.py` (18).
 Path-length matching, who decides what (phase 6 slice B of the 2026-10
 do-over): `path_length_requirements.py` computes how much extra length each
 edge needs and where it may go (the edge itself, or upstream where every
-group stays matched); `route_rust_meanders.py` (1,855 lines, from 3,010)
-turns that into request vectors and Rust decides every plan. The selection
-pass sends one Rust call per requirement (the candidate bundles in order,
+group stays matched); `route_rust_meanders.py` (1,849 lines, from 3,010)
+turns that into request vectors for one `MeanderPlanner(router)`
+(`src/bindings/meander_py.rs`, phase 6 slice C: `register` and
+`register_geometries` once per pass, `plan_requests` per requirement,
+`plan_final` once, `reserve_rect` per committed plan) and Rust decides every
+plan. The selection pass sends one Rust call per requirement (the candidate bundles in order,
 shared upstream bundle before recursive upstream before the direct edge, each
 edge asked for its new total where it already carries a planned meander, and
 the requiring edge as the same-edge split fallback); the final pass sends

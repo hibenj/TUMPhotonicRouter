@@ -3,10 +3,9 @@
 //! `obstacle_map` is the routing database, `search` the single-net A*
 //! kernel with its crossing rules and the simple-route probe, `engine` the
 //! negotiated rip-up-and-reroute loop, `crossings`/`geometry_realization`/
-//! `meander`/`plm` the crossing, geometry and path-length-matching stages,
+//! `meander` the crossing, geometry and path-length-matching stages,
 //! and `bindings` the PyO3 surface the Python package drives.
 
-pub mod auto_meander;
 pub mod bindings;
 pub mod config;
 pub mod crossings;
@@ -14,16 +13,10 @@ pub mod engine;
 pub mod geometry_realization;
 pub mod meander;
 pub mod obstacle_map;
-pub mod plm;
 pub mod primitives;
 pub mod search;
 pub mod static_obstacle_builder;
 
-pub use auto_meander::{
-    cells_in_grid_rect, check_meander_box_free_with_prefix, meander_box_to_grid_rect,
-    AutoMeanderConfig, AutoMeanderSidePolicy, AutoRouteAnalyticMeanderPlan, DenseOccupancyPrefix,
-    MeanderGridRect, SparseCellIndex,
-};
 pub use config::{
     CrossingEngineConfig, KernelDiagnostics, NegotiationConfig, NetNameTrace, RouterConfig,
     SearchOverrides,
@@ -35,10 +28,15 @@ pub use geometry_realization::{
     realize_route_polygon_from_primitives, route_to_grid_path, route_to_primitive_centerline,
     snap_centerline_endpoints, GeometryError, GeometryGridSpec,
 };
-pub use meander::{
+pub use meander::geometry::{
     actual_bend_radius_um_from_cells, bend_radius_cells_from_min_radius, plan_analytic_meander,
     plan_fill_box_multi_bump_meander, AnalyticMeanderConfig, AnalyticMeanderPlan, MeanderBox,
     MeanderPlanningError, MeanderPlanningMode, MeanderSide, PhysicalPoint, StraightSegment,
+};
+pub use meander::search::{
+    cells_in_grid_rect, check_meander_box_free_with_prefix, meander_box_to_grid_rect,
+    AutoMeanderConfig, AutoMeanderSidePolicy, AutoRouteAnalyticMeanderPlan, DenseOccupancyPrefix,
+    MeanderGridRect, SparseCellIndex,
 };
 pub use obstacle_map::{
     pack_xy, unpack_xy, CellKey, ClearanceMetric, NetId, ObstacleMap, WaveguideFootprint,

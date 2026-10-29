@@ -7,17 +7,17 @@ use std::error::Error;
 use std::fmt;
 
 #[cfg(test)]
-use crate::auto_meander::{
+use crate::meander::geometry::{MeanderBox, MeanderPlanningMode, MeanderSide};
+use crate::meander::geometry::{MeanderPlanningError, PhysicalPoint};
+#[cfg(test)]
+use crate::meander::search::{
     cells_in_grid_rect, check_meander_box_free_with_prefix, extract_axis_aligned_straight_runs,
     meander_box_to_grid_rect, plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix,
     AutoMeanderConfig, AutoMeanderSidePolicy, DenseOccupancyPrefix,
 };
-use crate::auto_meander::{
+use crate::meander::search::{
     AutoMeanderRejectionDetail, AutoRouteAnalyticMeanderPlan, MeanderGridRect,
 };
-#[cfg(test)]
-use crate::meander::{MeanderBox, MeanderPlanningMode, MeanderSide};
-use crate::meander::{MeanderPlanningError, PhysicalPoint};
 #[cfg(test)]
 use crate::obstacle_map::{CellKey, ObstacleMap};
 use crate::primitives::{PrimitiveGeometry, PrimitiveLibrary};

@@ -105,6 +105,87 @@ class GridSpec:
     @property
     def width(self) -> Any: ...
 
+class MeanderPlanner:
+    def __init__(self, router: Any) -> None: ...
+    def clear_reserved(self, /) -> Any: ...
+    def open_cell_count(self, /, index: Any) -> Any: ...
+    def plan_centerline(
+        self,
+        /,
+        centerline: Any,
+        requested_extra_length_um: Any,
+        box_depths_um: Any,
+        min_bend_radius_um: Any = None,
+        min_straight_um: Any = 0.0,
+        max_bumps: Any = 8,
+        max_meander_height_um: Any = 20.0,
+        min_segment_length_um: Any = 10.0,
+        endpoint_inset_um: Any = 0.0,
+        clearance_radius_cells: Any = 0,
+        side_policy: Any = "both",
+        opened_cells: Any = None,
+        planning_mode: Any = "fill_box_multi_bump",
+        extra_blocked_cells: Any = None,
+    ) -> Any: ...
+    def plan_final(
+        self,
+        /,
+        geometry_indices: Any,
+        requested_extra_lengths_um: Any,
+        min_insertable_extra_length_um: Any,
+        max_split_parts: Any = 8,
+        min_bend_radius_um: Any = None,
+        min_straight_um: Any = 0.0,
+        max_meander_height_um: Any = 20.0,
+        min_segment_length_um: Any = 10.0,
+        auto_endpoint_inset_um: Any = None,
+        clearance_radius_cells: Any = 0,
+        side_policy: Any = "both",
+        planning_mode: Any = "fill_box_multi_bump",
+    ) -> Any: ...
+    def plan_requests(
+        self,
+        /,
+        candidate_geometry_indices: Any,
+        candidate_requested_extra_lengths_um: Any,
+        split_geometry_index: Any = None,
+        split_requested_extra_length_um: Any = None,
+        min_insertable_extra_length_um: Any = 0.0,
+        max_split_parts: Any = 8,
+        min_bend_radius_um: Any = None,
+        min_straight_um: Any = 0.0,
+        max_meander_height_um: Any = 20.0,
+        min_segment_length_um: Any = 10.0,
+        auto_endpoint_inset_um: Any = None,
+        clearance_radius_cells: Any = 0,
+        side_policy: Any = "both",
+        planning_mode: Any = "fill_box_multi_bump",
+    ) -> Any: ...
+    def profile(self, /) -> Any: ...
+    def realize(
+        centerline: Any,
+        width_um: Any,
+        route: Any,
+        selected_run_start_index: Any,
+        selected_run_end_index: Any,
+        meander_centerline: Any,
+        source_enabled: Any = True,
+        target_enabled: Any = True,
+    ) -> Any: ...
+    def register(
+        self,
+        /,
+        routes: Any,
+        base_static_cells: Any = None,
+        base_static_cell_handle: Any = None,
+        route_clearance_radius_cells: Any = 0,
+        reset: Any = True,
+    ) -> Any: ...
+    def register_geometries(
+        self, /, centerlines: Any, registered_opened_cell_indices: Any, max_bumps_by_edge: Any
+    ) -> Any: ...
+    def reserve_rect(self, /, min_x: Any, max_x: Any, min_y: Any, max_y: Any) -> Any: ...
+
 class PrimitiveLibraryConfig:
     def __init__(
         self,
@@ -132,10 +213,6 @@ class PyPhotonicRouter:
         self, grid_spec: Any, primitive_config: Any, astar_config: Any, router_config: Any = None
     ) -> None: ...
     def add_port_open_cells(self, /, cells: Any) -> Any: ...
-    def add_registered_meander_reserved_cells(self, /, cells: Any) -> Any: ...
-    def add_registered_meander_reserved_grid_rect(
-        self, /, min_x: Any, max_x: Any, min_y: Any, max_y: Any
-    ) -> Any: ...
     def add_static_cells(self, /, cells: Any) -> Any: ...
     def add_static_rects(self, /, rects: Any) -> Any: ...
     def all_net_route_cells(self, /) -> Any: ...
@@ -175,7 +252,6 @@ class PyPhotonicRouter:
         source_port_um: Any = None,
         target_port_um: Any = None,
     ) -> Any: ...
-    def clear_registered_meander_reserved_cells(self, /) -> Any: ...
     def commit_route_cells(self, /, net_id: Any, cells: Any) -> Any: ...
     def crossing_config(self, /) -> Any: ...
     def crossing_events(self, /) -> Any: ...
@@ -185,74 +261,9 @@ class PyPhotonicRouter:
     def export_debug_svg_with_obstacle_cells(self, /, route: Any, obstacle_cells: Any) -> Any: ...
     def get_net_cells(self, /, net_id: Any) -> Any: ...
     def get_net_core_cells(self, /, net_id: Any) -> Any: ...
-    def last_meander_registration_profile(self, /) -> Any: ...
-    def plan_auto_analytic_meander_final_requests_registered_opened_auto_config(
-        self,
-        /,
-        geometry_indices: Any,
-        requested_extra_lengths_um: Any,
-        min_insertable_extra_length_um: Any,
-        max_split_parts: Any = 8,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_meander_height_um: Any = 20.0,
-        min_segment_length_um: Any = 10.0,
-        auto_endpoint_inset_um: Any = None,
-        clearance_radius_cells: Any = 0,
-        side_policy: Any = "both",
-        planning_mode: Any = "fill_box_multi_bump",
-    ) -> Any: ...
-    def plan_auto_analytic_meander_for_centerline_depth_sweep(
-        self,
-        /,
-        centerline: Any,
-        requested_extra_length_um: Any,
-        box_depths_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        max_meander_height_um: Any = 20.0,
-        min_segment_length_um: Any = 10.0,
-        endpoint_inset_um: Any = 0.0,
-        clearance_radius_cells: Any = 0,
-        side_policy: Any = "both",
-        opened_cells: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-        extra_blocked_cells: Any = None,
-    ) -> Any: ...
-    def plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
-        self,
-        /,
-        candidate_geometry_indices: Any,
-        candidate_requested_extra_lengths_um: Any,
-        split_geometry_index: Any = None,
-        split_requested_extra_length_um: Any = None,
-        min_insertable_extra_length_um: Any = 0.0,
-        max_split_parts: Any = 8,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_meander_height_um: Any = 20.0,
-        min_segment_length_um: Any = 10.0,
-        auto_endpoint_inset_um: Any = None,
-        clearance_radius_cells: Any = 0,
-        side_policy: Any = "both",
-        planning_mode: Any = "fill_box_multi_bump",
-    ) -> Any: ...
     def raw_dynamic_core_cells(self, /) -> Any: ...
     def raw_dynamic_obstacle_cells(self, /) -> Any: ...
     def raw_static_obstacle_cells(self, /) -> Any: ...
-    def realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents(
-        self,
-        /,
-        centerline: Any,
-        width_um: Any,
-        route: Any,
-        selected_run_start_index: Any,
-        selected_run_end_index: Any,
-        meander_centerline: Any,
-        source_enabled: Any = True,
-        target_enabled: Any = True,
-    ) -> Any: ...
     def realize_centerline_polygon_with_terminal_tangents(
         self,
         /,
@@ -275,13 +286,6 @@ class PyPhotonicRouter:
     def realize_route_polygon_with_endpoint_correction(
         self, /, route: Any, width_um: Any, source_port_um: Any = None, target_port_um: Any = None
     ) -> Any: ...
-    def register_meander_route_cells_as_static(
-        self, /, routes: Any, base_static_cells: Any, route_clearance_radius_cells: Any = 0
-    ) -> Any: ...
-    def register_meander_route_geometries(
-        self, /, centerlines: Any, registered_opened_cell_indices: Any, max_bumps_by_edge: Any
-    ) -> Any: ...
-    def registered_meander_open_cell_count(self, /, index: Any) -> Any: ...
     def ripup_route(self, /, net_id: Any) -> Any: ...
     def route_many_with_negotiated_repair_and_commit(
         self,
@@ -375,12 +379,6 @@ class PyPhotonicRouter:
     ) -> Any: ...
     def set_long_straight_exempt_net_ids(self, /, net_ids: Any) -> Any: ...
     def set_route_width_um(self, /, width_um: Any) -> Any: ...
-    def set_static_and_register_meander_route_cells_as_static(
-        self, /, routes: Any, base_static_cells: Any, route_clearance_radius_cells: Any = 0
-    ) -> Any: ...
-    def set_static_and_register_meander_route_cells_as_static_handle(
-        self, /, routes: Any, base_static_cell_handle: Any, route_clearance_radius_cells: Any = 0
-    ) -> Any: ...
     def set_static_cells(self, /, cells: Any) -> Any: ...
     def set_static_rects(self, /, rects: Any) -> Any: ...
 

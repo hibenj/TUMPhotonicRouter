@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::time::Instant;
 
 use pyo3::prelude::*;
@@ -7,7 +6,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::config::{RouterConfig, SEARCH_ENGINE_GRID_DIJKSTRA};
 use crate::crossings::CrossingContext;
 use crate::obstacle_map::{CellKey, ObstacleMap};
-use crate::plm::RegisteredPlmContext;
 use crate::primitives::{
     create_photonic_primitive_library, PrimitiveLibrary, PrimitiveLibraryConfig,
 };
@@ -89,8 +87,17 @@ pub struct PyPhotonicRouter {
     pub(crate) crossing_verdicts: Vec<CrossingVerdictRecord>,
     pub(crate) static_cells: FxHashSet<CellKey>,
     pub(crate) port_open_cells: FxHashSet<CellKey>,
-    pub(crate) registered_plm: RefCell<RegisteredPlmContext>,
-    pub(crate) last_meander_registration_profile: RefCell<Option<MeanderRegistrationProfile>>,
+    /// Bumped whenever the obstacle map changes (every commit, rip-up,
+    /// static-cell edit: `invalidate_meander_base_prefix`). A
+    /// `MeanderPlanner` on this router rebuilds its dense occupancy prefix
+    /// when the counter moved since it built the prefix; before phase 6
+    /// slice C the prefix lived here and the same call sites set it to
+    /// `None`.
+    pub(crate) obstacle_generation: u64,
+    /// Bumped by `clear_static_cells`, which also dropped the registered
+    /// routes and reserved cells while they lived here; a `MeanderPlanner`
+    /// drops its registration when it sees the counter moved.
+    pub(crate) static_reset_generation: u64,
     pub(crate) long_straight_congestion_cells: FxHashMap<CellKey, u32>,
     pub(crate) long_straight_congestion_records: Vec<LongStraightCongestionRecord>,
     // Set once at the top of the negotiated repair loop from that call's
@@ -217,8 +224,8 @@ impl PyPhotonicRouter {
             crossing_verdicts: Vec::new(),
             static_cells: FxHashSet::default(),
             port_open_cells: FxHashSet::default(),
-            registered_plm: RefCell::new(RegisteredPlmContext::default()),
-            last_meander_registration_profile: RefCell::new(None),
+            obstacle_generation: 0,
+            static_reset_generation: 0,
             long_straight_congestion_cells: FxHashMap::default(),
             long_straight_congestion_records: Vec::new(),
             commit_history_increment: 0,

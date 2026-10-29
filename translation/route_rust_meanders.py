@@ -63,61 +63,58 @@ class MeanderRustBackendLike(Protocol):
         **kwargs: object,
     ) -> dict[str, object]: ...
     def PyPhotonicRouter(self, *args: object, **kwargs: object) -> MeanderRouterLike: ...
+    def MeanderPlanner(self, router: MeanderRouterLike) -> MeanderPlannerLike: ...
 
 
 class MeanderRouterLike(Protocol):
-    """Structural type for the PyO3 router used by registered-meander planning.
+    """Structural type for the PyO3 router the planner context is built on."""
+
+    def set_static_cells(self, cells: list[GridCell]) -> None: ...
+    def route_port_corrected_centerline(
+        self,
+        route: object,
+        **kwargs: Any,
+    ) -> list[tuple[float, float]]: ...
+
+
+class MeanderPlannerLike(Protocol):
+    """Structural type for the PyO3 `MeanderPlanner` (`src/bindings/meander_py.rs`),
+    the registration state and planning calls of one router.
 
     The two planning methods are the request-vector form of the selection
     pass and the final pass (`plan_registered_geometry_requirement_requests`
-    and `plan_registered_geometry_final_requests` in `src/plm.rs`).
+    and `plan_registered_geometry_final_requests` in `src/meander/plan.rs`).
     """
 
-    def set_static_cells(self, cells: list[GridCell]) -> None: ...
-    def add_registered_meander_reserved_grid_rect(
-        self,
-        min_x: int,
-        max_x: int,
-        min_y: int,
-        max_y: int,
-    ) -> int: ...
-    def set_static_and_register_meander_route_cells_as_static(
+    def register(
         self,
         routes: list[object],
-        base_static_cells: list[GridCell],
-        route_occupancy_radius_cells: int = 0,
+        base_static_cells: list[GridCell] | None = None,
+        base_static_cell_handle: object | None = None,
+        route_clearance_radius_cells: int = 0,
+        reset: bool = True,
     ) -> tuple[list[int], list[int], int]: ...
-    def set_static_and_register_meander_route_cells_as_static_handle(
-        self,
-        routes: list[object],
-        base_static_cell_handle: object,
-        route_occupancy_radius_cells: int = 0,
-    ) -> tuple[list[int], list[int], int]: ...
-    def last_meander_registration_profile(self) -> dict[str, int | float]: ...
-    def register_meander_route_geometries(
+    def register_geometries(
         self,
         centerlines: list[list[tuple[float, float]]],
         registered_opened_cell_indices: list[int],
         max_bumps_by_edge: list[int],
     ) -> list[int]: ...
-    def plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
+    def reserve_rect(self, min_x: int, max_x: int, min_y: int, max_y: int) -> int: ...
+    def profile(self) -> dict[str, int | float]: ...
+    def plan_requests(
         self,
         candidate_geometry_indices: list[list[int]],
         candidate_requested_extra_lengths_um: list[list[float]],
         **kwargs: Any,
     ) -> dict[str, object]: ...
-    def plan_auto_analytic_meander_final_requests_registered_opened_auto_config(
+    def plan_final(
         self,
         geometry_indices: list[int],
         requested_extra_lengths_um: list[float],
         min_insertable_extra_length_um: float,
         **kwargs: Any,
     ) -> dict[str, object]: ...
-    def route_port_corrected_centerline(
-        self,
-        route: object,
-        **kwargs: Any,
-    ) -> list[tuple[float, float]]: ...
 
 
 #: (edge, record, the Rust plan dict, max_bumps)
@@ -291,9 +288,9 @@ def _candidate_edge_calls(result: Mapping[str, object]) -> int:
 
 @dataclass
 class _MeanderPlannerContext:
-    """One registered Rust router with the routes and their geometries registered."""
+    """One Rust `MeanderPlanner` with the routes and their geometries registered."""
 
-    router: MeanderRouterLike
+    planner: MeanderPlannerLike
     by_edge: dict[RoutedEdgeKey, RoutedNetRecord]
     updated: dict[RoutedEdgeKey, RoutedNetRecord]
     registered_geometry_index_by_edge: dict[RoutedEdgeKey, int]
@@ -392,7 +389,7 @@ class _MeanderPlannerContext:
         try:
             result = cast(
                 dict[str, object],
-                self.router.plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
+                self.planner.plan_requests(
                     candidate_geometry_indices,
                     candidate_requests,
                     split_geometry_index=split_geometry_index,
@@ -550,7 +547,7 @@ class _MeanderPlannerContext:
         try:
             result = cast(
                 dict[str, object],
-                self.router.plan_auto_analytic_meander_final_requests_registered_opened_auto_config(
+                self.planner.plan_final(
                     geometry_indices,
                     requested_lengths,
                     min_insertable_extra_um,
@@ -637,7 +634,7 @@ class _MeanderPlannerContext:
             return
         min_x, max_x, min_y, max_y = parsed_grid_rect
         t_rust_reserved_start = time.perf_counter()
-        self.router.add_registered_meander_reserved_grid_rect(min_x, max_x, min_y, max_y)
+        self.planner.reserve_rect(min_x, max_x, min_y, max_y)
         if self.profile is not None:
             self.profile.add_commit_time(
                 "rust_reserved_rect_update_s", time.perf_counter() - t_rust_reserved_start
@@ -829,9 +826,9 @@ def _build_planner_context(
     route_clearance_radius_cells: int | None = None,
     debug_meanders: bool = False,
 ) -> _MeanderPlannerContext:
-    """A fresh registered router: static cells, the routes as occupied cells
-    (with their keepout radius) and the route geometries the meander planner
-    needs. Records without a centerline cannot be registered; their cells join
+    """A fresh router and its `MeanderPlanner`: static cells, the routes as
+    occupied cells (with their keepout radius) and the route geometries the
+    planner needs. Records without a centerline cannot be registered; their cells join
     the static set. Timers only under ``debug_meanders``."""
     t_total_start = time.perf_counter()
     width, height, grid_size_um_cfg, origin_x_um, origin_y_um = realization_grid_spec
@@ -850,6 +847,7 @@ def _build_planner_context(
     )
     astar_cfg = rust_backend.AStarConfig(max_iterations=1)
     router = rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
+    planner = rust_backend.MeanderPlanner(router)
     router_init_s = time.perf_counter() - t_router_start
     by_edge = {_record_edge_key(r): r for r in routed_net_records}
     if route_occupancy_radius_cells is None:
@@ -926,26 +924,22 @@ def _build_planner_context(
         t_register_start = time.perf_counter()
         route_objects = [by_edge[edge_key].route_obj for edge_key in registerable_edge_keys]
         if use_static_handle:
-            indices, open_counts, unique_count = (
-                router.set_static_and_register_meander_route_cells_as_static_handle(
-                    route_objects,
-                    static_blocked_cell_handle,
-                    route_occupancy_radius_cells,
-                )
+            indices, open_counts, unique_count = planner.register(
+                route_objects,
+                base_static_cell_handle=static_blocked_cell_handle,
+                route_clearance_radius_cells=route_occupancy_radius_cells,
             )
         else:
-            indices, open_counts, unique_count = (
-                router.set_static_and_register_meander_route_cells_as_static(
-                    route_objects,
-                    list(base_static_for_router),
-                    route_occupancy_radius_cells,
-                )
+            indices, open_counts, unique_count = planner.register(
+                route_objects,
+                base_static_cells=list(base_static_for_router),
+                route_clearance_radius_cells=route_occupancy_radius_cells,
             )
         register_route_cells_s = time.perf_counter() - t_register_start
         registered_unique_route_cell_count = int(unique_count)
         registered_open_cell_count = int(sum(int(raw_count) for raw_count in open_counts))
         if debug_meanders:
-            raw_profile = router.last_meander_registration_profile()
+            raw_profile = planner.profile()
             if isinstance(raw_profile, Mapping):
                 for key, value in raw_profile.items():
                     if isinstance(key, str) and isinstance(value, (int, float)):
@@ -960,7 +954,7 @@ def _build_planner_context(
             )
             registered_max_bumps_by_edge[edge_key] = max_bumps
             geometry_max_bumps.append(max_bumps)
-        geometry_indices = router.register_meander_route_geometries(
+        geometry_indices = planner.register_geometries(
             [centerline_lists_by_edge[edge_key] for edge_key in registerable_edge_keys],
             [int(raw_index) for raw_index in indices],
             geometry_max_bumps,
@@ -994,7 +988,7 @@ def _build_planner_context(
             setup_profile[f"rust_registration_{key}"] = float(value)
         profile = _ContextProfile(setup_profile=setup_profile)
     return _MeanderPlannerContext(
-        router=router,
+        planner=planner,
         by_edge=by_edge,
         updated=dict(by_edge),
         registered_geometry_index_by_edge=registered_geometry_index_by_edge,

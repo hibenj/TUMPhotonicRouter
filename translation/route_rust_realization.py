@@ -19,6 +19,7 @@ from translation.route_rust_types import (
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 _load_rust_backend = _sob._load_rust_backend
+_require_rust_backend = _sob._require_rust_backend
 
 
 class _EndpointCorrectionRouter(Protocol):
@@ -264,7 +265,8 @@ def _record_realized_polygon(
                 if isinstance(p, (tuple, list)) and len(p) == 2
             ]
             if corrected_centerline:
-                realize_with_tangents = router.realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents
+                # pure geometry, a static method of the planner class
+                realize_with_tangents = _require_rust_backend().MeanderPlanner.realize
                 try:
                     return realize_with_tangents(
                         corrected_centerline,

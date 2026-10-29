@@ -10,7 +10,7 @@ use crate::config::{
     SearchOverrides, SEARCH_ENGINE_ASTAR, SEARCH_ENGINE_GRID_DIJKSTRA,
 };
 use crate::crossings::CrossingConfig;
-use crate::meander::{
+use crate::meander::geometry::{
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
     bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs,
 };

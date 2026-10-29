@@ -1,7 +1,7 @@
 //! Obstacle-aware analytic meander search.
 //!
 //! This module layers grid occupancy checks and search over the lower-level
-//! analytic meander planner in `meander.rs`.
+//! analytic meander planner in `geometry.rs`.
 
 use std::borrow::Cow;
 use std::time::Instant;
@@ -14,7 +14,7 @@ use crate::geometry_realization::{
     centerline_length_um, distance, push_physical_if_different, GeometryError, GeometryGridSpec,
     EPS,
 };
-use crate::meander::{
+use crate::meander::geometry::{
     plan_analytic_meander, plan_fill_box_multi_bump_footprint, AnalyticMeanderConfig,
     AnalyticMeanderPlan, MeanderBox, MeanderPlanningMode, MeanderSide, PhysicalPoint,
     StraightSegment,

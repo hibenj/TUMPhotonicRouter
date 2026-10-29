@@ -7,12 +7,35 @@ use std::time::Instant;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use rustc_hash::FxHashSet;
 
-use crate::auto_meander::{AutoMeanderPlanningProfile, AutoMeanderSidePolicy};
-use crate::meander::{MeanderPlanningMode, MeanderSide};
-use crate::plm::{
-    MeanderPlanningProfileTotals, MeanderWrapperProfileTotals, RegisteredRequirementResult,
+use crate::engine::{
+    build_registered_open_indices, build_registered_open_sets, collect_meander_route_cell_sets,
+    pack_cells, MeanderRegistrationProfile, PyPhotonicRouter,
 };
+use crate::geometry_realization::{
+    centerline_length_um as centerline_length_um_rs,
+    realize_centerline_polygon_with_terminal_tangents as realize_centerline_polygon_with_terminal_tangents_rs,
+    splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
+    GeometryGridSpec,
+};
+use crate::meander::geometry::{
+    actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs, MeanderPlanningMode,
+    MeanderSide, PhysicalPoint,
+};
+use crate::meander::plan::{
+    plan_registered_geometry_final_requests, plan_registered_geometry_requirement_requests,
+    MeanderPlanningProfileTotals, MeanderWrapperProfileTotals, RegisteredMeanderGeometry,
+    RegisteredPlmContext, RegisteredRequirementResult, SplitFallbackRequest,
+};
+use crate::meander::search::{
+    plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
+    AutoMeanderConfig, AutoMeanderPlanningProfile, AutoMeanderSidePolicy,
+};
+use crate::obstacle_map::{unpack_xy, CellKey, ObstacleMap};
+use crate::static_obstacle_builder::PyStaticCellSet;
+
+use super::{to_route_result, PyRouteResult};
 
 pub(crate) fn parse_auto_meander_side_policy(side_policy: &str) -> PyResult<AutoMeanderSidePolicy> {
     let normalized = side_policy.trim().to_ascii_lowercase();
@@ -139,7 +162,7 @@ pub(crate) fn auto_meander_planning_profile_to_py_object(
 
 pub(crate) fn auto_meander_plan_to_py_object(
     py: Python<'_>,
-    plan: &crate::auto_meander::AutoRouteAnalyticMeanderPlan,
+    plan: &crate::meander::search::AutoRouteAnalyticMeanderPlan,
     requested_min_bend_radius_um: Option<f64>,
     effective_bend_radius_um: f64,
     primitive_bend_radius_cells: i32,
@@ -556,4 +579,869 @@ pub(crate) fn auto_meander_search_config_rs(
         auto_endpoint_inset_um.is_some(),
     )?
     .into())
+}
+
+/// The path-length-matching planner of one router (phase 6 slice C of the
+/// 2026-10 do-over): the routes registered as occupied cells with each
+/// route's own cells open to its meanders, the route geometries, the cells
+/// the planned meanders reserve, and the two caches the planning calls
+/// rebuild on demand -- the router's dense occupancy prefix and the sparse
+/// index of the reserved cells. `MeanderPlanner(router)` starts empty;
+/// `register` then `register_geometries` fill it, `plan_requests` and
+/// `plan_final` decide the meanders, `reserve_rect` books a planned box.
+///
+/// The router keeps two counters the planner syncs on at every call:
+/// `obstacle_generation` moves whenever the obstacle map changes and drops
+/// the prefix, `static_reset_generation` moves with `clear_static_cells`
+/// and drops the registration -- exactly what the router's own context did
+/// while this state lived on `PyPhotonicRouter`.
+#[pyclass(name = "MeanderPlanner")]
+pub struct PyMeanderPlanner {
+    router: Py<PyPhotonicRouter>,
+    context: RegisteredPlmContext,
+    base_prefix_generation: u64,
+    static_generation: u64,
+    profile: Option<MeanderRegistrationProfile>,
+}
+
+impl PyMeanderPlanner {
+    /// Drop the registration when the router's static cells were cleared
+    /// since the last call (the router did this in `clear_static_cells`
+    /// before the state moved here).
+    fn sync_with_router(&mut self, router: &PyPhotonicRouter) {
+        if self.static_generation != router.static_reset_generation {
+            self.context.clear_registered_routes();
+            self.context.clear_reserved_cells_and_invalidate_index();
+            self.static_generation = router.static_reset_generation;
+        }
+    }
+
+    fn ensure_base_prefix(&mut self, router: &PyPhotonicRouter) {
+        if self.base_prefix_generation != router.obstacle_generation {
+            self.context.invalidate_base_prefix();
+            self.base_prefix_generation = router.obstacle_generation;
+        }
+        self.context
+            .ensure_base_prefix_from_obstacle_map(&router.obstacle_map);
+    }
+
+    fn ensure_reserved_index(&mut self, router: &PyPhotonicRouter) {
+        self.context
+            .ensure_reserved_index(router.grid.width as i32, router.grid.height as i32);
+    }
+
+    /// The registration that adds the routes to the router's current static
+    /// map (`reset=False`).
+    fn register_on_current_map(
+        &mut self,
+        router: &mut PyPhotonicRouter,
+        routes: &Bound<'_, PyList>,
+        base_static_cells: Vec<(i32, i32)>,
+        route_clearance_radius_cells: i32,
+    ) -> PyResult<(Vec<usize>, Vec<usize>, usize)> {
+        let total_start = Instant::now();
+        let mut profile = MeanderRegistrationProfile {
+            route_count: routes.len(),
+            base_static_cell_count: base_static_cells.len(),
+            ..MeanderRegistrationProfile::default()
+        };
+        let reset_start = Instant::now();
+        self.context.clear_reserved_cells_and_invalidate_index();
+        profile.reset_s += reset_start.elapsed().as_secs_f64();
+        let base_static_pack_start = Instant::now();
+        let base_static_keys = pack_cells(&base_static_cells);
+        profile.base_static_pack_s += base_static_pack_start.elapsed().as_secs_f64();
+        let (route_cell_sets, route_cell_refcounts, unique_route_cells) =
+            collect_meander_route_cell_sets(
+                routes,
+                route_clearance_radius_cells,
+                router.grid.width as i32,
+                router.grid.height as i32,
+                &mut profile,
+            )?;
+        let (registered_open_sets, open_counts) = build_registered_open_sets(
+            route_cell_sets,
+            &route_cell_refcounts,
+            &base_static_keys,
+            &mut profile,
+        );
+
+        let route_cell_list_start = Instant::now();
+        let route_cell_list: Vec<(i32, i32)> =
+            unique_route_cells.iter().copied().map(unpack_xy).collect();
+        profile.route_cell_list_s += route_cell_list_start.elapsed().as_secs_f64();
+        let unique_route_cell_count = route_cell_list.len();
+        profile.unique_route_cell_count = unique_route_cell_count;
+        profile.registered_open_cell_count = open_counts.iter().sum();
+        if !route_cell_list.is_empty() {
+            let route_static_add_start = Instant::now();
+            router.add_static_cells(route_cell_list);
+            profile.route_static_add_s += route_static_add_start.elapsed().as_secs_f64();
+        }
+
+        let indices: Vec<usize> = (0..registered_open_sets.len()).collect();
+        let registered_store_start = Instant::now();
+        self.ensure_base_prefix(router);
+        let base_prefix = self
+            .context
+            .base_prefix
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let registered_open_indices =
+            build_registered_open_indices(base_prefix, &registered_open_sets);
+        self.context.open_cells = registered_open_sets;
+        self.context.open_indices = registered_open_indices;
+        profile.registered_store_s += registered_store_start.elapsed().as_secs_f64();
+        profile.total_s = total_start.elapsed().as_secs_f64();
+        self.profile = Some(profile);
+        Ok((indices, open_counts, unique_route_cell_count))
+    }
+
+    /// The registration the flow uses: the router starts over from the
+    /// base static cells and the routes join its static map.
+    fn register_with_reset(
+        &mut self,
+        router: &mut PyPhotonicRouter,
+        routes: &Bound<'_, PyList>,
+        base_static_cells: Vec<(i32, i32)>,
+        route_clearance_radius_cells: i32,
+    ) -> PyResult<(Vec<usize>, Vec<usize>, usize)> {
+        let total_start = Instant::now();
+        let mut profile = MeanderRegistrationProfile {
+            route_count: routes.len(),
+            base_static_cell_count: base_static_cells.len(),
+            ..MeanderRegistrationProfile::default()
+        };
+        let reset_start = Instant::now();
+        router.invalidate_meander_base_prefix();
+        router.obstacle_map = ObstacleMap::new(router.grid.width as i32, router.grid.height as i32);
+        router.committed_center_routes.clear();
+        router.committed_realized_center_routes.clear();
+        router.committed_target_terminal_bump_guards.clear();
+        router.committed_opened_cell_keys.clear();
+        router.crossing_events.clear();
+        router.crossing_verdicts.clear();
+        profile.reset_s += reset_start.elapsed().as_secs_f64();
+        let base_static_pack_start = Instant::now();
+        let base_static_keys = pack_cells(&base_static_cells);
+        profile.base_static_pack_s += base_static_pack_start.elapsed().as_secs_f64();
+        router.static_cells = base_static_keys.clone();
+        self.context.clear_registered_routes();
+        self.context.clear_reserved_cells_and_invalidate_index();
+        if !base_static_cells.is_empty() {
+            let base_static_add_start = Instant::now();
+            router.obstacle_map.add_static_cells(&base_static_cells);
+            profile.base_static_obstacle_add_s += base_static_add_start.elapsed().as_secs_f64();
+        }
+
+        let (route_cell_sets, route_cell_refcounts, unique_route_cells) =
+            collect_meander_route_cell_sets(
+                routes,
+                route_clearance_radius_cells,
+                router.grid.width as i32,
+                router.grid.height as i32,
+                &mut profile,
+            )?;
+        let (registered_open_sets, open_counts) = build_registered_open_sets(
+            route_cell_sets,
+            &route_cell_refcounts,
+            &base_static_keys,
+            &mut profile,
+        );
+
+        let route_cell_list_start = Instant::now();
+        let route_cell_list: Vec<(i32, i32)> =
+            unique_route_cells.iter().copied().map(unpack_xy).collect();
+        profile.route_cell_list_s += route_cell_list_start.elapsed().as_secs_f64();
+        let unique_route_cell_count = route_cell_list.len();
+        profile.unique_route_cell_count = unique_route_cell_count;
+        profile.registered_open_cell_count = open_counts.iter().sum();
+        router.static_cells.extend(unique_route_cells);
+        if !route_cell_list.is_empty() {
+            let route_static_add_start = Instant::now();
+            router.obstacle_map.add_static_cells(&route_cell_list);
+            profile.route_static_add_s += route_static_add_start.elapsed().as_secs_f64();
+        }
+
+        let indices: Vec<usize> = (0..registered_open_sets.len()).collect();
+        let registered_store_start = Instant::now();
+        self.ensure_base_prefix(router);
+        let base_prefix = self
+            .context
+            .base_prefix
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let registered_open_indices =
+            build_registered_open_indices(base_prefix, &registered_open_sets);
+        self.context.open_cells = registered_open_sets;
+        self.context.open_indices = registered_open_indices;
+        profile.registered_store_s += registered_store_start.elapsed().as_secs_f64();
+        profile.total_s = total_start.elapsed().as_secs_f64();
+        self.profile = Some(profile);
+        Ok((indices, open_counts, unique_route_cell_count))
+    }
+
+    /// The reset registration from a Rust static-cell handle: the prefix is
+    /// built from the handle's keys plus the route cells directly.
+    fn register_with_reset_from_handle(
+        &mut self,
+        router: &mut PyPhotonicRouter,
+        routes: &Bound<'_, PyList>,
+        base_static_keys: &FxHashSet<CellKey>,
+        route_clearance_radius_cells: i32,
+    ) -> PyResult<(Vec<usize>, Vec<usize>, usize)> {
+        let total_start = Instant::now();
+        let mut profile = MeanderRegistrationProfile {
+            route_count: routes.len(),
+            base_static_cell_count: base_static_keys.len(),
+            ..MeanderRegistrationProfile::default()
+        };
+        let reset_start = Instant::now();
+        router.invalidate_meander_base_prefix();
+        router.obstacle_map = ObstacleMap::new(router.grid.width as i32, router.grid.height as i32);
+        router.committed_center_routes.clear();
+        router.committed_realized_center_routes.clear();
+        router.committed_target_terminal_bump_guards.clear();
+        router.committed_opened_cell_keys.clear();
+        router.crossing_events.clear();
+        router.crossing_verdicts.clear();
+        router.static_cells = base_static_keys.clone();
+        self.context.clear_registered_routes();
+        self.context.clear_reserved_cells_and_invalidate_index();
+        profile.reset_s += reset_start.elapsed().as_secs_f64();
+
+        let (route_cell_sets, route_cell_refcounts, unique_route_cells) =
+            collect_meander_route_cell_sets(
+                routes,
+                route_clearance_radius_cells,
+                router.grid.width as i32,
+                router.grid.height as i32,
+                &mut profile,
+            )?;
+        let (registered_open_sets, open_counts) = build_registered_open_sets(
+            route_cell_sets,
+            &route_cell_refcounts,
+            base_static_keys,
+            &mut profile,
+        );
+
+        let route_cell_list_start = Instant::now();
+        let unique_route_cell_count = unique_route_cells.len();
+        profile.route_cell_list_s += route_cell_list_start.elapsed().as_secs_f64();
+        profile.unique_route_cell_count = unique_route_cell_count;
+        profile.registered_open_cell_count = open_counts.iter().sum();
+        let base_prefix_build_start = Instant::now();
+        let mut base_prefix_keys = base_static_keys.clone();
+        base_prefix_keys.extend(unique_route_cells);
+        router.static_cells = base_prefix_keys.clone();
+        self.context.set_base_prefix_from_keys(
+            router.grid.width as i32,
+            router.grid.height as i32,
+            &base_prefix_keys,
+        );
+        self.base_prefix_generation = router.obstacle_generation;
+        profile.base_prefix_build_s += base_prefix_build_start.elapsed().as_secs_f64();
+
+        let indices: Vec<usize> = (0..registered_open_sets.len()).collect();
+        let registered_store_start = Instant::now();
+        let base_prefix = self
+            .context
+            .base_prefix
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let registered_open_indices =
+            build_registered_open_indices(base_prefix, &registered_open_sets);
+        self.context.open_cells = registered_open_sets;
+        self.context.open_indices = registered_open_indices;
+        profile.registered_store_s += registered_store_start.elapsed().as_secs_f64();
+        profile.total_s = total_start.elapsed().as_secs_f64();
+        self.profile = Some(profile);
+        Ok((indices, open_counts, unique_route_cell_count))
+    }
+}
+
+#[pymethods]
+impl PyMeanderPlanner {
+    #[new]
+    fn new(py: Python<'_>, router: Py<PyPhotonicRouter>) -> PyResult<Self> {
+        let (obstacle_generation, static_reset_generation) = {
+            let router = router.bind(py).try_borrow()?;
+            (router.obstacle_generation, router.static_reset_generation)
+        };
+        Ok(Self {
+            router,
+            context: RegisteredPlmContext::default(),
+            base_prefix_generation: obstacle_generation,
+            static_generation: static_reset_generation,
+            profile: None,
+        })
+    }
+
+    /// Register the routes as occupied cells (inflated by
+    /// `route_clearance_radius_cells`), each route's own cells open to its
+    /// meanders where no other route or base static cell claims them.
+    /// Returns the registered route indices, their open-cell counts and the
+    /// number of distinct route cells. With `reset` (the flow's form) the
+    /// router starts over from `base_static_cells` -- or from the Rust
+    /// handle `base_static_cell_handle`, whose keys then also build the
+    /// occupancy prefix directly -- and drops its committed routes and
+    /// crossing events; `reset=False` adds the routes to the router's
+    /// current static map and keeps the rest.
+    #[pyo3(signature=(routes,base_static_cells=None,base_static_cell_handle=None,route_clearance_radius_cells=0,reset=true))]
+    fn register(
+        &mut self,
+        py: Python<'_>,
+        routes: &Bound<'_, PyList>,
+        base_static_cells: Option<Vec<(i32, i32)>>,
+        base_static_cell_handle: Option<PyRef<'_, PyStaticCellSet>>,
+        route_clearance_radius_cells: i32,
+        reset: bool,
+    ) -> PyResult<(Vec<usize>, Vec<usize>, usize)> {
+        if route_clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err(
+                "route_clearance_radius_cells must be >= 0",
+            ));
+        }
+        let mut router = self.router.bind(py).try_borrow_mut()?;
+        self.sync_with_router(&router);
+        match (base_static_cells, base_static_cell_handle, reset) {
+            (Some(cells), None, true) => {
+                self.register_with_reset(&mut router, routes, cells, route_clearance_radius_cells)
+            }
+            (Some(cells), None, false) => self.register_on_current_map(
+                &mut router,
+                routes,
+                cells,
+                route_clearance_radius_cells,
+            ),
+            (None, Some(handle), true) => self.register_with_reset_from_handle(
+                &mut router,
+                routes,
+                handle.keys(),
+                route_clearance_radius_cells,
+            ),
+            (None, Some(_), false) => Err(PyValueError::new_err(
+                "base_static_cell_handle registers with reset=True only",
+            )),
+            _ => Err(PyValueError::new_err(
+                "register takes exactly one of base_static_cells and base_static_cell_handle",
+            )),
+        }
+    }
+
+    /// Register one centerline per route to plan meanders on: its index
+    /// among the registered routes (from `register`) and its bump cap.
+    /// Returns the geometry indices the planning calls take.
+    fn register_geometries(
+        &mut self,
+        py: Python<'_>,
+        centerlines: Vec<Vec<(f64, f64)>>,
+        registered_opened_cell_indices: Vec<usize>,
+        max_bumps_by_edge: Vec<usize>,
+    ) -> PyResult<Vec<usize>> {
+        {
+            let router = self.router.bind(py).try_borrow()?;
+            self.sync_with_router(&router);
+        }
+        let count = centerlines.len();
+        if count != registered_opened_cell_indices.len() || count != max_bumps_by_edge.len() {
+            return Err(PyValueError::new_err(
+                "registered meander geometry inputs must have matching lengths",
+            ));
+        }
+        let open_cell_count = self.context.open_cells.len();
+        let mut geometries = Vec::with_capacity(count);
+        for ((centerline, registered_open_index), max_bumps) in centerlines
+            .into_iter()
+            .zip(registered_opened_cell_indices)
+            .zip(max_bumps_by_edge)
+        {
+            if registered_open_index >= open_cell_count {
+                return Err(PyValueError::new_err(
+                    "registered meander route index is out of range",
+                ));
+            }
+            if max_bumps == 0 {
+                return Err(PyValueError::new_err(
+                    "registered meander max bump values must be > 0",
+                ));
+            }
+            let _ = centerline_length_um_rs(&centerline)
+                .map_err(|err| PyValueError::new_err(err.to_string()))?;
+            geometries.push(RegisteredMeanderGeometry {
+                centerline,
+                registered_open_index,
+                max_bumps,
+            });
+        }
+        let indices: Vec<usize> = (0..geometries.len()).collect();
+        self.context.geometries = geometries;
+        Ok(indices)
+    }
+
+    /// Reserve a planned meander's grid rectangle for the following plans.
+    /// Returns the number of newly reserved cells.
+    fn reserve_rect(
+        &mut self,
+        py: Python<'_>,
+        min_x: i32,
+        max_x: i32,
+        min_y: i32,
+        max_y: i32,
+    ) -> PyResult<usize> {
+        if max_x < min_x || max_y < min_y {
+            return Err(PyValueError::new_err(
+                "registered meander reserved grid rect must be non-empty",
+            ));
+        }
+        let router = self.router.bind(py).try_borrow()?;
+        self.sync_with_router(&router);
+        Ok(self.context.add_reserved_grid_rect(
+            min_x,
+            max_x,
+            min_y,
+            max_y,
+            router.grid.width as i32,
+        ))
+    }
+
+    fn clear_reserved(&mut self, py: Python<'_>) -> PyResult<()> {
+        let router = self.router.bind(py).try_borrow()?;
+        self.sync_with_router(&router);
+        self.context.clear_reserved_cells(router.grid.height as i32);
+        Ok(())
+    }
+
+    fn open_cell_count(&mut self, py: Python<'_>, index: usize) -> PyResult<usize> {
+        {
+            let router = self.router.bind(py).try_borrow()?;
+            self.sync_with_router(&router);
+        }
+        self.context
+            .open_cells
+            .get(index)
+            .map(FxHashSet::len)
+            .ok_or_else(|| PyValueError::new_err("registered meander route index is out of range"))
+    }
+
+    /// The timers and counts of the last `register` call (empty before one).
+    fn profile(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let d = PyDict::new_bound(py);
+        if let Some(profile) = self.profile.as_ref() {
+            d.set_item("total_s", profile.total_s)?;
+            d.set_item("reset_s", profile.reset_s)?;
+            d.set_item("base_static_pack_s", profile.base_static_pack_s)?;
+            d.set_item(
+                "base_static_obstacle_add_s",
+                profile.base_static_obstacle_add_s,
+            )?;
+            d.set_item("base_prefix_build_s", profile.base_prefix_build_s)?;
+            d.set_item("route_extract_s", profile.route_extract_s)?;
+            d.set_item("route_cell_collect_s", profile.route_cell_collect_s)?;
+            d.set_item("open_set_build_s", profile.open_set_build_s)?;
+            d.set_item("route_cell_list_s", profile.route_cell_list_s)?;
+            d.set_item("route_static_add_s", profile.route_static_add_s)?;
+            d.set_item("registered_store_s", profile.registered_store_s)?;
+            d.set_item("route_count", profile.route_count)?;
+            d.set_item("base_static_cell_count", profile.base_static_cell_count)?;
+            d.set_item("unique_route_cell_count", profile.unique_route_cell_count)?;
+            d.set_item(
+                "registered_open_cell_count",
+                profile.registered_open_cell_count,
+            )?;
+        }
+        Ok(d.into())
+    }
+
+    /// Plan one path-length requirement from its request vector (phase 6
+    /// slice B): `candidate_geometry_indices[i]` is the i-th candidate bundle
+    /// of registered geometries and `candidate_requested_extra_lengths_um[i]`
+    /// its requested extra length per edge (the edge's new total where it
+    /// already carries a planned meander). The candidates are tried in order
+    /// at each endpoint inset; the first bundle that plans as one sequence
+    /// wins. When none plans and `split_geometry_index` is given, that
+    /// geometry is tried as 2..`max_split_parts` same-edge chunks of
+    /// `split_requested_extra_length_um`, each at least
+    /// `min_insertable_extra_length_um`. The result's `planning_mode` says
+    /// which branch planned (`rust_registered_candidate`,
+    /// `rust_registered_split_route_runs`, `none`), `selected_candidate_index`
+    /// the planned candidate (the split's part-count attempts follow the
+    /// candidates) and `split_part_count` the chunks of a planned split.
+    #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,split_geometry_index=None,split_requested_extra_length_um=None,min_insertable_extra_length_um=0.0,max_split_parts=8,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,auto_endpoint_inset_um=None,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_requests(
+        &mut self,
+        py: Python<'_>,
+        candidate_geometry_indices: Vec<Vec<usize>>,
+        candidate_requested_extra_lengths_um: Vec<Vec<f64>>,
+        split_geometry_index: Option<usize>,
+        split_requested_extra_length_um: Option<f64>,
+        min_insertable_extra_length_um: f64,
+        max_split_parts: usize,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        auto_endpoint_inset_um: Option<f64>,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        let router = self.router.bind(py).try_borrow()?;
+        self.sync_with_router(&router);
+        let effective_radius_um = router.effective_bend_radius_um(min_bend_radius_um)?;
+        let box_depths_um = default_meander_box_depths_um(max_meander_height_um)?;
+        let endpoint_insets_um = default_endpoint_insets_um(
+            effective_radius_um,
+            min_segment_length_um,
+            auto_endpoint_inset_um,
+        )?;
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            router.primitive_cfg.bend_radius_cells,
+            router.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let grid = GeometryGridSpec::new(
+            router.grid.grid_size_um,
+            router.grid.origin_x_um,
+            router.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let split_fallback = match (split_geometry_index, split_requested_extra_length_um) {
+            (Some(geometry_index), Some(requested_extra_length_um)) => Some(SplitFallbackRequest {
+                geometry_index,
+                requested_extra_length_um,
+                min_insertable_extra_um: min_insertable_extra_length_um,
+                max_parts: max_split_parts,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "split_geometry_index and split_requested_extra_length_um go together",
+                ))
+            }
+        };
+
+        self.ensure_base_prefix(&router);
+        self.ensure_reserved_index(&router);
+        let plm = &self.context;
+        let base_prefix = plm
+            .base_prefix
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let requests_result = plan_registered_geometry_requirement_requests(
+            &candidate_geometry_indices,
+            &candidate_requested_extra_lengths_um,
+            split_fallback,
+            &plm.geometries,
+            &plm.open_cells,
+            &plm.open_indices,
+            base_prefix,
+            plm.reserved_index.as_ref(),
+            &grid,
+            router.grid.width as i32,
+            router.grid.height as i32,
+            &box_depths_um,
+            &endpoint_insets_um,
+            auto_endpoint_inset_um.is_some(),
+            effective_radius_um,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            policy,
+            mode,
+        )
+        .map_err(PyValueError::new_err)?;
+
+        let py_result = registered_requirement_result_to_py_object(
+            py,
+            requests_result.result,
+            min_bend_radius_um,
+            effective_radius_um,
+            router.primitive_cfg.bend_radius_cells,
+            primitive_bend_radius_um,
+            mode,
+            min_straight_um,
+            min_segment_length_um,
+            max_meander_height_um,
+        )?;
+        let py_result_dict = py_result.bind(py).downcast::<PyDict>()?;
+        py_result_dict.set_item("planning_mode", requests_result.planning_mode)?;
+        py_result_dict.set_item("split_part_count", requests_result.split_part_count)?;
+        Ok(py_result)
+    }
+
+    /// Plan every physical edge's total in one call: the whole sequence,
+    /// then each edge direct, then the same-edge split. The result's
+    /// `planning_mode` names the branch that planned and
+    /// `plan_input_indices` the input edge of each plan.
+    #[pyo3(signature=(geometry_indices,requested_extra_lengths_um,min_insertable_extra_length_um,max_split_parts=8,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,auto_endpoint_inset_um=None,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_final(
+        &mut self,
+        py: Python<'_>,
+        geometry_indices: Vec<usize>,
+        requested_extra_lengths_um: Vec<f64>,
+        min_insertable_extra_length_um: f64,
+        max_split_parts: usize,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        auto_endpoint_inset_um: Option<f64>,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        planning_mode: &str,
+    ) -> PyResult<PyObject> {
+        let router = self.router.bind(py).try_borrow()?;
+        self.sync_with_router(&router);
+        let effective_radius_um = router.effective_bend_radius_um(min_bend_radius_um)?;
+        let box_depths_um = default_meander_box_depths_um(max_meander_height_um)?;
+        let endpoint_insets_um = default_endpoint_insets_um(
+            effective_radius_um,
+            min_segment_length_um,
+            auto_endpoint_inset_um,
+        )?;
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            router.primitive_cfg.bend_radius_cells,
+            router.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let grid = GeometryGridSpec::new(
+            router.grid.grid_size_um,
+            router.grid.origin_x_um,
+            router.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        self.ensure_base_prefix(&router);
+        self.ensure_reserved_index(&router);
+        let plm = &self.context;
+        let base_prefix = plm
+            .base_prefix
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let final_result = plan_registered_geometry_final_requests(
+            &geometry_indices,
+            &requested_extra_lengths_um,
+            min_insertable_extra_length_um,
+            max_split_parts,
+            &plm.geometries,
+            &plm.open_cells,
+            &plm.open_indices,
+            base_prefix,
+            plm.reserved_index.as_ref(),
+            &grid,
+            router.grid.width as i32,
+            router.grid.height as i32,
+            &box_depths_um,
+            &endpoint_insets_um,
+            auto_endpoint_inset_um.is_some(),
+            effective_radius_um,
+            min_straight_um,
+            max_meander_height_um,
+            min_segment_length_um,
+            clearance_radius_cells,
+            policy,
+            mode,
+        )
+        .map_err(PyValueError::new_err)?;
+
+        let py_result = registered_requirement_result_to_py_object(
+            py,
+            final_result.result,
+            min_bend_radius_um,
+            effective_radius_um,
+            router.primitive_cfg.bend_radius_cells,
+            primitive_bend_radius_um,
+            mode,
+            min_straight_um,
+            min_segment_length_um,
+            max_meander_height_um,
+        )?;
+        let py_result_dict = py_result.bind(py).downcast::<PyDict>()?;
+        py_result_dict.set_item("planning_mode", final_result.planning_mode)?;
+        py_result_dict.set_item("plan_input_indices", final_result.plan_input_indices)?;
+        Ok(py_result)
+    }
+
+    /// The depth sweep over one centerline against the router's occupancy
+    /// (its port-open cells unless `opened_cells` is given): the first box
+    /// depth, run and side that take `requested_extra_length_um` exactly.
+    #[pyo3(signature=(centerline,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn plan_centerline(
+        &mut self,
+        py: Python<'_>,
+        centerline: Vec<(f64, f64)>,
+        requested_extra_length_um: f64,
+        box_depths_um: Vec<f64>,
+        min_bend_radius_um: Option<f64>,
+        min_straight_um: f64,
+        max_bumps: usize,
+        max_meander_height_um: f64,
+        min_segment_length_um: f64,
+        endpoint_inset_um: f64,
+        clearance_radius_cells: i32,
+        side_policy: &str,
+        opened_cells: Option<Vec<(i32, i32)>>,
+        planning_mode: &str,
+        extra_blocked_cells: Option<Vec<(i32, i32)>>,
+    ) -> PyResult<PyObject> {
+        if requested_extra_length_um <= 0.0 {
+            return Err(PyValueError::new_err(
+                "requested_extra_length_um must be > 0",
+            ));
+        }
+        if box_depths_um.is_empty() {
+            return Err(PyValueError::new_err("box_depths_um must not be empty"));
+        }
+        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(PyValueError::new_err(
+                "box_depths_um values must be finite and > 0",
+            ));
+        }
+        if min_straight_um < 0.0 {
+            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
+        }
+        if max_bumps == 0 {
+            return Err(PyValueError::new_err("max_bumps must be > 0"));
+        }
+        if max_meander_height_um <= 0.0 {
+            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
+        }
+        if min_segment_length_um <= 0.0 {
+            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
+        }
+        if endpoint_inset_um < 0.0 {
+            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
+        }
+        if clearance_radius_cells < 0 {
+            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
+        }
+        let _ = centerline_length_um_rs(&centerline)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let policy = parse_auto_meander_side_policy(side_policy)?;
+        let mode = parse_meander_planning_mode(planning_mode)?;
+        let router = self.router.bind(py).try_borrow()?;
+        self.sync_with_router(&router);
+        let effective_radius_um = router.effective_bend_radius_um(min_bend_radius_um)?;
+        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
+            router.primitive_cfg.bend_radius_cells,
+            router.grid.grid_size_um,
+        )
+        .map_err(PyValueError::new_err)?;
+        let cfg = AutoMeanderConfig {
+            requested_extra_length_um,
+            min_bend_radius_um: effective_radius_um,
+            min_straight_um,
+            max_bumps,
+            max_meander_height_um,
+            box_depth_um: box_depths_um[0],
+            min_segment_length_um,
+            endpoint_inset_um,
+            clearance_radius_cells,
+            side_policy: policy,
+            mode,
+        };
+        let grid = GeometryGridSpec::new(
+            router.grid.grid_size_um,
+            router.grid.origin_x_um,
+            router.grid.origin_y_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let opened_owned;
+        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
+            opened_owned = pack_cells(cells);
+            Some(&opened_owned)
+        } else {
+            Some(&router.port_open_cells)
+        };
+        let extra_blocked_owned;
+        let extra_blocked_ref: Option<&FxHashSet<CellKey>> =
+            if let Some(cells) = extra_blocked_cells.as_ref() {
+                extra_blocked_owned = pack_cells(cells);
+                Some(&extra_blocked_owned)
+            } else {
+                None
+            };
+        self.ensure_base_prefix(&router);
+        let base_prefix = self
+            .context
+            .base_prefix
+            .as_ref()
+            .expect("meander base prefix should be initialized");
+        let plan = plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
+            &centerline,
+            &grid,
+            base_prefix,
+            opened_ref,
+            None,
+            extra_blocked_ref,
+            None,
+            None,
+            &cfg,
+            &box_depths_um,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+
+        auto_meander_plan_to_py_object(
+            py,
+            &plan,
+            min_bend_radius_um,
+            effective_radius_um,
+            router.primitive_cfg.bend_radius_cells,
+            primitive_bend_radius_um,
+            mode,
+        )
+    }
+
+    /// The polygon of a port-corrected centerline with a planned meander
+    /// spliced into its run `selected_run_start_index..=selected_run_end_index`,
+    /// the terminal tangents taken from the grid route. Pure geometry: no
+    /// router state, so a static method.
+    #[staticmethod]
+    #[pyo3(signature=(centerline,width_um,route,selected_run_start_index,selected_run_end_index,meander_centerline,source_enabled=true,target_enabled=true))]
+    #[allow(clippy::too_many_arguments)]
+    fn realize(
+        centerline: Vec<(f64, f64)>,
+        width_um: f64,
+        route: &PyRouteResult,
+        selected_run_start_index: usize,
+        selected_run_end_index: usize,
+        meander_centerline: Vec<(f64, f64)>,
+        source_enabled: bool,
+        target_enabled: bool,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        if width_um <= 0.0 {
+            return Err(PyValueError::new_err("width_um must be > 0"));
+        }
+        let _ = centerline_length_um_rs(&centerline)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let meander_points: Vec<PhysicalPoint> = meander_centerline
+            .into_iter()
+            .map(|(x_um, y_um)| PhysicalPoint { x_um, y_um })
+            .collect();
+        let spliced = splice_meander_into_centerline_range_rs(
+            &centerline,
+            selected_run_start_index,
+            selected_run_end_index,
+            &meander_points,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let r = to_route_result(route);
+        realize_centerline_polygon_with_terminal_tangents_rs(
+            &spliced,
+            &r,
+            width_um,
+            source_enabled,
+            target_enabled,
+        )
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
 }

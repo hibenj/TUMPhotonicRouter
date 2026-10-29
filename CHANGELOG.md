@@ -65,6 +65,49 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- One meander module tree and one `MeanderPlanner` class (phase 6 slice C; no
+  behaviour change: the nine-cell reproduction gate, the two-cell PLM gate and the
+  thirteen PLM cells of `docs/plm_baseline.json` reproduce exactly). Rust:
+  `src/meander.rs`, `src/auto_meander.rs` and `src/plm.rs` moved verbatim to
+  `src/meander/{geometry,search,plan}.rs` under a `mod.rs` that re-exports every
+  public item (`crate::meander::X` still names them); the 36 `*_rejects_*` unit
+  tests of the registered planner are one table-driven test
+  (`registered_planning_rejects_invalid_inputs`, one row per former test, named
+  after it; 504 lib tests from 539). PyO3: the registration state that lived on
+  `PyPhotonicRouter` (the registered route cells and open sets, the route
+  geometries, the reserved cells, the occupancy-prefix and reserved-index caches,
+  the registration profile) is a `#[pyclass] MeanderPlanner(router)` in
+  `src/bindings/meander_py.rs` with `register(routes, base_static_cells= |
+  base_static_cell_handle=, route_clearance_radius_cells=, reset=)`,
+  `register_geometries`, `reserve_rect`, `clear_reserved`, `open_cell_count`,
+  `profile`, `plan_requests`, `plan_final`, `plan_centerline` (the depth sweep) and
+  the static `realize` (the terminal-tangent polygon). The thirteen router
+  methods they replace are removed (`register_meander_route_geometries`,
+  `register_meander_route_cells_as_static`,
+  `set_static_and_register_meander_route_cells_as_static[_handle]`,
+  `plan_auto_analytic_meander_{for_centerline_depth_sweep,
+  requirement_requests_registered_opened_auto_config,
+  final_requests_registered_opened_auto_config}`,
+  `realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents`,
+  `last_meander_registration_profile`, `registered_meander_open_cell_count`,
+  `clear_registered_meander_reserved_cells`,
+  `add_registered_meander_reserved_grid_rect` and the never-called
+  `add_registered_meander_reserved_cells`); `PyPhotonicRouter` keeps 42 methods
+  (from 55), `route_single_net_with_auto_meander_and_commit` and
+  `realize_route_polygon_from_planned_auto_meander` among them. Instead of the
+  state the router keeps two counters: `obstacle_generation` (bumped by
+  `invalidate_meander_base_prefix` at every commit, rip-up and static edit) and
+  `static_reset_generation` (bumped by `clear_static_cells`); the planner rebuilds
+  its prefix, or drops its registration, when they moved -- what the router's own
+  context did before. `translation/route_rust_meanders.py` builds
+  `rust_backend.MeanderPlanner(router)` next to the router and drives it
+  (`_MeanderPlannerContext.planner`, the `MeanderPlannerLike` protocol);
+  `route_rust_realization.py` calls `MeanderPlanner.realize`; the stub is
+  regenerated. The test fakes of the planner live in
+  `tests/fixtures/path_length.py` (`fake_backend`, `FakeRouter`, `FakePlanner`,
+  `planned_meander`, `planned_result`, the real-backend, report and search-config
+  helpers; seven fake routers in `tests/test_path_length_graph.py` before).
+
 - Rust decides the meander cascade, the PLM reports go behind `--debug-meanders`
   (phase 6 slice B; the thirteen PLM cells of `docs/plm_baseline.json`, the two-cell
   PLM gate and the nine-cell reproduction gate reproduce exactly). One policy owner:
