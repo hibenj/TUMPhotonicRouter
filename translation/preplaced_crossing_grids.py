@@ -1,8 +1,10 @@
-"""Pre-placed, topology-derived crossing tiles for permutation-network benchmarks.
+"""Pre-placed, placement-derived crossing tiles for permutation-network benchmarks.
 
 For a Benes-style network the set of waveguide crossings in every interstage
-layer is fully determined by the graph before routing starts. This module turns
-that precomputed information (a ``CrossingPlan``) into placed PDK crossing
+layer is fully determined by the placement before routing starts (the
+``CrossingDemand`` of the bands between the component columns,
+`photonic_router.crossing_demand`). This module turns that precomputed
+information (its ``CrossingPlan``) into placed PDK crossing
 tiles -- one small tile per planned crossing (contribution 2, owner rule
 2026-09-07) -- and derives a second schematic/layout pair in which those tiles
 are placed as ordinary instances and every crossing lane is split into
@@ -1369,16 +1371,9 @@ def preplaced_crossing_grid_metrics(derived: DerivedCrossingLayout) -> dict[str,
 
 def build_crossing_plan_for_benchmark(
     schematic: Schematic,
-    metadata: Mapping[str, object],
+    unrouted_layout: Component,
 ) -> CrossingPlan:
-    """Build the router-facing crossing plan from benchmark topology metadata."""
-    from photonic_router.crossing_plan import build_crossing_plan
-    from photonic_router.topology_analysis import analyze_schematic_topology
+    """The crossing plan of the placed benchmark: its `CrossingDemand`'s stages, one per band."""
+    from photonic_router.crossing_demand import build_crossing_demand
 
-    topology = analyze_schematic_topology(
-        schematic,
-        node_depths=metadata.get("node_depths") or None,  # type: ignore[arg-type]
-        node_ranks=metadata.get("node_ranks") or None,  # type: ignore[arg-type]
-        edge_ranks=metadata.get("edge_ranks") or None,  # type: ignore[arg-type]
-    )
-    return build_crossing_plan(topology)
+    return build_crossing_demand(schematic, unrouted_layout).plan

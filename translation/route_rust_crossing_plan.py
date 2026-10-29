@@ -10,10 +10,10 @@ from collections.abc import Iterable as IterableABC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 from photonic_router.config import CrossingPlanConfig
-from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
-from photonic_router.topology_analysis import analyze_schematic_topology
+from photonic_router.crossing_demand import CrossingDemand, build_crossing_demand
 
 from translation.crossing_modes import is_guided_mode
 from translation.route_rust_crossing_components import _crossing_component_bbox_size_um
@@ -175,19 +175,22 @@ def _build_crossing_plan_info(
     rust_backend: object,
     router: object,
     schematic: Schematic,
+    unrouted_layout: Component,
     route_jobs: list[RouteJob],
     enable_crossings: bool,
     crossing_mode: str,
-    node_depths: dict[str, int] | None,
-    node_ranks: dict[str, int] | None,
-    edge_ranks: dict[str, dict[str, int]] | None,
     crossing_loss: float,
     crossing_search_loss: float,
     crossing_half_size_cells: int,
     guidance_net_names: frozenset[str] | None = None,
     config: CrossingPlanConfig | None = None,
 ) -> dict[str, object]:
-    """``guidance_net_names``: when given, only plan events between two of
+    """Build the crossing plan info and hand contribution 1's guidance to the router.
+
+    The plan is the `CrossingDemand` of the placed layout (bands between the
+    component columns, `photonic_router.crossing_demand`); its events are
+    the invariant crossing pairs in the bubble-sort order of each band.
+    ``guidance_net_names``: when given, only plan events between two of
     these nets are loaded (counts, guidance pairs); the others are dropped
     silently. Contribution 2's router fallback uses it so that the guided
     search only sees the layers it routes, not the tiled ones."""
@@ -241,25 +244,16 @@ def _build_crossing_plan_info(
         info["reason"] = "lidar_pure_mode_ignores_topology_plan"
         return info
 
-    if node_depths is None or node_ranks is None or edge_ranks is None:
-        info["reason"] = "missing_topology_metadata"
-        return info
-
     try:
-        topology = analyze_schematic_topology(
-            schematic,
-            node_depths=node_depths,
-            node_ranks=node_ranks,
-            edge_ranks=edge_ranks,
-        )
-        crossing_plan: CrossingPlan = build_crossing_plan(topology)
+        demand: CrossingDemand = build_crossing_demand(schematic, unrouted_layout)
     except (KeyError, ValueError) as exc:
-        info["reason"] = "invalid_topology_metadata"
+        info["reason"] = "invalid_crossing_demand"
         info["error"] = str(exc)
         return info
+    crossing_plan = demand.plan
     info["event_count"] = len(crossing_plan.events)
     info["stage_count"] = len(crossing_plan.stages)
-    info["plan_text"] = crossing_plan.to_text(include_empty_stages=True)
+    info["plan_text"] = demand.to_text()
 
     jobs_by_edge = {route_edge_key(job): job for job in route_jobs}
     missing_events: list[dict[str, object]] = []

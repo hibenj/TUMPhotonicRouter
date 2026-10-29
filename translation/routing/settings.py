@@ -68,9 +68,6 @@ class SessionSettings:
     net_order_depth_by_node: dict[str, int] | None
     #: > 0 runs the detour pass (phase 7b, `detour_pass.py`) with this factor
     detour_pass_factor: float
-    node_depths: dict[str, int] | None
-    node_ranks: dict[str, int] | None
-    edge_ranks: dict[str, dict[str, int]] | None
 
     # ---- crossings ------------------------------------------------------------
     # Consumed by the crossing plan, the dispatch and the final verification.
@@ -133,9 +130,6 @@ class SessionSettings:
         include_heater_obstacles: bool = False,
         ripup_reroute_config: RipupRerouteConfig | None = None,
         enable_crossings: bool = False,
-        node_depths: dict[str, int] | None = None,
-        node_ranks: dict[str, int] | None = None,
-        edge_ranks: dict[str, dict[str, int]] | None = None,
         crossing_loss: float = 0.0,
         crossing_mode: str = "lidar-pure",
         crossing_half_size_cells: int = 0,
@@ -250,9 +244,6 @@ class SessionSettings:
                 dict(net_order_depth_by_node) if net_order_depth_by_node else None
             ),
             detour_pass_factor=float(detour_pass_factor),
-            node_depths=node_depths,
-            node_ranks=node_ranks,
-            edge_ranks=edge_ranks,
             enable_crossings=enable_crossings,
             crossing_loss=crossing_loss,
             crossing_mode=crossing_mode,

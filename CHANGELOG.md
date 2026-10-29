@@ -13,6 +13,42 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- The crossing plan comes from the placement, not from the layered-DAG
+  depth/rank analysis (phase 4 slice C). New
+  `python/photonic_router/crossing_demand.py`: `build_crossing_demand(
+  schematic, unrouted_layout)` clusters the placed instances into columns
+  (overlapping or touching x-extents), treats the space between two
+  consecutive columns as a band, confines a net to the band its two
+  horizontal ports point into, orders the terminals on each wall top to
+  bottom (equal y: by x, then net name) and takes the pairs whose order
+  differs between the walls as the band's invariant crossings;
+  `CrossingDemand.lower_bound()` is their sum (the crossing count of every
+  band-confined routing), `counts_by_net_name()` the per-net share, and
+  `outside` lists the nets the model does not cover with a reason
+  (`same_wall`, `non_adjacent_walls`, `vertical_port`, `chip_boundary`; none
+  on the 17 paper benchmarks). `crossing_plan.build_crossing_plan` takes an
+  iterable of the new `LaneRank` (edge key, the stage's two indices, the two
+  ranks) instead of a `TopologyAnalysisResult`, so the band orders go through
+  the same bubble-sort sequencing as the depth/rank tables did.
+  `translation/route_rust_crossing_plan._build_crossing_plan_info` takes the
+  `unrouted_layout` and builds the demand (`plan_text` describes the bands;
+  the Rust interface `set_crossing_guidance(pairs, loss, single_per_pair)` is
+  unchanged); `translation/preplaced_crossing_grids.
+  build_crossing_plan_for_benchmark(schematic, unrouted_layout)` returns the
+  demand's plan for contribution 2. The `node_depths` / `node_ranks` /
+  `edge_ranks` keywords left `route_match_and_realize`, `RoutingSession`,
+  `SessionSettings` and the optical stage; the Benes `TOPOLOGY_METADATA`
+  tables stay in the benchmark modules as descriptive metadata and the test
+  oracle but no routing code reads them. `topology_analysis.py` has no
+  production reader and is kept as that oracle: `tests/test_crossing_demand.py`
+  and `tests/e2e/test_crossing_demand_equality.py` assert that the demand
+  reproduces its stages, wall orders, pairs, per-net counts and ordered
+  events (level and order index) on all 17 paper benchmarks (Benes 4x4 to
+  128x128, plain and `_flat`, ADEPT 8x8 to 128x128); `GraphAnalysisContext`
+  lost its topology product. `scripts/results/crossing_lower_bound.py`
+  (`lower_bound_for_benchmark`) is the helper the reproduction table will
+  subtract in a later slice. Same guidance pairs, same tiles in the same
+  order; the nine-cell gate is identical.
 - The negotiated batch takes `RouteJob` objects (phase 3 slice E):
   `PyPhotonicRouter.route_many_with_negotiated_repair_and_commit` accepts a
   list of the new `photonic_router._rust.RouteJob` (`#[pyclass]` in

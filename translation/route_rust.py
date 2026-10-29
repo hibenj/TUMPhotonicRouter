@@ -39,7 +39,6 @@ from photonic_router.routing_layers import (
     find_component_port_access_rule,
 )
 from photonic_router.static_obstacle_builder import grid_cell_center, physical_to_grid
-from photonic_router.topology_analysis import analyze_schematic_topology
 
 from translation import route_rust_meanders as _meander_impl
 from translation.crossing_modes import normalize_crossing_mode
@@ -380,7 +379,6 @@ __all__ = [
     "analysis_to_info_dict",
     "analyze_meander_insertion_for_requirements",
     "analyze_path_length_matching",
-    "analyze_schematic_topology",
     "apply_port_endpoint_corrections",
     "bend_radius_cells_from_um",
     "build_crossing_plan",

@@ -49,10 +49,18 @@ def _register_windows_rust_dll_directories() -> None:
 _register_windows_rust_dll_directories()
 
 from photonic_router.benchmark_extractor import ExtractedBenchmark, Port, extract_benchmark
+from photonic_router.crossing_demand import (
+    Band,
+    Column,
+    CrossingDemand,
+    OutsideNet,
+    build_crossing_demand,
+)
 from photonic_router.crossing_plan import (
     CrossingEvent,
     CrossingPlan,
     CrossingStagePlan,
+    LaneRank,
     build_crossing_plan,
 )
 from photonic_router.graph_analysis import GraphAnalysisContext
@@ -86,18 +94,15 @@ from photonic_router.static_obstacle_builder import (
     StaticObstacleMapData,
     build_static_obstacle_map,
 )
-from photonic_router.topology_analysis import (
-    TopologyAnalysisResult,
-    TopologyEdgeRank,
-    analyze_graph_topology,
-    analyze_schematic_topology,
-)
 
 __all__ = [
     "HEATER_METAL_OBSTACLE_LAYERS",
     "HEATER_OPTICAL_PORT_ACCESS_RULES",
     "OPTICAL_OBSTACLE_LAYERS",
+    "Band",
+    "Column",
     "ComponentPortAccessRule",
+    "CrossingDemand",
     "CrossingEvent",
     "CrossingPlan",
     "CrossingStagePlan",
@@ -107,8 +112,10 @@ __all__ = [
     "GraphEdge",
     "GraphNode",
     "GridSpec",
+    "LaneRank",
     "MissingLengthRequirement",
     "NodeType",
+    "OutsideNet",
     "PathLengthAnalysisResult",
     "PathLengthGraphAnnotations",
     "PhotonicRoutingGraph",
@@ -118,11 +125,8 @@ __all__ = [
     "RoutedEdgeKey",
     "StaticObstacleMapConfig",
     "StaticObstacleMapData",
-    "TopologyAnalysisResult",
-    "TopologyEdgeRank",
-    "analyze_graph_topology",
-    "analyze_schematic_topology",
     "annotate_edge_lengths",
+    "build_crossing_demand",
     "build_crossing_plan",
     "build_graph_from_schematic",
     "build_static_obstacle_map",

@@ -79,7 +79,7 @@ class CrossingPlanInfo:
 
     # ---- optional, `_build_crossing_plan_info` (phase 4) ------------------
     reason: str | None = None
-    """Why no plan was built (lidar-pure mode, missing/invalid metadata). w:4"""
+    """Why no plan was built (lidar-pure mode, or the demand could not be built). w:4"""
 
     error: str | None = None
     """The topology error message when the plan could not be built. w:4"""

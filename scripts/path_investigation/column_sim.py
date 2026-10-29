@@ -16,7 +16,6 @@ import sys
 
 import gdsfactory as gf
 
-from benchmark_metadata import load_benchmark_metadata
 from translation import preplaced_crossing_grids as pcg
 from translation.layout_from_schematic import layout_from_schematic
 
@@ -53,7 +52,7 @@ def run(name, col_pitch=16.0):
         bbox[ref.name] = (b.left, b.right)
         for p in ref.ports:
             ports[(ref.name, p.name)] = (float(p.dcenter[0]), float(p.dcenter[1]))
-    plan = pcg.build_crossing_plan_for_benchmark(s, load_benchmark_metadata(name, schematic=s))
+    plan = pcg.build_crossing_plan_for_benchmark(s, lay)
     for key, st in sorted(plan.stages.items()):
         if not st.events:
             continue

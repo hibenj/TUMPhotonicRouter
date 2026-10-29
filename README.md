@@ -8,7 +8,7 @@ constraints, rip-up/repair, and geometry-heavy planning kernels.
 
 The project is an active research/prototype router, but it is already more than
 a standalone optical detailed router: it contains schematic translation, optical
-routing, topology-derived crossing support, path-length matching with meanders,
+routing, placement-derived crossing support, path-length matching with meanders,
 heater electrical routing, diagnostics, and benchmarking.
 
 ## Current Capabilities
@@ -19,7 +19,7 @@ heater electrical routing, diagnostics, and benchmarking.
 | Optical routing | 8-heading primitive router with straight, 45-degree, and 90-degree transitions |
 | Fast optical paths | Straight, L, Z, and turnaround candidates are tried before dense A* where legal |
 | Obstacle handling | Rust static/dynamic obstacle database with compact rectangles, packed cell keys, dense bitsets, and prefix tables |
-| Crossing support | Optional topology-derived crossing constraints, expected-pair validation, crossing reservations, and local crossing repair |
+| Crossing support | Optional placement-derived crossing guidance (the band demand), expected-pair validation, crossing reservations, and local crossing repair |
 | Repair | Dynamic route commitment, rip-up/reroute, rollback, and history costs |
 | Path-length matching | Graph analysis, missing-length requirements, analytic meander insertion, and Rust meander planners |
 | Electrical routing | Heater terminal extraction, pad planning, bus/detail routing, and verification |
@@ -95,8 +95,8 @@ field is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 | `python/photonic_router/config.py` | `RoutingConfig` / `RouterConfig`, the typed configuration trees |
 | `translation/routing/` | The routing session as nine phases (`session.py::run`) behind the Protocols of `stages.py` |
 | `python/photonic_router/static_obstacle_builder.py` | Static obstacle extraction, Rust fallback handling, compact bbox payloads |
-| `python/photonic_router/topology_analysis.py` | Depth/rank analysis used for crossing-aware routing |
-| `python/photonic_router/crossing_plan.py` | Converts topology rank inversions into ordered crossing events |
+| `python/photonic_router/crossing_demand.py` | The crossings a placement forces: bands between component columns, invariant pairs, the lower bound |
+| `python/photonic_router/crossing_plan.py` | Converts the two wall orders of a band into ordered crossing events |
 | `src/search/` | One net: the `NetSearch` interface, the A* engine (`astar/`), the Dijkstra oracle |
 | `src/engine/` | Many nets: jobs, commitment, crossing reservations, endpoint correction |
 | `src/engine/negotiation/` | The rip-up-and-repair loop and its budget / crossing-free / rip-up / queue policies |

@@ -235,8 +235,27 @@ strings; `config_loading.py` (37 lines) owns `build_config(stable_env)`, the
 precedence of section 6. `static_obstacle_builder.py` (1,162 lines) owns
 obstacle extraction and the `ObstacleMapBuilder` Protocol;
 `primitive_library.py` (179) owns the 1:1 map from Rust primitive ids to
-gdsfactory components; `topology_analysis.py` (322) and `crossing_plan.py`
-(242) own depth/rank analysis and the crossing events derived from it;
+gdsfactory components; `crossing_demand.py` (about 390) and `crossing_plan.py`
+(about 280) own the crossing plan: the demand cuts the placed layout into
+*bands* between the component *columns* (a column is a maximal set of
+instances whose placed x-extents overlap or touch; a net whose two terminals
+point into one band from its two walls is confined to that band), orders the
+terminals on each wall top to bottom, and takes the pairs whose order
+differs between the two walls as the band's invariant crossings; the plan's
+bubble-sort sequencing (`build_crossing_plan` over `LaneRank`s, one stage per
+band keyed by its two column indices) turns the two wall orders into the
+ordered `CrossingEvent`s contribution 2 places tiles for and contribution 1
+hands to the router as pairs. `CrossingDemand.lower_bound()` is the sum of
+invariant pairs: the crossing count of every band-confined routing of that
+placement. Nets outside the band model (same wall, non-adjacent walls, a
+vertical port, a port pointing off the chip) are listed with reasons and get
+no events; the 17 paper benchmarks have none. Until phase 4 slice C of the
+2026-10 do-over the plan came from `topology_analysis.py` (graph depth and
+placed-port rank per edge, or a benchmark's explicit `NODE_DEPTHS` /
+`NODE_RANKS` / `EDGE_RANKS` tables); that module is the test oracle now
+(`tests/e2e/test_crossing_demand_equality.py` keeps both equal on all 17
+benchmarks, events and order included) and the routing flow reads no
+topology metadata any more;
 `path_length_graph.py` (about 380: the directed graph of a schematic
 and the arrival analysis that turns routed lengths into the missing length
 per edge; since 2026-10-07 every net is pointed along the light from the

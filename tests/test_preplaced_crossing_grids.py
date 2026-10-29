@@ -2,7 +2,7 @@
 
 These exercise the tile placement and the schematic/layout derivation for the
 four Benes benchmarks without routing anything: crossing counts against the
-topology plan, lane movement analysis, tile snapping, and -- most importantly
+placement's crossing demand, lane movement analysis, tile snapping, and -- most importantly
 -- that no two waveguide pieces inside a placed tile physically overlap (a
 collision that end-to-end verification cannot see, because tile geometry is a
 placed instance, not a routed record).
@@ -18,7 +18,6 @@ import pytest
 from gdsfactory.gpdk import get_generic_pdk
 from photonic_router.crossing_plan import CrossingStagePlan
 
-from benchmark_metadata import load_benchmark_metadata
 from translation import preplaced_crossing_grids as pcg
 from translation.layout_from_schematic import layout_from_schematic
 
@@ -30,8 +29,7 @@ BENES_EXPECTED_CROSSINGS = {"benes_4x4": 2, "benes_8x8": 16, "benes_16x16": 88, 
 def _benchmark(name: str):
     module = importlib.import_module(f"benchmarks.{name}")
     schematic = module.build_schematic()
-    metadata = load_benchmark_metadata(name, schematic=schematic)
-    plan = pcg.build_crossing_plan_for_benchmark(schematic, metadata)
+    plan = pcg.build_crossing_plan_for_benchmark(schematic, layout_from_schematic(schematic))
     return schematic, plan
 
 
@@ -132,7 +130,6 @@ def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge
 
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
-    from benchmark_metadata import load_benchmark_metadata
     from translation.layout_from_schematic import layout_from_schematic
     from translation.preplaced_crossing_grids import (
         CROSSING_TILE_PREFIX,
@@ -149,9 +146,7 @@ def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge
     module = importlib.import_module("benchmarks.benes_8x8")
     schematic = module.build_schematic()
     layout = layout_from_schematic(schematic)
-    plan = build_crossing_plan_for_benchmark(
-        schematic, load_benchmark_metadata("benes_8x8", schematic=schematic)
-    )
+    plan = build_crossing_plan_for_benchmark(schematic, layout)
     derived = derive_preplaced_crossing_layout(schematic, layout, plan, router_probe_kwargs=probe)
     grid = 2.0
     origin_x = float(layout.dbbox().left) - 20.0

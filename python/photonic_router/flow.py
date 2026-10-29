@@ -213,7 +213,6 @@ def _print_flow_footer(stats: RoutingFlowStats | None = None) -> None:
 
 def _preplaced_crossing_grids_stage(
     *,
-    benchmark_name: str,
     schematic: Schematic,
     unrouted_layout: Component,
     total_steps: int,
@@ -230,22 +229,21 @@ def _preplaced_crossing_grids_stage(
     folds into the routing-stage config so the actual routing run's fan-out
     access agrees with the probe's.
 
-    Every interstage crossing of the benchmark is computed from its topology
-    metadata, realized as a pre-wired crossing grid instance placed in the
-    layer's free band, and the interstage nets are split into crossing-free
-    stubs. Downstream stages see an ordinary schematic and layout.
+    Every interstage crossing of the benchmark is computed from its placement
+    (the band demand), realized as a pre-wired crossing grid instance placed
+    in the layer's free band, and the interstage nets are split into
+    crossing-free stubs. Downstream stages see an ordinary schematic and
+    layout.
     """
-    from benchmark_metadata import load_benchmark_metadata
     from translation.preplaced_crossing_grids import (
         build_crossing_plan_for_benchmark,
         derive_preplaced_crossing_layout,
         preplaced_crossing_grid_metrics,
     )
 
-    print(f"\n[2b/{total_steps}] Placing topology-derived crossing grids...")
+    print(f"\n[2b/{total_steps}] Placing placement-derived crossing grids...")
     t_start = time.perf_counter()
-    metadata = load_benchmark_metadata(benchmark_name, schematic=schematic)
-    crossing_plan = build_crossing_plan_for_benchmark(schematic, metadata)
+    crossing_plan = build_crossing_plan_for_benchmark(schematic, unrouted_layout)
     derived = derive_preplaced_crossing_layout(
         schematic,
         unrouted_layout,
@@ -430,7 +428,6 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
             crossing_guidance_net_names,
             dense_fanout_instances,
         ) = _preplaced_crossing_grids_stage(
-            benchmark_name=benchmark_name,
             schematic=schematic,
             unrouted_layout=unrouted_layout,
             total_steps=total_steps,

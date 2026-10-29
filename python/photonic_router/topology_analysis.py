@@ -1,4 +1,17 @@
-"""Topology depth/rank analysis for crossing-aware routing planning."""
+"""Depth/rank analysis of a schematic DAG: the test oracle of the crossing demand.
+
+Until phase 4 slice C of the 2026-10 do-over this analysis fed the routing
+flow's crossing plan: a net's stage was the `(source_depth, target_depth)`
+pair of its end instances (graph depth, or a benchmark's explicit
+`NODE_DEPTHS`/`EDGE_RANKS` tables) and its rank the placed port order within
+the depth. The flow now derives the same plan from the placed layout
+(`photonic_router.crossing_demand`: column walls, bands, terminal orders),
+which needs no metadata and no graph. This module has no production reader
+any more; `tests/test_crossing_demand.py` and
+`tests/e2e/test_crossing_demand_equality.py` keep it as the independent
+oracle the demand is checked against (same pairs, counts and ordered events
+on the 17 paper benchmarks).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from photonic_router.crossing_plan import LaneRank
 from photonic_router.path_length_graph import (
     PhotonicRoutingGraph,
     PortRef,
@@ -20,12 +34,8 @@ class SchematicLike(Protocol):
 
 
 @dataclass(frozen=True)
-class TopologyEdgeRank:
-    edge_key: RoutedEdgeKey
-    source_depth: int
-    target_depth: int
-    source_rank: int
-    target_rank: int
+class TopologyEdgeRank(LaneRank):
+    """A `LaneRank` whose stage is the depth pair of the edge's end instances."""
 
 
 @dataclass
@@ -45,8 +55,9 @@ def analyze_schematic_topology(
 ) -> TopologyAnalysisResult:
     """Analyze a schematic DAG: topological order, node depths and ranks, edge ranks.
 
-    The rank inversions (the planned crossings) are derived from the edge ranks
-    by `photonic_router.crossing_plan.build_crossing_plan`.
+    The rank inversions (the planned crossings) follow from the edge ranks
+    through `photonic_router.crossing_plan.build_crossing_plan(
+    result.edge_ranks.values())`.
 
     Explicit benchmark metadata is used when supplied. Missing edge ranks fall
     back to absolute placed port coordinates, which works for left-to-right

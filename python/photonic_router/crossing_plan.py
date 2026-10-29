@@ -1,11 +1,41 @@
-"""Router-facing crossing event plans derived from topology annotations."""
+"""Router-facing crossing event plans: the bubble-sort sequencing of lane orders.
+
+A stage is a set of lanes (routed edges) that enter in one order and leave in
+another; `build_crossing_plan` turns every stage's two orders into the
+adjacent-swap sequence of a bubble sort and records each swap as a
+`CrossingEvent` with a level (the swap round in which its two lanes are
+both free) and an order index. Contribution 2 places one crossing tile per
+event in that order, contribution 1 hands the unordered pairs to the router
+as soft guidance.
+
+Since phase 4 slice C of the 2026-10 do-over the lane orders come from the
+placed layout (`photonic_router.crossing_demand`: the terminal order on the
+two walls of a band); the depth/rank tables of `topology_analysis.py` feed
+the same function as the test oracle.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from photonic_router.path_length_graph import RoutedEdgeKey
-from photonic_router.topology_analysis import TopologyAnalysisResult, TopologyEdgeRank
+
+
+@dataclass(frozen=True)
+class LaneRank:
+    """One lane of a stage: where it enters and where it leaves.
+
+    `source_depth`/`target_depth` name the stage (for a band: the index of
+    its left and right wall column); `source_rank`/`target_rank` are the
+    lane's top-to-bottom position on the two walls.
+    """
+
+    edge_key: RoutedEdgeKey
+    source_depth: int
+    target_depth: int
+    source_rank: int
+    target_rank: int
 
 
 @dataclass(frozen=True)
@@ -123,12 +153,17 @@ class CrossingPlan:
         return self.to_text()
 
 
-def build_crossing_plan(topology: TopologyAnalysisResult) -> CrossingPlan:
+def build_crossing_plan(lane_ranks: Iterable[LaneRank]) -> CrossingPlan:
+    """The crossing plan of the given lanes, one stage per `(source_depth, target_depth)`.
+
+    Every stage is validated: applying its events to the source order yields
+    the target order.
+    """
     stages: dict[tuple[int, int], CrossingStagePlan] = {}
     events_by_edge_mut: dict[RoutedEdgeKey, list[CrossingEvent]] = {}
     events_by_pair: dict[frozenset[RoutedEdgeKey], CrossingEvent] = {}
 
-    for stage_key, edge_ranks in _edge_ranks_by_stage(topology).items():
+    for stage_key, edge_ranks in _lane_ranks_by_stage(lane_ranks).items():
         stage_plan = _build_stage_plan(stage_key, edge_ranks)
         stage_plan.validate()
         stages[stage_key] = stage_plan
@@ -150,18 +185,18 @@ def build_crossing_plan(topology: TopologyAnalysisResult) -> CrossingPlan:
     )
 
 
-def _edge_ranks_by_stage(
-    topology: TopologyAnalysisResult,
-) -> dict[tuple[int, int], list[TopologyEdgeRank]]:
-    by_stage: dict[tuple[int, int], list[TopologyEdgeRank]] = {}
-    for edge_rank in topology.edge_ranks.values():
+def _lane_ranks_by_stage(
+    lane_ranks: Iterable[LaneRank],
+) -> dict[tuple[int, int], list[LaneRank]]:
+    by_stage: dict[tuple[int, int], list[LaneRank]] = {}
+    for edge_rank in lane_ranks:
         by_stage.setdefault((edge_rank.source_depth, edge_rank.target_depth), []).append(edge_rank)
     return by_stage
 
 
 def _build_stage_plan(
     stage_key: tuple[int, int],
-    edge_ranks: list[TopologyEdgeRank],
+    edge_ranks: list[LaneRank],
 ) -> CrossingStagePlan:
     source_depth, target_depth = stage_key
     ordered_by_source = sorted(

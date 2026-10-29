@@ -39,17 +39,17 @@ from translation.route_rust import _resolve_crossing_half_size_cells
 
 
 def _plan_for(schematic, module) -> CrossingPlan:
-    """The crossing plan of a Benes benchmark module: its topology metadata
-    through `analyze_schematic_topology` and `build_crossing_plan`, the one
-    producer of planned crossings (the rank inversions) since phase 4 slice A
-    of the 2026-10 do-over."""
+    """The crossing plan of a Benes benchmark module from its topology metadata
+    (`analyze_schematic_topology`, the test oracle since phase 4 slice C of
+    the 2026-10 do-over; the flow derives the same plan from the placement,
+    see `tests/test_crossing_demand.py`)."""
     topology = analyze_schematic_topology(
         schematic,
         node_depths=module.NODE_DEPTHS,
         node_ranks=module.NODE_RANKS,
         edge_ranks=module.EDGE_RANKS,
     )
-    return build_crossing_plan(topology)
+    return build_crossing_plan(topology.edge_ranks.values())
 
 
 def _events_by_stage(plan: CrossingPlan) -> dict[int, int]:
@@ -162,7 +162,7 @@ def _plan_from_loaded_metadata(name: str, schematic) -> CrossingPlan:
         node_ranks=metadata["node_ranks"],
         edge_ranks=metadata["edge_ranks"],
     )
-    return build_crossing_plan(topology)
+    return build_crossing_plan(topology.edge_ranks.values())
 
 
 def test_larger_benes_metadata_loader_exposes_crossing_oracles():
@@ -244,7 +244,7 @@ def test_crossing_plan_orders_4x4_benes_events_by_stage():
         node_ranks=NODE_RANKS,
         edge_ranks=EDGE_RANKS,
     )
-    plan = build_crossing_plan(topology)
+    plan = build_crossing_plan(topology.edge_ranks.values())
 
     assert len(plan.events) == 2
     assert set(plan.stages) == {(0, 1), (1, 2), (2, 3), (3, 4)}
@@ -301,7 +301,7 @@ def test_crossing_plan_orders_8x8_benes_events_by_stage():
         node_ranks=NODE_RANKS_8X8,
         edge_ranks=EDGE_RANKS_8X8,
     )
-    plan = build_crossing_plan(topology)
+    plan = build_crossing_plan(topology.edge_ranks.values())
 
     assert len(plan.events) == 16
     assert {key: len(stage.events) for key, stage in plan.stages.items() if stage.events} == {
@@ -412,8 +412,8 @@ def test_flat_benes_topology_keeps_the_switch_level_crossing_oracle():
         node_ranks=NODE_RANKS_8X8,
         edge_ranks=EDGE_RANKS_8X8,
     )
-    flat_plan = build_crossing_plan(flat)
-    parent_plan = build_crossing_plan(parent)
+    flat_plan = build_crossing_plan(flat.edge_ranks.values())
+    parent_plan = build_crossing_plan(parent.edge_ranks.values())
     pairs = lambda plan: {  # noqa: E731
         frozenset((e.edge_a.net_name, e.edge_b.net_name)) for e in plan.events
     }

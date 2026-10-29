@@ -148,12 +148,10 @@ def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
         rust_backend=fake_backend,
         router=FakeRouter(),
         schematic=SimpleNamespace(),
+        unrouted_layout=SimpleNamespace(),
         route_jobs=[],
         enable_crossings=True,
         crossing_mode="lidar-pure",
-        node_depths=None,
-        node_ranks=None,
-        edge_ranks=None,
         crossing_loss=0.0,
         crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
         crossing_half_size_cells=3,
@@ -1714,10 +1712,13 @@ def _fake_crossing_plan_router_and_backend(captured: dict[str, object]):
     return FakeRouter(), backend
 
 
-def _mm8_route_jobs() -> tuple[list[RouteJob], object]:
+def _mm8_route_jobs() -> tuple[list[RouteJob], object, object]:
+    """Route jobs, schematic and placed layout of multiportmmi_8x8."""
     from benchmarks.multiportmmi_8x8 import build_schematic as build_mm8
+    from translation.layout_from_schematic import layout_from_schematic
 
     schematic = build_mm8()
+    layout = layout_from_schematic(schematic)
     jobs: list[RouteJob] = []
     # same job build as `translation/route_rust.py` (net name = route name)
     for net_name, bundle in schematic.netlist.routes.items():
@@ -1738,7 +1739,7 @@ def _mm8_route_jobs() -> tuple[list[RouteJob], object]:
                     target_port=cast(object, None),  # type: ignore[arg-type]
                 )
             )
-    return jobs, schematic
+    return jobs, schematic, layout
 
 
 def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
@@ -1747,18 +1748,16 @@ def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
     constraints (phase 4 slice A), so nothing else in it can see the plan."""
     captured: dict[str, object] = {}
     router, backend = _fake_crossing_plan_router_and_backend(captured)
-    jobs, schematic = _mm8_route_jobs()
+    jobs, schematic, layout = _mm8_route_jobs()
 
     info = _build_crossing_plan_info(
         rust_backend=backend,
         router=router,
         schematic=schematic,
+        unrouted_layout=layout,
         route_jobs=jobs,
         enable_crossings=True,
         crossing_mode="lidar-guided",
-        node_depths={},
-        node_ranks={},
-        edge_ranks={},
         crossing_loss=0.0,
         crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
         crossing_half_size_cells=3,
@@ -1779,18 +1778,16 @@ def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
 def test_lidar_pure_still_ignores_the_topology_plan():
     captured: dict[str, object] = {}
     router, backend = _fake_crossing_plan_router_and_backend(captured)
-    jobs, schematic = _mm8_route_jobs()
+    jobs, schematic, layout = _mm8_route_jobs()
 
     info = _build_crossing_plan_info(
         rust_backend=backend,
         router=router,
         schematic=schematic,
+        unrouted_layout=layout,
         route_jobs=jobs,
         enable_crossings=True,
         crossing_mode="lidar-pure",
-        node_depths={},
-        node_ranks={},
-        edge_ranks={},
         crossing_loss=0.0,
         crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
         crossing_half_size_cells=3,
@@ -1849,18 +1846,16 @@ def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
 
     captured: dict[str, object] = {}
     router, backend = _fake_crossing_plan_router_and_backend(captured)
-    jobs, schematic = _mm8_route_jobs()
+    jobs, schematic, layout = _mm8_route_jobs()
     monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "1")
     info = _build_crossing_plan_info(
         rust_backend=backend,
         router=router,
         schematic=schematic,
+        unrouted_layout=layout,
         route_jobs=jobs,
         enable_crossings=True,
         crossing_mode="lidar-guided",
-        node_depths={},
-        node_ranks={},
-        edge_ranks={},
         crossing_loss=0.0,
         crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
         crossing_half_size_cells=3,

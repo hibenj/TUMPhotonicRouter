@@ -29,8 +29,7 @@ earlier net's greedy shortest path can seal a sibling's target pocket
   layers (the 32x32 cases).
 
 Depth is derived from the batch's own net graph so every benchmark and
-every crossing mode has it (benchmark ``NODE_DEPTHS`` metadata is optional
-and the plan is withheld in lidar-pure).
+every crossing mode has it (the plan is withheld in lidar-pure).
 
 The default depends on the configuration (``default_net_order``): the
 baseline routes in ``topological`` order, contribution 1 (guided crossing

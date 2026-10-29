@@ -6,17 +6,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from photonic_router.crossing_plan import CrossingPlan, build_crossing_plan
 from photonic_router.path_length_graph import (
     PathLengthAnalysisResult,
     PathLengthGraphAnnotations,
     PhotonicRoutingGraph,
     RoutedEdgeKey,
     build_graph_from_schematic,
-)
-from photonic_router.topology_analysis import (
-    TopologyAnalysisResult,
-    analyze_graph_topology,
 )
 
 
@@ -33,8 +28,6 @@ class GraphAnalysisContext:
     graph: PhotonicRoutingGraph
     plm: PathLengthGraphAnnotations | None = None
     timing: PathLengthAnalysisResult | None = None
-    topology: TopologyAnalysisResult | None = None
-    crossing_plan: CrossingPlan | None = None
 
     @classmethod
     def from_schematic(
@@ -61,26 +54,3 @@ class GraphAnalysisContext:
         )
         self.timing = self.plm.analyze_missing_lengths(self.graph)
         return self.timing
-
-    def analyze_topology(
-        self,
-        *,
-        node_depths: Mapping[str, int] | None = None,
-        node_ranks: Mapping[str, int] | None = None,
-        edge_ranks: Mapping[str, Mapping[str, int]] | None = None,
-    ) -> TopologyAnalysisResult:
-        self.topology = analyze_graph_topology(
-            self.graph,
-            schematic=self.schematic,
-            node_depths=node_depths,
-            node_ranks=node_ranks,
-            edge_ranks=edge_ranks,
-        )
-        self.crossing_plan = None
-        return self.topology
-
-    def build_crossing_plan(self) -> CrossingPlan:
-        if self.topology is None:
-            raise ValueError("Topology analysis must be computed before building a crossing plan")
-        self.crossing_plan = build_crossing_plan(self.topology)
-        return self.crossing_plan

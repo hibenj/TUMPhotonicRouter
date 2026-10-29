@@ -1,4 +1,4 @@
-"""Topology crossing plan vs the realized crossings of the last run of a benchmark
+"""Placement crossing demand vs the realized crossings of the last run of a benchmark
 (reads build/verification/<bench>_crossing_verification.json). Usage:
 .venv/bin/python scripts/path_investigation/plan_vs_realized_crossings.py benes_32x32
 (contribution 1 design measurement, 2026-09-04)."""
@@ -10,22 +10,14 @@ import sys
 from collections import Counter
 
 sys.path.insert(0, ".")
-from photonic_router.crossing_plan import build_crossing_plan
-from photonic_router.topology_analysis import analyze_schematic_topology
+from photonic_router.crossing_demand import build_crossing_demand
 
-from benchmark_metadata import load_benchmark_metadata
 from routing_flow import load_benchmark
+from translation.layout_from_schematic import layout_from_schematic
 
 b = sys.argv[1]
 sch = load_benchmark(b)
-md = load_benchmark_metadata(b, schematic=sch)
-topo = analyze_schematic_topology(
-    sch,
-    node_depths=md.get("node_depths") or None,
-    node_ranks=md.get("node_ranks") or None,
-    edge_ranks=md.get("edge_ranks") or None,
-)
-plan = build_crossing_plan(topo)
+plan = build_crossing_demand(sch, layout_from_schematic(sch)).plan
 plan_pairs = Counter(frozenset((e.edge_a.net_name, e.edge_b.net_name)) for e in plan.events)
 d = json.load(open(f"build/verification/{b}_crossing_verification.json"))
 real_pairs = Counter(frozenset((c["net_name_a"], c["net_name_b"])) for c in d["crossings"])

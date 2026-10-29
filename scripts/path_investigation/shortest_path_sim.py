@@ -18,7 +18,6 @@ import time
 
 import gdsfactory as gf
 
-from benchmark_metadata import load_benchmark_metadata
 from translation import preplaced_crossing_grids as pcg
 from translation.layout_from_schematic import layout_from_schematic
 
@@ -517,7 +516,7 @@ def run(name, want_svg=(), outdir="."):
         bbox[ref.name] = (b.left, b.right)
         for p in ref.ports:
             ports[(ref.name, p.name)] = (float(p.dcenter[0]), float(p.dcenter[1]))
-    plan = pcg.build_crossing_plan_for_benchmark(s, load_benchmark_metadata(name, schematic=s))
+    plan = pcg.build_crossing_plan_for_benchmark(s, lay)
     rows = []
     for key, st in sorted(plan.stages.items()):
         if not st.events:
