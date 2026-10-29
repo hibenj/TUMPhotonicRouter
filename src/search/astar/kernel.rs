@@ -616,11 +616,12 @@ pub(crate) fn run<H: CrossingLegalityHook>(
     )?;
 
     let mut iterations = 0usize;
-    let search_loop_start = if config.collect_detailed_timing {
-        Some(Instant::now())
-    } else {
-        None
-    };
+    let search_loop_start =
+        if config.collect_detailed_timing || config.diagnostics.exp_kernel_profile {
+            Some(Instant::now())
+        } else {
+            None
+        };
     let search_timeout_start = (config.max_search_time_ms > 0).then(Instant::now);
 
     loop {

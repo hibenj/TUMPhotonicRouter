@@ -19,6 +19,7 @@ pub(crate) mod cost;
 pub(crate) mod crossing_rules;
 pub(crate) mod dense;
 pub(crate) mod diagnostics;
+pub mod exp1;
 pub(crate) mod expansion;
 pub(crate) mod heuristic;
 pub(crate) mod kernel;
@@ -277,6 +278,18 @@ fn run_search(env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome
         },
     )
     .map(|route| with_route_search_total_time(route, route_search_total_start.as_ref()));
+
+    if config.diagnostics.exp_kernel_profile {
+        exp1::record_search(
+            route.as_ref(),
+            &stats,
+            source,
+            target,
+            primitives,
+            config,
+            crossing.is_some(),
+        );
+    }
 
     SearchOutcome { route, stats }
 }

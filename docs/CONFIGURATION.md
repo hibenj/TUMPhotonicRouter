@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 87 `RoutingConfig` fields (87 with an overlay variable), 50 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 174 in total.
+Totals: 88 `RoutingConfig` fields (88 with an overlay variable), 50 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 175 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -122,6 +122,7 @@ Mirrors Rust `KernelDiagnostics`. Every field is off/unset by default, except `t
 | `crossing_mismatch_dump_net` | `int \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_MISMATCH_DUMP` | -- |
 | `crossing_mismatch_fatal` | `bool` | `False` | `PHOTONIC_ROUTER_CROSSING_MISMATCH_FATAL` | -- |
 | `analysis_crossing_partner_counters` | `bool` | `False` | `PHOTONIC_ROUTER_ANALYSIS_CROSSING_PARTNER_COUNTERS` | -- |
+| `exp_kernel_profile` | `bool` | `False` | `PHOTONIC_ROUTER_EXP_KERNEL_PROFILE` | Experiment 1 (2026-10-29): kernel-loop and crossing-hook timers plus one `EXP1 search` stderr line per search. Off: nothing runs. |
 
 ### `crossing_plan` -- `CrossingPlanConfig`
 

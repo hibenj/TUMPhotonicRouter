@@ -452,6 +452,8 @@ pub(crate) fn to_route_result(route: &PyRouteResult) -> RouteResult {
             // A `PyRouteResult` always describes a route that was found, so
             // it can never carry an unsupported-request marker.
             unsupported_request: 0,
+            exp_hook_calls: 0,
+            exp_hook_time_ns: 0,
         },
     }
 }

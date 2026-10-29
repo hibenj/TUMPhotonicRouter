@@ -195,6 +195,13 @@ pub struct KernelDiagnostics {
     /// `PHOTONIC_ROUTER_ANALYSIS_CROSSING_PARTNER_COUNTERS`: lowercased
     /// value in `{1, true, on, yes, enabled}`.
     pub analysis_crossing_partner_counters: bool,
+    /// `PHOTONIC_ROUTER_EXP_KERNEL_PROFILE`: presence. Experiment 1
+    /// (2026-10-29, `.agent/TUMPhotonicRouter/experiments/01_instrumentation.md`):
+    /// times the kernel loop and every `CrossingLegalityHook::evaluate`
+    /// call, prints one `EXP1 search` line per search and one
+    /// `EXP1 run-summary` line per negotiated batch to stderr. Off: no
+    /// timer runs and nothing is printed.
+    pub exp_kernel_profile: bool,
 }
 
 impl Default for KernelDiagnostics {
@@ -226,6 +233,7 @@ impl Default for KernelDiagnostics {
             crossing_mismatch_dump_net: None,
             crossing_mismatch_fatal: false,
             analysis_crossing_partner_counters: false,
+            exp_kernel_profile: false,
         }
     }
 }

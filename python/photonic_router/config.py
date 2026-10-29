@@ -103,6 +103,9 @@ class KernelDiagnostics:
     crossing_mismatch_dump_net: int | None = None
     crossing_mismatch_fatal: bool = False
     analysis_crossing_partner_counters: bool = False
+    # Experiment 1 (2026-10-29): kernel-loop and crossing-hook timers plus
+    # one `EXP1 search` stderr line per search. Off: nothing runs.
+    exp_kernel_profile: bool = False
 
 
 @dataclass(frozen=True)
@@ -342,6 +345,7 @@ class RouterConfig:
             diag_crossing_mismatch_dump_net=d.crossing_mismatch_dump_net,
             diag_crossing_mismatch_fatal=d.crossing_mismatch_fatal,
             diag_analysis_crossing_partner_counters=d.analysis_crossing_partner_counters,
+            diag_exp_kernel_profile=d.exp_kernel_profile,
         )
 
     @classmethod

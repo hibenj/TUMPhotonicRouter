@@ -771,6 +771,8 @@ pub struct PyRouterConfig {
     pub diag_crossing_mismatch_fatal: bool,
     #[pyo3(get)]
     pub diag_analysis_crossing_partner_counters: bool,
+    #[pyo3(get)]
+    pub diag_exp_kernel_profile: bool,
 }
 
 #[pymethods]
@@ -820,7 +822,7 @@ impl PyRouterConfig {
         diag_crossing_mismatch_dump=false,
         diag_crossing_mismatch_dump_net=None,
         diag_crossing_mismatch_fatal=false,
-        diag_analysis_crossing_partner_counters=false,
+        diag_analysis_crossing_partner_counters=false,diag_exp_kernel_profile=false,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -868,6 +870,7 @@ impl PyRouterConfig {
         diag_crossing_mismatch_dump_net: Option<u64>,
         diag_crossing_mismatch_fatal: bool,
         diag_analysis_crossing_partner_counters: bool,
+        diag_exp_kernel_profile: bool,
     ) -> PyResult<Self> {
         if search_engine != SEARCH_ENGINE_ASTAR && search_engine != SEARCH_ENGINE_GRID_DIJKSTRA {
             return Err(PyValueError::new_err(format!(
@@ -919,6 +922,7 @@ impl PyRouterConfig {
             diag_crossing_mismatch_dump_net,
             diag_crossing_mismatch_fatal,
             diag_analysis_crossing_partner_counters,
+            diag_exp_kernel_profile,
         })
     }
 }
@@ -983,6 +987,7 @@ impl From<&PyRouterConfig> for RouterConfig {
                 crossing_mismatch_dump_net: cfg.diag_crossing_mismatch_dump_net,
                 crossing_mismatch_fatal: cfg.diag_crossing_mismatch_fatal,
                 analysis_crossing_partner_counters: cfg.diag_analysis_crossing_partner_counters,
+                exp_kernel_profile: cfg.diag_exp_kernel_profile,
             },
         }
     }

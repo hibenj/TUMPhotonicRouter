@@ -482,6 +482,9 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
     ),
     EnvVar(_PREFIX + "CHAIN_DIAG", ("router", "diagnostics", "chain_diag"), presence),
     EnvVar(_PREFIX + "HOT_LOOP_TIMING", ("router", "diagnostics", "hot_loop_timing"), presence),
+    EnvVar(
+        _PREFIX + "EXP_KERNEL_PROFILE", ("router", "diagnostics", "exp_kernel_profile"), presence
+    ),
     EnvVar(_PREFIX + "MOVE_DIAG", ("router", "diagnostics", "move_diag"), presence),
     EnvVar(_PREFIX + "MOVE_DIAG", ("router", "diagnostics", "move_diag_cell"), cell_pair),
     EnvVar(_PREFIX + "POP_DIAG_BELOW_Y", ("router", "diagnostics", "pop_diag_below_y"), i32),

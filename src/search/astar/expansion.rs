@@ -648,7 +648,8 @@ pub(crate) fn move_is_legal<H: CrossingLegalityHook>(
     } else {
         None
     };
-    let Some((outcome, extra_cost)) = context.hook.evaluate(
+    let hook_start = config.diagnostics.exp_kernel_profile.then(Instant::now);
+    let evaluated = context.hook.evaluate(
         state,
         current_extension,
         primitive,
@@ -656,7 +657,12 @@ pub(crate) fn move_is_legal<H: CrossingLegalityHook>(
         primitive_crossing,
         footprint_free,
         stats,
-    ) else {
+    );
+    if let Some(hook_start) = hook_start {
+        stats.exp_hook_time_ns += hook_start.elapsed().as_nanos();
+        stats.exp_hook_calls += 1;
+    }
+    let Some((outcome, extra_cost)) = evaluated else {
         let search_seq = diagnostics.search_seq;
         if let Some(before) = diag_before {
             let changed = [
@@ -1384,7 +1390,8 @@ pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
         let step_pending_completed =
             primitive_initial_straight_run_distance(step_primitive, chain_state.angle) + 1.0e-9
                 >= f64::from(chain_extension.pending_after_crossing_cells);
-        let Some((step_outcome, step_extra_cost)) = hook.evaluate(
+        let hook_start = config.diagnostics.exp_kernel_profile.then(Instant::now);
+        let step_evaluated = hook.evaluate(
             chain_state,
             chain_extension,
             step_primitive,
@@ -1392,7 +1399,12 @@ pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
             step_crossing,
             step_footprint_free,
             stats,
-        ) else {
+        );
+        if let Some(hook_start) = hook_start {
+            stats.exp_hook_time_ns += hook_start.elapsed().as_nanos();
+            stats.exp_hook_calls += 1;
+        }
+        let Some((step_outcome, step_extra_cost)) = step_evaluated else {
             if let Some(i) = diagnostics.ring_index(step_x, step_y) {
                 diagnostics.count_landing(i, if step_footprint_free { 3 } else { 2 });
             }

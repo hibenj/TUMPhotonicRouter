@@ -145,6 +145,13 @@ pub struct RouteSearchStats {
     /// `crossing` part). 0 everywhere else, including every ordinary search
     /// failure. Nothing but the engine's own tests reads it.
     pub unsupported_request: u32,
+    /// Experiment 1 (`KernelDiagnostics::exp_kernel_profile`): number of
+    /// `CrossingLegalityHook::evaluate` calls and their summed wall time in
+    /// nanoseconds (a single call is well below a microsecond, so the
+    /// microsecond truncation the other timers use would lose it). Both
+    /// stay 0 unless the switch is on.
+    pub exp_hook_calls: usize,
+    pub exp_hook_time_ns: u128,
 }
 
 pub(crate) fn find_primitive(

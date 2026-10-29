@@ -322,6 +322,9 @@ impl PyPhotonicRouter {
         if args.trace {
             self.trace_negotiated_done(&counters, round, queue.len());
         }
+        if self.router_config.diagnostics.exp_kernel_profile {
+            crate::search::astar::exp1::print_run_summary("negotiated_batch");
+        }
         self.finish_negotiated_batch();
         Ok((batch, counters))
     }

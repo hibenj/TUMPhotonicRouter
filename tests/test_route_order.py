@@ -143,7 +143,7 @@ def test_orders_require_their_inputs_and_reject_unknown_names():
     with pytest.raises(ValueError, match="plan"):
         order_route_jobs(JOBS, net_order="plan-crossings-asc", depth_by_node=depths)
     with pytest.raises(ValueError, match="net_order"):
-        order_route_jobs(JOBS, net_order="random", depth_by_node=depths)
+        order_route_jobs(JOBS, net_order="shuffled", depth_by_node=depths)
     assert NET_ORDERS == (
         "topological",
         "topological-reverse",
@@ -153,7 +153,29 @@ def test_orders_require_their_inputs_and_reject_unknown_names():
         "plan-crossings-asc",
         "plan-crossings-desc",
         "plan-crossings-hybrid",
+        "random",
+        "topological-random",
     )
+
+
+def test_random_orders_are_seeded_permutations(monkeypatch):
+    """Experiment 1 (2026-10-29): `random` permutes the whole batch,
+    `topological-random` keeps the depth layers; both are reproducible per
+    PHOTONIC_ROUTER_EXP_NET_ORDER_SEED and differ between seeds."""
+    depths = depth_by_node_from_jobs(JOBS)
+    monkeypatch.setenv("PHOTONIC_ROUTER_EXP_NET_ORDER_SEED", "1")
+    first = _ids(order_route_jobs(JOBS, net_order="random", depth_by_node=depths))
+    again = _ids(order_route_jobs(JOBS, net_order="random", depth_by_node=depths))
+    assert first == again
+    assert sorted(first) == sorted(_ids(JOBS))
+    layered = order_route_jobs(JOBS, net_order="topological-random", depth_by_node=depths)
+    layer_depths = [depths.get(job.inst1, 0) for job in layered]
+    assert layer_depths == sorted(layer_depths)
+    seeds = set()
+    for seed in range(2, 12):
+        monkeypatch.setenv("PHOTONIC_ROUTER_EXP_NET_ORDER_SEED", str(seed))
+        seeds.add(tuple(_ids(order_route_jobs(JOBS, net_order="random", depth_by_node=depths))))
+    assert len(seeds) > 1
 
 
 def test_default_net_order_is_span_only_for_preplaced_crossing_grids() -> None:

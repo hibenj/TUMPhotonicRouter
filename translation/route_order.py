@@ -57,7 +57,16 @@ NET_ORDERS: tuple[str, ...] = (
     "plan-crossings-asc",
     "plan-crossings-desc",
     "plan-crossings-hybrid",
+    "random",
+    "topological-random",
 )
+
+# Experiment 1 (2026-10-29, net-order sensitivity): ``random`` is a uniform
+# random permutation of the whole batch, ``topological-random`` keeps the
+# depth layers and shuffles inside each. The seed is
+# ``PHOTONIC_ROUTER_EXP_NET_ORDER_SEED`` (default 0); the draw is a
+# ``random.Random(seed)`` keyed on declaration order, so it is reproducible.
+EXP_NET_ORDER_SEED_ENV = "PHOTONIC_ROUTER_EXP_NET_ORDER_SEED"
 
 # span: the one rule without the depth key -- the nets with the nearest
 # ports first across the whole net graph (owner, 2026-10-06, after the
@@ -156,6 +165,20 @@ def order_route_jobs(
 
     if order == "topological":
         return sorted(jobs, key=lambda job: (depth(job), int(job.route_index)))
+    if order in ("random", "topological-random"):
+        import os
+        import random
+
+        seed = int(os.environ.get(EXP_NET_ORDER_SEED_ENV, "0"))
+        draw = random.Random(seed)
+        shuffle_key = {
+            int(job.route_index): draw.random()
+            for job in sorted(jobs, key=lambda job: int(job.route_index))
+        }
+        print(f"      - net order seed: {seed} ({EXP_NET_ORDER_SEED_ENV})")
+        if order == "random":
+            return sorted(jobs, key=lambda job: shuffle_key[int(job.route_index)])
+        return sorted(jobs, key=lambda job: (depth(job), shuffle_key[int(job.route_index)]))
     if order == "topological-reverse":
         # Declaration order reversed inside a depth layer (2026-09-16,
         # multiportmmi_128x128 fan-in bands): the port stubs of a
