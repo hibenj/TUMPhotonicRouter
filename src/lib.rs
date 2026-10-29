@@ -1,7 +1,10 @@
-//! Rust foundations for a photonic grid router.
+//! The Rust core of the photonic waveguide router.
 //!
-//! This crate currently provides only the routing database and obstacle-map
-//! infrastructure. It intentionally does not implement A* yet.
+//! `obstacle_map` is the routing database, `search` the single-net A*
+//! kernel with its crossing rules and the simple-route probe, `engine` the
+//! negotiated rip-up-and-reroute loop, `crossings`/`geometry_realization`/
+//! `meander`/`plm` the crossing, geometry and path-length-matching stages,
+//! and `bindings` the PyO3 surface the Python package drives.
 
 pub mod auto_meander;
 pub mod bindings;
