@@ -149,19 +149,26 @@ section 4.
 
 ### `src/engine/negotiation/` -- the loop and its policies
 
-`mod.rs` (15 lines) is the module list. `loop_.rs` (1,302 lines) owns the loop
-itself: `run_negotiated_batch(jobs, params) -> (RepairBatchState,
-NegotiationCounters)` is the loop without PyO3, and
-`route_many_with_negotiated_repair_and_commit_impl` is the thin converter above
-it. Each *rule* the loop applies lives in its own module and can be replaced
-without touching the loop: `budget.rs` (293 lines, `AttemptKind`,
-`BudgetSchedule`, `LadderBudgets`), `crossing_free.rs` (102 lines,
-`CrossingFreePolicy`, `PlannedPairsOnly`, `Never`), `ripup.rs` (409 lines,
-`RipUpPolicy`, `LidarStyleRipUp`, `NoRipUp`), `queue.rs` (213 lines,
-`NetQueue` and the three tables the rules read), `attempt.rs` (469 lines, one
-attempt and its trace line), `probe.rs` (536 lines, "who is blocking this
-net"), `braid.rs` (957 lines, the local swap of two crossing routes). Section 5
-reads the loop in full.
+`mod.rs` (16 lines) is the module list. `loop_.rs` (1,278 lines, 732 of them
+code and 546 tests) owns the loop itself in three functions:
+`run_negotiated_batch(jobs, params) -> (RepairBatchState, NegotiationCounters)`
+(103 lines) is the rounds without PyO3, `route_net_this_round(..) -> NetOutcome`
+(100 lines) is one net's turn, and `global_ripup_round(.., &mut NetQueue, ..)`
+(98 lines) is LiDAR's `ripupfailedNets` at round end; the setup, the per-net
+`SearchArgs`, the braid requeue and the post-rip-up guidance are small helpers
+beside them, and `route_many_with_negotiated_repair_and_commit_impl` is the thin
+converter above it (phase 3 slice D of the 2026-10 do-over). Each *rule* the
+loop applies lives in its own module and can be replaced without touching the
+loop: `budget.rs` (206 lines, `AttemptKind`, `BudgetSchedule`,
+`LadderBudgets`), `crossing_free.rs` (102 lines, `CrossingFreePolicy`,
+`PlannedPairsOnly`, `Never`), `ripup.rs` (315 lines,
+`ripup_illegal_crossing_partners`, the local rip-up rule), `queue.rs` (263
+lines, `NetQueue` and the three tables the rules read, all behind methods),
+`attempt.rs` (371 lines, one attempt and its trace line), `probe.rs` (497
+lines, "who is blocking this net"), `braid.rs` (890 lines, the local swap of
+two crossing routes), `trace.rs` (108 lines, every
+`PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG` line of the loop but the per-attempt
+one). Section 5 reads the loop in full.
 
 ### `src/bindings/` -- the PyO3 surface
 
@@ -728,17 +735,24 @@ the plain fixtures, crossing request refused, the negotiated loop runs on it,
 
 `run_negotiated_batch` in `src/engine/negotiation/loop_.rs` is the loop every
 paper row runs. Read as a sentence: route the nets in the order given; when one
-fails, ask the probe who is blocking it; rip up what the rip-up policy names
-and search once more (guided by the probe's legal crossing partners when it
-reported any); requeue whoever did not resolve, and iterate until every net is
-routed or `max_rounds` is exhausted. Two crossing-accepting repairs used to run
-between the probe and the rip-up, the legal-only probe-guided search and the
-direct-crossing search; the 27-cell ablation of 2026-10 found both inert
+fails, ask the probe who is blocking it; rip up what the local rip-up rule
+names and search once more (guided by the probe's legal crossing partners when
+it reported any); requeue whoever did not resolve, rip up at round end what the
+probes blamed for the nets still failing, and iterate until every net is routed
+or `max_rounds` is exhausted. The code reads the same way since phase 3 slice D
+of the 2026-10 do-over: `run_negotiated_batch` is the rounds, each net's turn
+is `route_net_this_round`, which returns `Routed`, `Failed` or `ProbeAborted`,
+and the round end is `global_ripup_round`. Two crossing-accepting repairs used
+to run between the probe and the rip-up, the legal-only probe-guided search and
+the direct-crossing search; the 27-cell ablation of 2026-10 found both inert
 (byte-identical crossings and GDS lengths with either switched off) and phase 3
-slice A removed them. Around it: history and congestion are cleared at entry, a braid
-pass follows every committed route, a round with no progress twice in a row
-resets the epoch (`RESET_AFTER_ROUNDS_WITHOUT_PROGRESS = 2`), and a probe that
-finds no path at all aborts the batch naming the failed net.
+slice A removed them. Around it: history and congestion are cleared at entry, a
+braid pass follows every committed route, a probe that finds no path at all
+aborts the batch naming the failed net, and two epoch resets stand, both from
+the paper's runs: the global rip-up clears the history map and the once-per-epoch
+set exactly once per batch, on its second call, and the loop clears them and the
+failure counts after two rounds without a single committed route
+(`RESET_AFTER_ROUNDS_WITHOUT_PROGRESS = 2`).
 
 The rules are values, one module each, chosen before the first round:
 
@@ -746,7 +760,7 @@ The rules are values, one module each, chosen before the first round:
 | --- | --- | --- |
 | Budget | `BudgetSchedule`, `LadderBudgets` (`negotiation/budget.rs`) | the expansion budget of one attempt, given its `AttemptKind` (`First`, `FirstRetry`, `PostRipUp`), the net's failure count and the round; `None` means unbounded. The braid passes put their constant budget (`NEGOTIATED_BUDGET_BRAID`) on every `SearchCall` they build |
 | Crossing-free | `CrossingFreePolicy`, `PlannedPairsOnly`, `Never` (`negotiation/crossing_free.rs`) | whether this net's searches this round run crossing-free (contribution 1's rule for nets the plan gives no crossing; `Never` without guidance) |
-| Rip-up | `RipUpPolicy`, `LidarStyleRipUp`, `NoRipUp` (`negotiation/ripup.rs`) | which committed nets a blocked net displaces -- and it does the ripping, because rip-up mutates the obstacle map and `batch.final_routes`; it returns the ids it ripped, in the order it found them. `NoRipUp` rips nothing: the binding's `no_ripup=True` with `max_rounds = 1` is the no-repair mode (`RipupRerouteConfig(enabled=False)`) |
+| Rip-up | `ripup_illegal_crossing_partners` (`negotiation/ripup.rs`), behind `if no_ripup` in the loop | which committed nets a blocked net displaces -- and it does the ripping, because rip-up mutates the obstacle map and `batch.final_routes`; it returns the ids it ripped, in the order it found them. `no_ripup` skips it (nothing ripped, the net fails its round): the binding's `no_ripup=True` with `max_rounds = 1` is the no-repair mode (`RipupRerouteConfig(enabled=False)`). It was a one-method trait with a second implementation that returned no victims until phase 3 slice D folded it into that `if` |
 | Queue | `NetQueue` (`negotiation/queue.rs`) | the work order plus the three tables the other rules read: failure counts, the nets already ripped this epoch, and each net's most recent probe blockers |
 
 `negotiation/attempt.rs` builds each attempt's `SearchCall` from the batch's
@@ -777,9 +791,11 @@ open (the plan's Milestone 4).
 **To add a policy.** (1) Declare the decision as a trait in its own module
 under `src/engine/negotiation/`, with today's behaviour as the first
 implementation, and keep the trait's method signature to what the decision
-needs. (2) Construct it once in `run_negotiated_batch`, before the round loop,
-next to `budgets`, `crossing_free_policy` and `ripup_policy`; the loop body
-must ask the policy, never re-derive the decision. (3) If a configuration field
+needs. (2) Construct it once in `batch_context`, which `run_negotiated_batch`
+calls before the round loop, next to `budgets` and `crossing_free_policy`; the
+loop body must ask the policy, never re-derive the decision. A decision with
+exactly two outcomes and no state is an `if` on a `NegotiationParams` field,
+not a trait (the rip-up switch is the example). (3) If a configuration field
 selects it, add the field to `NegotiationConfig` on both sides (`src/config.rs`
 and `python/photonic_router/config.py`) and an `ENV_OVERLAY` entry
 (`python/photonic_router/env_overlay.py`); `docs/CONFIGURATION.md` then picks it
@@ -947,7 +963,7 @@ loop with its ~25-helper chain (the whole `src/engine/legacy_repair.rs`, 3,739
 lines) and its binding, the clean-probe commit, the orthogonal repair fallback
 (its config field `enable_orthogonal_repair_fallback` removed with it), the
 non-repair batch binding (the negotiated loop with `max_rounds = 1` and
-`NoRipUp` replaces it),
+`no_ripup` replaces it),
 the negotiated-displacement trio and `ripup_repair_set_victims`, the
 engine-selection fields and their two environment variables, and every helper
 those left unreachable. Two decisions came with the slice: the two

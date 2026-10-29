@@ -315,7 +315,7 @@ class RipupRerouteConfig:
     together with their two command-line flags). The negotiated loop's
     own round budget is `NEGOTIATED_MAX_ROUNDS`
     (`translation/routing/dispatch.py`); `enabled=False` selects the
-    no-repair mode (that loop with one round and `NoRipUp`).
+    no-repair mode (that loop with one round and `no_ripup=True`).
     """
 
     enabled: bool = True

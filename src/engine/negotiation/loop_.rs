@@ -1,3 +1,16 @@
+//! The negotiated rip-up-and-repair loop (Milestone 5 of
+//! `.agent/execplans/2026-08-25-negotiated-repair-engine.md`, rebuilt
+//! LiDAR-style in
+//! `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`,
+//! brought to this shape in phase 3 slice D of the 2026-10 do-over):
+//! `run_negotiated_batch` is the rounds, `route_net_this_round` is one net's
+//! turn, `global_ripup_round` is LiDAR's `ripupfailedNets` at round end.
+//! Each rule the loop applies lives in its own module: the budget ladder in
+//! `budget.rs`, the crossing-free rule in `crossing_free.rs`, the local
+//! rip-up rule in `ripup.rs`, the queue and its bookkeeping in `queue.rs`,
+//! one attempt and its trace line in `attempt.rs`, the probe in `probe.rs`,
+//! the braid passes in `braid.rs`, the trace lines in `trace.rs`.
+
 use std::time::Instant;
 
 use pyo3::prelude::*;
@@ -7,13 +20,599 @@ use crate::config::NegotiationConfig;
 
 use crate::engine::*;
 
+/// The Python job tuple the `#[pymethods]` wrapper forwards unchanged.
+pub(crate) type PyRouteJobTuple = (
+    u64,
+    PyState,
+    PyState,
+    Vec<(i32, i32)>,
+    Vec<(i32, i32)>,
+    Vec<(i32, i32)>,
+    Option<(f64, f64)>,
+    Option<(f64, f64)>,
+);
+
+/// The Python job tuples as the loop's own jobs -- the one conversion the
+/// `#[pymethods]` wrapper's tuples need before anything native runs.
+pub(crate) fn native_jobs_from_py(jobs: Vec<PyRouteJobTuple>) -> Vec<NativeRouteJob> {
+    jobs.into_iter()
+        .map(
+            |(
+                net_id,
+                source,
+                target,
+                opened_cells,
+                clearance_exempt_cells,
+                static_cleanup_cells,
+                source_port_um,
+                target_port_um,
+            )| {
+                NativeRouteJob::new(
+                    net_id,
+                    source,
+                    target,
+                    opened_cells,
+                    clearance_exempt_cells,
+                    static_cleanup_cells,
+                    source_port_um,
+                    target_port_um,
+                )
+            },
+        )
+        .collect()
+}
+
+/// The batch's jobs plus the three lookup tables the loop's steps read:
+/// the caller's net order (`route_rust.py`'s `_topological_net_route_order`),
+/// the jobs by id, and the job indices by source column (the source-column
+/// widening of the post-rip-up guidance).
+struct NetTables {
+    jobs: Vec<NativeRouteJob>,
+    order_by_id: FxHashMap<u64, usize>,
+    job_by_id: FxHashMap<u64, NativeRouteJob>,
+    source_layer_indices_by_x: FxHashMap<i32, Vec<usize>>,
+}
+
+impl NetTables {
+    fn from_jobs(jobs: Vec<NativeRouteJob>) -> Self {
+        let mut source_layer_indices_by_x: FxHashMap<i32, Vec<usize>> = FxHashMap::default();
+        for (index, job) in jobs.iter().enumerate() {
+            source_layer_indices_by_x
+                .entry(job.source.x)
+                .or_default()
+                .push(index);
+        }
+        NetTables {
+            order_by_id: jobs
+                .iter()
+                .enumerate()
+                .map(|(index, job)| (job.net_id, index))
+                .collect(),
+            job_by_id: jobs.iter().cloned().map(|job| (job.net_id, job)).collect(),
+            source_layer_indices_by_x,
+            jobs,
+        }
+    }
+}
+
+/// The counters the `native_negotiated_done` line reports, plus the two
+/// the line does not print but [`PyPhotonicRouter::run_negotiated_batch`]
+/// hands back with the batch (`rounds` is the `rounds=` field of that same
+/// line; `stall_resets` is how often the "two rounds without progress"
+/// reset fired). Nothing in the loop reads them; they are written where
+/// the loop already did the work they count.
+#[derive(Default)]
+pub(crate) struct NegotiationCounters {
+    pub(crate) global_ripups: u32,
+    pub(crate) local_ripups: u32,
+    pub(crate) probe_guided: u32,
+    pub(crate) crossing_free: u32,
+    /// Rounds the loop actually ran.
+    pub(crate) rounds: u32,
+    /// How often the loop's own epoch boundary
+    /// (`RESET_AFTER_ROUNDS_WITHOUT_PROGRESS` rounds in which not a single
+    /// net committed) cleared the history map and the queue's failure
+    /// counts.
+    pub(crate) stall_resets: u32,
+}
+
+/// The per-batch arguments of the negotiated loop: the clearance radii
+/// every search of the batch shares, the round limit, the history cost the
+/// loop installs for the nets that have already failed, and whether the
+/// local rip-up rule runs. Exactly the seven arguments
+/// `route_many_with_negotiated_repair_and_commit` takes from Python beside
+/// the jobs.
+pub(crate) struct NegotiationParams {
+    pub(crate) block_radius_cells: i32,
+    pub(crate) commit_radius_cells: Option<i32>,
+    pub(crate) core_radius_cells: Option<i32>,
+    pub(crate) max_rounds: u32,
+    pub(crate) history_weight: f64,
+    pub(crate) history_increment: u32,
+    /// `true` switches the local rip-up rule off: nothing is ripped for a
+    /// blocked net and it just fails its round. With `max_rounds = 1` this
+    /// is the no-repair mode (`RipupRerouteConfig(enabled=False)`), which
+    /// reached the deleted separate non-repair batch binding this loop
+    /// replaced in Milestone 8 of
+    /// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
+    /// (2026-09-24).
+    pub(crate) no_ripup: bool,
+}
+
+/// What every round of one batch shares, chosen once in the setup and never
+/// written by the loop: the arguments, the configuration (a clone, so that
+/// `self` stays free for the searches), the two policies, the job tables
+/// and the `SearchArgs` every search of the batch starts from.
+struct BatchContext<'a> {
+    params: &'a NegotiationParams,
+    negotiation: &'a NegotiationConfig,
+    budgets: LadderBudgets<'a>,
+    crossing_free_policy: Box<dyn CrossingFreePolicy>,
+    tables: NetTables,
+    /// The radii and flags; the two per-net weights are chosen at the top
+    /// of each net's turn (`net_search_args`).
+    args: SearchArgs,
+}
+
+/// What one round mutates: the committed batch, the queue and its
+/// bookkeeping, and the braid pairs already tried this round.
+struct RoundState<'a> {
+    batch: &'a mut RepairBatchState,
+    queue: &'a mut NetQueue,
+    /// Once-per-round rule for `try_braid_repair`'s pairwise attempts
+    /// (2026-09-15 11:54 trace finding): an unordered `{net, partner}`
+    /// pair whose braid attempt ended `keep=false` is not retried again
+    /// this round -- a pair that failed last round may look different this
+    /// round, so it deserves one fresh attempt per round.
+    braid_failed_pairs: FxHashSet<(u64, u64)>,
+}
+
+/// How one net's turn ended.
+enum NetOutcome {
+    /// Committed, braid passes run, whatever they ripped requeued.
+    Routed,
+    /// Still unrouted, requeued at the back; the round-end global rip-up
+    /// gets it.
+    Failed,
+    /// Its probe found no path at all: the batch ends here with the
+    /// `failed_net_id`/`failed_error` the probe set.
+    ProbeAborted,
+}
+
+/// This net's blockers as of its most recent probe, for
+/// `global_ripup_round` to consult if the net is still unrouted at the end
+/// of the round: the probe's candidate blockers, unioned with the partner
+/// ids of its realized illegal crossings (the nets it would have to
+/// cross), and -- for a crossing-free net, which may cross nobody -- the
+/// partners of its legal crossings too.
+fn probe_blockers(probe: &ProbeState, crossing_free: bool) -> Vec<u64> {
+    let mut blockers: Vec<u64> = probe.candidate_blockers.clone();
+    for violation in &probe.probe_realized_crossing_violations {
+        if !blockers.contains(&violation.partner_net_id) {
+            blockers.push(violation.partner_net_id);
+        }
+    }
+    if crossing_free {
+        for event in &probe.probe_crossing_events {
+            if !blockers.contains(&event.partner_net_id) {
+                blockers.push(event.partner_net_id);
+            }
+        }
+    }
+    blockers
+}
+
 impl PyPhotonicRouter {
+    /// The `#[pymethods]` wrapper's entry point: the Python job tuples as
+    /// the loop's own jobs, the loop, and the Python result dictionary.
+    /// Everything between those two conversions is `run_negotiated_batch`,
+    /// which needs no `Python<'_>` token at all -- the loop itself is
+    /// native, and this is the only place in the batch that is not.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn route_many_with_negotiated_repair_and_commit_impl(
+        &mut self,
+        py: Python<'_>,
+        jobs: Vec<PyRouteJobTuple>,
+        block_radius_cells: i32,
+        commit_radius_cells: Option<i32>,
+        core_radius_cells: Option<i32>,
+        max_rounds: u32,
+        history_weight: f64,
+        history_increment: u32,
+        no_ripup: bool,
+    ) -> PyResult<PyObject> {
+        let jobs = native_jobs_from_py(jobs);
+        let params = NegotiationParams {
+            block_radius_cells,
+            commit_radius_cells,
+            core_radius_cells,
+            max_rounds,
+            history_weight,
+            history_increment,
+            no_ripup,
+        };
+        // Read before the loop runs, as `SearchArgs` has always read it;
+        // no step of the loop writes `astar_cfg`.
+        let collect_native_timing = self.astar_cfg.collect_detailed_timing;
+        let (mut batch, _counters) = self.run_negotiated_batch(jobs.clone(), &params)?;
+        self.build_native_batch_result_dict(py, &jobs, &mut batch, collect_native_timing)
+    }
+
+    /// The loop every paper row runs: route the nets in the order given;
+    /// when one fails, ask the probe who is blocking it, rip up what the
+    /// local rip-up rule names and search once more; requeue whoever did
+    /// not resolve, rip up at round end what the probes blamed for the nets
+    /// still failing, and iterate until every net routes or `max_rounds` is
+    /// exhausted. One net's turn is `route_net_this_round`.
+    ///
+    /// Returns the committed batch and the counters of the rules that ran;
+    /// `route_many_with_negotiated_repair_and_commit_impl` above turns the
+    /// batch into the Python result dictionary and drops the counters (the
+    /// trace line already reports them). No step below touches Python.
+    pub(crate) fn run_negotiated_batch(
+        &mut self,
+        jobs: Vec<NativeRouteJob>,
+        params: &NegotiationParams,
+    ) -> PyResult<(RepairBatchState, NegotiationCounters)> {
+        let args = self.begin_negotiated_batch(params);
+        let negotiation = self.router_config.negotiation.clone();
+        let ctx = self.batch_context(jobs, params, &negotiation, args);
+        let max_rounds = params.max_rounds;
+        let mut batch = RepairBatchState::default();
+        let mut queue = NetQueue::new(ctx.tables.jobs.iter().map(|job| job.net_id));
+        let mut counters = NegotiationCounters::default();
+        let mut round = 0u32;
+        let mut rounds_without_progress = 0u32;
+        const RESET_AFTER_ROUNDS_WITHOUT_PROGRESS: u32 = 2;
+        // Set by the one early exit (a probe that found no path at all):
+        // that batch keeps the `failed_net_id`/`failed_error` the probe
+        // itself set and never takes the soft non-convergence failure.
+        let mut probe_aborted = false;
+
+        'rounds: while round < max_rounds && !queue.is_empty() {
+            round += 1;
+            let this_round = queue.take_round();
+            let mut state = RoundState {
+                batch: &mut batch,
+                queue: &mut queue,
+                braid_failed_pairs: FxHashSet::default(),
+            };
+            let mut made_progress = false;
+            // Every net that ends this round still unrouted, whether or
+            // not a rip-up was attempted for it.
+            let mut round_failed_ids: Vec<u64> = Vec::new();
+
+            for (position, net_id) in this_round.into_iter().enumerate() {
+                match self.route_net_this_round(
+                    &ctx,
+                    &mut state,
+                    &mut counters,
+                    position,
+                    round,
+                    net_id,
+                ) {
+                    NetOutcome::Routed => made_progress = true,
+                    NetOutcome::Failed => round_failed_ids.push(net_id),
+                    NetOutcome::ProbeAborted => {
+                        probe_aborted = true;
+                        break 'rounds;
+                    }
+                }
+            }
+
+            // LiDAR's `ripupfailedNets`, with its own once-per-batch epoch
+            // reset on the second global rip-up.
+            self.global_ripup_round(
+                state.batch,
+                &round_failed_ids,
+                state.queue,
+                &mut counters.global_ripups,
+                round,
+                args.trace,
+            );
+
+            // Two rounds without a single committed route: the loop's own
+            // epoch boundary, independent of the global rip-up's. Both
+            // resets are what the paper's runs had.
+            if made_progress {
+                rounds_without_progress = 0;
+            } else {
+                rounds_without_progress += 1;
+                if rounds_without_progress >= RESET_AFTER_ROUNDS_WITHOUT_PROGRESS
+                    && !queue.is_empty()
+                {
+                    self.obstacle_map.clear_history();
+                    queue.epoch_reset(true);
+                    rounds_without_progress = 0;
+                    counters.stall_resets += 1;
+                }
+            }
+        }
+        counters.rounds = round;
+
+        if !probe_aborted {
+            // The soft failure: the batch is returned with whatever routed.
+            if let Some(failed_net_id) = queue.front() {
+                batch.failed_net_id = Some(failed_net_id);
+                batch.failed_error = Some(format!(
+                    "Negotiated repair did not converge for net {failed_net_id} within {max_rounds} rounds; {} net(s) still unrouted",
+                    queue.len()
+                ));
+            }
+        }
+        if args.trace {
+            self.trace_negotiated_done(&counters, round, queue.len());
+        }
+        self.finish_negotiated_batch();
+        Ok((batch, counters))
+    }
+
+    /// One net's turn in a round: the plain search (and the first-retry
+    /// rule), on failure the probe, the local rip-up and the search once
+    /// more on the map it freed (guided by the probe's legal partners in
+    /// the mixed case), then the requeues. Every search of the turn runs
+    /// with the same `SearchArgs`.
+    fn route_net_this_round(
+        &mut self,
+        ctx: &BatchContext,
+        state: &mut RoundState,
+        counters: &mut NegotiationCounters,
+        position: usize,
+        round: u32,
+        net_id: u64,
+    ) -> NetOutcome {
+        let max_rounds = ctx.params.max_rounds;
+        let job = ctx
+            .tables
+            .job_by_id
+            .get(&net_id)
+            .expect("every queued net_id came from job_by_id's own keys");
+        let failed_count = state.queue.failed_count(net_id);
+        let budget = |kind| ctx.budgets.budget(kind, failed_count, round, max_rounds);
+        let crossing_free = ctx
+            .crossing_free_policy
+            .crossing_free(net_id, round, max_rounds);
+        let args = self.net_search_args(ctx, net_id, failed_count);
+        if args.trace {
+            self.trace_net_start(position, round, net_id, failed_count, crossing_free);
+        }
+
+        // The plain search, and -- for a net that has not failed yet,
+        // outside the last round -- one retry at the larger first-retry
+        // budget before probe and rip-up run at all (owner decision
+        // 2026-09-15 01:30).
+        let first = PlainAttempt::first(budget(AttemptKind::First), crossing_free);
+        let mut outcome = self.run_plain_attempt(state.batch, job, &args, first);
+        if matches!(outcome, PlainRouteOutcome::NotResolved)
+            && failed_count == 0
+            && round != max_rounds
+        {
+            let retry = PlainAttempt::first_retry(budget(AttemptKind::FirstRetry), crossing_free);
+            outcome = self.run_plain_attempt(state.batch, job, &args, retry);
+        }
+        if matches!(outcome, PlainRouteOutcome::Routed) {
+            counters.crossing_free += u32::from(crossing_free);
+            self.braid_and_requeue(state, job, &ctx.tables, &args);
+            return NetOutcome::Routed;
+        }
+
+        // The probe is diagnostic only and is never itself committed here;
+        // a probe failure aborts the whole batch, this loop's only early
+        // return.
+        let order_by_id = &ctx.tables.order_by_id;
+        let Ok(probe) = self.run_probe_attempt(state.batch, job, order_by_id, &args) else {
+            return NetOutcome::ProbeAborted;
+        };
+        state
+            .queue
+            .record_blockers(net_id, probe_blockers(&probe, crossing_free));
+
+        // LiDAR's local rip-up rule (`ripuplocalnets`) -- switched off in
+        // the no-repair mode -- then this net's search once more on the map
+        // it freed.
+        let ripped = if ctx.params.no_ripup {
+            Vec::new()
+        } else {
+            self.ripup_illegal_crossing_partners(
+                state.batch,
+                &probe,
+                state.queue.ripped_once_mut(),
+                net_id,
+                round,
+                args.trace,
+                crossing_free,
+            )
+        };
+        if ripped.is_empty() {
+            state.queue.requeue_back(net_id);
+            return NetOutcome::Failed;
+        }
+        counters.local_ripups += 1;
+        let guided_partner_ids =
+            self.post_ripup_guidance(ctx, state.batch, &probe, net_id, crossing_free, args.trace);
+        let post = PlainAttempt::post_ripup(
+            budget(AttemptKind::PostRipUp),
+            crossing_free,
+            &guided_partner_ids,
+        );
+        let outcome = self.run_plain_attempt(state.batch, job, &args, post);
+        let result = if matches!(outcome, PlainRouteOutcome::Routed) {
+            counters.probe_guided += u32::from(!guided_partner_ids.is_empty());
+            counters.crossing_free += u32::from(crossing_free);
+            self.braid_and_requeue(state, job, &ctx.tables, &args);
+            NetOutcome::Routed
+        } else {
+            state.queue.requeue_back(net_id);
+            NetOutcome::Failed
+        };
+        state.queue.requeue_front_preserving_order(&ripped);
+        result
+    }
+
+    /// The batch's setup on `self`: history and congestion cleared, the
+    /// per-commit history amount installed, the trace clock started. Returns
+    /// the `SearchArgs` every search of the batch starts from.
+    fn begin_negotiated_batch(&mut self, params: &NegotiationParams) -> SearchArgs {
+        self.obstacle_map.clear_congestion();
+        self.obstacle_map.clear_history();
+        self.long_straight_congestion_cells.clear();
+        self.long_straight_congestion_records.clear();
+        self.commit_history_increment = params.history_increment;
+        self.commit_history_block_radius_cells = params.block_radius_cells;
+        // Timestamps this loop's `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG`
+        // trace lines; cleared again by `finish_negotiated_batch`.
+        self.negotiated_batch_start = Some(Instant::now());
+        SearchArgs {
+            radii: SearchRadii::new(
+                params.block_radius_cells,
+                params.commit_radius_cells,
+                params.core_radius_cells,
+            ),
+            collect_native_timing: self.astar_cfg.collect_detailed_timing,
+            trace: self.router_config.diagnostics.native_repair_diag,
+            // Chosen per net at the top of its turn (`net_search_args`).
+            history_weight: 0.0,
+            long_straight_weight_override: None,
+        }
+    }
+
+    /// Both returns of the loop clear the per-batch field it set.
+    fn finish_negotiated_batch(&mut self) {
+        self.negotiated_batch_start = None;
+    }
+
+    /// The job tables and the two policies, chosen once for the batch.
+    fn batch_context<'a>(
+        &self,
+        jobs: Vec<NativeRouteJob>,
+        params: &'a NegotiationParams,
+        negotiation: &'a NegotiationConfig,
+        args: SearchArgs,
+    ) -> BatchContext<'a> {
+        BatchContext {
+            params,
+            negotiation,
+            budgets: LadderBudgets(negotiation),
+            crossing_free_policy: self.negotiated_crossing_free_policy(negotiation),
+            tables: NetTables::from_jobs(jobs),
+            args,
+        }
+    }
+
+    /// Contribution 1's crossing-free rule on the nets named by at least
+    /// one planned pair of the guidance; without guidance (lidar-pure) or
+    /// with the rule switched off, nobody is exempt.
+    fn negotiated_crossing_free_policy(
+        &self,
+        negotiation: &NegotiationConfig,
+    ) -> Box<dyn CrossingFreePolicy> {
+        match negotiation
+            .crossing_free_unplanned
+            .then(|| self.crossing_context.guidance())
+            .flatten()
+        {
+            Some(guidance) => Box::new(PlannedPairsOnly(
+                guidance
+                    .pairs()
+                    .into_iter()
+                    .flat_map(|(a, b)| [a, b])
+                    .collect(),
+            )),
+            None => Box::new(Never),
+        }
+    }
+
+    /// The `SearchArgs` of one net's turn -- the plain attempts, the probe
+    /// and the braid passes all run with them: the batch's radii and flags
+    /// plus the two weights chosen here. History cost steers a net that has
+    /// already failed, and only such a net: a net's first attempt each
+    /// epoch runs without it. The long-straight penalty is 0 for the exempt
+    /// dense fan-out nets, the configured weight for every other net.
+    fn net_search_args(&self, ctx: &BatchContext, net_id: u64, failed_count: u32) -> SearchArgs {
+        let failed_before = failed_count != 0 || ctx.negotiation.history_on_first_attempt;
+        let exempt = self.long_straight_exempt_net_ids.contains(&net_id);
+        SearchArgs {
+            history_weight: if failed_before {
+                ctx.params.history_weight
+            } else {
+                0.0
+            },
+            long_straight_weight_override: if exempt { Some(0.0) } else { None },
+            ..ctx.args
+        }
+    }
+
+    /// The braid passes that follow every route this loop commits, plus
+    /// the requeue of whatever a braid escalation left ripped
+    /// (`BraidRepairOutcome::VictimRipped`).
+    fn braid_and_requeue(
+        &mut self,
+        state: &mut RoundState,
+        job: &NativeRouteJob,
+        tables: &NetTables,
+        args: &SearchArgs,
+    ) {
+        let mut braid_ripped_victims: Vec<u64> = Vec::new();
+        self.run_braid_repair_passes(
+            state.batch,
+            job,
+            &tables.job_by_id,
+            args,
+            &mut state.braid_failed_pairs,
+            &mut braid_ripped_victims,
+        );
+        state.queue.requeue_braid_victims(&braid_ripped_victims);
+    }
+
+    /// Mixed-case guidance for the post-rip-up search (2026-09-15 16:25
+    /// Decision Log entry, follow-up (2)): when the probe also reported
+    /// legal crossing partners, the search prices them at
+    /// `NEGOTIATED_PROBE_GUIDANCE_LOSS`, widened by source column (2026-09-15
+    /// 15:00, "Slice result 15:40": the probe's free path threads between
+    /// some lanes of a fan-out bundle rather than crossing all of them, so
+    /// the partners it names alone underprice the search) unless
+    /// `disable_source_column_widening`. A crossing-free net gets no
+    /// guidance: it may cross nobody. Not covered by the 2026-10 ablation;
+    /// `disable_post_ripup_guidance` is the switch for the next one.
+    fn post_ripup_guidance(
+        &self,
+        ctx: &BatchContext,
+        batch: &RepairBatchState,
+        probe: &ProbeState,
+        net_id: u64,
+        crossing_free: bool,
+        trace: bool,
+    ) -> Vec<u64> {
+        if crossing_free || ctx.negotiation.disable_post_ripup_guidance {
+            return Vec::new();
+        }
+        let (legal_partner_ids, _illegal_partner_ids) = split_probe_partners(probe);
+        if legal_partner_ids.is_empty() {
+            return Vec::new();
+        }
+        if ctx.negotiation.disable_source_column_widening {
+            return legal_partner_ids;
+        }
+        let tables = &ctx.tables;
+        let widened = widen_probe_partners_by_source_column(
+            &legal_partner_ids,
+            &tables.job_by_id,
+            &tables.source_layer_indices_by_x,
+            &tables.jobs,
+            &batch.final_routes,
+            net_id,
+        );
+        if trace {
+            self.trace_probe_widening(net_id, &legal_partner_ids, &widened);
+        }
+        widened
+    }
+
     /// LiDAR's `ripupfailedNets` (Milestone 3 of
     /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`):
-    /// called once at the end of every round of
-    /// `route_many_with_negotiated_repair_and_commit`. Every net that ended
-    /// the round still unrouted (`round_failed`) is ripped up together with
-    /// the blockers its most recent probe reported (`last_blockers`) that
+    /// called once at the end of every round. Every net that ended the
+    /// round still unrouted (`round_failed`) is ripped up together with the
+    /// blockers its most recent probe reported (`queue.last_blockers`) that
     /// are still committed; history cost is bumped on a ripped blocker's
     /// cells before it is ripped, via the same per-commit chokepoint
     /// (`add_repair_history_for_route`) every successful commit uses. The
@@ -25,24 +624,20 @@ impl PyPhotonicRouter {
     /// counter reaches 2, and never again, however many further global
     /// rip-ups follow -- the history map and the local rip-up rule's
     /// once-per-epoch set are cleared: this is this milestone's own epoch
-    /// boundary, independent of (and able to coincide with) the existing
+    /// boundary, independent of (and able to coincide with) the loop's
     /// "two rounds without progress" reset.
     ///
     /// This once-per-batch reset is the behaviour the paper's runs used
     /// (D7 of `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`,
     /// decided 2026-09-24: the code stands, the comment is corrected).
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn global_ripup_round(
         &mut self,
         batch: &mut RepairBatchState,
         round_failed: &[u64],
-        last_blockers: &FxHashMap<u64, Vec<u64>>,
-        queue: &mut std::collections::VecDeque<u64>,
-        failed_counts: &mut FxHashMap<u64, u32>,
-        ripped_once: &mut FxHashSet<u64>,
+        queue: &mut NetQueue,
         global_ripups: &mut u32,
         round: u32,
-        trace_native_repair: bool,
+        trace: bool,
     ) {
         if round_failed.is_empty() {
             return;
@@ -52,10 +647,7 @@ impl PyPhotonicRouter {
         let mut ripped_blocker_ids: Vec<u64> = Vec::new();
         let mut ripped_seen: FxHashSet<u64> = FxHashSet::default();
         for &failed_net_id in round_failed {
-            let Some(blockers) = last_blockers.get(&failed_net_id) else {
-                continue;
-            };
-            for &blocker_id in blockers {
+            for blocker_id in queue.last_blockers(failed_net_id).to_vec() {
                 let Some(route) = batch.final_routes.get(&blocker_id) else {
                     // Not currently committed (already ripped by this or an
                     // earlier step this round) -- nothing to do for it.
@@ -65,38 +657,26 @@ impl PyPhotonicRouter {
                 self.add_repair_history_for_route(&route);
                 self.ripup_route(blocker_id);
                 batch.final_routes.remove(&blocker_id);
-                *failed_counts.entry(blocker_id).or_insert(0) += 1;
+                queue.bump_failed_count(blocker_id);
                 if ripped_seen.insert(blocker_id) {
                     ripped_blocker_ids.push(blocker_id);
                 }
             }
         }
 
-        // Rebuild the queue for the next round: pull every id about to be
-        // requeued out of wherever it currently sits (a ripped blocker may
-        // already be in `queue` from a same-round local rip-up of a
-        // different net), then push the failed nets first (in
-        // `round_failed` order) and the ripped blockers after them (in rip
-        // order, deduplicated) to the front, so both are tried again first
-        // thing next round -- LiDAR's "ripped nets go back to the queue".
-        // Nets already routed stay out of the queue entirely (they were
-        // never added to `round_failed`).
+        // The failed nets first (in `round_failed` order), the ripped
+        // blockers after them (in rip order), deduplicated, to the front of
+        // the queue -- LiDAR's "ripped nets go back to the queue". Nets
+        // already routed stay out of the queue entirely (they were never
+        // added to `round_failed`).
         let mut requeue_ids: Vec<u64> = Vec::new();
         let mut requeue_seen: FxHashSet<u64> = FxHashSet::default();
-        for &failed_net_id in round_failed {
-            if requeue_seen.insert(failed_net_id) {
-                requeue_ids.push(failed_net_id);
+        for &id in round_failed.iter().chain(&ripped_blocker_ids) {
+            if requeue_seen.insert(id) {
+                requeue_ids.push(id);
             }
         }
-        for &blocker_id in &ripped_blocker_ids {
-            if requeue_seen.insert(blocker_id) {
-                requeue_ids.push(blocker_id);
-            }
-        }
-        queue.retain(|id| !requeue_seen.contains(id));
-        for &id in requeue_ids.iter().rev() {
-            queue.push_front(id);
-        }
+        queue.move_to_front(&requeue_ids);
 
         push_native_repair_trace(
             &mut batch.repair_trace,
@@ -114,14 +694,8 @@ impl PyPhotonicRouter {
             None,
             None,
         );
-        if trace_native_repair {
-            eprintln!(
-                "{}native_repair_global_ripup round={} failed={:?} ripped={:?}",
-                trace_t(self.negotiated_batch_start),
-                round,
-                round_failed,
-                ripped_blocker_ids
-            );
+        if trace {
+            self.trace_global_ripup(round, round_failed, &ripped_blocker_ids);
         }
 
         // This milestone's own epoch boundary (LiDAR clears the history
@@ -130,11 +704,9 @@ impl PyPhotonicRouter {
         // as in LiDAR (`ripup_times == 2`); clearing at every second call
         // (the first version, 2026-09-14) never let pressure build on a
         // shared corridor and two nets displaced each other for 10 rounds.
-        // Independent of the "two rounds without progress" reset in the
-        // caller, which may or may not fire the same round.
         if *global_ripups == 2 {
             self.obstacle_map.clear_history();
-            ripped_once.clear();
+            queue.epoch_reset(false);
             push_native_repair_trace(
                 &mut batch.repair_trace,
                 "history_clear",
@@ -151,13 +723,8 @@ impl PyPhotonicRouter {
                 None,
                 None,
             );
-            if trace_native_repair {
-                eprintln!(
-                    "{}history_clear round={} global_ripups={}",
-                    trace_t(self.negotiated_batch_start),
-                    round,
-                    *global_ripups
-                );
+            if trace {
+                self.trace_history_clear(round, *global_ripups);
             }
         }
     }
@@ -167,6 +734,12 @@ impl PyPhotonicRouter {
 mod tests {
     use super::*;
     use crate::engine::test_support::*;
+
+    /// A queue with nothing left to route this round, as `global_ripup_round`
+    /// sees it after `take_round`.
+    fn drained_queue() -> NetQueue {
+        NetQueue::new(std::iter::empty())
+    }
 
     #[test]
     fn global_ripup_round_rips_blockers_and_queues_failed_nets_first() {
@@ -178,20 +751,14 @@ mod tests {
         }
 
         let round_failed: Vec<u64> = vec![4];
-        let mut last_blockers: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
-        last_blockers.insert(4, vec![3]);
-        let mut queue: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
-        let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
-        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
+        let mut queue = drained_queue();
+        queue.record_blockers(4, vec![3]);
         let mut global_ripups: u32 = 0;
 
         router.global_ripup_round(
             &mut batch,
             &round_failed,
-            &last_blockers,
             &mut queue,
-            &mut failed_counts,
-            &mut ripped_once,
             &mut global_ripups,
             1,
             false,
@@ -206,13 +773,13 @@ mod tests {
             "net 3 must be removed from final_routes"
         );
         assert_eq!(
-            failed_counts.get(&3).copied(),
+            queue.failed_counts().get(&3).copied(),
             Some(1),
             "the ripped blocker's failed_counts must be bumped exactly once"
         );
         assert_eq!(
-            queue,
-            std::collections::VecDeque::from([4u64, 3u64]),
+            queue.order(),
+            vec![4u64, 3u64],
             "the queue must start with the failed net first, then its ripped blocker"
         );
         assert_eq!(global_ripups, 1);
@@ -239,20 +806,14 @@ mod tests {
         }
 
         let round_failed: Vec<u64> = vec![4];
-        let mut last_blockers: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
-        last_blockers.insert(4, vec![3]);
-        let mut queue: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
-        let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
-        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
+        let mut queue = drained_queue();
+        queue.record_blockers(4, vec![3]);
         let mut global_ripups: u32 = 0;
 
         router.global_ripup_round(
             &mut batch,
             &round_failed,
-            &last_blockers,
             &mut queue,
-            &mut failed_counts,
-            &mut ripped_once,
             &mut global_ripups,
             1,
             false,
@@ -280,33 +841,20 @@ mod tests {
             batch.final_routes.insert(net_id, route);
         }
 
-        let mut queue: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
-        let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
-        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
-        ripped_once.insert(99); // a dummy epoch marker, to prove it gets cleared
+        let mut queue = drained_queue();
+        queue.ripped_once_mut().insert(99); // a dummy epoch marker, to prove it gets cleared
         let mut global_ripups: u32 = 0;
 
         // First call: net 4 failed, blamed net 3 -- ripped, history bumped,
         // no epoch clear yet (this is the first global rip-up).
-        let mut last_blockers: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
-        last_blockers.insert(4, vec![3]);
-        router.global_ripup_round(
-            &mut batch,
-            &[4],
-            &last_blockers,
-            &mut queue,
-            &mut failed_counts,
-            &mut ripped_once,
-            &mut global_ripups,
-            1,
-            false,
-        );
+        queue.record_blockers(4, vec![3]);
+        router.global_ripup_round(&mut batch, &[4], &mut queue, &mut global_ripups, 1, false);
         assert_eq!(global_ripups, 1);
         assert!(net3_cells
             .iter()
             .any(|&(x, y)| router.obstacle_map.get_history_cost(x, y) > 0));
         assert!(
-            ripped_once.contains(&99),
+            queue.ripped_once().contains(&99),
             "the epoch marker must survive the first global rip-up"
         );
 
@@ -314,18 +862,8 @@ mod tests {
         // committed, untouched by the first call) -- this is the second
         // global rip-up, so the epoch boundary fires: history clears and
         // `ripped_once` resets.
-        last_blockers.insert(6, vec![2]);
-        router.global_ripup_round(
-            &mut batch,
-            &[6],
-            &last_blockers,
-            &mut queue,
-            &mut failed_counts,
-            &mut ripped_once,
-            &mut global_ripups,
-            2,
-            false,
-        );
+        queue.record_blockers(6, vec![2]);
+        router.global_ripup_round(&mut batch, &[6], &mut queue, &mut global_ripups, 2, false);
 
         assert_eq!(global_ripups, 2);
         assert!(
@@ -336,7 +874,7 @@ mod tests {
              global rip-up"
         );
         assert!(
-            ripped_once.is_empty(),
+            queue.ripped_once().is_empty(),
             "ripped_once must be cleared on the second global rip-up epoch boundary"
         );
         assert!(
@@ -365,38 +903,15 @@ mod tests {
             batch.final_routes.insert(net_id, route);
         }
 
-        let mut queue: std::collections::VecDeque<u64> = std::collections::VecDeque::new();
-        let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
-        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
+        let mut queue = drained_queue();
         let mut global_ripups: u32 = 0;
 
         // Calls one and two: rip nets 1 and 2, so the epoch boundary has
         // already fired (`global_ripups == 2`) before the third call.
-        let mut last_blockers: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
-        last_blockers.insert(4, vec![1]);
-        router.global_ripup_round(
-            &mut batch,
-            &[4],
-            &last_blockers,
-            &mut queue,
-            &mut failed_counts,
-            &mut ripped_once,
-            &mut global_ripups,
-            1,
-            false,
-        );
-        last_blockers.insert(5, vec![2]);
-        router.global_ripup_round(
-            &mut batch,
-            &[5],
-            &last_blockers,
-            &mut queue,
-            &mut failed_counts,
-            &mut ripped_once,
-            &mut global_ripups,
-            2,
-            false,
-        );
+        queue.record_blockers(4, vec![1]);
+        router.global_ripup_round(&mut batch, &[4], &mut queue, &mut global_ripups, 1, false);
+        queue.record_blockers(5, vec![2]);
+        router.global_ripup_round(&mut batch, &[5], &mut queue, &mut global_ripups, 2, false);
         assert_eq!(global_ripups, 2);
         let clears_after_two = batch
             .repair_trace
@@ -411,19 +926,9 @@ mod tests {
         // Third call: net 6 blames net 3, which is still committed. Its
         // history is bumped before it is ripped, and nothing may clear it.
         let net3_cells = router.get_net_cells(3);
-        ripped_once.insert(99); // an epoch marker that must now survive
-        last_blockers.insert(6, vec![3]);
-        router.global_ripup_round(
-            &mut batch,
-            &[6],
-            &last_blockers,
-            &mut queue,
-            &mut failed_counts,
-            &mut ripped_once,
-            &mut global_ripups,
-            3,
-            false,
-        );
+        queue.ripped_once_mut().insert(99); // an epoch marker that must now survive
+        queue.record_blockers(6, vec![3]);
+        router.global_ripup_round(&mut batch, &[6], &mut queue, &mut global_ripups, 3, false);
 
         assert_eq!(global_ripups, 3);
         assert!(
@@ -435,7 +940,7 @@ mod tests {
             net3_cells
         );
         assert!(
-            ripped_once.contains(&99),
+            queue.ripped_once().contains(&99),
             "the once-per-epoch set must survive a third global rip-up"
         );
         assert_eq!(
@@ -459,20 +964,13 @@ mod tests {
         }
 
         let round_failed: Vec<u64> = Vec::new();
-        let last_blockers: FxHashMap<u64, Vec<u64>> = FxHashMap::default();
-        let mut queue: std::collections::VecDeque<u64> =
-            std::collections::VecDeque::from([7u64, 8u64]);
-        let mut failed_counts: FxHashMap<u64, u32> = FxHashMap::default();
-        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
+        let mut queue = NetQueue::new([7u64, 8u64]);
         let mut global_ripups: u32 = 0;
 
         router.global_ripup_round(
             &mut batch,
             &round_failed,
-            &last_blockers,
             &mut queue,
-            &mut failed_counts,
-            &mut ripped_once,
             &mut global_ripups,
             1,
             false,
@@ -491,11 +989,11 @@ mod tests {
             "net 3 must stay committed on the obstacle map"
         );
         assert_eq!(
-            queue,
-            std::collections::VecDeque::from([7u64, 8u64]),
+            queue.order(),
+            vec![7u64, 8u64],
             "the queue must be untouched"
         );
-        assert!(failed_counts.is_empty());
+        assert!(queue.failed_counts().is_empty());
         assert!(batch.repair_trace.is_empty());
     }
 
@@ -745,633 +1243,36 @@ mod tests {
             batch.failed_error
         );
     }
-}
 
-/// The Python job tuple the `#[pymethods]` wrapper forwards unchanged.
-pub(crate) type PyRouteJobTuple = (
-    u64,
-    PyState,
-    PyState,
-    Vec<(i32, i32)>,
-    Vec<(i32, i32)>,
-    Vec<(i32, i32)>,
-    Option<(f64, f64)>,
-    Option<(f64, f64)>,
-);
-
-/// The batch's jobs plus the three lookup tables the loop's steps read:
-/// the caller's net order (`route_rust.py`'s `_topological_net_route_order`),
-/// the jobs by id, and the job indices by source column (the probe-guided
-/// step's structural widening).
-struct NetTables {
-    jobs: Vec<NativeRouteJob>,
-    order_by_id: FxHashMap<u64, usize>,
-    job_by_id: FxHashMap<u64, NativeRouteJob>,
-    source_layer_indices_by_x: FxHashMap<i32, Vec<usize>>,
-}
-
-/// The Python job tuples as the loop's own jobs -- the one conversion the
-/// `#[pymethods]` wrapper's tuples need before anything native runs.
-pub(crate) fn native_jobs_from_py(jobs: Vec<PyRouteJobTuple>) -> Vec<NativeRouteJob> {
-    jobs.into_iter()
-        .map(
-            |(
-                net_id,
-                source,
-                target,
-                opened_cells,
-                clearance_exempt_cells,
-                static_cleanup_cells,
-                source_port_um,
-                target_port_um,
-            )| {
-                NativeRouteJob::new(
-                    net_id,
-                    source,
-                    target,
-                    opened_cells,
-                    clearance_exempt_cells,
-                    static_cleanup_cells,
-                    source_port_um,
-                    target_port_um,
-                )
-            },
-        )
-        .collect()
-}
-
-impl NetTables {
-    fn from_jobs(jobs: Vec<NativeRouteJob>) -> Self {
-        let mut source_layer_indices_by_x: FxHashMap<i32, Vec<usize>> = FxHashMap::default();
-        for (index, job) in jobs.iter().enumerate() {
-            source_layer_indices_by_x
-                .entry(job.source.x)
-                .or_default()
-                .push(index);
-        }
-        NetTables {
-            order_by_id: jobs
-                .iter()
-                .enumerate()
-                .map(|(index, job)| (job.net_id, index))
-                .collect(),
-            job_by_id: jobs.iter().cloned().map(|job| (job.net_id, job)).collect(),
-            source_layer_indices_by_x,
-            jobs,
-        }
-    }
-}
-
-/// The counters the `native_negotiated_done` line reports, plus the two
-/// the line does not print but [`PyPhotonicRouter::run_negotiated_batch`]
-/// hands back with the batch (`rounds` is the `rounds=` field of that same
-/// line; `stall_resets` is how often the "two rounds without progress"
-/// reset fired). Nothing in the loop reads them; they are written where
-/// the loop already did the work they count.
-#[derive(Default)]
-pub(crate) struct NegotiationCounters {
-    pub(crate) global_ripups: u32,
-    pub(crate) local_ripups: u32,
-    pub(crate) probe_guided: u32,
-    pub(crate) crossing_free: u32,
-    /// Rounds the loop actually ran.
-    pub(crate) rounds: u32,
-    /// How often the loop's own epoch boundary
-    /// (`RESET_AFTER_ROUNDS_WITHOUT_PROGRESS` rounds in which not a single
-    /// net committed) cleared the history map and the queue's failure
-    /// counts.
-    pub(crate) stall_resets: u32,
-}
-
-/// The per-batch arguments of the negotiated loop: the clearance radii
-/// every search of the batch shares, the round limit, the history cost the
-/// loop installs for the nets that have already failed, and which rip-up
-/// rule runs. Exactly the seven arguments
-/// `route_many_with_negotiated_repair_and_commit` takes from Python beside
-/// the jobs.
-pub(crate) struct NegotiationParams {
-    pub(crate) block_radius_cells: i32,
-    pub(crate) commit_radius_cells: Option<i32>,
-    pub(crate) core_radius_cells: Option<i32>,
-    pub(crate) max_rounds: u32,
-    pub(crate) history_weight: f64,
-    pub(crate) history_increment: u32,
-    /// `true` selects `NoRipUp` instead of `LidarStyleRipUp`: nothing is
-    /// ever ripped and a blocked net just fails its round. With
-    /// `max_rounds = 1` this is the no-repair mode
-    /// (`RipupRerouteConfig(enabled=False)`), which reached the deleted
-    /// separate non-repair batch binding this loop replaced in Milestone 8
-    /// of `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
-    /// (2026-09-24).
-    pub(crate) no_ripup: bool,
-}
-
-/// What one round mutates: the committed batch, the queue and its
-/// bookkeeping, and the braid pairs already tried this round.
-struct RoundState<'a> {
-    batch: &'a mut RepairBatchState,
-    queue: &'a mut NetQueue,
-    /// Once-per-round rule for `try_braid_repair`'s pairwise attempts
-    /// (2026-09-15 11:54 trace finding): an unordered `{net, partner}`
-    /// pair whose braid attempt ended `keep=false` is not retried again
-    /// this round -- a pair that failed last round may look different this
-    /// round, so it deserves one fresh attempt per round.
-    braid_failed_pairs: &'a mut FxHashSet<(u64, u64)>,
-}
-
-fn empty_batch_state() -> RepairBatchState {
-    RepairBatchState {
-        final_routes: FxHashMap::default(),
-        attempts: Vec::new(),
-        repair_trace: Vec::new(),
-        repair_count: 0,
-        failed_net_id: None,
-        failed_error: None,
-        timings: NativeBatchTimings::default(),
-    }
-}
-
-/// This net's blockers as of its most recent probe, for
-/// `global_ripup_round` to consult if the net is still unrouted at the end
-/// of the round: the probe's candidate blockers, unioned with the partner
-/// ids of its realized illegal crossings (the nets it would have to
-/// cross), and -- for a crossing-free net, which may cross nobody -- the
-/// partners of its legal crossings too.
-fn probe_blockers(probe: &ProbeState, crossing_free: bool) -> Vec<u64> {
-    let mut blockers: Vec<u64> = probe.candidate_blockers.clone();
-    for violation in &probe.probe_realized_crossing_violations {
-        if !blockers.contains(&violation.partner_net_id) {
-            blockers.push(violation.partner_net_id);
-        }
-    }
-    if crossing_free {
-        for event in &probe.probe_crossing_events {
-            if !blockers.contains(&event.partner_net_id) {
-                blockers.push(event.partner_net_id);
-            }
-        }
-    }
-    blockers
-}
-
-/// The probe's crossing partners as this loop's two crossing-accepting
-/// steps use them: the legal ones, and at most three illegal ones -- the
-/// profile (2026-09-14 20:46 Surprises of
-/// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`)
-/// found the unfiltered sweep costing 406 s on net 313's 22 partners and
-/// resolving nothing. A crossing-free net gets neither: it skips both
-/// steps and goes straight to the rip-up of every probe partner.
-fn loop_partner_split(probe: &ProbeState, crossing_free: bool) -> (Vec<u64>, Vec<u64>) {
-    if crossing_free {
-        return (Vec::new(), Vec::new());
-    }
-    let (legal_partner_ids, all_illegal_partner_ids) = split_probe_partners(probe);
-    (
-        legal_partner_ids,
-        all_illegal_partner_ids.into_iter().take(3).collect(),
-    )
-}
-
-impl PyPhotonicRouter {
-    /// The braid passes that follow every route this loop commits, plus
-    /// the requeue of whatever a braid escalation left ripped
-    /// (`BraidRepairOutcome::VictimRipped`).
-    fn braid_and_requeue(
-        &mut self,
-        state: &mut RoundState,
-        job: &NativeRouteJob,
-        tables: &NetTables,
-        args: &SearchArgs,
-    ) {
-        let mut braid_ripped_victims: Vec<u64> = Vec::new();
-        self.run_braid_repair_passes(
-            state.batch,
-            job,
-            &tables.job_by_id,
-            args,
-            state.braid_failed_pairs,
-            &mut braid_ripped_victims,
-        );
-        state.queue.requeue_braid_victims(&braid_ripped_victims);
-    }
-
-    /// The probe's legal partners, widened structurally (2026-09-15 15:00
-    /// Decision Log entry, "Slice result 15:40"): the probe's free path
-    /// threads between some lanes of a fan-out bundle rather than crossing
-    /// all of them, so the partners it names alone underprice the search.
-    fn widened_probe_partners(
-        &self,
-        legal_partner_ids: &[u64],
-        tables: &NetTables,
-        batch: &RepairBatchState,
-        net_id: u64,
-        trace: bool,
-    ) -> Vec<u64> {
-        let widened = widen_probe_partners_by_source_column(
-            legal_partner_ids,
-            &tables.job_by_id,
-            &tables.source_layer_indices_by_x,
-            &tables.jobs,
-            &batch.final_routes,
-            net_id,
-        );
-        if trace {
-            let added_ids: Vec<u64> = widened
-                .iter()
-                .copied()
-                .filter(|id| !legal_partner_ids.contains(id))
-                .collect();
-            eprintln!(
-                "{}native_repair_probe_guided net={} partners={:?} widened={:?}",
-                trace_t(self.negotiated_batch_start),
-                net_id,
-                legal_partner_ids,
-                added_ids
-            );
-        }
-        widened
-    }
-
-    /// Contribution 1's crossing-free rule on the nets named by at least
-    /// one planned pair of the guidance; without guidance (lidar-pure) or
-    /// with the rule switched off, nobody is exempt.
-    fn negotiated_crossing_free_policy(
-        &self,
-        negotiation: &NegotiationConfig,
-    ) -> Box<dyn CrossingFreePolicy> {
-        match negotiation
-            .crossing_free_unplanned
-            .then(|| self.crossing_context.guidance())
-            .flatten()
-        {
-            Some(guidance) => Box::new(PlannedPairsOnly(
-                guidance
-                    .pairs()
-                    .into_iter()
-                    .flat_map(|(a, b)| [a, b])
-                    .collect(),
-            )),
-            None => Box::new(Never),
-        }
-    }
-
-    /// LiDAR's `ripupfailedNets` at the end of every round, exactly as it
-    /// has always run (`global_ripup_round`, unchanged): every net still
-    /// unrouted is ripped up together with the blockers its last probe
-    /// reported, and both are requeued at the front for the next round.
-    /// Its own epoch reset fires when the global rip-up counter is exactly
-    /// 2 -- the code the paper ran; whether it should instead fire at every
-    /// second call, as its comment says, is open question D7 of
-    /// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
-    fn round_end_global_ripup(
-        &mut self,
-        state: &mut RoundState,
-        round_failed_ids: &[u64],
-        counters: &mut NegotiationCounters,
-        round: u32,
-        trace: bool,
-    ) {
-        self.global_ripup_round(
-            state.batch,
-            round_failed_ids,
-            &state.queue.last_blockers,
-            &mut state.queue.order,
-            &mut state.queue.failed_counts,
-            &mut state.queue.ripped_once,
-            &mut counters.global_ripups,
-            round,
-            trace,
-        );
-    }
-
-    /// The line that opens every net's turn.
-    fn trace_net_start(&self, position: usize, round: u32, net_id: u64, failed: u32, free: bool) {
-        eprintln!(
-            "{}native_negotiated_net index={} round={} net={} failed_count={} crossing_free={}",
-            trace_t(self.negotiated_batch_start),
-            position + 1,
-            round,
-            net_id,
-            failed,
-            u8::from(free)
-        );
-    }
-
-    /// The batch's closing line: how the loop ended and what its rules did.
-    fn trace_negotiated_done(&self, counters: &NegotiationCounters, round: u32, unrouted: usize) {
-        eprintln!(
-            "native_negotiated_done t={:.1} rounds={} global_ripups={} local_ripups={} unrouted={} probe_guided={} crossing_free={}",
-            self.negotiated_batch_start
-                .map(|start| start.elapsed().as_secs_f64())
-                .unwrap_or(0.0),
-            round,
-            counters.global_ripups,
-            counters.local_ripups,
-            unrouted,
-            counters.probe_guided,
-            counters.crossing_free
-        );
-    }
-
-    /// Both returns of the loop clear the per-batch field it set. (Until
-    /// phase 3 slice A of the 2026-10 do-over the direct-crossing attempt
-    /// had a `?` return that propagated without clearing; that attempt is
-    /// gone. Until slice B the loop also reset the per-search knobs it had
-    /// set on `self`; they travel on each `SearchCall` now.)
-    fn finish_negotiated_batch(&mut self) {
-        self.negotiated_batch_start = None;
-    }
-
-    /// The `#[pymethods]` wrapper's entry point: the Python job tuples as
-    /// the loop's own jobs, the loop, and the Python result dictionary.
-    /// Everything between those two conversions is `run_negotiated_batch`,
-    /// which needs no `Python<'_>` token at all -- the loop itself is
-    /// native, and this is the only place in the batch that is not.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn route_many_with_negotiated_repair_and_commit_impl(
-        &mut self,
-        py: Python<'_>,
-        jobs: Vec<PyRouteJobTuple>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        max_rounds: u32,
-        history_weight: f64,
-        history_increment: u32,
-        no_ripup: bool,
-    ) -> PyResult<PyObject> {
-        let jobs = native_jobs_from_py(jobs);
+    /// (6) The no-rip-up mode (`no_ripup = true` with `max_rounds = 1`, the
+    /// test-only no-repair baseline): the same contention as (2), but the
+    /// local rip-up rule is switched off, so the blocked net fails its round
+    /// without displacing anybody -- no `local_ripup` event, no local
+    /// rip-up counted. The round-end global rip-up is not part of the switch
+    /// and runs as it always has.
+    #[test]
+    fn no_ripup_mode_rips_nothing_locally() {
+        let (mut router, jobs) = crossing_ripup_job_fixture();
         let params = NegotiationParams {
-            block_radius_cells,
-            commit_radius_cells,
-            core_radius_cells,
-            max_rounds,
-            history_weight,
-            history_increment,
-            no_ripup,
-        };
-        // Read before the loop runs, as `SearchArgs` has always read it;
-        // no step of the loop writes `astar_cfg`.
-        let collect_native_timing = self.astar_cfg.collect_detailed_timing;
-        let (mut batch, _counters) = self.run_negotiated_batch(jobs.clone(), &params)?;
-        self.build_native_batch_result_dict(py, &jobs, &mut batch, collect_native_timing)
-    }
-
-    /// The negotiated rip-up-and-repair loop (Milestone 5 of
-    /// `.agent/execplans/2026-08-25-negotiated-repair-engine.md`, rebuilt
-    /// LiDAR-style in
-    /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`):
-    /// route the nets in the order given; when one fails, ask the probe who
-    /// is blocking it, try the two crossing-accepting repairs, rip up what
-    /// the rip-up policy names and search once more; requeue whoever did
-    /// not resolve and iterate until every net routes or `max_rounds` is
-    /// exhausted. Each rule lives in its own module: the budget ladder in
-    /// `budget.rs`, the crossing-free rule in `crossing_free.rs`, the
-    /// rip-up rule in `ripup.rs`, the queue and its bookkeeping in
-    /// `queue.rs`, one attempt and its trace line in `attempt.rs`.
-    ///
-    /// Returns the committed batch and the counters of the rules that ran;
-    /// `route_many_with_negotiated_repair_and_commit_impl` above turns the
-    /// batch into the Python result dictionary and drops the counters (the
-    /// trace line already reports them). No step below touches Python.
-    pub(crate) fn run_negotiated_batch(
-        &mut self,
-        jobs: Vec<NativeRouteJob>,
-        params: &NegotiationParams,
-    ) -> PyResult<(RepairBatchState, NegotiationCounters)> {
-        let NegotiationParams {
-            block_radius_cells,
-            commit_radius_cells,
-            core_radius_cells,
-            max_rounds,
-            history_weight,
-            history_increment,
-            no_ripup,
-        } = *params;
-        self.obstacle_map.clear_congestion();
-        self.obstacle_map.clear_history();
-        self.long_straight_congestion_cells.clear();
-        self.long_straight_congestion_records.clear();
-        self.commit_history_increment = history_increment;
-        self.commit_history_block_radius_cells = block_radius_cells;
-        // Timestamps this loop's `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG`
-        // trace lines; cleared before every return below.
-        self.negotiated_batch_start = Some(Instant::now());
-        let batch_args = SearchArgs {
-            radii: SearchRadii::new(block_radius_cells, commit_radius_cells, core_radius_cells),
-            collect_native_timing: self.astar_cfg.collect_detailed_timing,
-            trace: self.router_config.diagnostics.native_repair_diag,
-            // Chosen per net at the top of its turn, see the round loop.
-            history_weight: 0.0,
-            long_straight_weight_override: None,
-        };
-        let mut batch = empty_batch_state();
-        let tables = NetTables::from_jobs(jobs);
-        // The policies. The configuration is cloned because no step of the
-        // loop changes it and `self` must stay free for the searches.
-        let negotiation = self.router_config.negotiation.clone();
-        let budgets = LadderBudgets(&negotiation);
-        let crossing_free_policy = self.negotiated_crossing_free_policy(&negotiation);
-        // This loop has always ripped up LiDAR-style; `NoRipUp` is the
-        // no-repair mode (`max_rounds = 1`, `no_ripup = true`), which
-        // Milestone 8 of
-        // `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
-        // re-pointed here from the deleted non-repair batch binding.
-        let ripup_policy: Box<dyn RipUpPolicy> = if no_ripup {
-            Box::new(NoRipUp)
-        } else {
-            Box::new(LidarStyleRipUp)
+            no_ripup: true,
+            ..plain_params(1)
         };
 
-        let mut queue = NetQueue::new(tables.jobs.iter().map(|job| job.net_id));
-        let mut counters = NegotiationCounters::default();
-        let mut braid_failed_pairs: FxHashSet<(u64, u64)> = FxHashSet::default();
-        let mut round = 0u32;
-        let mut rounds_without_progress = 0u32;
-        const RESET_AFTER_ROUNDS_WITHOUT_PROGRESS: u32 = 2;
-        // Set by the one early exit below (a probe that found no path at
-        // all): that batch keeps the `failed_net_id`/`failed_error` the
-        // probe itself set and never takes the soft non-convergence
-        // failure after the loop.
-        let mut probe_aborted = false;
+        let (batch, counters) = router
+            .run_negotiated_batch(jobs, &params)
+            .expect("the negotiated loop must not raise");
 
-        'rounds: while round < max_rounds && !queue.is_empty() {
-            round += 1;
-            braid_failed_pairs.clear();
-            let this_round = queue.take_round();
-            let mut state = RoundState {
-                batch: &mut batch,
-                queue: &mut queue,
-                braid_failed_pairs: &mut braid_failed_pairs,
-            };
-            let mut made_progress = false;
-            // Every net that ends this round still unrouted, whether or
-            // not a rip-up was attempted for it.
-            let mut round_failed_ids: Vec<u64> = Vec::new();
-
-            for (position, net_id) in this_round.into_iter().enumerate() {
-                let job = tables
-                    .job_by_id
-                    .get(&net_id)
-                    .expect("every queued net_id came from job_by_id's own keys")
-                    .clone();
-                let failed_count = state.queue.failed_count(net_id);
-                let budget = |kind| budgets.budget(kind, failed_count, round, max_rounds);
-                let crossing_free = crossing_free_policy.crossing_free(net_id, round, max_rounds);
-                // History cost steers a net that has already failed, and
-                // only such a net: a net's first attempt each epoch runs
-                // without it.
-                let failed_before = failed_count != 0 || negotiation.history_on_first_attempt;
-                // 0 for the exempt dense fan-out nets, the configured
-                // weight for every other net.
-                let exempt = self.long_straight_exempt_net_ids.contains(&net_id);
-                // Every search of this net's turn -- the plain attempts, the
-                // probe and the braid passes -- runs with these two weights.
-                let args = SearchArgs {
-                    history_weight: if failed_before { history_weight } else { 0.0 },
-                    long_straight_weight_override: if exempt { Some(0.0) } else { None },
-                    ..batch_args
-                };
-                if args.trace {
-                    self.trace_net_start(position, round, net_id, failed_count, crossing_free);
-                }
-
-                // The plain search, and -- for a net that has not failed
-                // yet, outside the last round -- one retry at the larger
-                // first-retry budget before probe and rip-up run at all
-                // (owner decision 2026-09-15 01:30).
-                let first = PlainAttempt::first(budget(AttemptKind::First), crossing_free);
-                let mut outcome = self.run_plain_attempt(state.batch, &job, &args, first);
-                if matches!(outcome, PlainRouteOutcome::NotResolved)
-                    && failed_count == 0
-                    && round != max_rounds
-                {
-                    let retry_budget = budget(AttemptKind::FirstRetry);
-                    let retry = PlainAttempt::first_retry(retry_budget, crossing_free);
-                    outcome = self.run_plain_attempt(state.batch, &job, &args, retry);
-                }
-                if matches!(outcome, PlainRouteOutcome::Routed) {
-                    counters.crossing_free += u32::from(crossing_free);
-                    self.braid_and_requeue(&mut state, &job, &tables, &args);
-                    made_progress = true;
-                    continue;
-                }
-
-                // The probe is diagnostic only and is never itself
-                // committed here; a probe failure aborts the whole batch,
-                // this loop's only early return.
-                let jobs_by_order = &tables.order_by_id;
-                let Ok(probe) = self.run_probe_attempt(state.batch, &job, jobs_by_order, &args)
-                else {
-                    if args.trace {
-                        self.trace_negotiated_done(&counters, round, state.queue.len());
-                    }
-                    probe_aborted = true;
-                    break 'rounds;
-                };
-                let blockers = probe_blockers(&probe, crossing_free);
-                state.queue.record_blockers(net_id, blockers);
-                // Until phase 3 slice A of the 2026-10 do-over two
-                // crossing-accepting attempts ran here before the rip-up: a
-                // legal-only probe-guided search (every probe crossing legal:
-                // price exactly those partners) and a direct-crossing search
-                // against at most three partners the probe blamed for an
-                // illegal crossing. The 27-cell ablation found both inert
-                // (byte-identical crossings and GDS lengths with either
-                // switched off), so they are gone; only the mixed-case
-                // guidance of the post-rip-up search below remains.
-                let (legal_partner_ids, _illegal_partner_ids) =
-                    loop_partner_split(&probe, crossing_free);
-
-                // LiDAR's local rip-up rule (`ripuplocalnets`), then this
-                // net's search once more on the map it freed.
-                let ripped = ripup_policy.victims(
-                    self,
-                    state.batch,
-                    &probe,
-                    &mut state.queue.ripped_once,
-                    net_id,
-                    round,
-                    args.trace,
-                    crossing_free,
-                );
-                if ripped.is_empty() {
-                    round_failed_ids.push(net_id);
-                    state.queue.requeue_back(net_id);
-                    continue;
-                }
-                counters.local_ripups += 1;
-                // Mixed-case guided search (2026-09-15 16:25 Decision Log
-                // entry, follow-up (2)): when the probe also reported legal
-                // partners, this search prices them (widened by source
-                // column unless `disable_source_column_widening`) at
-                // `NEGOTIATED_PROBE_GUIDANCE_LOSS`. Not covered by the
-                // 2026-10 ablation; `disable_post_ripup_guidance` is the
-                // switch for the next one.
-                let guided_partner_ids =
-                    if legal_partner_ids.is_empty() || negotiation.disable_post_ripup_guidance {
-                        Vec::new()
-                    } else if negotiation.disable_source_column_widening {
-                        legal_partner_ids.clone()
-                    } else {
-                        self.widened_probe_partners(
-                            &legal_partner_ids,
-                            &tables,
-                            state.batch,
-                            net_id,
-                            args.trace,
-                        )
-                    };
-                let after = budget(AttemptKind::PostRipUp);
-                let post = PlainAttempt::post_ripup(after, crossing_free, &guided_partner_ids);
-                let post_outcome = self.run_plain_attempt(state.batch, &job, &args, post);
-                if matches!(post_outcome, PlainRouteOutcome::Routed) {
-                    counters.probe_guided += u32::from(!guided_partner_ids.is_empty());
-                    counters.crossing_free += u32::from(crossing_free);
-                    self.braid_and_requeue(&mut state, &job, &tables, &args);
-                    made_progress = true;
-                } else {
-                    round_failed_ids.push(net_id);
-                    state.queue.requeue_back(net_id);
-                }
-                state.queue.requeue_front_preserving_order(&ripped);
-            }
-
-            let failed = &round_failed_ids;
-            self.round_end_global_ripup(&mut state, failed, &mut counters, round, batch_args.trace);
-
-            // Two rounds without a single committed route: the loop's own
-            // epoch boundary, independent of the global rip-up's.
-            if made_progress {
-                rounds_without_progress = 0;
-            } else {
-                rounds_without_progress += 1;
-                if rounds_without_progress >= RESET_AFTER_ROUNDS_WITHOUT_PROGRESS
-                    && !queue.is_empty()
-                {
-                    self.obstacle_map.clear_history();
-                    queue.epoch_reset(true);
-                    rounds_without_progress = 0;
-                    counters.stall_resets += 1;
-                }
-            }
-        }
-        counters.rounds = round;
-
-        if !probe_aborted {
-            // The soft failure: the batch is returned with whatever routed.
-            if let Some(failed_net_id) = queue.front() {
-                batch.failed_net_id = Some(failed_net_id);
-                batch.failed_error = Some(format!(
-                    "Negotiated repair did not converge for net {failed_net_id} within {max_rounds} rounds; {} net(s) still unrouted",
-                    queue.len()
-                ));
-            }
-            if batch_args.trace {
-                self.trace_negotiated_done(&counters, round, queue.len());
-            }
-        }
-        self.finish_negotiated_batch();
-        Ok((batch, counters))
+        assert!(
+            local_ripup_events(&batch).is_empty(),
+            "no local rip-up may run: {:?}",
+            batch.repair_trace
+        );
+        assert_eq!(counters.local_ripups, 0);
+        assert!(
+            !batch.final_routes.contains_key(&2),
+            "the blocked net stays unrouted"
+        );
+        assert_eq!(batch.failed_net_id, Some(2), "{:?}", batch.failed_error);
+        assert_eq!(counters.global_ripups, 1, "the round-end rule still ran");
     }
 }

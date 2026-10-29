@@ -1,84 +1,16 @@
-//! The negotiated loop's rip-up rule: which committed nets are ripped when
-//! a net's own searches and the crossing repairs have all failed.
+//! The negotiated loop's local rip-up rule: which committed nets are ripped
+//! when a net's own searches have failed.
 //!
 //! Extracted from `loop_.rs` unchanged (Milestone 4 Slice 2 of
 //! `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`,
-//! 2026-09-23).
+//! 2026-09-23). The `RipUpPolicy` trait that wrapped the function here, with
+//! its `NoRipUp` implementation that returned no victims, was a plain
+//! `if no_ripup` in disguise and went in phase 3 slice D of the 2026-10
+//! do-over; the loop's `no_ripup` branch is that `if`.
 
 use rustc_hash::FxHashSet;
 
 use crate::engine::*;
-
-/// The rule that picks (and rips) the nets one blocked net displaces. The
-/// implementation does the ripping itself -- rip-up is a mutation of the
-/// obstacle map and of `batch.final_routes`, not a pure choice -- and
-/// returns the ids it ripped, in the order it found them.
-pub(crate) trait RipUpPolicy {
-    #[allow(clippy::too_many_arguments)]
-    fn victims(
-        &self,
-        router: &mut PyPhotonicRouter,
-        batch: &mut RepairBatchState,
-        probe: &ProbeState,
-        ripped_once: &mut FxHashSet<u64>,
-        net_id: u64,
-        round: u32,
-        trace_native_repair: bool,
-        rip_every_probe_partner: bool,
-    ) -> Vec<u64>;
-}
-
-/// LiDAR's `ripuplocalnets`, the rule this loop has always used:
-/// `ripup_illegal_crossing_partners` below.
-pub(crate) struct LidarStyleRipUp;
-
-impl RipUpPolicy for LidarStyleRipUp {
-    fn victims(
-        &self,
-        router: &mut PyPhotonicRouter,
-        batch: &mut RepairBatchState,
-        probe: &ProbeState,
-        ripped_once: &mut FxHashSet<u64>,
-        net_id: u64,
-        round: u32,
-        trace_native_repair: bool,
-        rip_every_probe_partner: bool,
-    ) -> Vec<u64> {
-        router.ripup_illegal_crossing_partners(
-            batch,
-            probe,
-            ripped_once,
-            net_id,
-            round,
-            trace_native_repair,
-            rip_every_probe_partner,
-        )
-    }
-}
-
-/// Nothing is ever ripped: a blocked net simply fails its round. This is
-/// the no-rip-up mode (`repair_config.enabled = False`), selected by
-/// `NegotiationParams::no_ripup` together with `max_rounds = 1`; Milestone
-/// 8 of `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`
-/// (2026-09-24) re-pointed that mode here from the deleted non-repair
-/// batch binding.
-pub(crate) struct NoRipUp;
-
-impl RipUpPolicy for NoRipUp {
-    fn victims(
-        &self,
-        _router: &mut PyPhotonicRouter,
-        _batch: &mut RepairBatchState,
-        _probe: &ProbeState,
-        _ripped_once: &mut FxHashSet<u64>,
-        _net_id: u64,
-        _round: u32,
-        _trace_native_repair: bool,
-        _rip_every_probe_partner: bool,
-    ) -> Vec<u64> {
-        Vec::new()
-    }
-}
 
 impl PyPhotonicRouter {
     /// LiDAR-style local rip-up rule (`ripuplocalnets` in
@@ -165,12 +97,7 @@ impl PyPhotonicRouter {
             None,
         );
         if trace_native_repair {
-            eprintln!(
-                "{}native_repair_local_ripup net={} ripped={:?}",
-                trace_t(self.negotiated_batch_start),
-                net_id,
-                ripped_ids
-            );
+            self.trace_local_ripup(net_id, &ripped_ids);
         }
         ripped_ids
     }
@@ -364,14 +291,14 @@ mod tests {
         assert_eq!(event.candidate_blockers, vec![3]);
     }
 
-    /// The policy wrapper rips exactly what the free function rips.
+    /// The victim is marked as ripped this epoch, so the once-per-epoch rule
+    /// above can refuse it next time.
     #[test]
-    fn lidar_style_ripup_policy_rips_the_illegal_partner() {
+    fn negotiated_local_ripup_marks_the_victim_ripped_this_epoch() {
         let (mut router, mut batch, vertical, probe) = crossing_conflict_probe_fixture();
         let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
 
-        let ripped = LidarStyleRipUp.victims(
-            &mut router,
+        let ripped = router.ripup_illegal_crossing_partners(
             &mut batch,
             &probe,
             &mut ripped_once,
@@ -384,30 +311,5 @@ mod tests {
         assert_eq!(ripped, vec![3]);
         assert!(!batch.final_routes.contains_key(&3));
         assert!(ripped_once.contains(&3));
-    }
-
-    /// The no-rip-up mode: nothing is ripped, nothing is marked, the map
-    /// is untouched -- the blocked net simply fails its round.
-    #[test]
-    fn no_ripup_policy_rips_nothing() {
-        let (mut router, mut batch, vertical, probe) = crossing_conflict_probe_fixture();
-        let mut ripped_once: FxHashSet<u64> = FxHashSet::default();
-
-        let ripped = NoRipUp.victims(
-            &mut router,
-            &mut batch,
-            &probe,
-            &mut ripped_once,
-            vertical.net_id,
-            1,
-            false,
-            false,
-        );
-
-        assert!(ripped.is_empty());
-        assert!(ripped_once.is_empty());
-        assert!(batch.final_routes.contains_key(&3), "net 3 stays committed");
-        assert!(router.obstacle_map.get_net_cells(3).is_some());
-        assert!(batch.repair_trace.is_empty(), "no rip-up, no trace event");
     }
 }

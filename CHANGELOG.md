@@ -13,6 +13,19 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- The negotiated loop in its 150-line shape (phase 3 slice D;
+  `src/engine/negotiation/loop_.rs` 1,377 -> 1,278 lines, the module 4,084
+  -> 4,046): `run_negotiated_batch` (103 lines) is the rounds, the per-net
+  ladder is `route_net_this_round(..) -> NetOutcome` (100 lines), and the
+  setup, the per-net `SearchArgs`, the braid requeue and the post-rip-up
+  guidance are small helpers. `global_ripup_round` takes `&mut NetQueue`
+  instead of nine borrows of its fields, which are private again. The
+  `RipUpPolicy` trait (`LidarStyleRipUp`, `NoRipUp`) is a plain `if
+  no_ripup` in the loop; its two wrapper tests became a test of the function
+  and an end-to-end test of the `no_ripup` branch. Every
+  `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG` line of the loop but the per-attempt
+  one prints from `negotiation/trace.rs`. Same searches, commits, rip-ups,
+  requeues, counters, trace text and errors; the nine-cell gate is identical.
 - `translation/routing/dispatch.py` is the kernel dispatch only (1,941 ->
   569 lines, phase 3 slice C): its two near-identical branches are one
   (`max_rounds=1, no_ripup=True` for the test-only no-repair baseline), and

@@ -306,8 +306,8 @@ def dispatch_native_routing(
 ) -> None:
     # Repair on (the default, every benchmark needs it): the negotiated
     # rip-up loop over NEGOTIATED_MAX_ROUNDS rounds. Repair off (a
-    # diagnostic/test baseline): the same loop with one round and the
-    # `NoRipUp` policy, which is plain in-order routing with no rip-up and no
+    # diagnostic/test baseline): the same loop with one round and
+    # `no_ripup`, which is plain in-order routing with no local rip-up and no
     # requeue; with one round every net has `failed_count == 0`, so the
     # loop's history weight stays 0.0 and its searches are unbounded.
     repair_enabled = bool(state.repair_config.enabled)

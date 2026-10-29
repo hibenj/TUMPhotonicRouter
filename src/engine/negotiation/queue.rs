@@ -15,15 +15,13 @@ use rustc_hash::{FxHashMap, FxHashSet};
 /// ladder), which nets the local rip-up rule has already ripped this epoch
 /// (LiDAR's `ripuplocalnets` once-per-epoch rule), and each net's most
 /// recent probe blockers (what `global_ripup_round` rips at round end).
-///
-/// The fields are `pub(crate)` because `global_ripup_round` -- kept exactly
-/// as it was, including its own epoch boundary -- takes the queue, the
-/// failure counts and the ripped-once set as three separate borrows.
+/// Every reader goes through a method; `global_ripup_round` takes the whole
+/// queue (phase 3 slice D of the 2026-10 do-over).
 pub(crate) struct NetQueue {
-    pub(crate) order: VecDeque<u64>,
-    pub(crate) failed_counts: FxHashMap<u64, u32>,
-    pub(crate) ripped_once: FxHashSet<u64>,
-    pub(crate) last_blockers: FxHashMap<u64, Vec<u64>>,
+    order: VecDeque<u64>,
+    failed_counts: FxHashMap<u64, u32>,
+    ripped_once: FxHashSet<u64>,
+    last_blockers: FxHashMap<u64, Vec<u64>>,
 }
 
 impl NetQueue {
@@ -102,6 +100,41 @@ impl NetQueue {
         self.last_blockers.insert(net_id, blockers);
     }
 
+    /// What `record_blockers` recorded for this net; empty if it was never
+    /// probed.
+    pub(crate) fn last_blockers(&self, net_id: u64) -> &[u64] {
+        self.last_blockers
+            .get(&net_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// A net the round-end global rip-up ripped as somebody's blocker: its
+    /// failure count rises (history cost on, the retry budget) without it
+    /// being queued here -- `move_to_front` queues the whole set after.
+    pub(crate) fn bump_failed_count(&mut self, net_id: u64) {
+        *self.failed_counts.entry(net_id).or_insert(0) += 1;
+    }
+
+    /// The round-end global rip-up's requeue: every id is pulled out of
+    /// wherever it currently sits (a ripped blocker may already be queued
+    /// from a same-round local rip-up of a different net) and the whole
+    /// list goes to the front in the order given, so all of them are tried
+    /// first thing next round. `ids` must already be deduplicated.
+    pub(crate) fn move_to_front(&mut self, ids: &[u64]) {
+        let moved: FxHashSet<u64> = ids.iter().copied().collect();
+        self.order.retain(|id| !moved.contains(id));
+        for &id in ids.iter().rev() {
+            self.order.push_front(id);
+        }
+    }
+
+    /// The once-per-epoch set, for the local rip-up rule
+    /// (`ripup_illegal_crossing_partners`) to read and extend.
+    pub(crate) fn ripped_once_mut(&mut self) -> &mut FxHashSet<u64> {
+        &mut self.ripped_once
+    }
+
     /// An epoch boundary: the once-per-epoch rip-up set always clears, and
     /// with `clear_failed_counts` (the loop's "two rounds without progress"
     /// reset) every net becomes fresh again -- first-attempt budget, no
@@ -112,6 +145,23 @@ impl NetQueue {
             self.failed_counts.clear();
         }
         self.ripped_once.clear();
+    }
+}
+
+/// Read access for the loop's tests (`loop_.rs`), which live outside this
+/// module.
+#[cfg(test)]
+impl NetQueue {
+    pub(crate) fn order(&self) -> Vec<u64> {
+        self.order.iter().copied().collect()
+    }
+
+    pub(crate) fn failed_counts(&self) -> &FxHashMap<u64, u32> {
+        &self.failed_counts
+    }
+
+    pub(crate) fn ripped_once(&self) -> &FxHashSet<u64> {
+        &self.ripped_once
     }
 }
 

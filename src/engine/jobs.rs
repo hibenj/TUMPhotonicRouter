@@ -120,6 +120,7 @@ impl NativeBatchTimings {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct RepairBatchState {
     pub(crate) final_routes: FxHashMap<u64, RouteResult>,
     pub(crate) attempts: Vec<NativeRouteAttempt>,

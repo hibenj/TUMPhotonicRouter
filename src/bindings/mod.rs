@@ -838,9 +838,8 @@ impl PyPhotonicRouter {
     /// (2026-09-24) removed the non-repair batch binding and the older
     /// 17-strategy repair chain.
     ///
-    /// `no_ripup = True` selects the `NoRipUp` rip-up policy instead of the
-    /// LiDAR-style one, so a blocked net simply fails instead of displacing
-    /// committed nets. With `max_rounds = 1` that is the no-repair mode
+    /// `no_ripup = True` switches the LiDAR-style local rip-up rule off, so
+    /// a blocked net simply fails instead of displacing committed nets. With `max_rounds = 1` that is the no-repair mode
     /// (`RipupRerouteConfig(enabled=False)`), which used to be the separate
     /// non-repair binding; every other caller leaves it at its default.
     #[pyo3(signature=(jobs,block_radius_cells=0,commit_radius_cells=None,core_radius_cells=None,max_rounds=8,history_weight=2.0,history_increment=1,no_ripup=false))]
