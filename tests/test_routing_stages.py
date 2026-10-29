@@ -151,7 +151,6 @@ def test_phase6_kernel_dispatcher_leaves_the_routes_in_the_bookkeeping(
 
     state = pipeline.state
     assert sorted(state.route_bookkeeping.records_by_id) == [1, 2, 3]
-    assert state.deferred_count == 0
     assert state.total_expanded_states >= 0
     assert len(state.route_bookkeeping.ordered_records()) == 3
 

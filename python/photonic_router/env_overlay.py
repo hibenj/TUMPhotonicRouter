@@ -382,23 +382,13 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         presence,
     ),
     EnvVar(
-        _PREFIX + "PENDING_STRAIGHT_RIPUP_THRESHOLD",
-        ("router", "negotiation", "pending_straight_ripup_threshold"),
-        usize_or_default(100),
-    ),
-    EnvVar(
-        _PREFIX + "NEGOTIATED_DISABLE_PROBE_GUIDED",
-        ("router", "negotiation", "disable_probe_guided"),
-        presence,
-    ),
-    EnvVar(
-        _PREFIX + "NEGOTIATED_DISABLE_DIRECT_CROSSING",
-        ("router", "negotiation", "disable_direct_crossing"),
-        presence,
-    ),
-    EnvVar(
         _PREFIX + "NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING",
         ("router", "negotiation", "disable_source_column_widening"),
+        presence,
+    ),
+    EnvVar(
+        _PREFIX + "NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE",
+        ("router", "negotiation", "disable_post_ripup_guidance"),
         presence,
     ),
     EnvVar(

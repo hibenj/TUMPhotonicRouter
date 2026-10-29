@@ -549,7 +549,6 @@ impl PyPhotonicRouter {
         result_dict.set_item("failed_net_id", batch.failed_net_id)?;
         result_dict.set_item("error", batch.failed_error.clone())?;
         result_dict.set_item("repair_count", batch.repair_count)?;
-        result_dict.set_item("deferred_count", batch.deferred_count)?;
         result_dict.set_item("routes", route_entries)?;
         result_dict.set_item("attempts", attempt_entries)?;
         result_dict.set_item("repair_trace", repair_trace_entries)?;

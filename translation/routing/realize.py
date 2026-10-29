@@ -102,7 +102,6 @@ def realize_and_assemble_debug_artifacts(
             route_count=len(route_jobs),
             simple_route_count=state.simple_route_count,
             repair_count=state.repair_count,
-            deferred_count=state.deferred_count,
             astar_elapsed_s=astar_elapsed_s,
         ),
         route_attempt_records=state.route_attempt_records,

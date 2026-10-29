@@ -1650,7 +1650,6 @@ def dispatch_native_routing(
                 )
 
         state.repair_count += int(batch_result.get("repair_count", 0) or 0)
-        state.deferred_count += int(batch_result.get("deferred_count", 0) or 0)
         raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
         for raw_entry in raw_routes:
             entry = dict(raw_entry)

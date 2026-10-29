@@ -114,12 +114,11 @@ def gds_lengths(archive: Path) -> dict:
 
 
 _LOG_PATTERNS = {
-    # `route search: astar_loop=2201.9764s, attempts=1077, failures=62, simple=465/895, repairs=26, deferred=0`
+    # `route search: astar_loop=2201.9764s, attempts=1077, failures=62, simple=465/895, repairs=26`
     "search_astar_loop_s": r"route search: astar_loop=([0-9.]+)s",
     "search_attempts": r"route search: .*?attempts=(\d+)",
     "search_failures": r"route search: .*?failures=(\d+)",
     "search_repairs": r"route search: .*?repairs=(\d+)",
-    "search_deferred": r"route search: .*?deferred=(\d+)",
     "search_simple_routes": r"route search: .*?simple=(\d+)/",
     # `native_negotiated_done t=1136.4 rounds=3 global_ripups=1 local_ripups=17 ...` (PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG)
     "negotiated_rounds": r"native_negotiated_done .*?rounds=(\d+)",

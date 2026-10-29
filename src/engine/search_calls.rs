@@ -1,8 +1,8 @@
 use std::time::Instant;
 
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 
 use crate::config::RouterConfig;
 use crate::crossings::{CrossingConfig, CrossingGuidance};
@@ -14,7 +14,9 @@ use crate::search::astar::crossing_rules::{CrossingSearchConfig, CrossingSearchP
 use crate::search::astar::simple_route::{
     try_simple_route_with_config, try_simple_route_with_dynamic_expansion_config,
 };
-use crate::search::state::{RouteResult, RouteSearchStats, State};
+#[cfg(test)]
+use crate::search::state::RouteSearchStats;
+use crate::search::state::{RouteResult, State};
 use crate::search::{CrossingSearch, DynamicExpansion, SearchEnvironment, SearchRequest};
 
 #[cfg(test)]
@@ -414,7 +416,6 @@ impl PyPhotonicRouter {
         if !self.crossing_context.is_enabled() || partner_ids.is_empty() {
             return Ok(None);
         }
-        self.clear_pending_straight_victim_hint(net_id);
         let crossing_cfg = self.crossing_context.config();
         let crossing_partners: Vec<CrossingSearchPartner> = partner_ids
             .iter()
@@ -505,9 +506,7 @@ impl PyPhotonicRouter {
             config: &crossing_search_cfg,
         };
         let outcome = self.search_engine.search(&env, &request);
-        let (route_result, failed_stats) = (outcome.route, outcome.stats);
-        let Some(result) = route_result else {
-            self.remember_pending_straight_victim_hint(net_id, &failed_stats);
+        let Some(result) = outcome.route else {
             return Ok(None);
         };
         if trace_crossing {
@@ -692,7 +691,6 @@ impl PyPhotonicRouter {
                 &realized_violations,
             ));
         }
-        self.remember_pending_straight_victim_hint(net_id, &result.stats);
         Ok(None)
     }
 
@@ -1696,187 +1694,6 @@ impl PyPhotonicRouter {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// Attempts to route the net directly through one already-committed
-    /// crossing-partner net at a time (ordered by net index), requiring
-    /// terminal straights, committing only if the resulting crossing is
-    /// legal -- no ripup involved. Delegates to
-    /// [`Self::try_route_with_collision_crossings`]. Gated on lidar-pure
-    /// collision-crossing routing being enabled.
-    pub(crate) fn try_lidar_direct_crossing_subset(
-        &mut self,
-        batch: &mut RepairBatchState,
-        job: &NativeRouteJob,
-        order_by_id: &FxHashMap<u64, usize>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        collect_native_timing: bool,
-        trace_native_repair: bool,
-        partner_filter: Option<&[u64]>,
-    ) -> PyResult<LidarDirectCrossingOutcome> {
-        if !self.lidar_pure_crossing_enabled() {
-            return Ok(LidarDirectCrossingOutcome::NotResolved);
-        }
-        let source_state = State::new(job.source.x, job.source.y, job.source.angle);
-        let target_state = State::new(job.target.x, job.target.y, job.target.angle);
-        let mut local_partner_ids =
-            self.crossing_partner_lookup_set_for_route(job.net_id, source_state, target_state);
-        local_partner_ids.retain(|partner_id| batch.final_routes.contains_key(partner_id));
-        // `None` (every caller but the negotiated loop): unchanged, sweeps
-        // every committed partner this net's window touches. `Some(ids)`
-        // (the negotiated loop, Milestone 5 part 3): restricts the sweep to
-        // the probe's own illegal-crossing partners -- the 22-partner sweep
-        // that resolved nothing on net 313 of the 64x64 mesh (see this
-        // milestone's Surprises & Discoveries) is why this is opt-in rather
-        // than the new default.
-        if let Some(filter) = partner_filter {
-            local_partner_ids.retain(|partner_id| filter.contains(partner_id));
-        }
-        if local_partner_ids.is_empty() {
-            return Ok(LidarDirectCrossingOutcome::NotResolved);
-        }
-        let mut local_partner_vec: Vec<u64> = local_partner_ids.iter().copied().collect();
-        local_partner_vec
-            .sort_unstable_by_key(|owner| order_by_id.get(owner).copied().unwrap_or(usize::MAX));
-        let opened_search_owned = self.opened_cells_without_dynamic_overlap(
-            &job.opened_cell_keys,
-            source_state,
-            target_state,
-            Some(&job.clearance_exempt_cell_keys),
-        );
-        let opened_search_ref = opened_search_owned
-            .as_ref()
-            .unwrap_or(&job.opened_cell_keys);
-        let dynamic_clearance_exempt_keys =
-            if block_radius_cells > 0 && !job.clearance_exempt_cells.is_empty() {
-                Some(&job.clearance_exempt_cell_keys)
-            } else {
-                None
-            };
-        let mut subset_cfg = self
-            .astar_config(None, None, None)
-            .map_err(PyRuntimeError::new_err)?;
-        subset_cfg.require_terminal_straights = true;
-        for partner_id in local_partner_vec {
-            let mut subset_partner_ids = FxHashSet::default();
-            subset_partner_ids.insert(partner_id);
-            let subset_start = native_batch_timer(collect_native_timing);
-            let subset_result = self
-                .try_route_with_collision_crossings(
-                    job.net_id,
-                    source_state,
-                    target_state,
-                    opened_search_ref,
-                    &subset_cfg,
-                    block_radius_cells,
-                    dynamic_clearance_exempt_keys,
-                    &subset_partner_ids,
-                    job.source_port_um,
-                    job.target_port_um,
-                    Some(&job.opened_cell_keys),
-                    false,
-                )
-                .map_err(PyRuntimeError::new_err)?;
-            let subset_elapsed_us = native_batch_elapsed_us(subset_start);
-            batch.timings.repair_failed_net_wall_us += subset_elapsed_us;
-            let Some((route, crossing_events)) = subset_result else {
-                continue;
-            };
-            let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
-            if crossed_partner_ids.is_empty() {
-                continue;
-            }
-            let crossed_partner_vec: Vec<u64> = crossed_partner_ids.iter().copied().collect();
-            match self.commit_native_route_with_clearance_allowing_core_overlap(
-                job.net_id,
-                &route,
-                block_radius_cells,
-                commit_radius_cells,
-                &job.clearance_exempt_cells,
-                core_radius_cells,
-                job.source_port_um,
-                job.target_port_um,
-                Some(&job.opened_cell_keys),
-                &crossed_partner_vec,
-                true,
-            ) {
-                Ok(true) => {
-                    batch
-                        .timings
-                        .add_route_result_stats_if(collect_native_timing, &route);
-                    if trace_native_repair {
-                        eprintln!(
-                            "{}native_repair_lidar_direct_crossing net={} crossed={:?}",
-                            trace_t(self.negotiated_batch_start),
-                            job.net_id,
-                            crossed_partner_vec
-                        );
-                    }
-                    batch.attempts.push(NativeRouteAttempt {
-                        bucket_name: "lidar_direct_crossing",
-                        net_id: job.net_id,
-                        route: Some(route.clone()),
-                        failed: false,
-                        error: None,
-                        repair_round: None,
-                        candidate_blockers: Vec::new(),
-                        ripup_ids: Vec::new(),
-                    });
-                    batch.final_routes.insert(job.net_id, route);
-                    return Ok(LidarDirectCrossingOutcome::Routed);
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    if trace_native_repair {
-                        eprintln!(
-                            "native_repair_lidar_direct_crossing_commit_failed net={} partner={} error={}",
-                            job.net_id, partner_id, error
-                        );
-                    }
-                }
-            }
-        }
-        Ok(LidarDirectCrossingOutcome::NotResolved)
-    }
-
-    pub(crate) fn clear_pending_straight_victim_hint(&self, net_id: u64) {
-        let mut hint = self.last_pending_straight_victim.borrow_mut();
-        if hint.as_ref().is_some_and(|hint| hint.net_id == net_id) {
-            *hint = None;
-        }
-    }
-
-    pub(crate) fn remember_pending_straight_victim_hint(
-        &self,
-        net_id: u64,
-        stats: &RouteSearchStats,
-    ) {
-        let threshold = self
-            .router_config
-            .negotiation
-            .pending_straight_ripup_threshold;
-        if threshold == 0 {
-            return;
-        }
-        let Some((&victim_net_id, &count)) = stats
-            .crossing_pending_straight_by_partner
-            .iter()
-            .filter(|(_, count)| **count >= threshold)
-            .max_by_key(|(_, count)| *count)
-        else {
-            return;
-        };
-        *self.last_pending_straight_victim.borrow_mut() =
-            Some(PendingStraightVictimHint { net_id });
-        if self.router_config.diagnostics.native_repair_diag {
-            eprintln!(
-                "native_repair_pending_straight_hint net={} victim={} count={} threshold={}",
-                net_id, victim_net_id, count, threshold
-            );
-        }
-    }
-
     pub(crate) fn geometry_grid(&self) -> Result<GeometryGridSpec, String> {
         GeometryGridSpec::new(
             self.grid.grid_size_um,
@@ -2299,112 +2116,6 @@ mod tests {
             matches!(priced_outcome, PlainRouteOutcome::Routed)
                 || priced_error == "No legal LiDAR crossing route found",
             "without the flag the same call dispatches the lidar-pure crossing search: {priced_error}"
-        );
-    }
-
-    #[test]
-    fn try_lidar_direct_crossing_subset_partner_filter_restricts_the_candidates_tried() {
-        // Milestone 5 part 3 of
-        // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`:
-        // `partner_filter` must actually restrict which committed partners
-        // this sweep tries, not just reorder or prefer them. Net 4
-        // (vertical)'s raw candidate set from `crossing_partner_lookup_set_for_route`
-        // in this fixture is exactly {1, 2, 3} (all three other committed
-        // nets are within its window); none of the three can resolve the
-        // net via this mechanism alone (net 3's crossing is illegal by
-        // construction -- "not_perpendicular", see
-        // `crossing_conflict_fixture_blocks_the_vertical_net_with_a_non_perpendicular_crossing`
-        // above -- and the vertical net structurally has to cross all of
-        // 1, 2 and 3, which this one-partner-at-a-time sweep can never do
-        // in a single attempt), so success/failure of the whole sweep
-        // cannot distinguish "tried" from "not tried" here. Whether an
-        // attempt was actually made can still be observed directly: this
-        // function costs wall time into `batch.timings.repair_failed_net_wall_us`
-        // (with `collect_native_timing=true`) for every partner it tries,
-        // and only for those, before ever computing a route -- a filter
-        // whose ids don't overlap the raw candidate set at all must leave
-        // that counter at exactly zero (the sweep returns immediately, per
-        // the `if local_partner_ids.is_empty()` guard, without trying
-        // anything), while a filter that keeps one real candidate must
-        // leave it strictly positive (one real search was attempted).
-        let (mut router, jobs) = crossing_conflict_fixture();
-        let vertical = jobs[3].clone();
-        assert_eq!(vertical.net_id, 4);
-        let order_by_id: FxHashMap<u64, usize> = jobs
-            .iter()
-            .enumerate()
-            .map(|(index, job)| (job.net_id, index))
-            .collect();
-
-        let mut batch = RepairBatchState {
-            final_routes: FxHashMap::default(),
-            attempts: Vec::new(),
-            repair_trace: Vec::new(),
-            repair_count: 0,
-            failed_net_id: None,
-            failed_error: None,
-            timings: NativeBatchTimings::default(),
-            deferred_count: 0,
-        };
-        for net_id in [1u64, 2, 3] {
-            batch.final_routes.insert(net_id, empty_test_route());
-        }
-
-        let source_state = State::new(vertical.source.x, vertical.source.y, vertical.source.angle);
-        let target_state = State::new(vertical.target.x, vertical.target.y, vertical.target.angle);
-        let raw_candidates = router.crossing_partner_lookup_set_for_route(
-            vertical.net_id,
-            source_state,
-            target_state,
-        );
-        assert_eq!(
-            raw_candidates,
-            [1u64, 2, 3].into_iter().collect::<FxHashSet<u64>>(),
-            "test assumption: this fixture's raw candidate set for net 4 is {{1, 2, 3}}"
-        );
-
-        let filtered_to_absent_id = router
-            .try_lidar_direct_crossing_subset(
-                &mut batch,
-                &vertical,
-                &order_by_id,
-                FIXTURE_CLEARANCE_RADIUS_CELLS,
-                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-                true,
-                false,
-                Some(&[999u64]),
-            )
-            .expect("subset search must not itself error");
-        assert!(matches!(
-            filtered_to_absent_id,
-            LidarDirectCrossingOutcome::NotResolved
-        ));
-        assert_eq!(
-            batch.timings.repair_failed_net_wall_us, 0,
-            "an id absent from the raw candidate set must leave the candidate              set empty and try nothing at all"
-        );
-
-        let filtered_to_one_real_candidate = router
-            .try_lidar_direct_crossing_subset(
-                &mut batch,
-                &vertical,
-                &order_by_id,
-                FIXTURE_CLEARANCE_RADIUS_CELLS,
-                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-                true,
-                false,
-                Some(&[1u64]),
-            )
-            .expect("subset search must not itself error");
-        assert!(matches!(
-            filtered_to_one_real_candidate,
-            LidarDirectCrossingOutcome::NotResolved
-        ));
-        assert!(
-            batch.timings.repair_failed_net_wall_us > 0,
-            "net 1 is a real member of the raw candidate set and must be              tried (spending wall time on a real search), even though this              one-partner sweep still cannot resolve the net through it alone"
         );
     }
 

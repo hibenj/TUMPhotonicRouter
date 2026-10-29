@@ -9,7 +9,6 @@
 use std::io::Write;
 use std::time::Instant;
 
-use pyo3::prelude::*;
 use rustc_hash::FxHashMap;
 
 use crate::engine::*;
@@ -77,7 +76,9 @@ pub(crate) fn trace_attempt(
 /// One plain search of the per-net sequence, fully described: which step
 /// of the ladder it is, the budget it runs under, whether it runs
 /// crossing-free, and which partners -- if any -- are priced as guidance
-/// for it. The four constructors below are the loop's four plain searches.
+/// for it. The three constructors below are the loop's three plain
+/// searches (the legal-only probe-guided search was removed in phase 3
+/// slice A of the 2026-10 do-over after the ablation found it inert).
 pub(crate) struct PlainAttempt<'a> {
     kind: AttemptKind,
     trace_kind: &'static str,
@@ -107,19 +108,6 @@ impl<'a> PlainAttempt<'a> {
             budget,
             crossing_free,
             guided_partner_ids: &[],
-        }
-    }
-
-    /// The probe-guided search: the probe's (widened) legal partners
-    /// priced at `NEGOTIATED_PROBE_GUIDANCE_LOSS` for one search. Never
-    /// crossing-free -- a crossing-free net has no legal partners to price.
-    pub(crate) fn probe_guided(budget: Option<u64>, partner_ids: &'a [u64]) -> Self {
-        PlainAttempt {
-            kind: AttemptKind::ProbeGuided,
-            trace_kind: "probe_guided",
-            budget,
-            crossing_free: false,
-            guided_partner_ids: partner_ids,
         }
     }
 
@@ -265,58 +253,6 @@ impl PyPhotonicRouter {
         probe_result
     }
 
-    /// The direct-crossing search: one legal crossing against at most the
-    /// three partners the probe blamed for an illegal one.
-    pub(crate) fn run_direct_crossing_attempt(
-        &mut self,
-        batch: &mut RepairBatchState,
-        job: &NativeRouteJob,
-        order_by_id: &FxHashMap<u64, usize>,
-        args: &SearchArgs,
-        budget: Option<u64>,
-        illegal_partner_ids: &[u64],
-    ) -> PyResult<LidarDirectCrossingOutcome> {
-        let net_id = job.net_id;
-        let started = Instant::now();
-        self.negotiated_search_budget = budget;
-        let result = self.try_lidar_direct_crossing_subset(
-            batch,
-            job,
-            order_by_id,
-            args.block_radius_cells,
-            args.commit_radius_cells,
-            args.core_radius_cells,
-            args.collect_native_timing,
-            args.trace,
-            Some(illegal_partner_ids),
-        );
-        self.negotiated_search_budget = None;
-        if args.trace {
-            let (outcome_str, expanded) = match &result {
-                Ok(LidarDirectCrossingOutcome::Routed) => {
-                    ("routed", self.committed_expanded_str(batch, net_id))
-                }
-                Ok(LidarDirectCrossingOutcome::NotResolved) => ("not_resolved", "?".to_string()),
-                Err(_) => ("failed", "?".to_string()),
-            };
-            trace_attempt(
-                &mut std::io::stderr(),
-                self.negotiated_batch_start,
-                net_id,
-                &AttemptRecord {
-                    kind: AttemptKind::DirectCrossing,
-                    trace_kind: "direct_crossing",
-                    budget,
-                    elapsed_s: started.elapsed().as_secs_f64(),
-                    expanded,
-                    outcome: outcome_str,
-                    error: None,
-                },
-            );
-        }
-        result
-    }
-
     /// Expansions of the route this net just committed, `?` if it is not in
     /// `final_routes` after all.
     fn committed_expanded_str(&self, batch: &RepairBatchState, net_id: u64) -> String {
@@ -380,24 +316,15 @@ mod tests {
     #[test]
     fn a_none_budget_prints_as_full() {
         assert_eq!(
-            trace_line(&record(AttemptKind::ProbeGuided, "probe_guided", None)),
-            "native_negotiated_search net=42 kind=probe_guided elapsed_s=0.500 expanded=123 \
+            trace_line(&record(AttemptKind::PostRipUp, "post_ripup_plain", None)),
+            "native_negotiated_search net=42 kind=post_ripup_plain elapsed_s=0.500 expanded=123 \
              outcome=routed budget=full\n"
         );
     }
 
     #[test]
     fn no_attempt_kind_but_the_first_prints_an_error_field() {
-        // `Braid` has no `AttemptRecord` constructor of its own yet (the
-        // braid passes set their budget directly), so this is the only
-        // place its kind-dependent behaviour is pinned.
-        for kind in [
-            AttemptKind::FirstRetry,
-            AttemptKind::PostRipUp,
-            AttemptKind::ProbeGuided,
-            AttemptKind::DirectCrossing,
-            AttemptKind::Braid,
-        ] {
+        for kind in [AttemptKind::FirstRetry, AttemptKind::PostRipUp] {
             let mut attempt = record(kind, "plain_retry", Some(10_000_000));
             attempt.error = Some("suppressed".to_string());
             let line = trace_line(&attempt);
@@ -441,12 +368,6 @@ mod tests {
             PlainAttempt::first_retry(None, false).kind,
             AttemptKind::FirstRetry
         );
-        assert_eq!(
-            PlainAttempt::probe_guided(None, &[7]).trace_kind,
-            "probe_guided"
-        );
-        // Never crossing-free: a crossing-free net has no legal partners.
-        assert!(!PlainAttempt::probe_guided(None, &[7]).crossing_free);
         // The post-rip-up search reports which of its three flavours ran.
         assert_eq!(
             PlainAttempt::post_ripup(None, true, &[]).trace_kind,

@@ -17,13 +17,12 @@ what="${2:-short}"
 declare -A SWITCH
 SWITCH[reference]=""
 SWITCH[no_braid]="PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR=1"
-SWITCH[no_probe_guided]="PHOTONIC_ROUTER_NEGOTIATED_DISABLE_PROBE_GUIDED=1"
-SWITCH[no_direct_crossing]="PHOTONIC_ROUTER_NEGOTIATED_DISABLE_DIRECT_CROSSING=1"
 SWITCH[no_widening]="PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING=1"
+SWITCH[no_post_ripup_guidance]="PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE=1"
 SWITCH[no_simple_probe]="PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE=1"
 SWITCH[history_first]="PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT=1"
 SWITCH[no_long_straight]="PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0"
-ORDER="reference no_braid no_probe_guided no_direct_crossing no_widening no_simple_probe history_first no_long_straight"
+ORDER="reference no_braid no_widening no_post_ripup_guidance no_simple_probe history_first no_long_straight"
 run_variant() {
   local v="$1"; [ -v 'SWITCH[$v]' ] || { echo "unknown variant: $v (one of: $ORDER)" >&2; return 2; }
   local root="$R/results_ablation/$v"; mkdir -p "$root"

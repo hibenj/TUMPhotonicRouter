@@ -128,17 +128,13 @@ pub(crate) struct RepairBatchState {
     pub(crate) failed_net_id: Option<u64>,
     pub(crate) failed_error: Option<String>,
     pub(crate) timings: NativeBatchTimings,
-    pub(crate) deferred_count: u32,
 }
 
 pub(crate) struct ProbeState {
     pub(crate) probe_route: RouteResult,
     pub(crate) crossing_repair_enabled: bool,
-    pub(crate) allowed_crossing_partners: FxHashSet<u64>,
     pub(crate) probe_crossing_events: Vec<CrossingEvent>,
     pub(crate) probe_realized_crossing_violations: Vec<InvalidCrossingIntersection>,
-    pub(crate) probe_grid_crossing_violations: Vec<InvalidCrossingIntersection>,
-    pub(crate) probe_repair_keepout_keys: FxHashSet<CellKey>,
     pub(crate) candidate_blockers: Vec<u64>,
     /// Crossings disabled (contribution 2, or crossings off): the
     /// committed nets whose centerline the probe's free path geometrically
@@ -176,11 +172,6 @@ pub(crate) enum BraidRepairOutcome {
     Kept(u64),
     Failed(u64),
     VictimRipped(u64),
-}
-
-pub(crate) enum LidarDirectCrossingOutcome {
-    Routed,
-    NotResolved,
 }
 
 pub(crate) struct NativeEndpointCorrection {
@@ -323,7 +314,6 @@ mod tests {
         assert_eq!(batch.repair_count, 0);
         assert_eq!(batch.failed_net_id, None);
         assert_eq!(batch.failed_error, None);
-        assert_eq!(batch.deferred_count, 0);
         assert_eq!(batch.timings.route_search_total_us, 0);
     }
 }

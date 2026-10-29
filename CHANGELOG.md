@@ -70,8 +70,34 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
   tests, ruff, the generated-file checks and the fast Python suite on every
   push; the nine-cell reproduction gate nightly.
 - `CONTRIBUTING.md`, `CHANGELOG.md`, `.pre-commit-config.yaml`.
+- `NegotiationConfig.disable_post_ripup_guidance`
+  (`PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE`, ablation variant
+  `no_post_ripup_guidance`), default off (phase 3 slice A): runs the
+  post-rip-up search unguided even when the probe reported legal crossing
+  partners, so the one guidance the 2026-10 ablation did not cover can be
+  measured next.
 
 ### Removed
+
+- The two negotiation tactics the 27-cell ablation found inert (phase 3
+  slice A): the legal-only probe-guided attempt and the direct-crossing
+  attempt (`try_lidar_direct_crossing_subset`, the `lidar_direct_crossing`
+  bucket, `AttemptKind::ProbeGuided`/`DirectCrossing`/`Braid`, the
+  three-function `commit_native_route_with_clearance_*` chain only the
+  direct-crossing attempt reached), with their switches
+  `disable_probe_guided` and `disable_direct_crossing`
+  (`PHOTONIC_ROUTER_NEGOTIATED_DISABLE_PROBE_GUIDED`,
+  `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_DIRECT_CROSSING`). The mixed-case
+  guidance of the post-rip-up search stays as it was, widening included;
+  `disable_source_column_widening` now gates that widening. Also gone, all
+  write-only: the pending-straight victim hint (`PendingStraightVictimHint`,
+  `pending_straight_ripup_threshold`,
+  `PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD`), the batch result's
+  `deferred_count` (always 0; the `deferred=` token of the route-search
+  summary line goes with it), the `commit_rejected` counter of the
+  `native_negotiated_done` trace line (always 0), and the probe's trace-only
+  `probe_repair_keepout_keys` with its two keep-out helpers. Nine-cell gate
+  identical.
 
 - The JPS4 accelerator (`src/search/astar/dense.rs`), the two unit-grid
   primitive libraries (`jps4_unit_grid`, `grid4_unit_grid`) and the

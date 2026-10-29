@@ -307,9 +307,6 @@ class SessionState:
     route_attempt_records: list[RouteAttemptRecord] = field(default_factory=list)
     """One record per search attempt. w:5 m:6 r:6,9  # shared writer"""
 
-    deferred_count: int = 0
-    """Nets deferred by the negotiated loop. w:5,6 r:7,9  # shared writer"""
-
     repair_count: int = 0
     """Repair attempts the loop made. w:5,6 r:7,9  # shared writer"""
 

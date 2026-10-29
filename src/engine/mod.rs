@@ -84,15 +84,13 @@ pub struct PyPhotonicRouter {
     pub(crate) port_open_cells: FxHashSet<CellKey>,
     pub(crate) registered_plm: RefCell<RegisteredPlmContext>,
     pub(crate) last_meander_registration_profile: RefCell<Option<MeanderRegistrationProfile>>,
-    pub(crate) last_pending_straight_victim: RefCell<Option<PendingStraightVictimHint>>,
     pub(crate) long_straight_congestion_cells: FxHashMap<CellKey, u32>,
     pub(crate) long_straight_congestion_records: Vec<LongStraightCongestionRecord>,
     // Set once at the top of the negotiated repair loop from that call's
     // own `history_increment`/`block_radius_cells` arguments, reset
     // to 0 (a no-op amount) when the batch finishes. Read unconditionally by
-    // every successful-commit chokepoint
-    // (`commit_native_route_with_clearance_internal`,
-    // `commit_native_route_with_clearance_allowing_core_overlap`) so every
+    // the successful-commit chokepoint (`add_post_commit_guidance_for_route`,
+    // `commit.rs`) so every
     // committed route -- not just 3 narrow repair call sites -- accumulates
     // history cost, matching LiDAR's `registar_net`/`updateHistoryMap`
     // (`drgridroute.py:443`/`703`, unconditional on every successful
@@ -121,11 +119,11 @@ pub struct PyPhotonicRouter {
     // (`route_many_with_negotiated_repair_and_commit`) started, `None`
     // outside it. Used only to timestamp `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG`
     // trace lines (`trace_t`): set to `Some(Instant::now())` at the top of
-    // that loop and back to `None` before it returns. Two of its helpers
-    // (`probe_net_for_repair`, `try_lidar_direct_crossing_subset`) were
-    // shared with the older repair chain, deleted in Milestone 8 of
+    // that loop and back to `None` before it returns. One of its helpers
+    // (`probe_net_for_repair`) was shared with the older repair chain,
+    // deleted in Milestone 8 of
     // `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`,
-    // which never set this field, so their trace lines printed no `t=`
+    // which never set this field, so its trace lines printed no `t=`
     // field there. See
     // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
     // Milestone 5.
@@ -191,11 +189,6 @@ pub struct PyPhotonicRouter {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PendingStraightVictimHint {
-    pub(crate) net_id: u64,
-}
-
-#[derive(Clone, Debug)]
 pub(crate) struct LongStraightCongestionRecord {
     pub(crate) net_id: u64,
     pub(crate) start: (i32, i32),
@@ -257,7 +250,6 @@ impl PyPhotonicRouter {
             port_open_cells: FxHashSet::default(),
             registered_plm: RefCell::new(RegisteredPlmContext::default()),
             last_meander_registration_profile: RefCell::new(None),
-            last_pending_straight_victim: RefCell::new(None),
             long_straight_congestion_cells: FxHashMap::default(),
             long_straight_congestion_records: Vec::new(),
             commit_history_increment: 0,

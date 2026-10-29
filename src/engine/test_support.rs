@@ -56,8 +56,6 @@ pub(crate) fn test_router_config(search_engine: &str) -> PyResult<PyRouterConfig
         false,
         true,
         false,
-        100,
-        false,
         false,
         false,
         false,
@@ -237,7 +235,6 @@ pub(crate) fn crossing_conflict_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJ
         failed_net_id: None,
         failed_error: None,
         timings: NativeBatchTimings::default(),
-        deferred_count: 0,
     };
 
     let horizontal_top = NativeRouteJob::new(
@@ -400,7 +397,6 @@ pub(crate) fn crossing_conflict_probe_fixture() -> (
         failed_net_id: None,
         failed_error: None,
         timings: NativeBatchTimings::default(),
-        deferred_count: 0,
     };
     for net_id in [1u64, 2, 3] {
         batch.final_routes.insert(net_id, empty_test_route());
@@ -529,7 +525,6 @@ pub(crate) fn fresh_repair_batch_state() -> RepairBatchState {
         failed_net_id: None,
         failed_error: None,
         timings: NativeBatchTimings::default(),
-        deferred_count: 0,
     }
 }
 

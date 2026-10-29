@@ -21,7 +21,7 @@ whole effect is on the state and on the kernel: phase 2 builds the router and it
 configuration objects into `state` (`router`, `primitive_cfg`, `astar_cfg`, the
 clearance radii, the raw static geometry), and phase 6 runs the kernel and leaves
 the routed results in `state.route_bookkeeping` together with the loop's counters
-(`deferred_count`, `repair_count`, `simple_route_count`, `total_expanded_states`,
+(`repair_count`, `simple_route_count`, `total_expanded_states`,
 `native_repair_trace_records`, `route_attempt_records`, `route_timing_buckets`).
 Those writes are documented per field in `state.py`.
 

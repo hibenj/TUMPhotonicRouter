@@ -737,7 +737,6 @@ def finalize_route_jobs_and_static_handoff(
     state.total_expanded_states = 0
     state.simple_route_count = 0
     state.repair_count = 0
-    state.deferred_count = 0
     state.route_attempt_records = []
     state.native_repair_trace_records: list[dict[str, object]] = []
     state.route_timing_buckets: dict[str, RouteTimingBucket] = {

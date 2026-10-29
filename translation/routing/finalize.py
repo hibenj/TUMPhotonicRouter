@@ -1103,8 +1103,7 @@ def finalize_routing_results(
             "      - Route search stats: "
             f"simple={state.simple_route_count}/{len(route_jobs)}, "
             f"expanded_states={state.total_expanded_states}, "
-            f"repairs={state.repair_count}, "
-            f"deferred={state.deferred_count}"
+            f"repairs={state.repair_count}"
         )
         print("      - A* timing breakdown by operation:")
         for bucket_name in (

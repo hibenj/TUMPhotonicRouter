@@ -718,10 +718,14 @@ the plain fixtures, crossing request refused, the negotiated loop runs on it,
 
 `run_negotiated_batch` in `src/engine/negotiation/loop_.rs` is the loop every
 paper row runs. Read as a sentence: route the nets in the order given; when one
-fails, ask the probe who is blocking it; try the two crossing-accepting
-repairs; rip up what the rip-up policy names and search once more; requeue
-whoever did not resolve, and iterate until every net is routed or `max_rounds`
-is exhausted. Around it: history and congestion are cleared at entry, a braid
+fails, ask the probe who is blocking it; rip up what the rip-up policy names
+and search once more (guided by the probe's legal crossing partners when it
+reported any); requeue whoever did not resolve, and iterate until every net is
+routed or `max_rounds` is exhausted. Two crossing-accepting repairs used to run
+between the probe and the rip-up, the legal-only probe-guided search and the
+direct-crossing search; the 27-cell ablation of 2026-10 found both inert
+(byte-identical crossings and GDS lengths with either switched off) and phase 3
+slice A removed them. Around it: history and congestion are cleared at entry, a braid
 pass follows every committed route, a round with no progress twice in a row
 resets the epoch (`RESET_AFTER_ROUNDS_WITHOUT_PROGRESS = 2`), and a probe that
 finds no path at all aborts the batch naming the failed net.
@@ -730,7 +734,7 @@ The rules are values, one module each, chosen before the first round:
 
 | policy | trait and implementations | what it decides |
 | --- | --- | --- |
-| Budget | `BudgetSchedule`, `LadderBudgets` (`negotiation/budget.rs`) | the expansion budget of one attempt, given its `AttemptKind` (`First`, `FirstRetry`, `PostRipUp`, `ProbeGuided`, `DirectCrossing`, `Braid`), the net's failure count and the round; `None` means unbounded |
+| Budget | `BudgetSchedule`, `LadderBudgets` (`negotiation/budget.rs`) | the expansion budget of one attempt, given its `AttemptKind` (`First`, `FirstRetry`, `PostRipUp`), the net's failure count and the round; `None` means unbounded. The braid passes set their constant budget at their own call sites |
 | Crossing-free | `CrossingFreePolicy`, `PlannedPairsOnly`, `Never` (`negotiation/crossing_free.rs`) | whether this net's searches this round run crossing-free (contribution 1's rule for nets the plan gives no crossing; `Never` without guidance) |
 | Rip-up | `RipUpPolicy`, `LidarStyleRipUp`, `NoRipUp` (`negotiation/ripup.rs`) | which committed nets a blocked net displaces -- and it does the ripping, because rip-up mutates the obstacle map and `batch.final_routes`; it returns the ids it ripped, in the order it found them. `NoRipUp` rips nothing: the binding's `no_ripup=True` with `max_rounds = 1` is the no-repair mode (`RipupRerouteConfig(enabled=False)`) |
 | Queue | `NetQueue` (`negotiation/queue.rs`) | the work order plus the three tables the other rules read: failure counts, the nets already ripped this epoch, and each net's most recent probe blockers |
@@ -935,7 +939,8 @@ those left unreachable. Two decisions came with the slice: the two
 mid-pipeline repair passes of `translation/routing/verify_repair.py` now call
 the negotiated loop (D8), and the probe-guided and direct-crossing budgets
 follow `NegotiationConfig` instead of the constants, whose values are those
-fields' defaults (D9).
+fields' defaults (D9; both attempts were removed in phase 3 slice A of the
+2026-10 do-over after the ablation found them inert).
 
 Already removed, Slice B, the window and collision crossing modes (D2,
 2026-09-24): `expected_pairs_partner_set`, `crossing_allowed_partner_set` and
@@ -1011,7 +1016,6 @@ later plan may split the state phase by phase. The phase numbers are the nine
 | `route_bookkeeping` | 5 (its phase-7 writes go through its own attributes) | 6, 7, 8 |
 | `route_timing_buckets` | 5, mutated by 6 | 6, 7, 9 |
 | `route_attempt_records` | 5, mutated by 6 | 6, 9 |
-| `deferred_count` | 5, 6 | 7, 9 |
 | `repair_count` | 5, 6 | 7, 9 |
 | `simple_route_count` | 5, 6 | 7, 9 |
 | `total_expanded_states` | 5, 6 | 7 |

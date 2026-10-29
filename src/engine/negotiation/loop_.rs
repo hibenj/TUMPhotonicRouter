@@ -834,11 +834,6 @@ pub(crate) struct NegotiationCounters {
     pub(crate) local_ripups: u32,
     pub(crate) probe_guided: u32,
     pub(crate) crossing_free: u32,
-    /// The negotiated chain no longer calls `try_commit_clean_probe`
-    /// (owner decision 2026-09-15: the clean-probe commit shortcut is
-    /// dropped here), so this always stays 0 -- kept only so the
-    /// `native_negotiated_done` trace line's shape is unchanged.
-    pub(crate) commit_rejected: u32,
     /// Rounds the loop actually ran.
     pub(crate) rounds: u32,
     /// How often the loop's own epoch boundary
@@ -893,7 +888,6 @@ fn empty_batch_state() -> RepairBatchState {
         failed_net_id: None,
         failed_error: None,
         timings: NativeBatchTimings::default(),
-        deferred_count: 0,
     }
 }
 
@@ -1070,23 +1064,23 @@ impl PyPhotonicRouter {
     /// The batch's closing line: how the loop ended and what its rules did.
     fn trace_negotiated_done(&self, counters: &NegotiationCounters, round: u32, unrouted: usize) {
         eprintln!(
-            "native_negotiated_done t={:.1} rounds={} global_ripups={} local_ripups={} commit_rejected={} unrouted={} probe_guided={} crossing_free={}",
+            "native_negotiated_done t={:.1} rounds={} global_ripups={} local_ripups={} unrouted={} probe_guided={} crossing_free={}",
             self.negotiated_batch_start
                 .map(|start| start.elapsed().as_secs_f64())
                 .unwrap_or(0.0),
             round,
             counters.global_ripups,
             counters.local_ripups,
-            counters.commit_rejected,
             unrouted,
             counters.probe_guided,
             counters.crossing_free
         );
     }
 
-    /// Both non-error returns of the loop clear the per-batch fields it
-    /// set. (The one `?` return, a direct-crossing error, propagates
-    /// without clearing, as it always has.)
+    /// Both returns of the loop clear the per-batch fields it set. (Until
+    /// phase 3 slice A of the 2026-10 do-over the direct-crossing attempt
+    /// had a `?` return that propagated without clearing; that attempt is
+    /// gone.)
     fn finish_negotiated_batch(&mut self) {
         self.long_straight_weight_override = None;
         self.negotiated_batch_start = None;
@@ -1275,57 +1269,17 @@ impl PyPhotonicRouter {
                 };
                 let blockers = probe_blockers(&probe, crossing_free);
                 state.queue.record_blockers(net_id, blockers);
-                let (legal_partner_ids, illegal_partner_ids) =
+                // Until phase 3 slice A of the 2026-10 do-over two
+                // crossing-accepting attempts ran here before the rip-up: a
+                // legal-only probe-guided search (every probe crossing legal:
+                // price exactly those partners) and a direct-crossing search
+                // against at most three partners the probe blamed for an
+                // illegal crossing. The 27-cell ablation found both inert
+                // (byte-identical crossings and GDS lengths with either
+                // switched off), so they are gone; only the mixed-case
+                // guidance of the post-rip-up search below remains.
+                let (legal_partner_ids, _illegal_partner_ids) =
                     loop_partner_split(&probe, crossing_free);
-
-                // Probe-guided search (2026-09-15 15:00 Decision Log entry
-                // of the LiDAR endgame plan): every crossing on the probe's
-                // free path is legal, so one more search prices exactly
-                // those partners instead of paying the crossing price. The
-                // mixed case is handled after the rip-up below.
-                if !negotiation.disable_probe_guided
-                    && illegal_partner_ids.is_empty()
-                    && !legal_partner_ids.is_empty()
-                {
-                    let partner_ids = if negotiation.disable_source_column_widening {
-                        legal_partner_ids.clone()
-                    } else {
-                        self.widened_probe_partners(
-                            &legal_partner_ids,
-                            &tables,
-                            state.batch,
-                            net_id,
-                            args.trace,
-                        )
-                    };
-                    let guided_budget = budget(AttemptKind::ProbeGuided);
-                    let guided = PlainAttempt::probe_guided(guided_budget, &partner_ids);
-                    let guided_outcome = self.run_plain_attempt(state.batch, &job, &args, guided);
-                    if matches!(guided_outcome, PlainRouteOutcome::Routed) {
-                        counters.probe_guided += 1;
-                        self.braid_and_requeue(&mut state, &job, &tables, &args);
-                        made_progress = true;
-                        continue;
-                    }
-                }
-
-                // A legal crossing against the partners the probe itself
-                // blamed for an illegal one (at most three).
-                if !negotiation.disable_direct_crossing && !illegal_partner_ids.is_empty() {
-                    let direct_crossing_outcome = self.run_direct_crossing_attempt(
-                        state.batch,
-                        &job,
-                        &tables.order_by_id,
-                        &args,
-                        budget(AttemptKind::DirectCrossing),
-                        &illegal_partner_ids,
-                    )?;
-                    if matches!(direct_crossing_outcome, LidarDirectCrossingOutcome::Routed) {
-                        self.braid_and_requeue(&mut state, &job, &tables, &args);
-                        made_progress = true;
-                        continue;
-                    }
-                }
 
                 // LiDAR's local rip-up rule (`ripuplocalnets`), then this
                 // net's search once more on the map it freed.
@@ -1347,19 +1301,25 @@ impl PyPhotonicRouter {
                 counters.local_ripups += 1;
                 // Mixed-case guided search (2026-09-15 16:25 Decision Log
                 // entry, follow-up (2)): when the probe also reported legal
-                // partners, this search runs under the same widened
-                // guidance as the legal-only step above.
-                let guided_partner_ids = if legal_partner_ids.is_empty() {
-                    Vec::new()
-                } else {
-                    self.widened_probe_partners(
-                        &legal_partner_ids,
-                        &tables,
-                        state.batch,
-                        net_id,
-                        args.trace,
-                    )
-                };
+                // partners, this search prices them (widened by source
+                // column unless `disable_source_column_widening`) at
+                // `NEGOTIATED_PROBE_GUIDANCE_LOSS`. Not covered by the
+                // 2026-10 ablation; `disable_post_ripup_guidance` is the
+                // switch for the next one.
+                let guided_partner_ids =
+                    if legal_partner_ids.is_empty() || negotiation.disable_post_ripup_guidance {
+                        Vec::new()
+                    } else if negotiation.disable_source_column_widening {
+                        legal_partner_ids.clone()
+                    } else {
+                        self.widened_probe_partners(
+                            &legal_partner_ids,
+                            &tables,
+                            state.batch,
+                            net_id,
+                            args.trace,
+                        )
+                    };
                 let after = budget(AttemptKind::PostRipUp);
                 let post = PlainAttempt::post_ripup(after, crossing_free, &guided_partner_ids);
                 let post_outcome = self.run_plain_attempt(state.batch, &job, &args, post);

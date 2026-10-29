@@ -742,102 +742,6 @@ impl PyPhotonicRouter {
         ))
     }
 
-    pub(crate) fn crossing_repair_keepout_radius_cells(&self) -> i32 {
-        let config = self.crossing_context.config();
-        crossing_required_margin_cells(
-            config.crossing_half_size_cells,
-            config.min_straight_cells_per_crossing,
-            self.primitive_cfg.bend_radius_cells,
-        )
-        .max(1)
-    }
-
-    pub(crate) fn crossing_repair_keepout_radius_for_reason(&self, reason: &str) -> i32 {
-        if reason == "crossing_footprint_contains_route_geometry"
-            || reason == "crossing_footprint_overlap"
-        {
-            return self
-                .crossing_context
-                .config()
-                .crossing_half_size_cells
-                .saturating_add(1)
-                .max(1);
-        }
-        if reason == "not_perpendicular" {
-            return self
-                .crossing_context
-                .config()
-                .crossing_half_size_cells
-                .saturating_add(1)
-                .max(1);
-        }
-        self.crossing_repair_keepout_radius_cells()
-    }
-
-    pub(crate) fn crossing_physical_violation_repair_keepout_keys(
-        &self,
-        violations: &[InvalidCrossingIntersection],
-        partner_ids: &[u64],
-    ) -> FxHashSet<CellKey> {
-        if violations.is_empty() || partner_ids.is_empty() {
-            return FxHashSet::default();
-        }
-        let partners: FxHashSet<u64> = partner_ids.iter().copied().collect();
-        let mut keys = FxHashSet::default();
-        for violation in violations {
-            if !partners.contains(&violation.partner_net_id) {
-                continue;
-            }
-            let radius = self.crossing_repair_keepout_radius_for_reason(violation.reason);
-            let Some((center_x, center_y)) = self.grid_cell_for_physical_point(violation.point)
-            else {
-                continue;
-            };
-            for y in center_y.saturating_sub(radius)..=center_y.saturating_add(radius) {
-                for x in center_x.saturating_sub(radius)..=center_x.saturating_add(radius) {
-                    if self.obstacle_map.in_bounds(x, y) {
-                        keys.insert(pack_xy(x, y));
-                    }
-                }
-            }
-        }
-        keys
-    }
-
-    pub(crate) fn crossing_grid_violation_repair_keepout_keys(
-        &self,
-        violations: &[InvalidCrossingIntersection],
-        partner_ids: &[u64],
-    ) -> FxHashSet<CellKey> {
-        if violations.is_empty() || partner_ids.is_empty() {
-            return FxHashSet::default();
-        }
-        let partners: FxHashSet<u64> = partner_ids.iter().copied().collect();
-        let radius = self.crossing_repair_keepout_radius_cells();
-        let mut keys = FxHashSet::default();
-        for violation in violations {
-            if !partners.contains(&violation.partner_net_id)
-                || !violation.point.0.is_finite()
-                || !violation.point.1.is_finite()
-            {
-                continue;
-            }
-            let center_x = violation.point.0.floor() as i32;
-            let center_y = violation.point.1.floor() as i32;
-            if !self.obstacle_map.in_bounds(center_x, center_y) {
-                continue;
-            }
-            for y in center_y.saturating_sub(radius)..=center_y.saturating_add(radius) {
-                for x in center_x.saturating_sub(radius)..=center_x.saturating_add(radius) {
-                    if self.obstacle_map.in_bounds(x, y) {
-                        keys.insert(pack_xy(x, y));
-                    }
-                }
-            }
-        }
-        keys
-    }
-
     pub(crate) fn dynamic_commit_error_repair_keepout_keys(
         &self,
         error: &str,
@@ -1718,7 +1622,6 @@ mod tests {
             failed_net_id: None,
             failed_error: None,
             timings: NativeBatchTimings::default(),
-            deferred_count: 0,
         };
         // probe_net_for_repair only checks *membership* of an owner id in
         // `batch.final_routes`, never the stored RouteResult itself, to
@@ -2666,82 +2569,6 @@ mod tests {
         );
 
         assert!(violations.is_empty());
-    }
-
-    #[test]
-    fn realized_crossing_violations_create_targeted_repair_keepouts() {
-        let grid = PyGridSpec::new(32, 32, 0.5, 100.0, 200.0).unwrap();
-        let mut router = PyPhotonicRouter::new(
-            grid,
-            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 1, true),
-            PyAStarConfig::new(
-                10000,
-                1.0,
-                0,
-                true,
-                None,
-                true,
-                12,
-                0.35,
-                3,
-                true,
-                0.5,
-                10_000_000,
-                false,
-                0.0,
-                0.0,
-                0,
-                false,
-                false,
-                "library".to_string(),
-                "distance".to_string(),
-            ),
-            None,
-        );
-        router.crossing_context.set_config(CrossingConfig {
-            enabled: true,
-            crossing_half_size_cells: 2,
-            min_straight_cells_per_crossing: 2,
-            ..CrossingConfig::default()
-        });
-        let violation = InvalidCrossingIntersection {
-            net_id: 2,
-            partner_net_id: 1,
-            point: (104.25, 206.75),
-            reason: "not_perpendicular",
-        };
-
-        let keys = router.crossing_physical_violation_repair_keepout_keys(
-            std::slice::from_ref(&violation),
-            &[1],
-        );
-        let center = router
-            .grid_cell_for_physical_point((104.25, 206.75))
-            .expect("violation point is in bounds");
-        assert!(keys.contains(&pack_xy(center.0, center.1)));
-        assert!(keys.contains(&pack_xy(center.0 + 1, center.1)));
-        assert!(keys.contains(&pack_xy(center.0, center.1 - 1)));
-        assert!(keys.contains(&pack_xy(center.0 + 2, center.1)));
-        assert!(keys.contains(&pack_xy(center.0 + 3, center.1)));
-        assert!(!keys.contains(&pack_xy(center.0 + 4, center.1)));
-
-        let grid_violation = InvalidCrossingIntersection {
-            net_id: 2,
-            partner_net_id: 1,
-            point: (8.5, 13.5),
-            reason: "insufficient_straight_margin",
-        };
-        let grid_keys = router.crossing_grid_violation_repair_keepout_keys(
-            std::slice::from_ref(&grid_violation),
-            &[1],
-        );
-        assert!(grid_keys.contains(&pack_xy(8, 13)));
-
-        let wrong_partner_keys = router.crossing_physical_violation_repair_keepout_keys(
-            std::slice::from_ref(&violation),
-            &[3],
-        );
-        assert!(wrong_partner_keys.is_empty());
     }
 
     #[test]

@@ -522,7 +522,6 @@ mod tests {
             failed_net_id: None,
             failed_error: None,
             timings: NativeBatchTimings::default(),
-            deferred_count: 0,
         };
         batch
             .final_routes
@@ -671,7 +670,6 @@ mod tests {
             failed_net_id: None,
             failed_error: None,
             timings: NativeBatchTimings::default(),
-            deferred_count: 0,
         };
         batch
             .final_routes
@@ -826,7 +824,6 @@ mod tests {
             failed_net_id: None,
             failed_error: None,
             timings: NativeBatchTimings::default(),
-            deferred_count: 0,
         };
         // A committed net far from job's own route below -- neither
         // geometrically overlaps nor needs to cross the other, so both
@@ -872,7 +869,6 @@ mod tests {
             failed_net_id: None,
             failed_error: None,
             timings: NativeBatchTimings::default(),
-            deferred_count: 0,
         };
         batch.final_routes.insert(victim.net_id, empty_test_route());
 

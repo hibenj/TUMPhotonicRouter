@@ -213,21 +213,6 @@ impl PyPhotonicRouter {
             } else {
                 Vec::new()
             };
-        let allowed_crossing_partner_list: Vec<u64> =
-            allowed_crossing_partners.iter().copied().collect();
-        let probe_repair_keepout_keys = if crossing_repair_enabled {
-            let mut keys = self.crossing_physical_violation_repair_keepout_keys(
-                &probe_realized_crossing_violations,
-                &allowed_crossing_partner_list,
-            );
-            keys.extend(self.crossing_grid_violation_repair_keepout_keys(
-                &probe_grid_crossing_violations,
-                &allowed_crossing_partner_list,
-            ));
-            keys
-        } else {
-            FxHashSet::default()
-        };
         if crossing_repair_enabled {
             let legal_crossed_partners =
                 Self::crossing_partner_ids_from_events(&probe_crossing_events);
@@ -292,34 +277,34 @@ impl PyPhotonicRouter {
                 order_by_id.get(owner).copied().unwrap_or(usize::MAX),
             )
         });
-        let probe = ProbeState {
-            probe_route,
-            crossing_repair_enabled,
-            allowed_crossing_partners,
-            probe_crossing_events,
-            probe_realized_crossing_violations,
-            probe_grid_crossing_violations,
-            probe_repair_keepout_keys,
-            candidate_blockers,
-            probe_intersecting_partners,
-        };
         if trace_native_repair {
             eprintln!(
-                "{}native_repair_probe net={} allowed_partners={} crossing_events={} grid_violations={} realized_violations={} realized_reasons={:?} keepout_keys={} candidate_blockers={:?}",
+                "{}native_repair_probe net={} allowed_partners={} crossing_events={} grid_violations={} realized_violations={} realized_reasons={:?} candidate_blockers={:?}",
                 trace_t(self.negotiated_batch_start),
                 job.net_id,
-                probe.allowed_crossing_partners.len(),
-                probe.probe_crossing_events.len(),
-                probe.probe_grid_crossing_violations.len(),
-                probe.probe_realized_crossing_violations.len(),
-                probe.probe_realized_crossing_violations
+                allowed_crossing_partners.len(),
+                probe_crossing_events.len(),
+                probe_grid_crossing_violations.len(),
+                probe_realized_crossing_violations.len(),
+                probe_realized_crossing_violations
                     .iter()
                     .map(|violation| (violation.partner_net_id, violation.reason))
                     .collect::<Vec<_>>(),
-                probe.probe_repair_keepout_keys.len(),
-                probe.candidate_blockers,
+                candidate_blockers,
             );
         }
+        // `allowed_crossing_partners` and `probe_grid_crossing_violations`
+        // are locals only: the first feeds the probe's crossing events and
+        // grid violations, the second the candidate blockers (priority 1),
+        // and nothing downstream read either (phase 3 slice A, 2026-10).
+        let probe = ProbeState {
+            probe_route,
+            crossing_repair_enabled,
+            probe_crossing_events,
+            probe_realized_crossing_violations,
+            candidate_blockers,
+            probe_intersecting_partners,
+        };
         batch.timings.repair_probe_victim_selection_us +=
             native_batch_elapsed_us(victim_selection_start);
         Ok(probe)
@@ -476,7 +461,6 @@ mod tests {
         let probe = ProbeState {
             probe_route: empty_test_route(),
             crossing_repair_enabled: true,
-            allowed_crossing_partners: FxHashSet::default(),
             probe_crossing_events: events,
             probe_realized_crossing_violations: vec![InvalidCrossingIntersection {
                 net_id: 4,
@@ -484,8 +468,6 @@ mod tests {
                 point: (0.0, 0.0),
                 reason: "not_perpendicular",
             }],
-            probe_grid_crossing_violations: Vec::new(),
-            probe_repair_keepout_keys: FxHashSet::default(),
             candidate_blockers: Vec::new(),
             probe_intersecting_partners: Vec::new(),
         };

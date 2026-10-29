@@ -291,10 +291,8 @@ RUST_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_NEGOTIATED_BRAID_ESCALATION",
         "PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED",
         "PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR",
-        "PHOTONIC_ROUTER_PENDING_STRAIGHT_RIPUP_THRESHOLD",
-        "PHOTONIC_ROUTER_NEGOTIATED_DISABLE_PROBE_GUIDED",
-        "PHOTONIC_ROUTER_NEGOTIATED_DISABLE_DIRECT_CROSSING",
         "PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING",
+        "PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE",
         "PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE",
         "PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT",
         # Search overrides (src/py_router.rs)
@@ -424,8 +422,12 @@ def test_router_config_default_to_rust_round_trips_defaults():
     assert rust_cfg.negotiation_crossing_free_unplanned == cfg.negotiation.crossing_free_unplanned
     assert rust_cfg.negotiation_disable_braid_repair == cfg.negotiation.disable_braid_repair
     assert (
-        rust_cfg.negotiation_pending_straight_ripup_threshold
-        == cfg.negotiation.pending_straight_ripup_threshold
+        rust_cfg.negotiation_disable_source_column_widening
+        == cfg.negotiation.disable_source_column_widening
+    )
+    assert (
+        rust_cfg.negotiation_disable_post_ripup_guidance
+        == cfg.negotiation.disable_post_ripup_guidance
     )
     assert rust_cfg.search_astar_timeout_ms == cfg.search.astar_timeout_ms
     assert rust_cfg.search_max_dense_states == cfg.search.max_dense_states
