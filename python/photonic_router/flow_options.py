@@ -31,7 +31,6 @@ from routing_flow_config import (
     SCRIPT_FANOUT_ACCESS_MODE,
     SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
     SCRIPT_GRID_SIZE_UM,
-    SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
     SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
@@ -95,7 +94,6 @@ class OpticalStageOptions:
     enable_crossings: bool = False
     crossing_mode: str = "lidar-pure"
     crossing_half_size_cells: int = 0
-    min_straight_cells_per_crossing: int = SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING
     foreign_port_keepout_cells: int = SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS
     fanout_access_mode: str | None = SCRIPT_FANOUT_ACCESS_MODE
     proactive_congestion_weight: float = SCRIPT_PROACTIVE_CONGESTION_WEIGHT

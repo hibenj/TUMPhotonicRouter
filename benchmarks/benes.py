@@ -1,7 +1,8 @@
 """Schematic-first Benes network benchmark generation.
 
 The generated schematic intentionally leaves all inter-stage waveguides unrouted.
-Topology metadata records stage depth, lane ranks, and unavoidable crossings so
+Topology metadata records stage depth and lane ranks (node and edge ranks), from
+which `photonic_router.crossing_plan` derives the unavoidable crossings, so
 crossing-aware routing can use the benchmark as a deterministic oracle.
 """
 
@@ -84,19 +85,6 @@ class BenesLayerEdge:
     target_rank: int
     source_depth: int
     target_depth: int
-
-
-@dataclass(frozen=True)
-class BenesCrossing:
-    """A pair of inter-stage edges whose rank order is inverted."""
-
-    stage: int
-    edge_a: str
-    edge_b: str
-    edge_a_source_rank: int
-    edge_a_target_rank: int
-    edge_b_source_rank: int
-    edge_b_target_rank: int
 
 
 def switch_name(stage: int, index: int) -> str:
@@ -266,43 +254,12 @@ def _iter_interstage_edges(size: int) -> tuple[BenesLayerEdge, ...]:
     return tuple(edges)
 
 
-def find_rank_crossings(edges: tuple[BenesLayerEdge, ...]) -> tuple[BenesCrossing, ...]:
-    """Find pairwise rank inversions between edges in the same stage transition."""
-    crossings: list[BenesCrossing] = []
-    by_stage: dict[int, list[BenesLayerEdge]] = {}
-    for edge in edges:
-        by_stage.setdefault(edge.source_depth - 1, []).append(edge)
-
-    for stage, stage_edges in by_stage.items():
-        ordered = sorted(stage_edges, key=lambda edge: edge.source_rank)
-        for left_index, edge_a in enumerate(ordered):
-            for edge_b in ordered[left_index + 1 :]:
-                source_delta = edge_a.source_rank - edge_b.source_rank
-                target_delta = edge_a.target_rank - edge_b.target_rank
-                if source_delta * target_delta >= 0:
-                    continue
-                crossings.append(
-                    BenesCrossing(
-                        stage=stage,
-                        edge_a=edge_a.net_name,
-                        edge_b=edge_b.net_name,
-                        edge_a_source_rank=edge_a.source_rank,
-                        edge_a_target_rank=edge_a.target_rank,
-                        edge_b_source_rank=edge_b.source_rank,
-                        edge_b_target_rank=edge_b.target_rank,
-                    )
-                )
-
-    return tuple(crossings)
-
-
 def benes_topology_metadata(size: int) -> dict[str, Any]:
     validate_benes_size(size)
     address_bits = int(log2(size))
     stage_count = 2 * address_bits - 1
     switches_per_stage = size // 2
     interstage_edges = _iter_interstage_edges(size)
-    crossings = find_rank_crossings(interstage_edges)
 
     node_depths: dict[str, int] = {}
     node_ranks: dict[str, int] = {}
@@ -326,19 +283,6 @@ def benes_topology_metadata(size: int) -> dict[str, Any]:
         }
         for edge in interstage_edges
     }
-    crossings_by_stage: dict[int, list[dict[str, Any]]] = {}
-    for crossing in crossings:
-        crossings_by_stage.setdefault(crossing.stage, []).append(
-            {
-                "edge_a": crossing.edge_a,
-                "edge_b": crossing.edge_b,
-                "edge_a_source_rank": crossing.edge_a_source_rank,
-                "edge_a_target_rank": crossing.edge_a_target_rank,
-                "edge_b_source_rank": crossing.edge_b_source_rank,
-                "edge_b_target_rank": crossing.edge_b_target_rank,
-            }
-        )
-
     return {
         "network": "benes",
         "size": size,
@@ -350,8 +294,6 @@ def benes_topology_metadata(size: int) -> dict[str, Any]:
         "node_ranks": node_ranks,
         "interstage_edges": tuple(edge.__dict__ for edge in interstage_edges),
         "edge_ranks": edge_ranks,
-        "crossings": tuple(crossing.__dict__ for crossing in crossings),
-        "crossings_by_stage": crossings_by_stage,
     }
 
 

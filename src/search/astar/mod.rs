@@ -158,9 +158,7 @@ fn run_search(env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome
     let crossing = request.crossing.as_ref().map(|crossing| crossing.config);
 
     if let Some(crossing) = crossing {
-        if crossing.partners.is_empty()
-            || (crossing.require_all_partners && crossing.partners.len() >= u64::BITS as usize)
-        {
+        if crossing.partners.is_empty() {
             return rejected_outcome();
         }
     }
@@ -238,7 +236,6 @@ fn run_search(env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome
                         obstacle_map,
                         crossing,
                         config,
-                        primitives.grid_size_um(),
                         Some(
                             reservation_anchor_open_cells
                                 .as_ref()

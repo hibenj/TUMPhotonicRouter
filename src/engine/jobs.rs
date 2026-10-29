@@ -182,8 +182,6 @@ pub(crate) struct NativeEndpointCorrection {
     pub(crate) candidate_label: Option<String>,
 }
 
-pub(crate) const CROSSING_SPACING_HISTORY_AMOUNT: u32 = 1;
-
 pub(crate) const LONG_STRAIGHT_CONGESTION_MIN_UM: f64 = 200.0;
 
 pub(crate) const LONG_STRAIGHT_CONGESTION_LATERAL_RADIUS_CELLS: i32 = 5;

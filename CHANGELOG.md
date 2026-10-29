@@ -137,6 +137,88 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Removed
 
+- The hard crossing-constraint API, whose only production writer was
+  `router.set_crossing_constraints([])` (phase 4 slice A): Rust
+  `CrossingConstraint`, `CrossingContext::{constraints, allowed_pairs,
+  expected_crossings_by_net, has_expected_pair, allows_pair,
+  expected_crossing_count, allowed_partners_for, ordered_constraints_for,
+  replace_constraints, clear_constraints}` and
+  `CrossingConfig::allow_only_expected_pairs` (always `False` from Python,
+  so `allows_pair` had reduced to `config.enabled`); the pyclass
+  `CrossingConstraint` and the six pymethods `crossing_constraints`,
+  `set_crossing_constraints`, `clear_crossing_constraints`,
+  `crossing_expected_count`, `crossing_has_expected_pair`,
+  `crossing_allows_pair` (81 -> 75 pymethods); the Python keyword
+  `allow_only_expected_crossings` of `route_nets_rust` / the session /
+  `SessionSettings` with `effective_allow_only_expected_crossings`, and the
+  `CrossingPlanInfo` fields `constraint_count`,
+  `requested_allow_only_expected_crossings`, `allow_only_expected_crossings`.
+  The `unexpected_pair` verdict is gone from the Rust and the Python
+  verifier; the legality predicates themselves are untouched.
+- Everything that was constant because of it: `net_has_crossing_requirements`
+  and the crossing spacing history (`add_crossing_spacing_history_for_route`,
+  `crossing_spacing_history_cells_for_route`,
+  `insert_crossing_reservation_window`, `CROSSING_SPACING_HISTORY_AMOUNT`);
+  `CrossingSearchConfig::require_all_partners` with `all_partner_mask` /
+  `all_partner_count`, the `goal_extra_ok` and `heuristic_bonus` hook methods
+  (`crossing_progress_heuristic`, `distance_to_trimmed_grid_segment`,
+  `distance_to_segment`), the window-mode partner tracking in
+  `evaluate_crossing_move` and the `next_partner_index` component of the
+  crossing search key (always 0); the aliases `lidar_pure_crossing_enabled`,
+  `lidar_pure_owner_lookup_partner_set` and the unreachable non-lidar branch
+  of `upfront_collision_crossing_partner_ids` with
+  `crossing_partner_lookup_set_for_route` /
+  `lidar_route_window_partner_lookup_set`.
+- `min_straight_cells_per_crossing` end to end: the
+  `--min-straight-cells-per-crossing` flag of the CLI and
+  `scripts/benchmark_photonic.py`, the flow and session keywords,
+  `SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING` /
+  `DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING`, the `CrossingConfig` /
+  `CrossingSearchConfig` fields and the `CrossingPlanInfo` field.
+  `crossing_required_margin_cells` never read it (half size plus bend
+  run-out); the trace line `collision-crossing start` loses its
+  `min_straight=` token.
+- The dead second and third copies of the rank-inversion analysis:
+  `TopologyCrossing`, `TopologyAnalysisResult.crossings` /
+  `crossings_by_depth`, `_find_rank_inversions`
+  (`python/photonic_router/topology_analysis.py`) and
+  `benchmarks/benes.py::find_rank_crossings` / `BenesCrossing` with the
+  `crossings` / `crossings_by_stage` metadata keys, the benchmark modules'
+  `EXPECTED_CROSSINGS` and `load_benchmark_metadata()["expected_crossings"]`.
+  `crossing_plan.build_crossing_plan` is the one copy; the tests assert its
+  event counts (2, 16, 88, 416 for Benes 4..32, 33 for multiportmmi_8x8) and
+  that every event is a genuine rank inversion.
+- The third `realized_intersections` producer
+  `_augment_crossing_plan_with_realized_overlaps` (and
+  `_first_perpendicular_route_intersection`, `_segment_length_cells`) with the
+  `CrossingPlanInfo` fields `actual_crossing_count`,
+  `actual_crossing_cell_count`, `actual_geometric_crossing_count`,
+  `actual_crossings`, `unrealized_expected_crossings`,
+  `unrealized_expected_crossing_count`, `actual_crossing_reason` and the
+  `realized_crossing_overlap_augment` timing bucket;
+  `scripts/crossing_benchmark_report.py` reports `planned_crossings`
+  (`event_count`) and `actual_crossings` (`native_crossing_event_count`)
+  instead.
+- The unreachable pre-placed grid builders of
+  `translation/preplaced_crossing_grids.py` (2,663 -> 1,383 lines): fan modes
+  `router`, `in_grid` and `stretched` (`build_crossing_grid_component`,
+  `_build_stretched_grid_component`, `_run_placement`,
+  `split_stage_into_participating_runs` and their helpers) and the `lines`
+  tile placement (`_derive_crossing_tiles_on_lines`), with the
+  `CrossingGridGeometry` / `CrossingGridConfig` fields `fan_mode`,
+  `tile_placement`, `lane_pitch_um`, `entry_straight_um`,
+  `fan_column_pitch_um`, `port_pair_spread_um`,
+  `unrouted_sibling_clearance_um`, `slot_spread_um`, `stub_stagger_um`,
+  `tile_min_spacing_um` and their ten `PHOTONIC_ROUTER_CROSSING_GRID_*`
+  variables, none of which any paper cell set. The `tiles` builder every
+  paper cell ran is unchanged.
+- `is_lidar_mode`, `LIDAR_MODES` and `CROSSING_MODE_ALIASES`
+  (`translation/crossing_modes.py`): the predicate had been constant true
+  since the collision mode went, and the command line only ever accepted the
+  two canonical names; `normalize_crossing_mode` now rejects the aliases
+  `pure`, `lidar`, `guided`, `lidar_guided`.
+  Nine-cell gate identical.
+
 - Ten dead `PyPhotonicRouter` pymethods of the negotiation, history, dynamic-
   and static-map and crossing-guidance surface with no caller in Python
   (production, tests or scripts) or Rust (phase 3 slice E):

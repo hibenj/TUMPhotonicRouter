@@ -194,7 +194,7 @@ def test_plain_float_raises_the_builtin_value_error():
 
 
 def test_float_or_unset_maps_blank_to_none_and_raises_on_bad_value():
-    parse = float_or_unset("PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM")
+    parse = float_or_unset("PHOTONIC_ROUTER_CROSSING_GRID_BAND_MARGIN_UM")
     assert parse("20") == pytest.approx(20.0)
     assert parse("  ") is None
     assert parse("") is None
@@ -354,16 +354,6 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_LEAD_UM",
         "PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_PITCH_UM",
         "PHOTONIC_ROUTER_CROSSING_GRID_CORNER_MARGIN_UM",
-        "PHOTONIC_ROUTER_CROSSING_GRID_ENTRY_STRAIGHT_UM",
-        "PHOTONIC_ROUTER_CROSSING_GRID_FAN_COLUMN_PITCH_UM",
-        "PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM",
-        "PHOTONIC_ROUTER_CROSSING_GRID_PORT_PAIR_SPREAD_UM",
-        "PHOTONIC_ROUTER_CROSSING_GRID_SLOT_SPREAD_UM",
-        "PHOTONIC_ROUTER_CROSSING_GRID_STUB_STAGGER_UM",
-        "PHOTONIC_ROUTER_CROSSING_GRID_TILE_MIN_SPACING_UM",
-        "PHOTONIC_ROUTER_CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM",
-        "PHOTONIC_ROUTER_CROSSING_GRID_FAN_MODE",
-        "PHOTONIC_ROUTER_CROSSING_GRID_TILE_PLACEMENT",
         "PHOTONIC_ROUTER_CROSSING_GRID_CORNERS",
         "PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS",
         "PHOTONIC_ROUTER_TRACE_COLUMN_GRID",
@@ -604,15 +594,15 @@ def test_long_straight_congestion_weight_applies_a_valid_value():
 def test_routing_config_from_environment_applies_the_whole_table():
     cfg = RoutingConfig.from_environment(
         {
-            "PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM": "20",
+            "PHOTONIC_ROUTER_CROSSING_GRID_BAND_MARGIN_UM": "20",
             "PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST": "123",
         }
     )
-    assert cfg.crossing_grid.lane_pitch_um == pytest.approx(20.0)
+    assert cfg.crossing_grid.band_margin_um == pytest.approx(20.0)
     assert cfg.router.negotiation.budget_first == 123
     # Everything else stays at its default.
     assert cfg == RoutingConfig(
-        crossing_grid=RoutingConfig().crossing_grid.__class__(lane_pitch_um=20.0),
+        crossing_grid=RoutingConfig().crossing_grid.__class__(band_margin_um=20.0),
         router=RouterConfig(negotiation=RouterConfig().negotiation.__class__(budget_first=123)),
     )
 

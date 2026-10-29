@@ -42,7 +42,7 @@ from photonic_router.static_obstacle_builder import grid_cell_center, physical_t
 from photonic_router.topology_analysis import analyze_schematic_topology
 
 from translation import route_rust_meanders as _meander_impl
-from translation.crossing_modes import is_lidar_mode, normalize_crossing_mode
+from translation.crossing_modes import normalize_crossing_mode
 from translation.photonic_verification import (
     PhotonicVerificationIssue,
     PhotonicVerificationResult,
@@ -89,7 +89,6 @@ from translation.route_rust_crossing_components import (
 from translation.route_rust_crossing_plan import (
     COLLISION_CROSSING_SEARCH_LOSS_ENV,
     DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
-    _augment_crossing_plan_with_realized_overlaps,
     _augment_insertion_loss_report,
     _augment_insertion_loss_report_from_realized_intersections,
     _build_crossing_plan_info,
@@ -146,7 +145,6 @@ from translation.route_rust_geometry import (
     _crossing_footprint_blockers,
     _crossing_footprint_half_extent_um,
     _crossing_footprint_polygon,
-    _first_perpendicular_route_intersection,
     _format_illegal_crossing_root_causes_line,
     _format_native_repair_trace_lines,
     _format_route_indices,
@@ -171,7 +169,6 @@ from translation.route_rust_geometry import (
     _segment_bbox_um,
     _segment_intersection_with_params,
     _segment_intersects_crossing_footprint_interior,
-    _segment_length_cells,
     _segment_length_um,
     _segment_unit_vector,
     _segments_are_perpendicular,
@@ -228,7 +225,6 @@ from translation.routing.router_setup import (
     dense_obstacle_cell_cap,
 )
 from translation.routing.session import (
-    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     GridSpec,
     StaticObstacleMapConfig,
     _load_rust_backend,
@@ -243,7 +239,6 @@ __all__ = [
     "COLLISION_CROSSING_SEARCH_LOSS_ENV",
     "DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM",
     "DEFAULT_MEANDER_MAX_HEIGHT_UM",
-    "DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING",
     "DENSE_OBSTACLE_CELL_CAP_MARGIN",
     "NEGOTIATED_MAX_ROUNDS",
     "PROJECT_ROOT",
@@ -285,7 +280,6 @@ __all__ = [
     "_apply_endpoint_corrections_to_debug_artifacts",
     "_as_float",
     "_as_point_list",
-    "_augment_crossing_plan_with_realized_overlaps",
     "_augment_insertion_loss_report",
     "_augment_insertion_loss_report_from_realized_intersections",
     "_bbox_bounds_um",
@@ -319,7 +313,6 @@ __all__ = [
     "_effective_crossing_search_loss",
     "_ensure_dir",
     "_expanded_bbox_um",
-    "_first_perpendicular_route_intersection",
     "_foreign_crossing_footprint_specs",
     "_format_cells_preview",
     "_format_illegal_crossing_root_causes_line",
@@ -370,7 +363,6 @@ __all__ = [
     "_segment_bend_units",
     "_segment_intersection_with_params",
     "_segment_intersects_crossing_footprint_interior",
-    "_segment_length_cells",
     "_segment_length_um",
     "_segment_um_from_mapping",
     "_segment_unit_vector",
@@ -412,7 +404,6 @@ __all__ = [
     "grid_cell_center",
     "importlib",
     "insert_meanders_for_requirements",
-    "is_lidar_mode",
     "json",
     "matching_group_diagnostics_to_info",
     "math",

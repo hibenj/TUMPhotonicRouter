@@ -47,26 +47,6 @@ pub(crate) fn remove_success_static_cleanup(obstacle_map: &mut ObstacleMap, job:
 }
 
 impl PyPhotonicRouter {
-    pub(crate) fn add_crossing_spacing_history_for_route(
-        &mut self,
-        net_id: u64,
-        route: &RouteResult,
-    ) {
-        if !self.net_has_crossing_requirements(net_id) {
-            return;
-        }
-        let config = self.crossing_context.config();
-        let cells = crossing_spacing_history_cells_for_route(
-            &route.compressed_waypoints,
-            config.min_straight_cells_per_crossing,
-            config.crossing_half_size_cells,
-            self.primitive_cfg.bend_radius_cells,
-            self.grid.width as i32,
-            self.grid.height as i32,
-        );
-        self.add_history_cells(cells, CROSSING_SPACING_HISTORY_AMOUNT);
-    }
-
     pub(crate) fn add_long_straight_congestion_for_route(
         &mut self,
         net_id: u64,
@@ -162,7 +142,6 @@ impl PyPhotonicRouter {
     }
 
     pub(crate) fn add_post_commit_guidance_for_route(&mut self, net_id: u64, route: &RouteResult) {
-        self.add_crossing_spacing_history_for_route(net_id, route);
         self.add_long_straight_congestion_for_route(net_id, route);
         self.add_repair_history_for_route(route);
     }

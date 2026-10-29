@@ -30,13 +30,11 @@ from translation.routing.router_setup import (  # noqa: E402
     dense_obstacle_cell_cap,
 )
 from translation.routing.session import (  # noqa: E402
-    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     _RouteNetsRustSession,
     route_nets_rust,
 )
 
 __all__ = [
-    "DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING",
     "DENSE_OBSTACLE_CELL_CAP_MARGIN",
     "NEGOTIATED_MAX_ROUNDS",
     "_RouteNetsRustSession",

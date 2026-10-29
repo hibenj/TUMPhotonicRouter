@@ -363,7 +363,6 @@ def _report_route_nets_subtimings(timings: object, route_nets_time: float) -> No
         "endpoint_correction_native",
         "endpoint_correction_processing",
         "record_assembly",
-        "realized_crossing_overlap_augment",
         "realized_crossing_native_events",
         "realized_crossing_insertion_loss",
         "realized_crossing_verify_intersections",

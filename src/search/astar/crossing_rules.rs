@@ -68,17 +68,14 @@ pub struct CrossingSearchConfig {
     pub diagnostics: crate::config::KernelDiagnostics,
     pub net_id: NetId,
     pub partners: Vec<CrossingSearchPartner>,
-    pub min_straight_cells: i32,
     pub crossing_half_size_cells: i32,
     pub bend_runout_cells: i32,
     pub crossing_loss: f64,
-    pub require_all_partners: bool,
     pub terminal_bump_guard: Option<TerminalBumpGuard>,
 }
 
 pub(crate) fn crossing_required_margin_cells(
     crossing_half_size_cells: i32,
-    _min_straight_cells: i32,
     bend_runout_cells: i32,
 ) -> i32 {
     crossing_half_size_cells.max(0) + bend_runout_cells.max(0)
@@ -88,7 +85,6 @@ pub(crate) fn crossing_required_margin_cells(
 pub(crate) struct CrossingAStarKey {
     pub(crate) state: State,
     pub(crate) crossed_mask: u64,
-    pub(crate) next_partner_index: u8,
     pub(crate) straight_run_cells: i32,
     pub(crate) pending_after_crossing_cells: i32,
     pub(crate) pending_after_crossing_angle: u8,
@@ -98,7 +94,6 @@ pub(crate) struct CrossingAStarKey {
 #[derive(Clone, Debug)]
 pub(crate) struct CrossingMoveOutcome {
     pub(crate) crossed_mask: u64,
-    pub(crate) next_partner_index: u8,
     pub(crate) straight_run_cells: i32,
     pub(crate) pending_after_crossing_cells: i32,
     pub(crate) pending_after_crossing_angle: u8,
@@ -176,7 +171,6 @@ pub(crate) struct CrossingRouteIntersection {
     pub(crate) partner_angle: u8,
     pub(crate) segment_is_terminal: bool,
     pub(crate) partner_idx: usize,
-    pub(crate) bit: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -483,7 +477,6 @@ pub(crate) fn terminal_bump_guard_satisfied(
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct CrossingExtension {
     pub(crate) crossed_mask: u64,
-    pub(crate) next_partner_index: u8,
     pub(crate) straight_run_cells: i32,
     pub(crate) pending_after_crossing_cells: i32,
     pub(crate) pending_after_crossing_angle: u8,
@@ -494,7 +487,6 @@ impl Default for CrossingExtension {
     fn default() -> Self {
         Self {
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 0,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -512,7 +504,6 @@ impl CrossingExtension {
         CrossingAStarKey {
             state,
             crossed_mask: self.crossed_mask,
-            next_partner_index: self.next_partner_index,
             straight_run_cells: self.straight_run_cells,
             pending_after_crossing_cells: self.pending_after_crossing_cells,
             pending_after_crossing_angle: self.pending_after_crossing_angle,
@@ -523,7 +514,6 @@ impl CrossingExtension {
     pub(crate) fn from_outcome(outcome: &CrossingMoveOutcome) -> Self {
         Self {
             crossed_mask: outcome.crossed_mask,
-            next_partner_index: outcome.next_partner_index,
             straight_run_cells: outcome.straight_run_cells,
             pending_after_crossing_cells: outcome.pending_after_crossing_cells,
             pending_after_crossing_angle: outcome.pending_after_crossing_angle,
@@ -577,23 +567,8 @@ pub(crate) trait CrossingLegalityHook {
         stats: &mut RouteSearchStats,
     ) -> Option<(CrossingMoveOutcome, f64)>;
 
-    /// Whether `extension` satisfies any extra crossing-specific goal
-    /// condition (today: `require_all_partners`'s "every partner has
-    /// been crossed" requirement). Always satisfied when crossings are
-    /// disabled.
-    fn goal_extra_ok(&self, _extension: CrossingExtension) -> bool {
-        true
-    }
-
     fn ignores_dynamic_obstacles(&self) -> bool {
         false
-    }
-
-    /// Optional search-guidance bonus added to a next state's f-score,
-    /// mirroring today's `crossing_progress_heuristic`. Zero when
-    /// crossings are disabled.
-    fn heuristic_bonus(&self, _next_state: State, _next_extension: CrossingExtension) -> f64 {
-        0.0
     }
 }
 
@@ -641,9 +616,6 @@ pub(crate) struct LiveCrossingHook<'a> {
     pub(super) partner_segments: &'a [Vec<PartnerPathSegment>],
     pub(super) dynamic_core_owners: &'a DenseDynamicCoreOwnerGrid,
     pub(super) ignore_dynamic_obstacles: bool,
-    pub(super) grid_size_um: f64,
-    pub(super) all_partner_mask: u64,
-    pub(super) all_partner_count: u8,
     pub(super) search_start: Instant,
 }
 
@@ -750,21 +722,6 @@ impl CrossingLegalityHook for LiveCrossingHook<'_> {
         let extra_cost = outcome.crossing_cost;
         Some((outcome, extra_cost))
     }
-
-    fn goal_extra_ok(&self, extension: CrossingExtension) -> bool {
-        !self.crossing.require_all_partners
-            || (extension.crossed_mask == self.all_partner_mask
-                && extension.next_partner_index == self.all_partner_count)
-    }
-
-    fn heuristic_bonus(&self, next_state: State, next_extension: CrossingExtension) -> f64 {
-        crossing_progress_heuristic(
-            next_extension.to_key(next_state),
-            self.crossing,
-            self.required_margin,
-            self.grid_size_um,
-        )
-    }
 }
 
 /// Owns everything a `LiveCrossingHook` borrows from, so tests can build
@@ -778,8 +735,6 @@ pub(crate) struct CrossingHookContext {
     pub(crate) partner_segments: Vec<Vec<PartnerPathSegment>>,
     pub(crate) required_margin: i32,
     pub(crate) capped_required_margin: i32,
-    pub(crate) all_partner_mask: u64,
-    pub(crate) all_partner_count: u8,
 }
 
 impl CrossingHookContext {
@@ -818,16 +773,9 @@ impl CrossingHookContext {
                 .expect("owner grid should build for a valid obstacle map");
         let required_margin = crossing_required_margin_cells(
             crossing.crossing_half_size_cells,
-            crossing.min_straight_cells,
             crossing.bend_runout_cells,
         );
         let capped_required_margin = required_margin.max(1);
-        let all_partner_mask = if crossing.require_all_partners {
-            (1u64 << crossing.partners.len()) - 1
-        } else {
-            0
-        };
-        let all_partner_count = u8::try_from(crossing.partners.len()).unwrap_or(u8::MAX);
         let partner_index_by_id = crossing
             .partners
             .iter()
@@ -843,18 +791,14 @@ impl CrossingHookContext {
             partner_segments,
             required_margin,
             capped_required_margin,
-            all_partner_mask,
-            all_partner_count,
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn hook<'a>(
         &'a self,
         obstacle_map: &'a ObstacleMap,
         crossing: &'a CrossingSearchConfig,
         config: &AStarConfig,
-        grid_size_um: f64,
         reservation_open_cells: Option<&'a FxHashSet<CellKey>>,
         port_open_cells: Option<&'a FxHashSet<CellKey>>,
     ) -> LiveCrossingHook<'a> {
@@ -872,9 +816,6 @@ impl CrossingHookContext {
             partner_segments: &self.partner_segments,
             dynamic_core_owners: &self.dynamic_core_owners,
             ignore_dynamic_obstacles: config.ignore_dynamic_obstacles,
-            grid_size_um,
-            all_partner_mask: self.all_partner_mask,
-            all_partner_count: self.all_partner_count,
             search_start: Instant::now(),
         }
     }
@@ -1002,7 +943,6 @@ pub(crate) fn crossing_no_contact_outcome(
     };
     CrossingMoveOutcome {
         crossed_mask: current_key.crossed_mask,
-        next_partner_index: current_key.next_partner_index,
         straight_run_cells: straight_run,
         pending_after_crossing_cells: remaining_pending_after_crossing.min(capped_required_margin),
         pending_after_crossing_angle: if remaining_pending_after_crossing > 0 {
@@ -1124,9 +1064,9 @@ pub(crate) fn record_perpendicular_crossing_reject(
 }
 
 /// One `crossed_mask` bit per partner with `single_discounted_crossing`
-/// (0 for the others and for budgeted partners beyond the 64th). In lidar
-/// modes `crossed_mask` is otherwise unused (window-mode partner tracking is
-/// off), so the budget bits can live in the same key field.
+/// (0 for the others and for budgeted partners beyond the 64th). The budget
+/// bits are the only use of `crossed_mask` (the window mode's partner
+/// tracking that once shared the field is gone).
 pub(crate) fn crossing_partner_budget_bits(crossing: &CrossingSearchConfig) -> Vec<u64> {
     let mut next_bit = 0u32;
     crossing
@@ -1281,8 +1221,6 @@ pub(crate) fn crossing_move_outcome_with_segments(
     let mut active_reservation_keys = Vec::new();
     let mut pending_reservation_keys = Vec::new();
     let mut crossed_mask = current_key.crossed_mask;
-    let mut next_partner_index = current_key.next_partner_index;
-    let track_crossed_partners = crossing.require_all_partners;
     let mut crossing_count = 0u32;
     let mut crossing_cost = 0.0_f64;
     let primitive_segments = &primitive_crossing.segments;
@@ -1370,11 +1308,6 @@ pub(crate) fn crossing_move_outcome_with_segments(
         for contact in contacted_partners.iter() {
             let partner_idx = contact.partner_idx;
             let partner = &crossing.partners[partner_idx];
-            let bit = if track_crossed_partners {
-                1u64 << partner_idx
-            } else {
-                0
-            };
             let intersection_count_before = route_intersections.len();
             for (route_segment_idx, relative_route_segment) in primitive_segments.iter().enumerate()
             {
@@ -1403,14 +1336,7 @@ pub(crate) fn crossing_move_outcome_with_segments(
                     let distance_on_segment = t * route_segment.length;
                     let distance_from_primitive_start =
                         route_segment.distance_before_segment + distance_on_segment;
-                    if track_crossed_partners
-                        && crossed_mask & bit != 0
-                        && distance_from_primitive_start <= 1.0e-9
-                    {
-                        continue;
-                    }
-                    // Same situation without partner tracking (lidar-pure):
-                    // when a crossing sat at the END cell of the move that
+                    // When a crossing sat at the END cell of the move that
                     // recorded it, the move paying its straight-after debt
                     // starts ON that cell and re-finds the same intersection
                     // at t=0. That is the crossing just recorded, not a new
@@ -1424,10 +1350,6 @@ pub(crate) fn crossing_move_outcome_with_segments(
                         && distance_from_primitive_start <= 1.0e-9
                     {
                         continue;
-                    }
-                    if track_crossed_partners && crossed_mask & bit != 0 {
-                        stats.crossing_reject_wrong_order += 1;
-                        return None;
                     }
                     if !grid_axes_are_perpendicular(route_segment.angle, partner_segment.angle) {
                         trace_crossing_candidate(
@@ -1582,19 +1504,11 @@ pub(crate) fn crossing_move_outcome_with_segments(
                             partner_angle: partner_segment.angle,
                             segment_is_terminal: route_segment_idx + 1 == primitive_segments.len(),
                             partner_idx,
-                            bit,
                         });
                     }
                 }
             }
             if route_intersections.len() == intersection_count_before {
-                if track_crossed_partners && crossed_mask & bit != 0 {
-                    if !is_straight {
-                        stats.crossing_reject_non_straight += 1;
-                        return None;
-                    }
-                    continue;
-                }
                 // Contact with the partner whose straight-after debt this
                 // move is paying is the crossing's own neighbourhood: the
                 // partner's centerline continues from the crossing cell in
@@ -1674,12 +1588,6 @@ pub(crate) fn crossing_move_outcome_with_segments(
                 search_start,
             );
             stats.crossing_reject_pending_straight += 1;
-            return None;
-        }
-        if crossing.require_all_partners
-            && intersection.partner_idx != usize::from(next_partner_index)
-        {
-            stats.crossing_reject_wrong_order += 1;
             return None;
         }
         if intersection.distance_before_on_segment + 1.0e-9 < f64::from(required_margin) {
@@ -1832,10 +1740,6 @@ pub(crate) fn crossing_move_outcome_with_segments(
             pending_after_partner_index =
                 u8::try_from(intersection.partner_idx).unwrap_or(NO_PENDING_CROSSING_PARTNER_INDEX);
         }
-        if track_crossed_partners {
-            crossed_mask |= intersection.bit;
-            next_partner_index = next_partner_index.checked_add(1)?;
-        }
         crossing_count += 1;
         stats.crossing_accepted += 1;
         let budget_bit = partner_budget_bits
@@ -1868,7 +1772,6 @@ pub(crate) fn crossing_move_outcome_with_segments(
 
     let outcome = Some(CrossingMoveOutcome {
         crossed_mask,
-        next_partner_index,
         straight_run_cells: straight_run,
         pending_after_crossing_cells: pending_after.min(capped_required_margin),
         pending_after_crossing_angle: if pending_after > 0 {
@@ -2111,81 +2014,6 @@ pub(crate) fn grid_point_on_segment_with_param(
         return None;
     }
     Some(dot as f64 / len_sq as f64)
-}
-
-pub(crate) fn crossing_progress_heuristic(
-    key: CrossingAStarKey,
-    crossing: &CrossingSearchConfig,
-    required_margin: i32,
-    grid_size_um: f64,
-) -> f64 {
-    if !crossing.require_all_partners {
-        return 0.0;
-    }
-    let next_idx = usize::from(key.next_partner_index);
-    let progress_bonus = next_idx as f64 * 10_000.0;
-    // Use a weak guide toward the next scheduled partner. The guide is small
-    // enough that target-directed path shape still dominates simple X routes.
-    let Some(partner) = crossing.partners.get(next_idx) else {
-        return -progress_bonus;
-    };
-    let point = (f64::from(key.state.x), f64::from(key.state.y));
-    let mut best_distance = f64::INFINITY;
-    for segment in partner.waypoints.windows(2) {
-        let distance =
-            distance_to_trimmed_grid_segment(point, segment[0], segment[1], required_margin);
-        if distance < best_distance {
-            best_distance = distance;
-        }
-    }
-    if best_distance.is_finite() {
-        best_distance * grid_size_um * 0.5 - progress_bonus
-    } else {
-        -progress_bonus
-    }
-}
-
-pub(crate) fn distance_to_trimmed_grid_segment(
-    point: (f64, f64),
-    start: (i32, i32),
-    end: (i32, i32),
-    trim_cells: i32,
-) -> f64 {
-    let dx = end.0 - start.0;
-    let dy = end.1 - start.1;
-    let steps = dx.abs().max(dy.abs());
-    if steps <= 0 || steps < 2 * trim_cells {
-        return f64::INFINITY;
-    }
-    let dir_x = dx.signum();
-    let dir_y = dy.signum();
-    let trimmed_start = (
-        f64::from(start.0 + dir_x * trim_cells),
-        f64::from(start.1 + dir_y * trim_cells),
-    );
-    let trimmed_end = (
-        f64::from(end.0 - dir_x * trim_cells),
-        f64::from(end.1 - dir_y * trim_cells),
-    );
-    distance_to_segment(point, trimmed_start, trimmed_end)
-}
-
-pub(crate) fn distance_to_segment(point: (f64, f64), start: (f64, f64), end: (f64, f64)) -> f64 {
-    let vx = end.0 - start.0;
-    let vy = end.1 - start.1;
-    let wx = point.0 - start.0;
-    let wy = point.1 - start.1;
-    let len_sq = vx * vx + vy * vy;
-    if len_sq <= 1.0e-12 {
-        let dx = point.0 - start.0;
-        let dy = point.1 - start.1;
-        return (dx * dx + dy * dy).sqrt();
-    }
-    let t = ((wx * vx + wy * vy) / len_sq).clamp(0.0, 1.0);
-    let projection = (start.0 + t * vx, start.1 + t * vy);
-    let dx = point.0 - projection.0;
-    let dy = point.1 - projection.1;
-    (dx * dx + dy * dy).sqrt()
 }
 
 pub(crate) fn direction_angle_between_grid_cells(a: (i32, i32), b: (i32, i32)) -> Option<u8> {

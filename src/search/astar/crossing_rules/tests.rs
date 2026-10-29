@@ -94,11 +94,9 @@ fn collision_crossing_search_accepts_expected_dynamic_core_collision() {
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 1,
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
         crossing_loss: 3.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let route = test_route_single_net_with_collision_crossing_config(
@@ -199,11 +197,9 @@ fn planned_partner_crossing_uses_its_own_price_and_unplanned_pays_crossing_loss(
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 1,
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
         crossing_loss: 3.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let route = guided_pricing_route(&map, &library, &crossing);
@@ -255,11 +251,9 @@ fn budget_config(partner: CrossingSearchPartner) -> CrossingSearchConfig {
         diagnostics: KernelDiagnostics::default(),
         net_id: 3,
         partners: vec![partner],
-        min_straight_cells: 1,
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
         crossing_loss: 3.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     }
 }
@@ -305,11 +299,9 @@ fn budget_is_per_partner_two_planned_partners_are_both_discounted() {
                 single_discounted_crossing: true,
             },
         ],
-        min_straight_cells: 1,
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
         crossing_loss: 3.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let route = guided_pricing_route(&map, &library, &crossing);
@@ -341,11 +333,9 @@ fn partners_without_price_override_price_like_the_baseline() {
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 1,
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
         crossing_loss: 3.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let route = guided_pricing_route(&map, &library, &crossing);
@@ -410,304 +400,6 @@ fn proactive_congestion_discourages_crowded_straights() {
 }
 
 #[test]
-fn crossing_move_accepts_benes8_route15_diagonal_sequence() {
-    let mut map = ObstacleMap::new(700, 450);
-    let partners = vec![
-        CrossingSearchPartner {
-            net_id: 14,
-            waypoints: vec![(364, 168), (444, 168), (553, 59), (634, 59)],
-            target_terminal_bump_guard: None,
-            crossing_loss_override: None,
-            single_discounted_crossing: false,
-        },
-        CrossingSearchPartner {
-            net_id: 12,
-            waypoints: vec![(364, 278), (444, 278), (554, 168), (634, 168)],
-            target_terminal_bump_guard: None,
-            crossing_loss_override: None,
-            single_discounted_crossing: false,
-        },
-        CrossingSearchPartner {
-            net_id: 10,
-            waypoints: vec![(364, 388), (414, 388), (627, 175), (634, 169)],
-            target_terminal_bump_guard: None,
-            crossing_loss_override: None,
-            single_discounted_crossing: false,
-        },
-    ];
-    let mut committed_partner_ids = FxHashSet::default();
-    for partner in &partners {
-        let cells = rasterize_waypoints_for_test(&partner.waypoints);
-        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
-            partner.net_id,
-            &cells,
-            &cells,
-            &[],
-            &committed_partner_ids
-        ));
-        committed_partner_ids.insert(partner.net_id);
-    }
-    let crossing = CrossingSearchConfig {
-        diagnostics: KernelDiagnostics::default(),
-        net_id: 15,
-        partners,
-        min_straight_cells: 2,
-        crossing_half_size_cells: 0,
-        bend_runout_cells: 0,
-        crossing_loss: 0.0,
-        require_all_partners: true,
-        terminal_bump_guard: None,
-    };
-    let partner_index_by_id: FxHashMap<NetId, usize> = crossing
-        .partners
-        .iter()
-        .enumerate()
-        .map(|(idx, partner)| (partner.net_id, idx))
-        .collect();
-    let length_um = 5.0 * 2.0_f64.sqrt();
-    let primitive = Primitive {
-        id: 0,
-        start_angle: 1,
-        end_angle: 1,
-        dx: 5,
-        dy: 5,
-        footprint: (0..=5).map(|step| (step, step)).collect(),
-        length_um,
-        bend_cost: 0.0,
-        geometry: PrimitiveGeometry::Straight { length_um },
-    };
-    let mut key = CrossingAStarKey {
-        state: State::new(414, 59, 1),
-        crossed_mask: 0,
-        next_partner_index: 0,
-        straight_run_cells: 12,
-        pending_after_crossing_cells: 0,
-        pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
-        pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
-    };
-    let mut stats = RouteSearchStats::default();
-    while key.state.x < 630 {
-        let next_state = State::new(key.state.x + primitive.dx, key.state.y + primitive.dy, 1);
-        let outcome = crossing_move_outcome(
-            &map,
-            &crossing,
-            key,
-            key.state,
-            &primitive,
-            true,
-            2,
-            2,
-            2,
-            None,
-            &partner_index_by_id,
-            &mut stats,
-        )
-        .unwrap_or_else(|| {
-            panic!(
-                "diagonal move was rejected at state {:?} with next partner index {}",
-                key.state, key.next_partner_index
-            )
-        });
-        key = CrossingAStarKey {
-            state: next_state,
-            crossed_mask: outcome.crossed_mask,
-            next_partner_index: outcome.next_partner_index,
-            straight_run_cells: outcome.straight_run_cells,
-            pending_after_crossing_cells: outcome.pending_after_crossing_cells,
-            pending_after_crossing_angle: outcome.pending_after_crossing_angle,
-            pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
-        };
-    }
-    assert_eq!(key.next_partner_index, 3);
-    assert_eq!(key.crossed_mask, 0b111);
-    assert_eq!(stats.crossing_accepted, 3);
-    assert!(stats.crossing_candidate_checks >= 3);
-}
-
-#[test]
-fn crossing_move_accepts_benes8_route13_first_diagonal() {
-    let mut map = ObstacleMap::new(700, 450);
-    let partners = vec![
-        CrossingSearchPartner {
-            net_id: 12,
-            waypoints: vec![(364, 278), (444, 278), (554, 168), (634, 168)],
-            target_terminal_bump_guard: None,
-            crossing_loss_override: None,
-            single_discounted_crossing: false,
-        },
-        CrossingSearchPartner {
-            net_id: 10,
-            waypoints: vec![(364, 388), (414, 388), (627, 175), (634, 169)],
-            target_terminal_bump_guard: None,
-            crossing_loss_override: None,
-            single_discounted_crossing: false,
-        },
-    ];
-    let mut committed_partner_ids = FxHashSet::default();
-    for partner in &partners {
-        let cells = rasterize_waypoints_for_test(&partner.waypoints);
-        assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
-            partner.net_id,
-            &cells,
-            &cells,
-            &[],
-            &committed_partner_ids
-        ));
-        committed_partner_ids.insert(partner.net_id);
-    }
-    let crossing = CrossingSearchConfig {
-        diagnostics: KernelDiagnostics::default(),
-        net_id: 13,
-        partners,
-        min_straight_cells: 2,
-        crossing_half_size_cells: 0,
-        bend_runout_cells: 0,
-        crossing_loss: 0.0,
-        require_all_partners: true,
-        terminal_bump_guard: None,
-    };
-    let partner_index_by_id: FxHashMap<NetId, usize> = crossing
-        .partners
-        .iter()
-        .enumerate()
-        .map(|(idx, partner)| (partner.net_id, idx))
-        .collect();
-    let length_um = 4.0 * 2.0_f64.sqrt();
-    let primitive = Primitive {
-        id: 0,
-        start_angle: 1,
-        end_angle: 1,
-        dx: 4,
-        dy: 4,
-        footprint: vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)],
-        length_um,
-        bend_cost: 0.0,
-        geometry: PrimitiveGeometry::Straight { length_um },
-    };
-    let mut key = CrossingAStarKey {
-        state: State::new(364, 169, 1),
-        crossed_mask: 0,
-        next_partner_index: 0,
-        straight_run_cells: 12,
-        pending_after_crossing_cells: 0,
-        pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
-        pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
-    };
-    let mut stats = RouteSearchStats::default();
-    while key.state.x < 520 {
-        let next_state = State::new(key.state.x + 4, key.state.y + 4, 1);
-        let outcome = crossing_move_outcome(
-            &map,
-            &crossing,
-            key,
-            key.state,
-            &primitive,
-            true,
-            2,
-            2,
-            2,
-            None,
-            &partner_index_by_id,
-            &mut stats,
-        )
-        .unwrap_or_else(|| {
-            panic!(
-                "net13 diagonal move was rejected at state {:?} with next partner index {}",
-                key.state, key.next_partner_index
-            )
-        });
-        key = CrossingAStarKey {
-            state: next_state,
-            crossed_mask: outcome.crossed_mask,
-            next_partner_index: outcome.next_partner_index,
-            straight_run_cells: outcome.straight_run_cells,
-            pending_after_crossing_cells: outcome.pending_after_crossing_cells,
-            pending_after_crossing_angle: outcome.pending_after_crossing_angle,
-            pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
-        };
-    }
-    assert_eq!(key.next_partner_index, 2);
-    assert_eq!(key.crossed_mask, 0b11);
-    assert_eq!(stats.crossing_accepted, 2);
-    assert!(stats.crossing_candidate_checks >= 2);
-}
-
-#[test]
-fn crossing_move_accepts_perpendicular_shared_core_cell() {
-    let mut map = ObstacleMap::new(16, 16);
-    assert!(map.commit_route_with_clearance_overlap(
-        2,
-        &[(6, 5), (6, 6), (6, 7)],
-        &[(6, 5), (6, 6), (6, 7)],
-        &[],
-    ));
-    let crossing = CrossingSearchConfig {
-        diagnostics: KernelDiagnostics::default(),
-        net_id: 1,
-        partners: vec![CrossingSearchPartner {
-            net_id: 2,
-            waypoints: vec![(6, 5), (6, 7)],
-            target_terminal_bump_guard: None,
-            crossing_loss_override: None,
-            single_discounted_crossing: false,
-        }],
-        min_straight_cells: 1,
-        crossing_half_size_cells: 0,
-        bend_runout_cells: 0,
-        crossing_loss: 0.0,
-        require_all_partners: true,
-        terminal_bump_guard: None,
-    };
-    let partner_index_by_id: FxHashMap<NetId, usize> = crossing
-        .partners
-        .iter()
-        .enumerate()
-        .map(|(idx, p)| (p.net_id, idx))
-        .collect();
-    let primitive = Primitive {
-        id: 0,
-        start_angle: 0,
-        end_angle: 0,
-        dx: 4,
-        dy: 0,
-        footprint: vec![(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)],
-        length_um: 4.0,
-        bend_cost: 0.0,
-        geometry: PrimitiveGeometry::Straight { length_um: 4.0 },
-    };
-    let mut stats = RouteSearchStats::default();
-    let outcome = crossing_move_outcome(
-        &map,
-        &crossing,
-        CrossingAStarKey {
-            state: State::new(4, 6, 0),
-            crossed_mask: 0,
-            next_partner_index: 0,
-            straight_run_cells: 2,
-            pending_after_crossing_cells: 0,
-            pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
-            pending_after_crossing_partner_index: NO_PENDING_CROSSING_PARTNER_INDEX,
-        },
-        State::new(4, 6, 0),
-        &primitive,
-        true,
-        1,
-        1,
-        1,
-        None,
-        &partner_index_by_id,
-        &mut stats,
-    )
-    .expect("shared perpendicular core cell should be a valid crossing");
-
-    assert_eq!(outcome.crossed_mask, 0b1);
-    assert_eq!(outcome.next_partner_index, 1);
-    assert_eq!(outcome.crossing_count, 1);
-    assert_eq!(stats.crossing_accepted, 1);
-    assert_eq!(stats.crossing_reject_unmatched_owner, 0);
-}
-
-#[test]
 fn crossing_move_detects_offset_diagonal_halo_contact() {
     let mut map = ObstacleMap::new(800, 300);
     let partner_waypoints = vec![(716, 162), (753, 199)];
@@ -729,11 +421,9 @@ fn crossing_move_detects_offset_diagonal_halo_contact() {
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 0,
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(32, 0)].into_iter().collect();
@@ -758,7 +448,6 @@ fn crossing_move_detects_offset_diagonal_halo_contact() {
         CrossingAStarKey {
             state: State::new(717, 164, 7),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 10,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -785,7 +474,6 @@ fn crossing_move_detects_offset_diagonal_halo_contact() {
         CrossingAStarKey {
             state: State::new(717, 164, 7),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 10,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -841,11 +529,9 @@ fn perpendicular_diagonal_x_approach_move_is_rejected_and_containing_move_accept
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 2,
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(32, 0)].into_iter().collect();
@@ -882,7 +568,7 @@ fn perpendicular_diagonal_x_approach_move_is_rejected_and_containing_move_accept
         "fixture must produce halo contact with the partner one cell before the X"
     );
 
-    let required_margin = crossing_required_margin_cells(2, 2, 0);
+    let required_margin = crossing_required_margin_cells(2, 0);
     let mut stats = RouteSearchStats::default();
     let outcome = crossing_move_outcome(
         &map,
@@ -890,7 +576,6 @@ fn perpendicular_diagonal_x_approach_move_is_rejected_and_containing_move_accept
         CrossingAStarKey {
             state,
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 10,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -921,7 +606,6 @@ fn perpendicular_diagonal_x_approach_move_is_rejected_and_containing_move_accept
         CrossingAStarKey {
             state: containing,
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 10,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -992,11 +676,9 @@ fn consecutive_perpendicular_diagonal_crossings_on_one_line() {
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 2,
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
         crossing_loss: 1.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     // Source and target both lie on y = -x + 45; that line meets partner A
@@ -1078,11 +760,9 @@ fn consecutive_perpendicular_diagonal_crossings_with_benchmark_margin() {
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 2,
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
         crossing_loss: 1.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let (route, stats) = test_route_single_net_with_collision_crossing_config_with_stats(
@@ -1162,11 +842,9 @@ fn vertical_route_crosses_two_horizontal_partners_with_benchmark_margin() {
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 2,
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
         crossing_loss: 1.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let (route, stats) = test_route_single_net_with_collision_crossing_config_with_stats(
@@ -1232,11 +910,9 @@ fn vertical_descent_across_two_horizontals(gap: i32) -> (Option<RouteResult>, Ro
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 2,
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
         crossing_loss: 1.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     test_route_single_net_with_collision_crossing_config_with_stats(
@@ -1317,11 +993,9 @@ fn diagonal_route_across_two_parallel_backslash_partners(
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 2,
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
         crossing_loss: 1.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     // "/" route on x - y = -10 from the lower left to the upper right
@@ -1453,11 +1127,9 @@ fn crossing_inside_turn_arm(
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 2,
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
@@ -1468,7 +1140,6 @@ fn crossing_inside_turn_arm(
         CrossingAStarKey {
             state: State::new(2, 5, 0),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 5,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -1549,11 +1220,9 @@ fn matrix_row1_turn_arm_counts_as_straight_run() {
         diagnostics: KernelDiagnostics::default(),
         net_id: 1,
         partners: Vec::new(),
-        min_straight_cells: 2,
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     for (end_angle, baseline_cells) in [(2u8, 3i32), (1u8, 3i32)] {
@@ -1569,7 +1238,6 @@ fn matrix_row1_turn_arm_counts_as_straight_run() {
             CrossingAStarKey {
                 state: State::new(5, 5, 0),
                 crossed_mask: 0,
-                next_partner_index: 0,
                 straight_run_cells: 2,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -1634,11 +1302,9 @@ fn matrix_row2_before_margin_on_a_pure_straight_approach() {
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
             }],
-            min_straight_cells: 2,
             crossing_half_size_cells: 2,
             bend_runout_cells: 3,
             crossing_loss: 0.0,
-            require_all_partners: false,
             terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
@@ -1661,7 +1327,6 @@ fn matrix_row2_before_margin_on_a_pure_straight_approach() {
             CrossingAStarKey {
                 state: start,
                 crossed_mask: 0,
-                next_partner_index: 0,
                 straight_run_cells: 0,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -1738,11 +1403,9 @@ fn matrix_row3_partner_margin_on_the_raw_polyline() {
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
             }],
-            min_straight_cells: 2,
             crossing_half_size_cells: 2,
             bend_runout_cells: 3,
             crossing_loss: 0.0,
-            require_all_partners: false,
             terminal_bump_guard: None,
         };
         let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
@@ -1759,7 +1422,6 @@ fn matrix_row3_partner_margin_on_the_raw_polyline() {
             CrossingAStarKey {
                 state: start,
                 crossed_mask: 0,
-                next_partner_index: 0,
                 straight_run_cells: 5,
                 pending_after_crossing_cells: 0,
                 pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -1810,11 +1472,9 @@ fn matrix_row4_crossing_at_a_partner_endpoint_with_half_size_zero() {
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 1,
         crossing_half_size_cells: 0,
         bend_runout_cells: 1,
         crossing_loss: 3.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(1, 0)].into_iter().collect();
@@ -1831,7 +1491,6 @@ fn matrix_row4_crossing_at_a_partner_endpoint_with_half_size_zero() {
         CrossingAStarKey {
             state: start,
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 4,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -1876,11 +1535,9 @@ fn crossing_move_rejects_parallel_diagonal_on_mirrored_halo_side() {
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 0,
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(32, 0)].into_iter().collect();
@@ -1905,7 +1562,6 @@ fn crossing_move_rejects_parallel_diagonal_on_mirrored_halo_side() {
         CrossingAStarKey {
             state: State::new(739, 144, 5),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 10,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -1955,11 +1611,9 @@ fn crossing_move_rejects_bend_arm_non_perpendicular_intersection() {
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 0,
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = crossing
@@ -1976,7 +1630,6 @@ fn crossing_move_rejects_bend_arm_non_perpendicular_intersection() {
         CrossingAStarKey {
             state: State::new(4, 4, 0),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 4,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -2018,11 +1671,9 @@ fn crossing_pending_rejects_bend_while_debt_open() {
         diagnostics: KernelDiagnostics::default(),
         net_id: 1,
         partners: Vec::new(),
-        min_straight_cells: 0,
         crossing_half_size_cells: 0,
         bend_runout_cells: 2,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let mut stats = RouteSearchStats::default();
@@ -2032,7 +1683,6 @@ fn crossing_pending_rejects_bend_while_debt_open() {
         CrossingAStarKey {
             state: State::new(4, 4, 0),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 0,
             pending_after_crossing_cells: 2,
             pending_after_crossing_angle: 0,
@@ -2061,7 +1711,6 @@ fn crossing_pending_rejects_bend_while_debt_open() {
         CrossingAStarKey {
             state: State::new(4, 4, 0),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 2,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -2095,11 +1744,9 @@ fn crossing_pending_margin_rejects_bend_kink_inside_margin() {
         diagnostics: KernelDiagnostics::default(),
         net_id: 1,
         partners: Vec::new(),
-        min_straight_cells: 0,
         crossing_half_size_cells: 0,
         bend_runout_cells: 3,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let mut stats = RouteSearchStats::default();
@@ -2109,7 +1756,6 @@ fn crossing_pending_margin_rejects_bend_kink_inside_margin() {
         CrossingAStarKey {
             state: State::new(4, 4, 0),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 0,
             pending_after_crossing_cells: 3,
             pending_after_crossing_angle: 0,
@@ -2148,11 +1794,9 @@ fn crossing_pending_margin_rejects_wrong_followup_direction() {
         diagnostics: KernelDiagnostics::default(),
         net_id: 1,
         partners: Vec::new(),
-        min_straight_cells: 0,
         crossing_half_size_cells: 0,
         bend_runout_cells: 2,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let mut stats = RouteSearchStats::default();
@@ -2163,7 +1807,6 @@ fn crossing_pending_margin_rejects_wrong_followup_direction() {
         CrossingAStarKey {
             state: State::new(4, 4, 2),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 0,
             pending_after_crossing_cells: 2,
             pending_after_crossing_angle: 0,
@@ -2220,11 +1863,9 @@ fn crossing_move_rejects_internal_bend_kink_before_after_margin() {
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 0,
         crossing_half_size_cells: 1,
         bend_runout_cells: 2,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
@@ -2236,7 +1877,6 @@ fn crossing_move_rejects_internal_bend_kink_before_after_margin() {
         CrossingAStarKey {
             state: State::new(4, 4, 0),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 10,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -2285,11 +1925,9 @@ fn crossing_pending_rejects_bend_regardless_of_diagonal_arm_length() {
         diagnostics: KernelDiagnostics::default(),
         net_id: 1,
         partners: Vec::new(),
-        min_straight_cells: 0,
         crossing_half_size_cells: 0,
         bend_runout_cells: 4,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
 
@@ -2300,7 +1938,6 @@ fn crossing_pending_rejects_bend_regardless_of_diagonal_arm_length() {
         CrossingAStarKey {
             state: State::new(4, 4, 1),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 0,
             pending_after_crossing_cells: 4,
             pending_after_crossing_angle: 1,
@@ -2327,7 +1964,6 @@ fn crossing_pending_rejects_bend_regardless_of_diagonal_arm_length() {
         CrossingAStarKey {
             state: State::new(4, 4, 1),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 0,
             pending_after_crossing_cells: 3,
             pending_after_crossing_angle: 1,
@@ -2380,11 +2016,9 @@ fn terminal_bump_guard_test_setup(
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 0,
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: Some(TerminalBumpGuard {
             axis: TerminalBumpAxis::Horizontal,
             target_axis_coord: 4.0,
@@ -2395,7 +2029,6 @@ fn terminal_bump_guard_test_setup(
     let key = CrossingAStarKey {
         state: State::new(0, 4, 0),
         crossed_mask: 0,
-        next_partner_index: 0,
         straight_run_cells: 12,
         pending_after_crossing_cells: 0,
         pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -2642,7 +2275,6 @@ fn crossing_move_rejects_two_crossings_with_overlapping_windows_in_one_move() {
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 0,
         // Predicate 2 (2026-09-03): partners 3 cells apart with
         // half_size 5 have +-5 reservation windows that overlap -- two
         // crossing elements cannot both be realized, so the move that
@@ -2650,7 +2282,6 @@ fn crossing_move_rejects_two_crossings_with_overlapping_windows_in_one_move() {
         crossing_half_size_cells: 5,
         bend_runout_cells: 0,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0), (3, 1)].into_iter().collect();
@@ -2673,7 +2304,6 @@ fn crossing_move_rejects_two_crossings_with_overlapping_windows_in_one_move() {
         CrossingAStarKey {
             state: State::new(0, 5, 0),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 10,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -2736,7 +2366,6 @@ fn crossing_pending_after_keeps_debt_of_the_later_crossing() {
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 0,
         // Re-pinned 2026-09-03 (predicate 2): partners 5 cells apart
         // (x=2 and x=7) so the +-2 windows are disjoint. The 8-cell
         // straight from x=0 crosses A with 6 cells after (no debt) and B
@@ -2745,7 +2374,6 @@ fn crossing_pending_after_keeps_debt_of_the_later_crossing() {
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0), (3, 1)].into_iter().collect();
@@ -2768,7 +2396,6 @@ fn crossing_pending_after_keeps_debt_of_the_later_crossing() {
         CrossingAStarKey {
             state: State::new(0, 5, 0),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 10,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -2813,11 +2440,9 @@ fn crossing_move_marks_n35_n32_short_after_runout_as_pending() {
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 0,
         crossing_half_size_cells: 3,
         bend_runout_cells: 2,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(33, 0)].into_iter().collect();
@@ -2842,7 +2467,6 @@ fn crossing_move_marks_n35_n32_short_after_runout_as_pending() {
         CrossingAStarKey {
             state: State::new(750, 155, 5),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 12,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -2892,11 +2516,9 @@ fn crossing_margin_counts_terminal_bend_arm_before_next_crossing() {
         diagnostics: KernelDiagnostics::default(),
         net_id: 1,
         partners: Vec::new(),
-        min_straight_cells: 0,
         crossing_half_size_cells: 2,
         bend_runout_cells: 2,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let mut stats = RouteSearchStats::default();
@@ -2906,7 +2528,6 @@ fn crossing_margin_counts_terminal_bend_arm_before_next_crossing() {
         CrossingAStarKey {
             state: State::new(4, 4, 0),
             crossed_mask: 0,
-            next_partner_index: 0,
             straight_run_cells: 0,
             pending_after_crossing_cells: 0,
             pending_after_crossing_angle: NO_PENDING_CROSSING_ANGLE,
@@ -2935,11 +2556,9 @@ fn crossing_margin_counts_terminal_bend_arm_before_next_crossing() {
             crossing_loss_override: None,
             single_discounted_crossing: false,
         }],
-        min_straight_cells: 0,
         crossing_half_size_cells: 2,
         bend_runout_cells: 2,
         crossing_loss: 0.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let partner_index_by_id: FxHashMap<NetId, usize> = [(2, 0)].into_iter().collect();
@@ -2954,7 +2573,6 @@ fn crossing_margin_counts_terminal_bend_arm_before_next_crossing() {
         CrossingAStarKey {
             state: State::new(6, 6, 2),
             crossed_mask: bend_outcome.crossed_mask,
-            next_partner_index: bend_outcome.next_partner_index,
             straight_run_cells: bend_outcome.straight_run_cells,
             pending_after_crossing_cells: bend_outcome.pending_after_crossing_cells,
             pending_after_crossing_angle: bend_outcome.pending_after_crossing_angle,
@@ -3085,14 +2703,7 @@ mod kernel_hook_dispatch {
                     crossing,
                     full_bounds,
                 );
-                let hook = context.hook(
-                    obstacle_map,
-                    crossing,
-                    config,
-                    primitives.grid_size_um(),
-                    None,
-                    None,
-                );
+                let hook = context.hook(obstacle_map, crossing, config, None, None);
                 kernel::run(
                     obstacle_map,
                     primitives,
@@ -3152,11 +2763,9 @@ mod kernel_hook_dispatch {
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
             }],
-            min_straight_cells: 1,
             crossing_half_size_cells: 0,
             bend_runout_cells: 0,
             crossing_loss: 3.0,
-            require_all_partners: false,
             terminal_bump_guard: None,
         };
         let config = AStarConfig {
@@ -3239,14 +2848,6 @@ mod kernel_hook_dispatch {
                 stats,
             )
         }
-
-        fn goal_extra_ok(&self, extension: CrossingExtension) -> bool {
-            self.inner.goal_extra_ok(extension)
-        }
-
-        fn heuristic_bonus(&self, next_state: State, next_extension: CrossingExtension) -> f64 {
-            self.inner.heuristic_bonus(next_state, next_extension)
-        }
     }
 
     #[test]
@@ -3266,11 +2867,9 @@ mod kernel_hook_dispatch {
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
             }],
-            min_straight_cells: 1,
             crossing_half_size_cells: 0,
             bend_runout_cells: 0,
             crossing_loss: 3.0,
-            require_all_partners: false,
             terminal_bump_guard: None,
         };
         let config = AStarConfig {
@@ -3287,14 +2886,7 @@ mod kernel_hook_dispatch {
             &far_crossing,
             full_bounds,
         );
-        let hook = context.hook(
-            &empty_map,
-            &far_crossing,
-            &config,
-            primitives.grid_size_um(),
-            None,
-            None,
-        );
+        let hook = context.hook(&empty_map, &far_crossing, &config, None, None);
         let counting = CountingHook {
             inner: &hook,
             calls: Cell::new(0),
@@ -3328,14 +2920,7 @@ mod kernel_hook_dispatch {
         let full_bounds = full_bounds_of(&map);
         let context =
             CrossingHookContext::build(&map, &primitives, &config, &crossing, full_bounds);
-        let hook = context.hook(
-            &map,
-            &crossing,
-            &config,
-            primitives.grid_size_um(),
-            None,
-            None,
-        );
+        let hook = context.hook(&map, &crossing, &config, None, None);
         let counting = CountingHook {
             inner: &hook,
             calls: Cell::new(0),

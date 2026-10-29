@@ -6,13 +6,11 @@ use crate::geometry_realization::{
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
 };
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey};
-use crate::search::state::{RouteResult, State};
+use crate::search::state::RouteResult;
 use crate::static_obstacle_builder::floor_snap_to_grid;
 
 #[cfg(test)]
 use crate::crossings::CrossingConfig;
-#[cfg(test)]
-use crate::crossings::CrossingConstraint;
 use crate::engine::*;
 #[cfg(test)]
 use crate::search::state::RouteSearchStats;
@@ -60,20 +58,26 @@ pub(crate) fn crossing_reservation_window_keys(
     if half_size_cells < 0 {
         return keys;
     }
-    insert_crossing_reservation_window(
-        &mut keys,
-        center_x,
-        center_y,
-        half_size_cells,
-        width,
-        height,
-    );
+    let min_x = (center_x - f64::from(half_size_cells)).floor() as i32;
+    let max_x = (center_x + f64::from(half_size_cells)).ceil() as i32;
+    let min_y = (center_y - f64::from(half_size_cells)).floor() as i32;
+    let max_y = (center_y + f64::from(half_size_cells)).ceil() as i32;
+    for x in min_x..=max_x {
+        if x < 0 || x >= width {
+            continue;
+        }
+        for y in min_y..=max_y {
+            if y < 0 || y >= height {
+                continue;
+            }
+            keys.insert(pack_xy(x, y));
+        }
+    }
     keys
 }
 
 pub(crate) fn crossing_required_margin_cells(
     crossing_half_size_cells: i32,
-    _min_straight_cells: i32,
     bend_runout_cells: i32,
 ) -> i32 {
     crossing_half_size_cells.max(0) + bend_runout_cells.max(0)
@@ -88,7 +92,6 @@ pub(crate) fn crossing_events_for_partner(
     partner_net_id: u64,
     route_waypoints: &[(i32, i32)],
     partner_waypoints: &[(i32, i32)],
-    min_straight_cells: i32,
     half_size_cells: i32,
     bend_runout_cells: i32,
     width: i32,
@@ -99,7 +102,6 @@ pub(crate) fn crossing_events_for_partner(
     }
     let required_margin = f64::from(crossing_required_margin_cells(
         half_size_cells,
-        min_straight_cells,
         bend_runout_cells,
     ));
     let mut events = Vec::new();
@@ -157,73 +159,6 @@ pub(crate) fn crossing_events_for_partner(
     events
 }
 
-pub(crate) fn crossing_spacing_history_cells_for_route(
-    route_waypoints: &[(i32, i32)],
-    min_straight_cells: i32,
-    half_size_cells: i32,
-    bend_runout_cells: i32,
-    width: i32,
-    height: i32,
-) -> Vec<(i32, i32)> {
-    let mut keys = FxHashSet::default();
-    if route_waypoints.len() < 2 {
-        return Vec::new();
-    }
-    let required_margin =
-        crossing_required_margin_cells(half_size_cells, min_straight_cells, bend_runout_cells);
-    for segment in route_waypoints.windows(2) {
-        if direction_angle_between_cells(segment[0], segment[1]).is_none() {
-            continue;
-        }
-        let dx = (segment[1].0 - segment[0].0).signum();
-        let dy = (segment[1].1 - segment[0].1).signum();
-        let steps = (segment[1].0 - segment[0].0)
-            .abs()
-            .max((segment[1].1 - segment[0].1).abs());
-        if steps <= 0 || steps < 2 * required_margin {
-            continue;
-        }
-        for step in required_margin..=(steps - required_margin) {
-            let x = segment[0].0 + dx * step;
-            let y = segment[0].1 + dy * step;
-            insert_crossing_reservation_window(
-                &mut keys,
-                f64::from(x),
-                f64::from(y),
-                half_size_cells,
-                width,
-                height,
-            );
-        }
-    }
-    keys.into_iter().map(unpack_xy).collect()
-}
-
-pub(crate) fn insert_crossing_reservation_window(
-    keys: &mut FxHashSet<CellKey>,
-    center_x: f64,
-    center_y: f64,
-    half_size_cells: i32,
-    width: i32,
-    height: i32,
-) {
-    let min_x = (center_x - f64::from(half_size_cells)).floor() as i32;
-    let max_x = (center_x + f64::from(half_size_cells)).ceil() as i32;
-    let min_y = (center_y - f64::from(half_size_cells)).floor() as i32;
-    let max_y = (center_y + f64::from(half_size_cells)).ceil() as i32;
-    for x in min_x..=max_x {
-        if x < 0 || x >= width {
-            continue;
-        }
-        for y in min_y..=max_y {
-            if y < 0 || y >= height {
-                continue;
-            }
-            keys.insert(pack_xy(x, y));
-        }
-    }
-}
-
 pub(crate) fn crossing_event_svg_overlay(events: &[CrossingEvent], height: i32) -> String {
     if events.is_empty() {
         return String::new();
@@ -272,11 +207,6 @@ pub(crate) fn append_crossing_event_svg_overlay(
 }
 
 impl PyPhotonicRouter {
-    pub(crate) fn net_has_crossing_requirements(&self, net_id: u64) -> bool {
-        self.crossing_context.is_enabled()
-            && self.crossing_context.expected_crossing_count(net_id) > 0
-    }
-
     /// Every currently-committed net other than `net_id`, unfiltered by any
     /// spatial window. In lidar-pure mode this is not a whitelist of nets a
     /// route is allowed to cross -- it is the full centerline lookup
@@ -291,33 +221,10 @@ impl PyPhotonicRouter {
             .collect()
     }
 
-    pub(crate) fn lidar_pure_owner_lookup_partner_set(&self, net_id: u64) -> FxHashSet<u64> {
-        // In LiDAR-pure this is not a whitelist of nets the route is allowed
-        // to cross. It is only the centerline lookup database for owners that
-        // A* discovers from actual dynamic obstacle cells while expanding
-        // moves.
-        self.lidar_pure_full_map_partner_set(net_id)
-    }
-
-    /// Router-discovered ("lidar") crossing routing, the only crossing
-    /// mechanics the router has since the window and collision modes were
-    /// removed (Milestone 8 of
-    /// .agent/execplans/2026-09-22-modular-readable-router-restructure.md):
-    /// enabled exactly when crossings are enabled at all.
-    pub(crate) fn lidar_pure_crossing_enabled(&self) -> bool {
-        self.crossing_context.is_enabled()
-    }
-
     /// Every currently-committed net (other than `net_id`) with at least one
     /// cell inside the axis-aligned box `[min_x, max_x] x [min_y, max_y]`.
-    /// Shared by `lidar_route_window_partner_lookup_set` (box derived from a
-    /// source/target state pair, before a route exists) and
-    /// `lidar_route_result_partner_lookup_set` (box derived from an actual
-    /// route's cells, after one exists) -- the two differ only in how they
-    /// compute the box, not in how they filter by it (previously
-    /// unshared, near-identical code in each; extracted in
-    /// .agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md,
-    /// Milestone 1).
+    /// Used by `lidar_route_result_partner_lookup_set` (box derived from an
+    /// actual route's cells).
     pub(crate) fn partners_within_bbox(
         &self,
         net_id: u64,
@@ -343,24 +250,6 @@ impl PyPhotonicRouter {
             .collect()
     }
 
-    pub(crate) fn lidar_route_window_partner_lookup_set(
-        &self,
-        net_id: u64,
-        source: State,
-        target: State,
-        extra_radius_cells: i32,
-    ) -> FxHashSet<u64> {
-        if !self.lidar_pure_crossing_enabled() {
-            return FxHashSet::default();
-        }
-        let extra = extra_radius_cells.max(0);
-        let min_x = source.x.min(target.x).saturating_sub(extra);
-        let max_x = source.x.max(target.x).saturating_add(extra);
-        let min_y = source.y.min(target.y).saturating_sub(extra);
-        let max_y = source.y.max(target.y).saturating_add(extra);
-        self.partners_within_bbox(net_id, min_x, max_x, min_y, max_y)
-    }
-
     pub(crate) fn lidar_probe_partner_lookup_set(
         &self,
         net_id: u64,
@@ -380,7 +269,7 @@ impl PyPhotonicRouter {
         route: &RouteResult,
         extra_radius_cells: i32,
     ) -> FxHashSet<u64> {
-        if !self.lidar_pure_crossing_enabled() {
+        if !self.crossing_context.is_enabled() {
             return FxHashSet::default();
         }
         let points: Vec<(i32, i32)> = if route.cells.is_empty() {
@@ -424,13 +313,12 @@ impl PyPhotonicRouter {
         net_id: u64,
         route: &RouteResult,
     ) -> FxHashSet<u64> {
-        if !self.lidar_pure_crossing_enabled() {
+        if !self.crossing_context.is_enabled() {
             return FxHashSet::default();
         }
         let config = self.crossing_context.config();
         let margin = crossing_required_margin_cells(
             config.crossing_half_size_cells,
-            config.min_straight_cells_per_crossing,
             self.primitive_cfg.bend_radius_cells,
         );
         self.lidar_route_result_partner_lookup_set(
@@ -442,59 +330,31 @@ impl PyPhotonicRouter {
         )
     }
 
-    pub(crate) fn crossing_partner_lookup_set_for_route(
-        &self,
-        net_id: u64,
-        source: State,
-        target: State,
-    ) -> FxHashSet<u64> {
-        if !self.lidar_pure_crossing_enabled() {
-            return FxHashSet::default();
-        }
-        let config = self.crossing_context.config();
-        let margin = crossing_required_margin_cells(
-            config.crossing_half_size_cells,
-            config.min_straight_cells_per_crossing,
-            self.primitive_cfg.bend_radius_cells,
-        );
-        self.lidar_route_window_partner_lookup_set(
-            net_id,
-            source,
-            target,
-            margin
-                .saturating_mul(2)
-                .saturating_add(self.primitive_cfg.bend_radius_cells),
-        )
-    }
-
     /// The collision-crossing partner set to use for an *upfront* (not
-    /// deferred) search attempt, given `try_order` and the current mode.
+    /// deferred) search attempt, given `try_order`.
     ///
-    /// For `PlainFirst` callers in lidar-pure mode, this deliberately
-    /// returns an empty set: the caller is expected to try its own plain
-    /// attempt first and only consult `lidar_pure_full_map_partner_set`
-    /// directly, a second time, if that plain attempt fails (matching
-    /// `route_and_commit`'s two-stage structure for a plain call, which
-    /// this function does not otherwise change). For
-    /// `CrossingFirst` callers the full partner set is returned
+    /// For `PlainFirst` callers this deliberately returns an empty set: the
+    /// caller is expected to try its own plain attempt first and only
+    /// consult `lidar_pure_full_map_partner_set` directly, a second time, if
+    /// that plain attempt fails (matching `route_and_commit`'s two-stage
+    /// structure for a plain call, which this function does not otherwise
+    /// change). For `CrossingFirst` callers the full partner set is returned
     /// immediately, since that case has no deferred second stage. With
     /// crossings disabled the set is empty either way.
     pub(crate) fn upfront_collision_crossing_partner_ids(
         &self,
         net_id: u64,
-        source: State,
-        target: State,
         try_order: CollisionCrossingTryOrder,
     ) -> FxHashSet<u64> {
-        if self.lidar_pure_crossing_enabled() {
-            return match try_order {
-                CollisionCrossingTryOrder::PlainFirst => FxHashSet::default(),
-                CollisionCrossingTryOrder::CrossingFirst => {
-                    self.lidar_pure_full_map_partner_set(net_id)
-                }
-            };
+        if !self.crossing_context.is_enabled() {
+            return FxHashSet::default();
         }
-        self.crossing_partner_lookup_set_for_route(net_id, source, target)
+        match try_order {
+            CollisionCrossingTryOrder::PlainFirst => FxHashSet::default(),
+            CollisionCrossingTryOrder::CrossingFirst => {
+                self.lidar_pure_full_map_partner_set(net_id)
+            }
+        }
     }
 
     pub(crate) fn crossing_events_for_route(
@@ -514,7 +374,6 @@ impl PyPhotonicRouter {
                 *partner_id,
                 &route.compressed_waypoints,
                 partner_waypoints,
-                config.min_straight_cells_per_crossing,
                 config.crossing_half_size_cells,
                 self.primitive_cfg.bend_radius_cells,
                 self.grid.width as i32,
@@ -603,9 +462,6 @@ impl PyPhotonicRouter {
                     if route_margin + 1e-9 < required_margin_um
                         || partner_margin + 1e-9 < required_margin_um
                     {
-                        continue;
-                    }
-                    if !self.crossing_context.allows_pair(net_id, *partner_id) {
                         continue;
                     }
                     if self
@@ -884,7 +740,6 @@ impl PyPhotonicRouter {
         // realized-clean routes (benes_32x32 net 273).
         let required_margin = f64::from(crossing_required_margin_cells(
             config.crossing_half_size_cells,
-            config.min_straight_cells_per_crossing,
             self.primitive_cfg.bend_radius_cells,
         ));
         let required_after = f64::from(config.crossing_half_size_cells.max(0));
@@ -1259,9 +1114,7 @@ impl PyPhotonicRouter {
                     );
                     let route_margin = (t * route_len).min((1.0 - t) * route_len);
                     let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
-                    let pair_allowed = self.crossing_context.allows_pair(net_id, *partner_id);
-                    if pair_allowed
-                        && perpendicular
+                    if perpendicular
                         && route_margin + 1e-9 >= required_margin
                         && partner_margin + 1e-9 >= required_margin
                     {
@@ -1298,9 +1151,7 @@ impl PyPhotonicRouter {
                         }
                         continue;
                     }
-                    let reason = if !pair_allowed {
-                        "unexpected_pair"
-                    } else if !perpendicular {
+                    let reason = if !perpendicular {
                         "not_perpendicular"
                     } else {
                         "insufficient_straight_margin"
@@ -1558,6 +1409,7 @@ impl PyPhotonicRouter {
 mod tests {
     use super::*;
     use crate::engine::test_support::*;
+    use crate::search::state::State;
 
     /// The grid-level and the event-level crossing check together, as the
     /// commit path applies them (`invalid_grid_crossing_error_for_route`
@@ -1818,8 +1670,7 @@ mod tests {
     #[test]
     fn crossing_events_require_straight_margin_around_intersection() {
         let partner = vec![(10, 5), (10, 24)];
-        let clean =
-            crossing_events_for_partner(2, 1, &[(3, 12), (24, 12)], &partner, 2, 2, 0, 32, 32);
+        let clean = crossing_events_for_partner(2, 1, &[(3, 12), (24, 12)], &partner, 2, 0, 32, 32);
         assert_eq!(clean.len(), 1);
         assert_eq!(clean[0].point, (10.0, 12.0));
 
@@ -1828,7 +1679,6 @@ mod tests {
             1,
             &[(3, 12), (10, 12), (10, 20)],
             &partner,
-            2,
             2,
             0,
             32,
@@ -1842,7 +1692,7 @@ mod tests {
         let partner = vec![(8, 5), (8, 24)];
         let route = vec![(3, 12), (13, 12), (16, 15)];
 
-        let events = crossing_events_for_partner(2, 1, &route, &partner, 2, 2, 3, 32, 32);
+        let events = crossing_events_for_partner(2, 1, &route, &partner, 2, 3, 32, 32);
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].point, (8.0, 12.0));
@@ -1881,7 +1731,6 @@ mod tests {
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
             crossing_half_size_cells: 2,
-            min_straight_cells_per_crossing: 2,
             ..CrossingConfig::default()
         });
         router
@@ -1944,21 +1793,11 @@ mod tests {
             ),
             None,
         );
-        router.crossing_context = CrossingContext::new(
-            CrossingConfig {
-                enabled: true,
-                crossing_half_size_cells: 2,
-                min_straight_cells_per_crossing: 2,
-                ..CrossingConfig::default()
-            },
-            vec![CrossingConstraint {
-                net_id: 1,
-                partner_net_id: 2,
-                level: 0,
-                source_depth: 0,
-                target_depth: 1,
-            }],
-        );
+        router.crossing_context = CrossingContext::new(CrossingConfig {
+            enabled: true,
+            crossing_half_size_cells: 2,
+            ..CrossingConfig::default()
+        });
         router
             .committed_center_routes
             .insert(1, vec![(10, 5), (10, 24)]);
@@ -2011,16 +1850,11 @@ mod tests {
             ),
             None,
         );
-        router.crossing_context = CrossingContext::new(
-            CrossingConfig {
-                enabled: true,
-                allow_only_expected_pairs: false,
-                crossing_half_size_cells: 4,
-                min_straight_cells_per_crossing: 2,
-                ..CrossingConfig::default()
-            },
-            Vec::new(),
-        );
+        router.crossing_context = CrossingContext::new(CrossingConfig {
+            enabled: true,
+            crossing_half_size_cells: 4,
+            ..CrossingConfig::default()
+        });
         router
             .committed_center_routes
             .insert(1, vec![(10, 0), (10, 20)]);
@@ -2089,14 +1923,10 @@ mod tests {
             ),
             None,
         );
-        router.crossing_context = CrossingContext::new(
-            CrossingConfig {
-                enabled: true,
-                allow_only_expected_pairs: false,
-                ..CrossingConfig::default()
-            },
-            Vec::new(),
-        );
+        router.crossing_context = CrossingContext::new(CrossingConfig {
+            enabled: true,
+            ..CrossingConfig::default()
+        });
         router
             .committed_center_routes
             .insert(1, vec![(0, 5), (12, 5)]);
@@ -2142,16 +1972,11 @@ mod tests {
             ),
             None,
         );
-        router.crossing_context = CrossingContext::new(
-            CrossingConfig {
-                enabled: true,
-                allow_only_expected_pairs: false,
-                crossing_half_size_cells: 2,
-                min_straight_cells_per_crossing: 2,
-                ..CrossingConfig::default()
-            },
-            Vec::new(),
-        );
+        router.crossing_context = CrossingContext::new(CrossingConfig {
+            enabled: true,
+            crossing_half_size_cells: 2,
+            ..CrossingConfig::default()
+        });
         router
             .committed_center_routes
             .insert(1, vec![(0, 10), (20, 10)]);
@@ -2245,16 +2070,11 @@ mod tests {
             ),
             None,
         );
-        router.crossing_context = CrossingContext::new(
-            CrossingConfig {
-                enabled: true,
-                allow_only_expected_pairs: false,
-                crossing_half_size_cells: 2,
-                min_straight_cells_per_crossing: 2,
-                ..CrossingConfig::default()
-            },
-            Vec::new(),
-        );
+        router.crossing_context = CrossingContext::new(CrossingConfig {
+            enabled: true,
+            crossing_half_size_cells: 2,
+            ..CrossingConfig::default()
+        });
         // Partner: vertical through x=10, long enough for its own margin.
         router
             .committed_center_routes
@@ -2324,16 +2144,11 @@ mod tests {
             ),
             None,
         );
-        router.crossing_context = CrossingContext::new(
-            CrossingConfig {
-                enabled: true,
-                allow_only_expected_pairs: false,
-                crossing_half_size_cells: 2,
-                min_straight_cells_per_crossing: 2,
-                ..CrossingConfig::default()
-            },
-            Vec::new(),
-        );
+        router.crossing_context = CrossingContext::new(CrossingConfig {
+            enabled: true,
+            crossing_half_size_cells: 2,
+            ..CrossingConfig::default()
+        });
         router
             .committed_center_routes
             .insert(1, vec![(10, 0), (10, 30)]);
@@ -2426,15 +2241,10 @@ mod tests {
             ),
             None,
         );
-        router.crossing_context = CrossingContext::new(
-            CrossingConfig {
-                enabled: true,
-                allow_only_expected_pairs: false,
-                min_straight_cells_per_crossing: 2,
-                ..CrossingConfig::default()
-            },
-            Vec::new(),
-        );
+        router.crossing_context = CrossingContext::new(CrossingConfig {
+            enabled: true,
+            ..CrossingConfig::default()
+        });
         router
             .committed_center_routes
             .insert(1, vec![(20, 20), (30, 20)]);
@@ -2526,16 +2336,11 @@ mod tests {
             ),
             None,
         );
-        router.crossing_context = CrossingContext::new(
-            CrossingConfig {
-                enabled: true,
-                allow_only_expected_pairs: false,
-                crossing_half_size_cells: 2,
-                min_straight_cells_per_crossing: 2,
-                ..CrossingConfig::default()
-            },
-            Vec::new(),
-        );
+        router.crossing_context = CrossingContext::new(CrossingConfig {
+            enabled: true,
+            crossing_half_size_cells: 2,
+            ..CrossingConfig::default()
+        });
         router
             .committed_center_routes
             .insert(1, vec![(10, 0), (10, 20)]);
@@ -2589,9 +2394,7 @@ mod tests {
         );
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
-            allow_only_expected_pairs: false,
             crossing_half_size_cells: 2,
-            min_straight_cells_per_crossing: 2,
             ..CrossingConfig::default()
         });
 
@@ -2686,9 +2489,7 @@ mod tests {
         );
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
-            allow_only_expected_pairs: false,
             crossing_half_size_cells: 2,
-            min_straight_cells_per_crossing: 2,
             ..CrossingConfig::default()
         });
         let route = RouteResult {
@@ -2760,23 +2561,6 @@ mod tests {
             &events,
             Some(&opened_static),
         ));
-    }
-
-    #[test]
-    fn crossing_spacing_history_uses_valid_straight_windows() {
-        let route = vec![(2, 10), (12, 10), (12, 16)];
-        let cells = crossing_spacing_history_cells_for_route(&route, 2, 1, 1, 32, 32);
-        let keys: FxHashSet<CellKey> = cells.iter().map(|(x, y)| pack_xy(*x, *y)).collect();
-
-        assert!(keys.contains(&pack_xy(6, 9)));
-        assert!(keys.contains(&pack_xy(6, 10)));
-        assert!(keys.contains(&pack_xy(6, 11)));
-        assert!(keys.contains(&pack_xy(11, 14)));
-        assert!(keys.contains(&pack_xy(12, 14)));
-        assert!(keys.contains(&pack_xy(13, 14)));
-        assert!(!keys.contains(&pack_xy(2, 10)));
-        assert!(!keys.contains(&pack_xy(12, 10)));
-        assert!(!keys.contains(&pack_xy(12, 16)));
     }
 
     #[test]

@@ -1,10 +1,10 @@
-//! Crossing-specific routing constraints.
+//! Crossing-specific routing configuration and guidance.
 //!
 //! This module intentionally stays independent from the A* hot path.  The
 //! router can own a [`CrossingContext`] without consulting it until crossing
 //! routing is explicitly enabled.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 
 use crate::obstacle_map::NetId;
 
@@ -13,8 +13,6 @@ pub struct CrossingConfig {
     pub enabled: bool,
     pub crossing_loss: f64,
     pub crossing_half_size_cells: i32,
-    pub min_straight_cells_per_crossing: i32,
-    pub allow_only_expected_pairs: bool,
 }
 
 impl Default for CrossingConfig {
@@ -23,24 +21,7 @@ impl Default for CrossingConfig {
             enabled: false,
             crossing_loss: 0.0,
             crossing_half_size_cells: 0,
-            min_straight_cells_per_crossing: 0,
-            allow_only_expected_pairs: true,
         }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CrossingConstraint {
-    pub net_id: NetId,
-    pub partner_net_id: NetId,
-    pub level: u32,
-    pub source_depth: u32,
-    pub target_depth: u32,
-}
-
-impl CrossingConstraint {
-    pub fn pair(&self) -> CrossingPair {
-        CrossingPair::new(self.net_id, self.partner_net_id)
     }
 }
 
@@ -67,12 +48,12 @@ impl CrossingPair {
 }
 
 /// Contribution 1 (crossing-guided search): the topology plan's crossing
-/// pairs as SOFT guidance. Unlike `CrossingConstraint`s (window mode: a
-/// whitelist plus per-net expectations that shape the search), guidance
-/// only changes the search price of a crossing with a planned partner
-/// (`planned_crossing_loss`, normally 0); unplanned crossings stay
-/// possible at the configured `crossing_loss`, and nothing else in the
-/// router consults it.
+/// pairs as SOFT guidance. Guidance only changes the search price of a
+/// crossing with a planned partner (`planned_crossing_loss`, normally 0);
+/// unplanned crossings stay possible at the configured `crossing_loss`, and
+/// nothing else in the router consults it. The router has no hard crossing
+/// constraints (no whitelist, no per-net expectations) since phase 4 slice A
+/// of the 2026-10 do-over.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CrossingGuidance {
     planned_pairs: FxHashSet<CrossingPair>,
@@ -128,30 +109,13 @@ impl CrossingGuidance {
 #[derive(Clone, Debug, Default)]
 pub struct CrossingContext {
     config: CrossingConfig,
-    constraints: Vec<CrossingConstraint>,
-    allowed_pairs: FxHashSet<CrossingPair>,
-    expected_crossings_by_net: FxHashMap<NetId, u32>,
     guidance: Option<CrossingGuidance>,
 }
 
 impl CrossingContext {
-    pub fn new(config: CrossingConfig, constraints: Vec<CrossingConstraint>) -> Self {
-        let mut allowed_pairs = FxHashSet::default();
-        let mut expected_crossings_by_net = FxHashMap::default();
-        for constraint in &constraints {
-            allowed_pairs.insert(constraint.pair());
-            *expected_crossings_by_net
-                .entry(constraint.net_id)
-                .or_insert(0) += 1;
-            *expected_crossings_by_net
-                .entry(constraint.partner_net_id)
-                .or_insert(0) += 1;
-        }
+    pub fn new(config: CrossingConfig) -> Self {
         Self {
             config,
-            constraints,
-            allowed_pairs,
-            expected_crossings_by_net,
             guidance: None,
         }
     }
@@ -179,89 +143,8 @@ impl CrossingContext {
     }
 
     #[inline]
-    pub fn constraints(&self) -> &[CrossingConstraint] {
-        &self.constraints
-    }
-
-    pub fn replace_constraints(&mut self, constraints: Vec<CrossingConstraint>) {
-        let config = self.config.clone();
-        // Guidance is independent of the constraints (contribution 1 vs
-        // window mode) and must survive a constraint replacement -- the
-        // flow sets guidance and then replaces the (empty) constraints.
-        let guidance = self.guidance.take();
-        *self = Self::new(config, constraints);
-        self.guidance = guidance;
-    }
-
-    pub fn clear_constraints(&mut self) {
-        self.constraints.clear();
-        self.allowed_pairs.clear();
-        self.expected_crossings_by_net.clear();
-    }
-
-    #[inline]
     pub fn is_enabled(&self) -> bool {
         self.config.enabled
-    }
-
-    #[inline]
-    pub fn has_expected_pair(&self, a: NetId, b: NetId) -> bool {
-        self.allowed_pairs.contains(&CrossingPair::new(a, b))
-    }
-
-    #[inline]
-    pub fn allows_pair(&self, a: NetId, b: NetId) -> bool {
-        if !self.config.enabled {
-            return false;
-        }
-        !self.config.allow_only_expected_pairs || self.has_expected_pair(a, b)
-    }
-
-    #[inline]
-    pub fn expected_crossing_count(&self, net_id: NetId) -> u32 {
-        self.expected_crossings_by_net
-            .get(&net_id)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    pub fn allowed_partners_for(&self, net_id: NetId) -> Vec<NetId> {
-        if !self.config.enabled {
-            return Vec::new();
-        }
-        let mut partners = Vec::new();
-        for constraint in &self.constraints {
-            if constraint.net_id == net_id {
-                partners.push(constraint.partner_net_id);
-            } else if constraint.partner_net_id == net_id {
-                partners.push(constraint.net_id);
-            }
-        }
-        partners.sort_unstable();
-        partners.dedup();
-        partners
-    }
-
-    pub fn ordered_constraints_for(&self, net_id: NetId) -> Vec<CrossingConstraint> {
-        if !self.config.enabled {
-            return Vec::new();
-        }
-        let mut constraints: Vec<_> = self
-            .constraints
-            .iter()
-            .filter(|constraint| constraint.net_id == net_id || constraint.partner_net_id == net_id)
-            .cloned()
-            .collect();
-        constraints.sort_by_key(|constraint| {
-            (
-                constraint.source_depth,
-                constraint.target_depth,
-                constraint.level,
-                constraint.net_id.min(constraint.partner_net_id),
-                constraint.net_id.max(constraint.partner_net_id),
-            )
-        });
-        constraints
     }
 }
 
@@ -270,70 +153,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn crossing_context_counts_and_normalizes_pairs() {
-        let config = CrossingConfig {
-            enabled: true,
-            ..CrossingConfig::default()
-        };
-        let context = CrossingContext::new(
-            config,
-            vec![
-                CrossingConstraint {
-                    net_id: 10,
-                    partner_net_id: 2,
-                    level: 0,
-                    source_depth: 1,
-                    target_depth: 2,
-                },
-                CrossingConstraint {
-                    net_id: 10,
-                    partner_net_id: 5,
-                    level: 1,
-                    source_depth: 1,
-                    target_depth: 2,
-                },
-            ],
-        );
-
-        assert!(context.has_expected_pair(2, 10));
-        assert!(context.has_expected_pair(10, 2));
-        assert!(context.allows_pair(5, 10));
-        assert!(!context.allows_pair(2, 5));
-        assert_eq!(context.expected_crossing_count(10), 2);
-        assert_eq!(context.expected_crossing_count(2), 1);
-        assert_eq!(context.expected_crossing_count(99), 0);
-        assert_eq!(context.allowed_partners_for(10), vec![2, 5]);
-        assert_eq!(
-            context
-                .ordered_constraints_for(10)
-                .into_iter()
-                .map(|constraint| constraint.partner_net_id)
-                .collect::<Vec<_>>(),
-            vec![2, 5]
-        );
-    }
-
-    #[test]
-    fn disabled_context_never_allows_pairs() {
-        let context = CrossingContext::new(
-            CrossingConfig::default(),
-            vec![CrossingConstraint {
-                net_id: 1,
-                partner_net_id: 2,
-                level: 0,
-                source_depth: 0,
-                target_depth: 1,
-            }],
-        );
-
-        assert!(context.has_expected_pair(1, 2));
-        assert!(!context.allows_pair(1, 2));
-    }
-
-    #[test]
-    fn guidance_is_soft_and_separate_from_constraints() {
-        let mut context = CrossingContext::new(CrossingConfig::default(), Vec::new());
+    fn guidance_is_soft_and_survives_a_config_replacement() {
+        let mut context = CrossingContext::new(CrossingConfig::default());
         assert!(context.guidance().is_none());
+        assert!(!context.is_enabled());
 
         context.set_guidance(CrossingGuidance::new(&[(5, 3), (7, 9)], 0.0));
         let guidance = context.guidance().expect("guidance set");
@@ -343,14 +166,13 @@ mod tests {
         assert!(!guidance.is_planned_pair(3, 7));
         assert_eq!(guidance.planned_crossing_loss, 0.0);
         assert!(guidance.single_discounted_crossing_per_pair); // S2 default
-                                                               // guidance never becomes a constraint / expectation / whitelist
-        assert_eq!(context.expected_crossing_count(5), 0);
-        assert!(!context.has_expected_pair(5, 3));
-        assert!(context.constraints().is_empty());
 
-        // constraints and config may be replaced without losing the guidance
-        context.replace_constraints(Vec::new());
-        context.set_config(CrossingConfig::default());
+        // the config may be replaced without losing the guidance
+        context.set_config(CrossingConfig {
+            enabled: true,
+            ..CrossingConfig::default()
+        });
+        assert!(context.is_enabled());
         assert_eq!(
             context
                 .guidance()

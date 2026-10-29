@@ -177,7 +177,7 @@ def configure_router_and_grid(
     # already committed static geometry by the time this reservation
     # would matter. A crossing (or anything else) placed directly at a
     # stub's exit cell is governed by the crossing-legality rules
-    # (`crossing_half_size_cells`, `min_straight_cells_per_crossing`),
+    # (`crossing_half_size_cells` plus the bend run-out),
     # not by this reservation, so there is nothing left for it to
     # protect at stubs specifically. Validated on `multiportmmi_8x8`'s
     # stable baseline with both knobs at `0` (previously `half_width=2`,

@@ -88,7 +88,6 @@ from photonic_router.static_obstacle_builder import (
 )
 from photonic_router.topology_analysis import (
     TopologyAnalysisResult,
-    TopologyCrossing,
     TopologyEdgeRank,
     analyze_graph_topology,
     analyze_schematic_topology,
@@ -120,7 +119,6 @@ __all__ = [
     "StaticObstacleMapConfig",
     "StaticObstacleMapData",
     "TopologyAnalysisResult",
-    "TopologyCrossing",
     "TopologyEdgeRank",
     "analyze_graph_topology",
     "analyze_schematic_topology",

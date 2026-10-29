@@ -71,7 +71,6 @@ from routing_flow_config import (
     SCRIPT_HEATER_CLEARANCE_UM,
     SCRIPT_INCLUDE_HEATER_OBSTACLES,
     SCRIPT_MAX_ITERATIONS,
-    SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     SCRIPT_OBSTACLE_MODE,
     SCRIPT_PATH_LENGTH_MATCH_OUTPUTS,
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
@@ -301,16 +300,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM, default 0, in the "
             "search; unplanned ones keep the collision price) "
             f"(default: {SCRIPT_CROSSING_MODE})."
-        ),
-    )
-    parser.add_argument(
-        "--min-straight-cells-per-crossing",
-        type=int,
-        default=SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
-        metavar="N",
-        help=(
-            "Minimum straight access cells before and after each crossing "
-            f"(default: {SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING})."
         ),
     )
     parser.add_argument(
@@ -759,7 +748,6 @@ def _flow_options(args: argparse.Namespace) -> FlowOptions:
                 else (False if args.preplaced_crossing_grids else SCRIPT_ENABLE_CROSSINGS)
             ),
             crossing_mode=args.crossing_mode,
-            min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
             foreign_port_keepout_cells=args.foreign_port_keepout_cells,
             fanout_access_mode=args.fanout_access_mode,
             proactive_congestion_weight=args.proactive_congestion_weight,

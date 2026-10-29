@@ -218,11 +218,9 @@ pub(crate) fn crossing_search_fixture() -> (
                 single_discounted_crossing: false,
             },
         ],
-        min_straight_cells: 1,
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
         crossing_loss: 3.0,
-        require_all_partners: false,
         terminal_bump_guard: None,
     };
     let config = AStarConfig {

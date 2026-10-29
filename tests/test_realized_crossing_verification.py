@@ -41,9 +41,7 @@ def _plan_info() -> CrossingPlanInfo:
     return CrossingPlanInfo.from_dict(
         {
             "enabled": True,
-            "allow_only_expected_crossings": True,
             "crossing_half_size_cells": 2,
-            "min_straight_cells_per_crossing": 2,
             "events": [
                 {
                     "loaded": True,
@@ -96,7 +94,6 @@ def test_realized_crossing_verifier_allows_lidar_pure_unexpected_crossing():
 def test_realized_crossing_verifier_rejects_lidar_pure_non_perpendicular_crossing():
     info = _plan_info()
     info.crossing_mode = "lidar-pure"
-    info.allow_only_expected_crossings = False
     info.events = []
 
     illegal = _verify_realized_route_intersections(
@@ -145,7 +142,6 @@ def test_realized_crossing_verifier_uses_route_waypoint_fallback():
 def test_realized_crossing_verifier_rejects_collinear_route_overlap():
     info = _plan_info()
     info.crossing_mode = "lidar-pure"
-    info.allow_only_expected_crossings = False
     info.events = []
 
     illegal = _verify_realized_route_intersections(
@@ -197,9 +193,8 @@ def test_realized_crossing_verifier_rejects_expected_bend_crossing():
     assert {item["classification"] for item in illegal} == {"illegal_unexpected_crossing"}
 
 
-def test_realized_crossing_verifier_reports_search_margin_without_min_straight():
+def test_realized_crossing_verifier_reports_search_margin_from_half_size_and_runout():
     info = _plan_info()
-    info.min_straight_cells_per_crossing = 10
     info.bend_runout_cells_per_crossing = 3
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
 
@@ -227,9 +222,7 @@ def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():
     info = CrossingPlanInfo.from_dict(
         {
             "enabled": True,
-            "allow_only_expected_crossings": True,
             "crossing_half_size_cells": 4,
-            "min_straight_cells_per_crossing": 2,
             "crossing_device": {"component_bbox_um": [8.0, 8.0]},
             "events": [
                 {
@@ -269,10 +262,8 @@ def test_realized_crossing_verifier_rejects_lidar_pure_overlapping_crossing_foot
     info = CrossingPlanInfo.from_dict(
         {
             "enabled": True,
-            "allow_only_expected_crossings": False,
             "crossing_mode": "lidar-pure",
             "crossing_half_size_cells": 4,
-            "min_straight_cells_per_crossing": 2,
             "crossing_device": {"component_bbox_um": [8.0, 8.0]},
             "events": [],
         }
@@ -316,7 +307,6 @@ def test_realized_crossing_verifier_rejects_route_inside_crossing_footprint():
 def test_realized_crossing_verifier_rejects_lidar_pure_footprint_blocker():
     info = _plan_info()
     info.crossing_mode = "lidar-pure"
-    info.allow_only_expected_crossings = False
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
     info.events = []
 
@@ -339,7 +329,6 @@ def test_realized_crossing_verifier_rejects_lidar_pure_footprint_blocker():
 
 def test_realized_crossing_verifier_ignores_route_endpoint_access():
     info = _plan_info()
-    info.allow_only_expected_crossings = False
     info.crossing_mode = "lidar-pure"
     info.events = []
 
@@ -360,7 +349,10 @@ def test_realized_crossing_verifier_ignores_route_endpoint_access():
     assert info.ignored_endpoint_access_intersections[0]["reason"] == ("route_endpoint_access")
 
 
-def test_realized_crossing_verifier_rejects_midroute_opened_cell_crossing():
+def test_realized_crossing_verifier_does_not_treat_a_midroute_opened_cell_as_endpoint_access():
+    """A perpendicular, straight crossing of two nets without a planned event is
+    legal (every pair may cross since the whitelist went); an opened cell in
+    the middle of a route is not an endpoint access and excuses nothing."""
     info = _plan_info()
     info.events = []
 
@@ -377,14 +369,15 @@ def test_realized_crossing_verifier_rejects_midroute_opened_cell_crossing():
         realization_grid_spec=(80, 80, 2.0, 0.0, 0.0),
     )
 
-    assert len(illegal) == 1
-    assert illegal[0]["reason"] == "unexpected_pair"
+    assert illegal == []
     assert info.ignored_endpoint_access_intersection_count == 0
+    assert [item["classification"] for item in info.realized_intersections] == [
+        "legal_unexpected_crossing"
+    ]
 
 
 def test_realized_crossing_verifier_rejects_opened_cell_crossing_near_endpoint():
     info = _plan_info()
-    info.allow_only_expected_crossings = False
     info.crossing_mode = "lidar-pure"
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
     info.events = []
@@ -410,7 +403,6 @@ def test_realized_crossing_verifier_rejects_opened_cell_crossing_near_endpoint()
 
 def test_realized_crossing_verifier_rejects_opened_cell_crossing_near_internal_bend():
     info = _plan_info()
-    info.allow_only_expected_crossings = False
     info.crossing_mode = "lidar-pure"
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
     info.events = []
@@ -437,7 +429,6 @@ def test_realized_crossing_verifier_rejects_opened_cell_crossing_near_internal_b
 
 def test_realized_crossing_verifier_ignores_port_center_access():
     info = _plan_info()
-    info.allow_only_expected_crossings = False
     info.crossing_mode = "lidar-pure"
     info.events = []
 

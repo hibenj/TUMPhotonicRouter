@@ -21,12 +21,10 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 from photonic_router.config import RouterConfig, RoutingConfig
 
-from translation.crossing_modes import is_lidar_mode, normalize_crossing_mode
+from translation.crossing_modes import normalize_crossing_mode
 from translation.route_order import normalize_net_order
 from translation.route_rust_crossing_plan import _effective_crossing_search_loss
 from translation.route_rust_types import RipupRerouteConfig
-
-DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING = 2
 
 
 @dataclass(frozen=True)
@@ -80,9 +78,6 @@ class SessionSettings:
     crossing_loss: float
     crossing_mode: str
     crossing_half_size_cells: int
-    min_straight_cells_per_crossing: int
-    allow_only_expected_crossings: bool
-    effective_allow_only_expected_crossings: bool
     crossing_search_loss: float
     crossing_guidance_net_names: frozenset[str] | None
 
@@ -144,10 +139,8 @@ class SessionSettings:
         crossing_loss: float = 0.0,
         crossing_mode: str = "lidar-pure",
         crossing_half_size_cells: int = 0,
-        min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
         foreign_port_keepout_cells: int = 0,
         fanout_access_mode: str | None = None,
-        allow_only_expected_crossings: bool = True,
         crossing_guidance_net_names: frozenset[str] | None = None,
         defer_realization: bool = False,
         enable_checked_endpoint_correction: bool = True,
@@ -172,10 +165,6 @@ class SessionSettings:
         if crossing_loss < 0:
             raise ValueError("crossing_loss must be non-negative")
         crossing_mode = normalize_crossing_mode(crossing_mode)
-        effective_allow_only_expected_crossings = bool(allow_only_expected_crossings)
-        if is_lidar_mode(crossing_mode):
-            # lidar-pure and lidar-guided: crossings are never a whitelist
-            effective_allow_only_expected_crossings = False
         crossing_search_loss = _effective_crossing_search_loss(
             enable_crossings=bool(enable_crossings),
             crossing_loss=float(crossing_loss),
@@ -183,8 +172,6 @@ class SessionSettings:
         )
         if crossing_half_size_cells < 0:
             raise ValueError("crossing_half_size_cells must be non-negative")
-        if min_straight_cells_per_crossing < 0:
-            raise ValueError("min_straight_cells_per_crossing must be non-negative")
         if foreign_port_keepout_cells < 0:
             raise ValueError("foreign_port_keepout_cells must be non-negative")
         raw_fanout_access_mode = (
@@ -270,9 +257,6 @@ class SessionSettings:
             crossing_loss=crossing_loss,
             crossing_mode=crossing_mode,
             crossing_half_size_cells=crossing_half_size_cells,
-            min_straight_cells_per_crossing=min_straight_cells_per_crossing,
-            allow_only_expected_crossings=allow_only_expected_crossings,
-            effective_allow_only_expected_crossings=effective_allow_only_expected_crossings,
             crossing_search_loss=crossing_search_loss,
             crossing_guidance_net_names=(
                 frozenset(crossing_guidance_net_names)

@@ -9,7 +9,7 @@ use crate::config::{
     CrossingEngineConfig, KernelDiagnostics, NegotiationConfig, NetNameTrace, RouterConfig,
     SearchOverrides, SEARCH_ENGINE_ASTAR, SEARCH_ENGINE_GRID_DIJKSTRA,
 };
-use crate::crossings::{CrossingConfig, CrossingConstraint};
+use crate::crossings::CrossingConfig;
 use crate::geometry_realization::PortAccess;
 use crate::meander::{
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
@@ -228,10 +228,6 @@ pub struct PyCrossingConfig {
     pub crossing_loss: f64,
     #[pyo3(get, set)]
     pub crossing_half_size_cells: i32,
-    #[pyo3(get, set)]
-    pub min_straight_cells_per_crossing: i32,
-    #[pyo3(get, set)]
-    pub allow_only_expected_pairs: bool,
 }
 
 impl From<&PyCrossingConfig> for CrossingConfig {
@@ -240,8 +236,6 @@ impl From<&PyCrossingConfig> for CrossingConfig {
             enabled: value.enabled,
             crossing_loss: value.crossing_loss,
             crossing_half_size_cells: value.crossing_half_size_cells,
-            min_straight_cells_per_crossing: value.min_straight_cells_per_crossing,
-            allow_only_expected_pairs: value.allow_only_expected_pairs,
         }
     }
 }
@@ -252,8 +246,6 @@ impl From<&CrossingConfig> for PyCrossingConfig {
             enabled: value.enabled,
             crossing_loss: value.crossing_loss,
             crossing_half_size_cells: value.crossing_half_size_cells,
-            min_straight_cells_per_crossing: value.min_straight_cells_per_crossing,
-            allow_only_expected_pairs: value.allow_only_expected_pairs,
         }
     }
 }
@@ -269,105 +261,25 @@ pub(crate) fn validate_crossing_config(config: &PyCrossingConfig) -> PyResult<()
             "crossing_half_size_cells must be non-negative",
         ));
     }
-    if config.min_straight_cells_per_crossing < 0 {
-        return Err(PyValueError::new_err(
-            "min_straight_cells_per_crossing must be non-negative",
-        ));
-    }
     Ok(())
 }
 
 #[pymethods]
 impl PyCrossingConfig {
     #[new]
-    #[pyo3(signature=(enabled=false,crossing_loss=0.0,crossing_half_size_cells=0,min_straight_cells_per_crossing=0,allow_only_expected_pairs=true))]
+    #[pyo3(signature=(enabled=false,crossing_loss=0.0,crossing_half_size_cells=0))]
     pub(crate) fn new(
         enabled: bool,
         crossing_loss: f64,
         crossing_half_size_cells: i32,
-        min_straight_cells_per_crossing: i32,
-        allow_only_expected_pairs: bool,
     ) -> PyResult<Self> {
         let config = Self {
             enabled,
             crossing_loss,
             crossing_half_size_cells,
-            min_straight_cells_per_crossing,
-            allow_only_expected_pairs,
         };
         validate_crossing_config(&config)?;
         Ok(config)
-    }
-}
-
-#[pyclass(name = "CrossingConstraint")]
-#[derive(Clone)]
-pub struct PyCrossingConstraint {
-    #[pyo3(get, set)]
-    pub net_id: u64,
-    #[pyo3(get, set)]
-    pub partner_net_id: u64,
-    #[pyo3(get, set)]
-    pub level: u32,
-    #[pyo3(get, set)]
-    pub source_depth: u32,
-    #[pyo3(get, set)]
-    pub target_depth: u32,
-}
-
-impl From<&PyCrossingConstraint> for CrossingConstraint {
-    fn from(value: &PyCrossingConstraint) -> Self {
-        Self {
-            net_id: value.net_id,
-            partner_net_id: value.partner_net_id,
-            level: value.level,
-            source_depth: value.source_depth,
-            target_depth: value.target_depth,
-        }
-    }
-}
-
-impl From<&CrossingConstraint> for PyCrossingConstraint {
-    fn from(value: &CrossingConstraint) -> Self {
-        Self {
-            net_id: value.net_id,
-            partner_net_id: value.partner_net_id,
-            level: value.level,
-            source_depth: value.source_depth,
-            target_depth: value.target_depth,
-        }
-    }
-}
-
-pub(crate) fn validate_crossing_constraint(constraint: &PyCrossingConstraint) -> PyResult<()> {
-    if constraint.net_id == constraint.partner_net_id {
-        return Err(PyValueError::new_err(
-            "crossing constraint requires two different net ids",
-        ));
-    }
-    Ok(())
-}
-
-#[pymethods]
-impl PyCrossingConstraint {
-    #[new]
-    #[pyo3(signature=(net_id,partner_net_id,level=0,source_depth=0,target_depth=0))]
-    pub(crate) fn new(
-        net_id: u64,
-        partner_net_id: u64,
-        level: u32,
-        source_depth: u32,
-        target_depth: u32,
-    ) -> PyResult<Self> {
-        let constraint = Self {
-            net_id,
-            partner_net_id,
-            level,
-            source_depth,
-            target_depth,
-        };
-        validate_crossing_constraint(&constraint)?;
-        Ok(constraint)
     }
 }
 

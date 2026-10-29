@@ -257,12 +257,11 @@ pub(crate) fn build_search_grid(
 /// source's dense-array index, needed again at goal reconstruction. Shared
 /// with `crate::search::grid_dijkstra`, whose zero heuristic makes the
 /// seeded `f_score` equal to the source's g-cost of 0.
-pub(crate) fn seed_open_set<H: CrossingLegalityHook>(
+pub(crate) fn seed_open_set(
     storage: &mut DenseSearchStorage,
     tier1_open: &mut OpenSet,
     source: State,
     search_heuristic: &SearchHeuristic,
-    hook: &H,
     config: &AStarConfig,
     stats: &mut RouteSearchStats,
     counter: &mut u32,
@@ -273,8 +272,7 @@ pub(crate) fn seed_open_set<H: CrossingLegalityHook>(
     storage.best_generation[source_idx] = source_generation;
     stats.best_cost_updates += 1;
     tier1_open.push(OpenEntry {
-        f_score: cost::heuristic_estimate(search_heuristic, source)
-            + hook.heuristic_bonus(source, CrossingExtension::default()),
+        f_score: cost::heuristic_estimate(search_heuristic, source),
         tie_score: heap_tie_score(0.0, config.heap_tie_breaker),
         g_score: 0.0,
         counter: source_generation,
@@ -609,7 +607,6 @@ pub(crate) fn run<H: CrossingLegalityHook>(
         &mut tier1_open,
         source,
         &search_heuristic,
-        hook,
         config,
         stats,
         &mut counter,
@@ -974,9 +971,7 @@ pub(crate) fn run<H: CrossingLegalityHook>(
                 stats.parent_updates += 1;
                 let generation = next_search_generation(&mut counter)?;
                 tier2_open.push(OpenEntry {
-                    f_score: chain_g
-                        + cost::heuristic_estimate(&search_heuristic, chain_state)
-                        + hook.heuristic_bonus(chain_state, chain_extension),
+                    f_score: chain_g + cost::heuristic_estimate(&search_heuristic, chain_state),
                     tie_score: heap_tie_score(chain_g, config.heap_tie_breaker),
                     g_score: chain_g,
                     counter: generation,
@@ -1228,11 +1223,9 @@ mod tests {
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
             }],
-            min_straight_cells: 2,
             crossing_half_size_cells: 0,
             bend_runout_cells: 0,
             crossing_loss: 0.0,
-            require_all_partners: false,
             terminal_bump_guard: None,
         };
         let result = test_route_single_net_with_crossing_config(

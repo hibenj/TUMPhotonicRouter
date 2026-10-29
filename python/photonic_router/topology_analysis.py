@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from photonic_router.path_length_graph import (
@@ -28,31 +28,12 @@ class TopologyEdgeRank:
     target_rank: int
 
 
-@dataclass(frozen=True)
-class TopologyCrossing:
-    source_depth: int
-    target_depth: int
-    edge_a: RoutedEdgeKey
-    edge_b: RoutedEdgeKey
-    edge_a_source_rank: int
-    edge_a_target_rank: int
-    edge_b_source_rank: int
-    edge_b_target_rank: int
-
-
 @dataclass
 class TopologyAnalysisResult:
     topological_order: list[str]
     node_depths: dict[str, int]
     node_ranks: dict[str, int]
     edge_ranks: dict[RoutedEdgeKey, TopologyEdgeRank]
-    crossings: list[TopologyCrossing] = field(default_factory=list)
-
-    def crossings_by_depth(self) -> dict[tuple[int, int], list[TopologyCrossing]]:
-        grouped: dict[tuple[int, int], list[TopologyCrossing]] = {}
-        for crossing in self.crossings:
-            grouped.setdefault((crossing.source_depth, crossing.target_depth), []).append(crossing)
-        return grouped
 
 
 def analyze_schematic_topology(
@@ -62,7 +43,10 @@ def analyze_schematic_topology(
     node_ranks: Mapping[str, int] | None = None,
     edge_ranks: Mapping[str, Mapping[str, int]] | None = None,
 ) -> TopologyAnalysisResult:
-    """Analyze a schematic DAG and report rank inversions as crossing candidates.
+    """Analyze a schematic DAG: topological order, node depths and ranks, edge ranks.
+
+    The rank inversions (the planned crossings) are derived from the edge ranks
+    by `photonic_router.crossing_plan.build_crossing_plan`.
 
     Explicit benchmark metadata is used when supplied. Missing edge ranks fall
     back to absolute placed port coordinates, which works for left-to-right
@@ -111,14 +95,11 @@ def analyze_graph_topology(
         node_ranks=resolved_ranks,
         explicit_edge_ranks=edge_ranks or {},
     )
-    crossings = _find_rank_inversions(ranked_edges)
-
     return TopologyAnalysisResult(
         topological_order=order,
         node_depths=resolved_depths,
         node_ranks=resolved_ranks,
         edge_ranks=ranked_edges,
-        crossings=crossings,
     )
 
 
@@ -290,34 +271,3 @@ def _rank_endpoints(
         )
     )
     return {edge_key: rank for rank, (_neg_y, _x, _net_name, edge_key) in enumerate(ordered)}
-
-
-def _find_rank_inversions(
-    edge_ranks: Mapping[RoutedEdgeKey, TopologyEdgeRank],
-) -> list[TopologyCrossing]:
-    by_depth: dict[tuple[int, int], list[TopologyEdgeRank]] = {}
-    for edge_rank in edge_ranks.values():
-        by_depth.setdefault((edge_rank.source_depth, edge_rank.target_depth), []).append(edge_rank)
-
-    crossings: list[TopologyCrossing] = []
-    for (source_depth, target_depth), group in by_depth.items():
-        ordered = sorted(group, key=lambda edge: (edge.source_rank, edge.target_rank))
-        for index, edge_a in enumerate(ordered):
-            for edge_b in ordered[index + 1 :]:
-                source_delta = edge_a.source_rank - edge_b.source_rank
-                target_delta = edge_a.target_rank - edge_b.target_rank
-                if source_delta * target_delta >= 0:
-                    continue
-                crossings.append(
-                    TopologyCrossing(
-                        source_depth=source_depth,
-                        target_depth=target_depth,
-                        edge_a=edge_a.edge_key,
-                        edge_b=edge_b.edge_key,
-                        edge_a_source_rank=edge_a.source_rank,
-                        edge_a_target_rank=edge_a.target_rank,
-                        edge_b_source_rank=edge_b.source_rank,
-                        edge_b_target_rank=edge_b.target_rank,
-                    )
-                )
-    return crossings

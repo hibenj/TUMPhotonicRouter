@@ -7,20 +7,27 @@ import pytest
 from translation.crossing_modes import (
     CROSSING_MODES,
     is_guided_mode,
-    is_lidar_mode,
     normalize_crossing_mode,
 )
 
 
 def test_only_the_two_paper_modes_exist():
     assert CROSSING_MODES == ("lidar-pure", "lidar-guided")
-    assert all(is_lidar_mode(mode) for mode in CROSSING_MODES)
     assert [mode for mode in CROSSING_MODES if is_guided_mode(mode)] == ["lidar-guided"]
 
 
-def test_aliases_resolve_to_the_two_modes():
-    assert normalize_crossing_mode(" Lidar ") == "lidar-pure"
-    assert normalize_crossing_mode("guided") == "lidar-guided"
+def test_normalize_lower_cases_and_strips_the_two_modes():
+    assert normalize_crossing_mode(" Lidar-Pure ") == "lidar-pure"
+    assert normalize_crossing_mode("LIDAR-GUIDED") == "lidar-guided"
+
+
+@pytest.mark.parametrize("alias", ["pure", "lidar", "guided", "lidar_guided"])
+def test_the_old_aliases_are_rejected(alias):
+    """The alias table went with phase 4 slice A of the 2026-10 do-over; the
+    command line only ever accepted the two canonical names."""
+
+    with pytest.raises(ValueError):
+        normalize_crossing_mode(alias)
 
 
 @pytest.mark.parametrize("removed_mode", ["window", "collision"])

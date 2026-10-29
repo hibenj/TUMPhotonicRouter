@@ -29,7 +29,7 @@ pub use config::{
     CrossingEngineConfig, KernelDiagnostics, NegotiationConfig, NetNameTrace, RouterConfig,
     SearchOverrides,
 };
-pub use crossings::{CrossingConfig, CrossingConstraint, CrossingContext, CrossingPair};
+pub use crossings::{CrossingConfig, CrossingContext, CrossingPair};
 pub use geometry_realization::{
     build_port_access, build_port_accesses, compress_grid_waypoints, compress_route_waypoints,
     generate_waveguide_polygon, grid_path_to_centerline, plan_analytic_meander_for_route,

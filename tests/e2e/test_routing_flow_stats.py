@@ -138,23 +138,11 @@ def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
         def __init__(self, **kwargs: object) -> None:
             captured["config"] = dict(kwargs)
 
-    class FakeCrossingConstraint:
-        pass
-
     class FakeRouter:
-        def set_crossing_constraints(self, constraints: object) -> None:
-            captured["constraints"] = constraints
-
         def set_crossing_config(self, config: object) -> None:
             captured["set_config"] = config
 
-        def crossing_expected_count(self, _net_id: object) -> int:
-            return 0
-
-    fake_backend = SimpleNamespace(
-        CrossingConfig=FakeCrossingConfig,
-        CrossingConstraint=FakeCrossingConstraint,
-    )
+    fake_backend = SimpleNamespace(CrossingConfig=FakeCrossingConfig)
 
     info = _build_crossing_plan_info(
         rust_backend=fake_backend,
@@ -169,8 +157,6 @@ def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
         crossing_loss=0.0,
         crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
         crossing_half_size_cells=3,
-        min_straight_cells_per_crossing=2,
-        allow_only_expected_crossings=False,
     )
 
     assert captured["config"]["crossing_loss"] == pytest.approx(
@@ -1710,19 +1696,9 @@ def _fake_crossing_plan_router_and_backend(captured: dict[str, object]):
         def __init__(self, **kwargs: object) -> None:
             captured["config"] = dict(kwargs)
 
-    class FakeCrossingConstraint:
-        def __init__(self, net_id_a: int, net_id_b: int, **kwargs: object) -> None:
-            self.pair = (net_id_a, net_id_b)
-
     class FakeRouter:
-        def set_crossing_constraints(self, constraints: object) -> None:
-            captured["constraints"] = constraints
-
         def set_crossing_config(self, config: object) -> None:
             captured["set_config"] = config
-
-        def crossing_expected_count(self, _net_id: object) -> int:
-            return 0
 
         def set_crossing_guidance(
             self,
@@ -1734,10 +1710,7 @@ def _fake_crossing_plan_router_and_backend(captured: dict[str, object]):
             captured["guidance_loss"] = planned_crossing_loss
             captured["guidance_single"] = single_discounted_crossing_per_pair
 
-    backend = SimpleNamespace(
-        CrossingConfig=FakeCrossingConfig,
-        CrossingConstraint=FakeCrossingConstraint,
-    )
+    backend = SimpleNamespace(CrossingConfig=FakeCrossingConfig)
     return FakeRouter(), backend
 
 
@@ -1770,9 +1743,8 @@ def _mm8_route_jobs() -> tuple[list[RouteJob], object]:
 
 def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
     """Contribution 1: the topology plan reaches the router ONLY as soft
-    guidance (planned pairs + planned price); the window-mode constraints stay
-    empty, so nothing else in the router (expected counts, whitelists, spacing
-    history) can see the plan."""
+    guidance (planned pairs + planned price); the router has no hard crossing
+    constraints (phase 4 slice A), so nothing else in it can see the plan."""
     captured: dict[str, object] = {}
     router, backend = _fake_crossing_plan_router_and_backend(captured)
     jobs, schematic = _mm8_route_jobs()
@@ -1790,8 +1762,6 @@ def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
         crossing_loss=0.0,
         crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
         crossing_half_size_cells=3,
-        min_straight_cells_per_crossing=0,
-        allow_only_expected_crossings=False,
     )
 
     assert info["event_count"] == 33  # the multiportmmi_8x8 plan
@@ -1801,8 +1771,6 @@ def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
     assert len(cast(list, captured["guidance_pairs"])) == 33
     assert captured["guidance_loss"] == pytest.approx(0.0)
     assert captured["guidance_single"] is False
-    assert captured["constraints"] == []  # never hard constraints
-    assert captured["config"]["allow_only_expected_pairs"] is False
     assert captured["config"]["crossing_loss"] == pytest.approx(
         DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
     )  # unplanned crossings keep the baseline search price
@@ -1826,14 +1794,11 @@ def test_lidar_pure_still_ignores_the_topology_plan():
         crossing_loss=0.0,
         crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
         crossing_half_size_cells=3,
-        min_straight_cells_per_crossing=0,
-        allow_only_expected_crossings=False,
     )
 
     assert info["reason"] == "lidar_pure_mode_ignores_topology_plan"
     assert info["event_count"] == 0
     assert "guidance_pairs" not in captured
-    assert captured["constraints"] == []
 
 
 def test_planned_crossing_search_loss_env_override(monkeypatch):
@@ -1899,8 +1864,6 @@ def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
         crossing_loss=0.0,
         crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
         crossing_half_size_cells=3,
-        min_straight_cells_per_crossing=0,
-        allow_only_expected_crossings=False,
         config=RoutingConfig.from_environment().crossing_plan,
     )
     assert info["guidance"]["single_discounted_crossing_per_pair"] is True

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from photonic_router.crossing_plan import build_crossing_plan
+from photonic_router.crossing_plan import CrossingEvent, CrossingPlan, build_crossing_plan
 from photonic_router.path_length_graph import build_graph_from_schematic
 from photonic_router.topology_analysis import analyze_schematic_topology
 
 from benchmark_metadata import load_benchmark_metadata
+from benchmarks import benes_4x4, benes_8x8, benes_16x16, benes_32x32
 from benchmarks.benes import (
     SWITCH_COMPONENT,
     benes_connection_pattern,
@@ -13,7 +14,6 @@ from benchmarks.benes import (
 )
 from benchmarks.benes_4x4 import (
     EDGE_RANKS,
-    EXPECTED_CROSSINGS,
     INTERNAL_DELAYS_UM,
     NODE_DEPTHS,
     NODE_RANKS,
@@ -22,9 +22,6 @@ from benchmarks.benes_4x4 import (
 )
 from benchmarks.benes_8x8 import (
     EDGE_RANKS as EDGE_RANKS_8X8,
-)
-from benchmarks.benes_8x8 import (
-    EXPECTED_CROSSINGS as EXPECTED_CROSSINGS_8X8,
 )
 from benchmarks.benes_8x8 import (
     NODE_DEPTHS as NODE_DEPTHS_8X8,
@@ -38,117 +35,33 @@ from benchmarks.benes_8x8 import (
 from benchmarks.benes_16x16 import build_schematic as build_schematic_16x16
 from benchmarks.benes_32x32 import build_schematic as build_schematic_32x32
 from translation.layout_from_schematic import layout_from_schematic
-from translation.route_rust import (
-    _augment_crossing_plan_with_realized_overlaps,
-    _build_crossing_plan_info,
-    _resolve_crossing_half_size_cells,
-)
-from translation.route_rust_types import RouteJob
-from translation.routing.crossing_plan_info import CrossingPlanInfo
+from translation.route_rust import _resolve_crossing_half_size_cells
 
 
-class _FakeCrossingConstraint:
-    def __init__(
-        self,
-        net_id,
-        partner_net_id,
-        *,
-        level=0,
-        source_depth=0,
-        target_depth=0,
-    ):
-        self.net_id = net_id
-        self.partner_net_id = partner_net_id
-        self.level = level
-        self.source_depth = source_depth
-        self.target_depth = target_depth
+def _plan_for(schematic, module) -> CrossingPlan:
+    """The crossing plan of a Benes benchmark module: its topology metadata
+    through `analyze_schematic_topology` and `build_crossing_plan`, the one
+    producer of planned crossings (the rank inversions) since phase 4 slice A
+    of the 2026-10 do-over."""
+    topology = analyze_schematic_topology(
+        schematic,
+        node_depths=module.NODE_DEPTHS,
+        node_ranks=module.NODE_RANKS,
+        edge_ranks=module.EDGE_RANKS,
+    )
+    return build_crossing_plan(topology)
 
 
-class _FakeCrossingConfig:
-    def __init__(
-        self,
-        *,
-        enabled=False,
-        crossing_loss=0.0,
-        crossing_half_size_cells=0,
-        min_straight_cells_per_crossing=0,
-        allow_only_expected_pairs=True,
-    ):
-        self.enabled = enabled
-        self.crossing_loss = crossing_loss
-        self.crossing_half_size_cells = crossing_half_size_cells
-        self.min_straight_cells_per_crossing = min_straight_cells_per_crossing
-        self.allow_only_expected_pairs = allow_only_expected_pairs
+def _events_by_stage(plan: CrossingPlan) -> dict[int, int]:
+    """Planned crossings per switch stage transition `s -> s + 1` (the inputs
+    sit at depth 0, switch stage `s` at depth `s + 1`)."""
+    return {key[0] - 1: len(stage.events) for key, stage in plan.stages.items() if stage.events}
 
 
-class _FakeCrossingBackend:
-    CrossingConstraint = _FakeCrossingConstraint
-    CrossingConfig = _FakeCrossingConfig
-
-
-class _FakeCrossingRouter:
-    def __init__(self):
-        self.config = None
-        self.constraints = []
-        self.guidance_pairs = []
-        self.guidance_loss = 0.0
-        self.guidance_single_per_pair = False
-        self.core_cells_by_net_id = {}
-
-    def set_crossing_config(self, config):
-        self.config = config
-
-    def set_crossing_constraints(self, constraints):
-        self.constraints = list(constraints)
-
-    def set_crossing_guidance(self, planned_pairs, planned_loss, single_per_pair):
-        self.guidance_pairs = [(int(a), int(b)) for a, b in planned_pairs]
-        self.guidance_loss = float(planned_loss)
-        self.guidance_single_per_pair = bool(single_per_pair)
-
-    def crossing_expected_count(self, net_id):
-        return sum(
-            1
-            for constraint in self.constraints
-            if constraint.net_id == net_id or constraint.partner_net_id == net_id
-        )
-
-    def all_net_core_cells(self):
-        return sorted(self.core_cells_by_net_id.items())
-
-
-class _FakeRouteObj:
-    def __init__(self, compressed_waypoints):
-        self.compressed_waypoints = compressed_waypoints
-
-
-class _FakeRouteRecord:
-    def __init__(self, route_obj):
-        self.route_obj = route_obj
-
-
-def _route_jobs_from_schematic(schematic):
-    jobs = []
-    net_id = 1
-    for net_name, bundle in schematic.netlist.routes.items():
-        for port1_spec, port2_spec in bundle.links.items():
-            inst1, port1 = port1_spec.split(",")
-            inst2, port2 = port2_spec.split(",")
-            jobs.append(
-                RouteJob(
-                    net_id=net_id,
-                    route_index=net_id,
-                    net_name=net_name,
-                    inst1=inst1,
-                    port1=port1,
-                    inst2=inst2,
-                    port2=port2,
-                    source_port=object(),
-                    target_port=object(),
-                )
-            )
-            net_id += 1
-    return jobs
+def _is_rank_inversion(event: CrossingEvent) -> bool:
+    source_delta = event.edge_a_source_rank - event.edge_b_source_rank
+    target_delta = event.edge_a_target_rank - event.edge_b_target_rank
+    return source_delta * target_delta < 0
 
 
 def _boxes_overlap(a, b) -> bool:
@@ -170,8 +83,9 @@ def test_benes_4x4_topology_shape_and_crossings():
         ((0, 1), (0, 1)),
     )
     assert len(metadata["interstage_edges"]) == 8
-    assert len(metadata["crossings"]) == 2
-    assert set(metadata["crossings_by_stage"]) == {0, 1}
+    plan = _plan_for(build_schematic(), benes_4x4)
+    assert len(plan.events) == 2
+    assert set(_events_by_stage(plan)) == {0, 1}
 
 
 def test_benes_8x8_topology_shape_is_available_for_next_benchmark():
@@ -180,16 +94,9 @@ def test_benes_8x8_topology_shape_is_available_for_next_benchmark():
     assert metadata["stage_count"] == 5
     assert metadata["switches_per_stage"] == 4
     assert len(metadata["interstage_edges"]) == 32
-    assert len(metadata["crossings"]) == 16
-    crossing_counts = {
-        stage: len(crossings) for stage, crossings in metadata["crossings_by_stage"].items()
-    }
-    assert crossing_counts == {
-        0: 6,
-        1: 2,
-        2: 2,
-        3: 6,
-    }
+    plan = _plan_for(build_schematic_8x8(), benes_8x8)
+    assert len(plan.events) == 16
+    assert _events_by_stage(plan) == {0: 6, 1: 2, 2: 2, 3: 6}
 
 
 def test_larger_benes_topology_shapes_are_available_for_stress_benchmarks():
@@ -219,15 +126,15 @@ def test_larger_benes_topology_shapes_are_available_for_stress_benchmarks():
         },
     }
 
+    modules = {16: benes_16x16, 32: benes_32x32}
     for size, expected in cases.items():
         metadata = benes_topology_metadata(size)
         assert metadata["stage_count"] == expected["stage_count"]
         assert metadata["switches_per_stage"] == expected["switches_per_stage"]
         assert len(metadata["interstage_edges"]) == expected["interstage_edges"]
-        assert len(metadata["crossings"]) == expected["crossings"]
-        assert {
-            stage: len(crossings) for stage, crossings in metadata["crossings_by_stage"].items()
-        } == expected["crossings_by_stage"]
+        plan = _plan_for(modules[size].build_schematic(), modules[size])
+        assert len(plan.events) == expected["crossings"]
+        assert _events_by_stage(plan) == expected["crossings_by_stage"]
 
 
 def test_benes_8x8_schematic_can_be_built():
@@ -247,14 +154,25 @@ def test_larger_benes_schematics_can_be_built():
     assert len(schematic_32.netlist.routes) == 320
 
 
+def _plan_from_loaded_metadata(name: str, schematic) -> CrossingPlan:
+    metadata = load_benchmark_metadata(name, schematic)
+    topology = analyze_schematic_topology(
+        schematic,
+        node_depths=metadata["node_depths"],
+        node_ranks=metadata["node_ranks"],
+        edge_ranks=metadata["edge_ranks"],
+    )
+    return build_crossing_plan(topology)
+
+
 def test_larger_benes_metadata_loader_exposes_crossing_oracles():
     metadata_16 = load_benchmark_metadata("benes_16x16")
     metadata_32 = load_benchmark_metadata("benes_32x32")
 
-    assert len(metadata_16["expected_crossings"]) == 88
     assert len(metadata_16["edge_ranks"]) == 96
-    assert len(metadata_32["expected_crossings"]) == 416
     assert len(metadata_32["edge_ranks"]) == 256
+    assert len(_plan_from_loaded_metadata("benes_16x16", build_schematic_16x16()).events) == 88
+    assert len(_plan_from_loaded_metadata("benes_32x32", build_schematic_32x32()).events) == 416
 
 
 def test_benes_8x8_top_level_placements_do_not_overlap():
@@ -290,7 +208,7 @@ def test_benes_4x4_schematic_is_dag_with_depth_metadata():
     assert NODE_DEPTHS["out_3"] == 4
     assert NODE_RANKS["in_0"] == 0
     assert NODE_RANKS["out_3"] == 3
-    assert len(EXPECTED_CROSSINGS) == 2
+    assert len(_plan_for(schematic, benes_4x4).events) == 2
     assert INTERNAL_DELAYS_UM["sw_s0_0"] == "auto"
     assert graph.nodes["sw_s0_0"].internal_delay_um == 320.0
 
@@ -302,28 +220,21 @@ def test_benes_4x4_metadata_loader_exposes_topology_fields():
     assert metadata["topology_metadata"]["network"] == "benes"
     assert metadata["node_depths"]["sw_s1_0"] == 2
     assert metadata["node_ranks"]["out_2"] == 2
-    assert len(metadata["expected_crossings"]) == 2
+    assert len(_plan_from_loaded_metadata("benes_4x4", schematic).events) == 2
     assert "n_s0_0_o1_to_s1_1_i0" in metadata["edge_ranks"]
     assert metadata["internal_delays_um"]["sw_s0_0"] == 320.0
 
 
-def test_topology_analysis_uses_benes_edge_ranks_for_crossing_oracle():
-    result = analyze_schematic_topology(
-        build_schematic(),
-        node_depths=NODE_DEPTHS,
-        node_ranks=NODE_RANKS,
-        edge_ranks=EDGE_RANKS,
-    )
+def test_crossing_plan_events_are_the_benes_4x4_rank_inversions():
+    plan = _plan_for(build_schematic(), benes_4x4)
 
-    crossing_pairs = {
-        (crossing.edge_a.net_name, crossing.edge_b.net_name) for crossing in result.crossings
-    }
-    expected_pairs = {
-        (str(crossing["edge_a"]), str(crossing["edge_b"])) for crossing in EXPECTED_CROSSINGS
-    }
-    assert crossing_pairs == expected_pairs
-    assert len(result.crossings_by_depth()[(1, 2)]) == 1
-    assert len(result.crossings_by_depth()[(2, 3)]) == 1
+    assert len(plan.events) == 2
+    assert all(_is_rank_inversion(event) for event in plan.events)
+    assert _events_by_stage(plan) == {0: 1, 1: 1}
+    for event in plan.events:
+        # every event pairs two inter-stage edges of one stage transition
+        assert event.target_depth == event.source_depth + 1
+        assert event.edge_a != event.edge_b
 
 
 def test_crossing_plan_orders_4x4_benes_events_by_stage():
@@ -359,142 +270,6 @@ def test_crossing_plan_orders_4x4_benes_events_by_stage():
     assert "stage 0->1" in plan.to_text(include_empty_stages=True)
 
 
-def test_benes_crossing_plan_counts_geometric_route_intersections():
-    schematic = build_schematic()
-    router = _FakeCrossingRouter()
-
-    info = _build_crossing_plan_info(
-        rust_backend=_FakeCrossingBackend,
-        router=router,
-        schematic=schematic,
-        route_jobs=_route_jobs_from_schematic(schematic),
-        enable_crossings=True,
-        crossing_mode="lidar-guided",
-        node_depths=NODE_DEPTHS,
-        node_ranks=NODE_RANKS,
-        edge_ranks=EDGE_RANKS,
-        crossing_loss=1.25,
-        crossing_search_loss=1.25,
-        crossing_half_size_cells=3,
-        min_straight_cells_per_crossing=4,
-        allow_only_expected_crossings=True,
-    )
-
-    net_id_a, net_id_b = router.guidance_pairs[0]
-    router.core_cells_by_net_id = {}
-    plan = CrossingPlanInfo.from_dict(info)
-    _augment_crossing_plan_with_realized_overlaps(
-        router=router,
-        crossing_plan_info=plan,
-        routed_records_by_net_id={
-            net_id_a: _FakeRouteRecord(
-                _FakeRouteObj([(-5, -5), (15, 15)]),
-            ),
-            net_id_b: _FakeRouteRecord(
-                _FakeRouteObj([(-5, 15), (15, -5)]),
-            ),
-        },
-    )
-
-    assert plan.actual_crossing_count == 1
-    assert plan.actual_geometric_crossing_count == 1
-    assert plan.actual_crossing_cell_count == 0
-    assert plan.actual_crossings[0]["geometric"] is True
-    assert plan.actual_crossings[0]["point"] == [5.0, 5.0]
-    assert plan.unrealized_expected_crossing_count == 1
-
-
-def test_benes_crossing_plan_rejects_geometric_intersection_without_margin():
-    schematic = build_schematic()
-    router = _FakeCrossingRouter()
-
-    info = _build_crossing_plan_info(
-        rust_backend=_FakeCrossingBackend,
-        router=router,
-        schematic=schematic,
-        route_jobs=_route_jobs_from_schematic(schematic),
-        enable_crossings=True,
-        crossing_mode="lidar-guided",
-        node_depths=NODE_DEPTHS,
-        node_ranks=NODE_RANKS,
-        edge_ranks=EDGE_RANKS,
-        crossing_loss=1.25,
-        crossing_search_loss=1.25,
-        crossing_half_size_cells=3,
-        min_straight_cells_per_crossing=6,
-        allow_only_expected_crossings=True,
-    )
-    net_id_a, net_id_b = router.guidance_pairs[0]
-    router.core_cells_by_net_id = {}
-    plan = CrossingPlanInfo.from_dict(info)
-    plan.bend_runout_cells_per_crossing = 6
-    _augment_crossing_plan_with_realized_overlaps(
-        router=router,
-        crossing_plan_info=plan,
-        routed_records_by_net_id={
-            net_id_a: _FakeRouteRecord(
-                _FakeRouteObj([(0, 0), (10, 10)]),
-            ),
-            net_id_b: _FakeRouteRecord(
-                _FakeRouteObj([(0, 10), (10, 0)]),
-            ),
-        },
-    )
-
-    assert plan.actual_crossing_count == 0
-    assert plan.unrealized_expected_crossing_count == 2
-    invalid = next(
-        crossing
-        for crossing in plan.unrealized_expected_crossings
-        if crossing.get("unrealized_reason") == "insufficient_straight_margin"
-    )
-    assert invalid["geometric"] is True
-    assert invalid["unrealized_reason"] == "insufficient_straight_margin"
-    assert invalid["required_margin_cells"] == 9
-
-
-def test_benes_crossing_plan_rejects_non_perpendicular_route_intersections():
-    schematic = build_schematic()
-    router = _FakeCrossingRouter()
-
-    info = _build_crossing_plan_info(
-        rust_backend=_FakeCrossingBackend,
-        router=router,
-        schematic=schematic,
-        route_jobs=_route_jobs_from_schematic(schematic),
-        enable_crossings=True,
-        crossing_mode="lidar-guided",
-        node_depths=NODE_DEPTHS,
-        node_ranks=NODE_RANKS,
-        edge_ranks=EDGE_RANKS,
-        crossing_loss=1.25,
-        crossing_search_loss=1.25,
-        crossing_half_size_cells=3,
-        min_straight_cells_per_crossing=6,
-        allow_only_expected_crossings=True,
-    )
-
-    net_id_a, net_id_b = router.guidance_pairs[0]
-    router.core_cells_by_net_id = {}
-    plan = CrossingPlanInfo.from_dict(info)
-    _augment_crossing_plan_with_realized_overlaps(
-        router=router,
-        crossing_plan_info=plan,
-        routed_records_by_net_id={
-            net_id_a: _FakeRouteRecord(
-                _FakeRouteObj([(0, 5), (10, 5)]),
-            ),
-            net_id_b: _FakeRouteRecord(
-                _FakeRouteObj([(0, 0), (10, 10)]),
-            ),
-        },
-    )
-
-    assert plan.actual_crossing_count == 0
-    assert plan.actual_geometric_crossing_count == 0
-    assert plan.unrealized_expected_crossing_count == 2
-
-
 def test_crossing_keepout_size_can_be_derived_from_pdk_component():
     half_size_cells, info = _resolve_crossing_half_size_cells(
         requested_half_size_cells=0,
@@ -510,21 +285,13 @@ def test_crossing_keepout_size_can_be_derived_from_pdk_component():
     assert info["component_bbox_um"][1] > 0
 
 
-def test_topology_analysis_matches_8x8_benes_crossing_oracle():
-    result = analyze_schematic_topology(
-        build_schematic_8x8(),
-        node_depths=NODE_DEPTHS_8X8,
-        node_ranks=NODE_RANKS_8X8,
-        edge_ranks=EDGE_RANKS_8X8,
-    )
+def test_crossing_plan_events_are_the_benes_8x8_rank_inversions():
+    plan = _plan_for(build_schematic_8x8(), benes_8x8)
 
-    crossing_pairs = {
-        (crossing.edge_a.net_name, crossing.edge_b.net_name) for crossing in result.crossings
-    }
-    expected_pairs = {
-        (str(crossing["edge_a"]), str(crossing["edge_b"])) for crossing in EXPECTED_CROSSINGS_8X8
-    }
-    assert crossing_pairs == expected_pairs
+    assert len(plan.events) == 16
+    assert all(_is_rank_inversion(event) for event in plan.events)
+    assert _events_by_stage(plan) == {0: 6, 1: 2, 2: 2, 3: 6}
+    assert len({event.edge_pair for event in plan.events}) == 16
 
 
 def test_crossing_plan_orders_8x8_benes_events_by_stage():
@@ -645,13 +412,14 @@ def test_flat_benes_topology_keeps_the_switch_level_crossing_oracle():
         node_ranks=NODE_RANKS_8X8,
         edge_ranks=EDGE_RANKS_8X8,
     )
-    pairs = lambda result: {  # noqa: E731
-        frozenset((c.edge_a.net_name, c.edge_b.net_name)) for c in result.crossings
+    flat_plan = build_crossing_plan(flat)
+    parent_plan = build_crossing_plan(parent)
+    pairs = lambda plan: {  # noqa: E731
+        frozenset((e.edge_a.net_name, e.edge_b.net_name)) for e in plan.events
     }
-    assert pairs(flat) == pairs(parent)
-    assert len(pairs(flat)) == len(EXPECTED_CROSSINGS_8X8) == 16
-    internal = [c for c in flat.crossings if "__" in c.edge_a.net_name or "__" in c.edge_b.net_name]
+    assert pairs(flat_plan) == pairs(parent_plan)
+    assert len(pairs(flat_plan)) == len(flat_plan.events) == 16
+    internal = [
+        e for e in flat_plan.events if "__" in e.edge_a.net_name or "__" in e.edge_b.net_name
+    ]
     assert internal == []
-    assert build_crossing_plan(flat).events and len(build_crossing_plan(flat).events) == len(
-        build_crossing_plan(parent).events
-    )

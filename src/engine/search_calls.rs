@@ -239,7 +239,6 @@ impl PyPhotonicRouter {
         target: State,
         target_port_um: Option<(f64, f64)>,
         crossing_loss_override: Option<f64>,
-        require_all_partners_override: Option<bool>,
     ) -> CrossingSearchConfig {
         if let Some(guidance) = self.crossing_context.guidance() {
             for partner in &mut partners {
@@ -254,12 +253,9 @@ impl PyPhotonicRouter {
             diagnostics: self.router_config.diagnostics.clone(),
             net_id,
             partners,
-            min_straight_cells: crossing_cfg.min_straight_cells_per_crossing,
             crossing_half_size_cells: crossing_cfg.crossing_half_size_cells,
             bend_runout_cells: self.primitive_cfg.bend_radius_cells,
             crossing_loss: crossing_loss_override.unwrap_or(crossing_cfg.crossing_loss),
-            require_all_partners: require_all_partners_override
-                .unwrap_or(crossing_cfg.allow_only_expected_pairs),
             terminal_bump_guard: self.terminal_bump_guard_for_target(target, target_port_um),
         }
     }
@@ -377,7 +373,6 @@ impl PyPhotonicRouter {
             target,
             target_port_um,
             crossing_loss_override,
-            None,
         );
         let search_partner_ids: FxHashSet<u64> = crossing_search
             .partners
@@ -402,7 +397,7 @@ impl PyPhotonicRouter {
                 self.committed_center_routes.keys().copied().collect();
             center_route_ids.sort_unstable();
             eprintln!(
-                "collision-crossing start net={} partners={:?} block_radius={} min_straight={} half_size={} lookup_partner_ids={:?} committed_center_routes={:?} net_route_entries={}",
+                "collision-crossing start net={} partners={:?} block_radius={} half_size={} lookup_partner_ids={:?} committed_center_routes={:?} net_route_entries={}",
                 net_id,
                 crossing_search
                     .partners
@@ -410,7 +405,6 @@ impl PyPhotonicRouter {
                     .map(|partner| partner.net_id)
                     .collect::<Vec<_>>(),
                 block_radius_cells,
-                crossing_search.min_straight_cells,
                 crossing_search.crossing_half_size_cells,
                 lookup_ids,
                 center_route_ids,
@@ -719,24 +713,20 @@ impl PyPhotonicRouter {
         // crossing search below is skipped, so a failed simple probe falls
         // through to the ordinary (crossing-free) search. A repair call
         // always carries `false` here.
-        let lidar_pure_crossing = self.lidar_pure_crossing_enabled() && !call.crossing_free;
+        let lidar_pure_crossing = self.crossing_context.is_enabled() && !call.crossing_free;
         // PlainFirst (fresh/native routing): try the plain, non-crossing
         // attempt first (see the simple-route block below); a lidar-pure
         // collision-crossing search only happens later, deferred, if that
         // plain attempt fails (the second, separate
-        // `lidar_pure_owner_lookup_partner_set` call further down), which is
+        // `lidar_pure_full_map_partner_set` call further down), which is
         // why this upfront call returns empty in lidar-pure mode.
         // CrossingFirst (repair): consult collision-crossing partners
         // immediately -- repair only runs after this net already failed to
         // route normally, so trying the collision-crossing path first is a
         // reasonable prior specifically in this context. See
         // `CollisionCrossingTryOrder`'s own doc comment.
-        let collision_partner_ids = self.upfront_collision_crossing_partner_ids(
-            net_id,
-            source_state,
-            target_state,
-            call.try_order,
-        );
+        let collision_partner_ids =
+            self.upfront_collision_crossing_partner_ids(net_id, call.try_order);
         let used_collision_crossing_attempt = !collision_partner_ids.is_empty();
         let crossing_attempt = if used_collision_crossing_attempt {
             self.try_route_with_collision_crossings(
@@ -919,7 +909,7 @@ impl PyPhotonicRouter {
             && deferred_crossing_attempt.is_none()
             && !probe_halo_only_conflict
         {
-            let owner_lookup_partner_ids = self.lidar_pure_owner_lookup_partner_set(net_id);
+            let owner_lookup_partner_ids = self.lidar_pure_full_map_partner_set(net_id);
             if !owner_lookup_partner_ids.is_empty() {
                 lidar_pure_crossing_attempted = true;
                 deferred_crossing_attempt = self.try_route_with_collision_crossings(
@@ -1626,7 +1616,6 @@ mod tests {
                 State::new(0, 0, 0),
                 None,
                 None,
-                None,
             );
             config
                 .partners
@@ -2000,16 +1989,11 @@ mod tests {
         let mut router = crossing_partner_discovery_test_router();
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
-            allow_only_expected_pairs: false,
             ..CrossingConfig::default()
         });
 
-        let partners = router.upfront_collision_crossing_partner_ids(
-            3,
-            State::new(5, 5, 0),
-            State::new(10, 10, 0),
-            CollisionCrossingTryOrder::PlainFirst,
-        );
+        let partners =
+            router.upfront_collision_crossing_partner_ids(3, CollisionCrossingTryOrder::PlainFirst);
 
         assert!(
             partners.is_empty(),
@@ -2024,16 +2008,11 @@ mod tests {
         let mut router = crossing_partner_discovery_test_router();
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
-            allow_only_expected_pairs: false,
             ..CrossingConfig::default()
         });
 
-        let partners = router.upfront_collision_crossing_partner_ids(
-            3,
-            State::new(5, 5, 0),
-            State::new(10, 10, 0),
-            CollisionCrossingTryOrder::CrossingFirst,
-        );
+        let partners = router
+            .upfront_collision_crossing_partner_ids(3, CollisionCrossingTryOrder::CrossingFirst);
 
         assert!(
             partners.contains(&1) && partners.contains(&2),

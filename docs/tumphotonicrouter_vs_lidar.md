@@ -131,9 +131,11 @@ TUMPhotonicRouter now has topology-derived crossing support:
 1. Benchmarks can expose node depths, node ranks, and edge ranks.
 2. Python analyzes rank inversions between topology stages.
 3. A crossing plan turns those inversions into ordered expected crossing events.
-4. Python passes compact `CrossingConstraint` records into Rust.
-5. Rust only allows/repairs core overlaps that match the expected partner set
-   when strict expected-pair mode is active.
+4. Under contribution 1 Python passes the planned pairs to Rust as soft search
+   guidance (`set_crossing_guidance`); the router has no hard crossing
+   constraints (the whitelist API was removed in phase 4 slice A of the 2026-10
+   do-over).
+5. Rust accepts a crossing with any committed net when the geometry is legal.
 6. The router reserves crossing windows, rejects invalid geometry such as
    non-perpendicular or insufficient-straight crossings, and writes crossing
    debug artifacts.

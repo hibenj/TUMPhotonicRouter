@@ -10,9 +10,9 @@ Absence is part of that contract: readers used `dict.get(key, default)` and the
 crossing debug JSON / the verification reports only carry the keys that were
 actually written, so a key that was never set must not appear. `None` is that
 "not written yet" marker for every optional field, `to_dict()` drops those
-fields, and `from_dict()` restores exactly what it was given. The thirteen
-fields `translation.route_rust_crossing_plan._build_crossing_plan_info` always
-writes are therefore not optional and are always emitted.
+fields, and `from_dict()` restores exactly what it was given. The ten fields
+`translation.route_rust_crossing_plan._build_crossing_plan_info` always writes
+are therefore not optional and are always emitted.
 
 `to_dict()` emits the keys in this class's declaration order, which is the
 pipeline's phase order. The dict it replaces was ordered by whichever write
@@ -50,11 +50,6 @@ class CrossingPlanInfo:
     enabled: bool = False
     """Whether crossing-aware routing is on at all. w:4"""
 
-    constraint_count: int = 0
-    """Hard crossing constraints handed to the router. Always 0 since the
-    window and collision crossing modes were removed (2026-09-24): neither
-    lidar-pure nor lidar-guided loads a hard constraint. w:4"""
-
     event_count: int = 0
     """Planned crossing events in the topology plan. w:4"""
 
@@ -82,17 +77,6 @@ class CrossingPlanInfo:
     crossing_half_size_cells: int = 0
     """Half the crossing footprint, in grid cells. w:4"""
 
-    min_straight_cells_per_crossing: int = 0
-    """Straight cells the router must keep on each arm of a crossing. w:4"""
-
-    allow_only_expected_crossings: bool = True
-    """Whether the search may only cross planned pairs. w:4
-
-    `True` by default because that was the default the realized-crossing
-    verifier used for a plan mapping without the key; the builder always writes
-    the run's own resolved value.
-    """
-
     # ---- optional, `_build_crossing_plan_info` (phase 4) ------------------
     reason: str | None = None
     """Why no plan was built (lidar-pure mode, missing/invalid metadata). w:4"""
@@ -112,9 +96,6 @@ class CrossingPlanInfo:
     # ---- the crossing plan stage's own additions (phase 4) ----------------
     crossing_mode: str | None = None
     """The configured crossing mode. w:4"""
-
-    requested_allow_only_expected_crossings: bool | None = None
-    """What the caller asked for, before mode-specific resolution. w:4"""
 
     bend_runout_cells_per_crossing: int | None = None
     """Straight run-out cells a crossing needs for its bends. w:4"""
@@ -228,28 +209,6 @@ class CrossingPlanInfo:
     insertion_loss_by_net: list[dict[str, Any]] | None = None
     """Per-net length, bends, crossings and loss. w:8"""
 
-    # ---- plan-versus-realized reconciliation (phase 8) -------------------
-    actual_crossing_count: int | None = None
-    """Planned events that are realized as a crossing. w:8"""
-
-    actual_crossing_cell_count: int | None = None
-    """Core-cell overlap of those crossings. w:8"""
-
-    actual_geometric_crossing_count: int | None = None
-    """Those that are a real segment intersection. w:8"""
-
-    actual_crossings: list[dict[str, Any]] | None = None
-    """Those crossings, one record each. w:8"""
-
-    unrealized_expected_crossings: list[dict[str, Any]] | None = None
-    """Planned events that did not become a crossing. w:8"""
-
-    unrealized_expected_crossing_count: int | None = None
-    """How many. w:8"""
-
-    actual_crossing_reason: str | None = None
-    """Why the reconciliation could not run. w:8"""
-
     # ---- the placed crossing components (phase 9, realize) ---------------
     realized_crossing_components: list[dict[str, Any]] | None = None
     """One record per placed PDK crossing reference. w:9"""
@@ -263,7 +222,7 @@ class CrossingPlanInfo:
     def to_dict(self) -> dict[str, Any]:
         """The plan as the pipeline's mapping consumers see it.
 
-        Exactly the dict the pipeline used to carry: the thirteen always-written
+        Exactly the dict the pipeline used to carry: the ten always-written
         fields plus every optional field that has been written, in insertion
         order, with unwritten fields absent.
         """
@@ -302,7 +261,6 @@ _ALWAYS_PRESENT: frozenset[str] = frozenset(
     if entry.name
     in {
         "enabled",
-        "constraint_count",
         "event_count",
         "missing_event_count",
         "missing_events",
@@ -312,7 +270,5 @@ _ALWAYS_PRESENT: frozenset[str] = frozenset(
         "crossing_loss",
         "crossing_search_loss",
         "crossing_half_size_cells",
-        "min_straight_cells_per_crossing",
-        "allow_only_expected_crossings",
     }
 )

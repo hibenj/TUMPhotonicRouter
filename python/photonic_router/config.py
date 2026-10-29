@@ -143,28 +143,6 @@ class CrossingGridConfig:
     column_pitch_um: float | None = None
     #: `PHOTONIC_ROUTER_CROSSING_GRID_CORNER_MARGIN_UM` (default 14.0).
     corner_margin_um: float | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_ENTRY_STRAIGHT_UM` (default 4.0).
-    entry_straight_um: float | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_FAN_COLUMN_PITCH_UM` (default 4.0).
-    fan_column_pitch_um: float | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM` (default 14.0).
-    lane_pitch_um: float | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_PORT_PAIR_SPREAD_UM` (default 2.0).
-    port_pair_spread_um: float | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_SLOT_SPREAD_UM` (default 11.0).
-    slot_spread_um: float | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_STUB_STAGGER_UM` (default 6.0).
-    stub_stagger_um: float | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_TILE_MIN_SPACING_UM` (default 14.0).
-    tile_min_spacing_um: float | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM` (default 0.0).
-    unrouted_sibling_clearance_um: float | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_FAN_MODE`: string (site default
-    #: `base.fan_mode`, "tiles"); a blank value is also "unset".
-    fan_mode: str | None = None
-    #: `PHOTONIC_ROUTER_CROSSING_GRID_TILE_PLACEMENT`: string (site default
-    #: "auto"); a blank value is also "unset".
-    tile_placement: str | None = None
     #: `PHOTONIC_ROUTER_CROSSING_GRID_CORNERS`: string (site default
     #: "always"); a blank value is also "unset".
     corners: str | None = None

@@ -565,52 +565,6 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("crossing_grid", "corner_margin_um"),
         float_or_unset(_PREFIX + "CROSSING_GRID_CORNER_MARGIN_UM"),
     ),
-    EnvVar(
-        _PREFIX + "CROSSING_GRID_ENTRY_STRAIGHT_UM",
-        ("crossing_grid", "entry_straight_um"),
-        float_or_unset(_PREFIX + "CROSSING_GRID_ENTRY_STRAIGHT_UM"),
-    ),
-    EnvVar(
-        _PREFIX + "CROSSING_GRID_FAN_COLUMN_PITCH_UM",
-        ("crossing_grid", "fan_column_pitch_um"),
-        float_or_unset(_PREFIX + "CROSSING_GRID_FAN_COLUMN_PITCH_UM"),
-    ),
-    EnvVar(
-        _PREFIX + "CROSSING_GRID_LANE_PITCH_UM",
-        ("crossing_grid", "lane_pitch_um"),
-        float_or_unset(_PREFIX + "CROSSING_GRID_LANE_PITCH_UM"),
-    ),
-    EnvVar(
-        _PREFIX + "CROSSING_GRID_PORT_PAIR_SPREAD_UM",
-        ("crossing_grid", "port_pair_spread_um"),
-        float_or_unset(_PREFIX + "CROSSING_GRID_PORT_PAIR_SPREAD_UM"),
-    ),
-    EnvVar(
-        _PREFIX + "CROSSING_GRID_SLOT_SPREAD_UM",
-        ("crossing_grid", "slot_spread_um"),
-        float_or_unset(_PREFIX + "CROSSING_GRID_SLOT_SPREAD_UM"),
-    ),
-    EnvVar(
-        _PREFIX + "CROSSING_GRID_STUB_STAGGER_UM",
-        ("crossing_grid", "stub_stagger_um"),
-        float_or_unset(_PREFIX + "CROSSING_GRID_STUB_STAGGER_UM"),
-    ),
-    EnvVar(
-        _PREFIX + "CROSSING_GRID_TILE_MIN_SPACING_UM",
-        ("crossing_grid", "tile_min_spacing_um"),
-        float_or_unset(_PREFIX + "CROSSING_GRID_TILE_MIN_SPACING_UM"),
-    ),
-    EnvVar(
-        _PREFIX + "CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM",
-        ("crossing_grid", "unrouted_sibling_clearance_um"),
-        float_or_unset(_PREFIX + "CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM"),
-    ),
-    EnvVar(_PREFIX + "CROSSING_GRID_FAN_MODE", ("crossing_grid", "fan_mode"), string_or_unset),
-    EnvVar(
-        _PREFIX + "CROSSING_GRID_TILE_PLACEMENT",
-        ("crossing_grid", "tile_placement"),
-        string_or_unset,
-    ),
     EnvVar(_PREFIX + "CROSSING_GRID_CORNERS", ("crossing_grid", "corners"), string_or_unset),
     EnvVar(
         _PREFIX + "CROSSING_GRID_ROUTER_LAYERS",

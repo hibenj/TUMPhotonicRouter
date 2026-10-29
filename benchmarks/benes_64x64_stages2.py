@@ -16,9 +16,6 @@ from benchmarks.benes_64x64 import (
     EDGE_RANKS as PARENT_EDGE_RANKS,
 )
 from benchmarks.benes_64x64 import (
-    EXPECTED_CROSSINGS as PARENT_EXPECTED_CROSSINGS,
-)
-from benchmarks.benes_64x64 import (
     INTERNAL_DELAYS_UM as PARENT_INTERNAL_DELAYS_UM,
 )
 from benchmarks.benes_64x64 import (
@@ -52,11 +49,6 @@ _KEPT_EDGES = {
 NODE_DEPTHS = {name: depth for name, depth in PARENT_NODE_DEPTHS.items() if name in _KEPT_NODES}
 NODE_RANKS = {name: rank for name, rank in PARENT_NODE_RANKS.items() if name in _KEPT_NODES}
 EDGE_RANKS = {name: ranks for name, ranks in PARENT_EDGE_RANKS.items() if name in _KEPT_EDGES}
-EXPECTED_CROSSINGS = tuple(
-    crossing
-    for crossing in PARENT_EXPECTED_CROSSINGS
-    if crossing["edge_a"] in _KEPT_EDGES and crossing["edge_b"] in _KEPT_EDGES
-)
 NODE_TYPES = {name: kind for name, kind in PARENT_NODE_TYPES.items() if name in _KEPT_NODES}
 INTERNAL_DELAYS_UM = {
     name: delay for name, delay in PARENT_INTERNAL_DELAYS_UM.items() if name in _KEPT_NODES
@@ -65,7 +57,6 @@ TOPOLOGY_METADATA = dict(PARENT_TOPOLOGY_METADATA)
 
 __all__ = [
     "EDGE_RANKS",
-    "EXPECTED_CROSSINGS",
     "INTERNAL_DELAYS_UM",
     "NODE_DEPTHS",
     "NODE_RANKS",

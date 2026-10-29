@@ -13,9 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from benchmark_metadata import load_benchmark_metadata
 from routing_flow import (
-    SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     RoutingFlowStats,
     load_benchmark,
     run_routing_flow,
@@ -28,22 +26,23 @@ def _crossing_json_path(benchmark: str) -> Path:
     return PROJECT_ROOT / "build" / "crossings" / f"{benchmark.lower()}_crossings.json"
 
 
-def _load_crossing_summary(benchmark: str, *, fallback_expected: int) -> dict[str, Any]:
+def _load_crossing_summary(benchmark: str) -> dict[str, Any]:
     path = _crossing_json_path(benchmark)
     if not path.exists():
         return {
-            "expected_crossings": int(fallback_expected),
+            "planned_crossings": 0,
             "actual_crossings": 0,
-            "geometric_crossings": 0,
-            "unrealized_crossings": 0,
             "crossing_report": None,
         }
     data = json.loads(path.read_text(encoding="utf-8"))
+    # `actual_crossings` counts the crossing events the kernel registered
+    # (`native_crossing_event_count`; the plan-versus-realized reconciliation
+    # that produced `actual_crossing_count` went with phase 4 slice A of the
+    # 2026-10 do-over). `planned_crossings` is the topology plan's event
+    # count: 0 under lidar-pure, which ignores the plan.
     return {
-        "expected_crossings": int(data.get("constraint_count", 0) or 0),
-        "actual_crossings": int(data.get("actual_crossing_count", 0) or 0),
-        "geometric_crossings": int(data.get("actual_geometric_crossing_count", 0) or 0),
-        "unrealized_crossings": int(data.get("unrealized_expected_crossing_count", 0) or 0),
+        "planned_crossings": int(data.get("event_count", 0) or 0),
+        "actual_crossings": int(data.get("native_crossing_event_count", 0) or 0),
         "crossing_report": str(path.relative_to(PROJECT_ROOT)),
         "crossing_device": data.get("crossing_device"),
     }
@@ -54,11 +53,8 @@ def run_benchmark(
     *,
     max_iterations: int,
     crossing_half_size_cells: int,
-    min_straight_cells_per_crossing: int,
 ) -> dict[str, Any]:
     schematic = load_benchmark(benchmark)
-    metadata = load_benchmark_metadata(benchmark, schematic)
-    metadata_expected_crossings = len(metadata.get("expected_crossings", ()))
     net_count = len(schematic.netlist.routes)
     stats = RoutingFlowStats()
     start = time.perf_counter()
@@ -74,7 +70,6 @@ def run_benchmark(
             show_klayout=False,
             enable_crossings=True,
             crossing_half_size_cells=int(crossing_half_size_cells),
-            min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
             allow_45_degree_turns=True,
             collect_route_stats=True,
             max_iterations=max_iterations,
@@ -84,19 +79,14 @@ def run_benchmark(
         status = "failed"
         error = f"{type(exc).__name__}: {exc}"
     elapsed_s = time.perf_counter() - start
-    crossing_summary = _load_crossing_summary(
-        benchmark,
-        fallback_expected=metadata_expected_crossings,
-    )
+    crossing_summary = _load_crossing_summary(benchmark)
     return {
         "benchmark": benchmark,
         "status": status,
         "error": error,
         "instance_count": len(schematic.netlist.instances),
         "net_count": net_count,
-        "metadata_expected_crossings": metadata_expected_crossings,
         "crossing_half_size_cells": int(crossing_half_size_cells),
-        "min_straight_cells_per_crossing": int(min_straight_cells_per_crossing),
         "route_failures": max(int(stats.route_failures or 0), int(status != "ok")),
         "simple_routes": int(stats.simple_route_count),
         "route_attempts": int(stats.route_attempts),
@@ -112,9 +102,8 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
         "benchmark",
         "status",
         "net_count",
-        "expected_crossings",
+        "planned_crossings",
         "actual_crossings",
-        "unrealized_crossings",
         "route_failures",
         "expanded_states",
         "runtime_s",
@@ -140,12 +129,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Crossing keepout half-size in grid cells; 0 derives from the component bbox.",
     )
     parser.add_argument(
-        "--min-straight-cells-per-crossing",
-        type=int,
-        default=SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
-        help="Minimum straight access cells before and after each crossing.",
-    )
-    parser.add_argument(
         "--json",
         type=Path,
         default=PROJECT_ROOT / "build" / "crossing_benchmark_report.json",
@@ -158,7 +141,6 @@ def main(argv: list[str] | None = None) -> int:
             str(benchmark),
             max_iterations=int(args.max_iterations),
             crossing_half_size_cells=int(args.crossing_half_size_cells),
-            min_straight_cells_per_crossing=int(args.min_straight_cells_per_crossing),
         )
         for benchmark in args.benchmarks
     ]

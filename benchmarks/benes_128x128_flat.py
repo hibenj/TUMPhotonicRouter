@@ -29,13 +29,11 @@ TOPOLOGY_METADATA = benes_flat_topology_metadata(NETWORK_SIZE)
 NODE_DEPTHS = TOPOLOGY_METADATA["node_depths"]
 NODE_RANKS = TOPOLOGY_METADATA["node_ranks"]
 EDGE_RANKS = TOPOLOGY_METADATA["edge_ranks"]
-EXPECTED_CROSSINGS = TOPOLOGY_METADATA["crossings"]
 NODE_TYPES = benes_flat_node_types(NETWORK_SIZE)
 INTERNAL_DELAYS_UM = benes_flat_internal_delays_um(NETWORK_SIZE)
 
 __all__ = [
     "EDGE_RANKS",
-    "EXPECTED_CROSSINGS",
     "INTERNAL_DELAYS_UM",
     "NETWORK_SIZE",
     "NODE_DEPTHS",

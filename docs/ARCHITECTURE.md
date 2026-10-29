@@ -995,9 +995,31 @@ false`, the field `use_collision_crossing_routing` and its pymethod
 `("lidar-pure", "lidar-guided")`, `is_collision_mode` folded into
 `is_lidar_mode`, the flow default became `lidar-pure`), the hard-constraint
 branch of `_build_crossing_plan_info` and the window-only Weighted-A*
-iteration cap. `CrossingConfig::allow_only_expected_pairs` stays: it is what
-`CrossingContext::allows_pair` reads, and Python passes `False` for both
-remaining modes.
+iteration cap. `CrossingConfig::allow_only_expected_pairs` stayed until phase 4
+slice A of the 2026-10 do-over removed the hard-constraint API as a whole:
+`CrossingConstraint`, `CrossingContext::{constraints, allows_pair,
+has_expected_pair, expected_crossing_count, allowed_partners_for,
+ordered_constraints_for, replace_constraints, clear_constraints}`, the six
+pymethods (`crossing_constraints`, `set_crossing_constraints`,
+`clear_crossing_constraints`, `crossing_expected_count`,
+`crossing_has_expected_pair`, `crossing_allows_pair`) and the Python keyword
+`allow_only_expected_crossings`; `allows_pair` had reduced to
+`config.enabled`, so the engine now tests that directly and the
+`unexpected_pair` verdict is gone from both verifiers. The same slice removed
+everything that was constant because of it (`net_has_crossing_requirements`,
+the crossing spacing history, `require_all_partners` with `all_partner_mask`,
+`goal_extra_ok` and the window-mode progress heuristic, the
+`next_partner_index` key component, `min_straight_cells_per_crossing` end to
+end -- `crossing_required_margin_cells` never read it), the dead second and
+third copies of the rank-inversion analysis (`TopologyCrossing` /
+`_find_rank_inversions`, `benes.py::find_rank_crossings`; the plan's events
+from `crossing_plan.build_crossing_plan` are the one copy), the third
+`realized_intersections` producer
+(`_augment_crossing_plan_with_realized_overlaps` with the `actual_crossings`
+fields of `CrossingPlanInfo`), the unreachable pre-placed grid builders of
+`translation/preplaced_crossing_grids.py` (fan modes `router`, `in_grid`,
+`stretched`; tile placement `lines`; only the `tiles` builder every paper cell
+ran remains) and `is_lidar_mode` (constant true since the collision mode went).
 
 Already removed, Slice C, the small leftovers (2026-09-24): the five Python
 helpers no stage reached (`record_elapsed` in `translation/routing/timing.py`

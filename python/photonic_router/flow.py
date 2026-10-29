@@ -52,7 +52,6 @@ from routing_flow_config import (
     SCRIPT_FANOUT_ACCESS_MODE,
     SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
     SCRIPT_GRID_SIZE_UM,
-    SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
     SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
@@ -477,7 +476,6 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
         crossing_mode=crossing_mode,
         crossing_guidance_net_names=crossing_guidance_net_names,
         crossing_half_size_cells=optical.crossing_half_size_cells,
-        min_straight_cells_per_crossing=optical.min_straight_cells_per_crossing,
         foreign_port_keepout_cells=optical.foreign_port_keepout_cells,
         fanout_access_mode=optical.fanout_access_mode,
         proactive_congestion_weight=optical.proactive_congestion_weight,
@@ -640,7 +638,6 @@ def run_routing_flow(
     crossing_mode: str = "lidar-pure",
     preplaced_crossing_grids: bool = False,
     crossing_half_size_cells: int = 0,
-    min_straight_cells_per_crossing: int = SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     foreign_port_keepout_cells: int = SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
     fanout_access_mode: str | None = SCRIPT_FANOUT_ACCESS_MODE,
     proactive_congestion_weight: float = SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
@@ -721,8 +718,6 @@ def run_routing_flow(
                       configuration's default: "topological-span" with
                       preplaced_crossing_grids (planar stubs), "topological"
                       otherwise.
-        min_straight_cells_per_crossing: Minimum straight access length on each
-                      side of a crossing in grid cells.
         fanout_access_mode: Dense multi-port access strategy passed to the Rust
                       routing bridge. Use "static-stubs" to pre-spread
                       same-element fanout ports as fixed static breakout
@@ -814,7 +809,6 @@ def run_routing_flow(
                 enable_crossings=enable_crossings,
                 crossing_mode=crossing_mode,
                 crossing_half_size_cells=crossing_half_size_cells,
-                min_straight_cells_per_crossing=min_straight_cells_per_crossing,
                 foreign_port_keepout_cells=foreign_port_keepout_cells,
                 fanout_access_mode=fanout_access_mode,
                 proactive_congestion_weight=proactive_congestion_weight,

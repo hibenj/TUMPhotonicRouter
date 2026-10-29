@@ -155,7 +155,6 @@ def load_benchmark_metadata(
     node_depths = getattr(benchmark_module, "NODE_DEPTHS", {})
     node_ranks = getattr(benchmark_module, "NODE_RANKS", {})
     edge_ranks = getattr(benchmark_module, "EDGE_RANKS", {})
-    expected_crossings = getattr(benchmark_module, "EXPECTED_CROSSINGS", ())
 
     if schematic is None and schematic_loader is not None:
         try:
@@ -187,5 +186,4 @@ def load_benchmark_metadata(
         "node_depths": node_depths,
         "node_ranks": node_ranks,
         "edge_ranks": edge_ranks,
-        "expected_crossings": expected_crossings,
     }

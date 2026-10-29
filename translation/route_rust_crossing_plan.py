@@ -17,7 +17,6 @@ from photonic_router.topology_analysis import analyze_schematic_topology
 
 from translation.crossing_modes import is_guided_mode
 from translation.route_rust_crossing_components import _crossing_component_bbox_size_um
-from translation.route_rust_geometry import _first_perpendicular_route_intersection
 from translation.route_rust_records import route_edge_key
 from translation.route_rust_types import RoutedNetRecord, RouteJob
 
@@ -185,8 +184,6 @@ def _build_crossing_plan_info(
     crossing_loss: float,
     crossing_search_loss: float,
     crossing_half_size_cells: int,
-    min_straight_cells_per_crossing: int,
-    allow_only_expected_crossings: bool,
     guidance_net_names: frozenset[str] | None = None,
     config: CrossingPlanConfig | None = None,
 ) -> dict[str, object]:
@@ -197,7 +194,6 @@ def _build_crossing_plan_info(
     config = config if config is not None else CrossingPlanConfig()
     info: dict[str, object] = {
         "enabled": bool(enable_crossings),
-        "constraint_count": 0,
         "event_count": 0,
         "missing_event_count": 0,
         "missing_events": [],
@@ -207,19 +203,13 @@ def _build_crossing_plan_info(
         "crossing_loss": float(crossing_loss),
         "crossing_search_loss": float(crossing_search_loss),
         "crossing_half_size_cells": int(crossing_half_size_cells),
-        "min_straight_cells_per_crossing": int(min_straight_cells_per_crossing),
-        "allow_only_expected_crossings": bool(allow_only_expected_crossings),
     }
     if not enable_crossings:
         return info
 
     required_backend = ("CrossingConfig",)
     missing_backend = [name for name in required_backend if not hasattr(rust_backend, name)]
-    required_router = (
-        "set_crossing_config",
-        "set_crossing_constraints",
-        "crossing_expected_count",
-    )
+    required_router = ("set_crossing_config",)
     missing_router = [name for name in required_router if not hasattr(router, name)]
     if missing_backend or missing_router:
         raise RuntimeError(
@@ -228,14 +218,11 @@ def _build_crossing_plan_info(
             f"Missing backend attrs: {missing_backend}; missing router attrs: {missing_router}."
         )
 
-    router.set_crossing_constraints([])
     router.set_crossing_config(
         rust_backend.CrossingConfig(
             enabled=True,
             crossing_loss=float(crossing_search_loss),
             crossing_half_size_cells=int(crossing_half_size_cells),
-            min_straight_cells_per_crossing=int(min_straight_cells_per_crossing),
-            allow_only_expected_pairs=bool(allow_only_expected_crossings),
         )
     )
 
@@ -249,8 +236,8 @@ def _build_crossing_plan_info(
         # lidar-pure / router-discovered crossing path from topology-
         # precomputed crossing hints") and the 2026-08-25 investigation
         # that found this plan's constraints reaching the router
-        # unconditionally, biasing post-commit search cost via
-        # net_has_crossing_requirements() / add_crossing_spacing_history_for_route()
+        # unconditionally, biasing the post-commit search cost through the
+        # (since removed) crossing spacing history.
         info["reason"] = "lidar_pure_mode_ignores_topology_plan"
         return info
 
@@ -328,14 +315,11 @@ def _build_crossing_plan_info(
         crossing_counts_by_net_name[str(job_b.net_name)] += 1
 
     # Contribution 1 (the only path that reaches here): the plan reaches the
-    # router ONLY as soft guidance (planned pairs + planned search price). No
-    # hard constraint is ever loaded, so expected counts, whitelists and the
-    # spacing history never see the plan; the search keeps the lidar-pure
-    # mechanics and may still add unplanned crossings at the full price. The
-    # hard-constraint branch belonged to the two crossing modes removed on
-    # 2026-09-24 (Milestone 8 of
-    # .agent/execplans/2026-09-22-modular-readable-router-restructure.md), and
-    # `info["constraint_count"]` therefore stays at its initial 0.
+    # router ONLY as soft guidance (planned pairs + planned search price). The
+    # router has no hard crossing constraints (the API went with phase 4
+    # slice A of the 2026-10 do-over; the modes that loaded them went on
+    # 2026-09-24), so the search keeps the lidar-pure mechanics and may still
+    # add unplanned crossings at the full price.
     if not hasattr(router, "set_crossing_guidance"):
         raise RuntimeError(
             "The loaded photonic_router._rust extension does not expose "
@@ -512,91 +496,6 @@ def _augment_insertion_loss_report_from_realized_intersections(
     )
 
 
-def _augment_crossing_plan_with_realized_overlaps(
-    *,
-    router: object,
-    crossing_plan_info: CrossingPlanInfo,
-    routed_records_by_net_id: Mapping[int, RoutedNetRecord] | None = None,
-) -> None:
-    if not crossing_plan_info.enabled:
-        return
-    if not hasattr(router, "all_net_core_cells"):
-        crossing_plan_info.actual_crossing_reason = "missing_core_cell_api"
-        return
-
-    core_cells_by_net_id: dict[int, set[tuple[int, int]]] = {}
-    for raw_net_id, raw_cells in router.all_net_core_cells():
-        core_cells_by_net_id[int(raw_net_id)] = {(int(cell[0]), int(cell[1])) for cell in raw_cells}
-
-    actual_crossings: list[dict[str, object]] = []
-    unrealized_expected: list[dict[str, object]] = []
-    required_crossing_margin_cells = int(crossing_plan_info.crossing_half_size_cells or 0) + int(
-        crossing_plan_info.bend_runout_cells_per_crossing or 0
-    )
-    for raw_event in list(crossing_plan_info.events):
-        event = dict(raw_event)
-        if not event.get("loaded"):
-            continue
-        net_id_a = int(cast(int, event["net_id_a"]))
-        net_id_b = int(cast(int, event["net_id_b"]))
-        overlap = sorted(
-            core_cells_by_net_id.get(net_id_a, set()) & core_cells_by_net_id.get(net_id_b, set())
-        )
-        geometric_crossing = None
-        if routed_records_by_net_id is not None:
-            record_a = routed_records_by_net_id.get(net_id_a)
-            record_b = routed_records_by_net_id.get(net_id_b)
-            geometric_crossing = _first_perpendicular_route_intersection(
-                record_a.route_obj if record_a is not None else None,
-                record_b.route_obj if record_b is not None else None,
-            )
-        record = {
-            "net_id_a": net_id_a,
-            "net_id_b": net_id_b,
-            "net_name_a": event.get("net_name_a"),
-            "net_name_b": event.get("net_name_b"),
-            "source_depth": event.get("source_depth"),
-            "target_depth": event.get("target_depth"),
-            "level": event.get("level"),
-            "order_index": event.get("order_index"),
-            "cell_count": len(overlap),
-            "cells": [[int(x), int(y)] for x, y in overlap[:32]],
-        }
-        if geometric_crossing is not None:
-            record["geometric"] = True
-            record["point"] = geometric_crossing["point"]
-            record["segment_a"] = geometric_crossing["segment_a"]
-            record["segment_b"] = geometric_crossing["segment_b"]
-            record["segment_a_margin_cells"] = geometric_crossing["segment_a_margin_cells"]
-            record["segment_b_margin_cells"] = geometric_crossing["segment_b_margin_cells"]
-            margin_a = float(geometric_crossing["segment_a_margin_cells"])
-            margin_b = float(geometric_crossing["segment_b_margin_cells"])
-            record["valid_crossing_geometry"] = (
-                margin_a + 1e-9 >= required_crossing_margin_cells
-                and margin_b + 1e-9 >= required_crossing_margin_cells
-            )
-            if not record["valid_crossing_geometry"]:
-                record["unrealized_reason"] = "insufficient_straight_margin"
-                record["required_margin_cells"] = required_crossing_margin_cells
-        if (geometric_crossing is not None and record.get("valid_crossing_geometry")) or (
-            overlap and routed_records_by_net_id is None
-        ):
-            actual_crossings.append(record)
-        else:
-            unrealized_expected.append(record)
-
-    crossing_plan_info.actual_crossing_count = len(actual_crossings)
-    crossing_plan_info.actual_crossing_cell_count = sum(
-        int(cast(int, record["cell_count"])) for record in actual_crossings
-    )
-    crossing_plan_info.actual_geometric_crossing_count = sum(
-        1 for record in actual_crossings if record.get("geometric")
-    )
-    crossing_plan_info.actual_crossings = actual_crossings
-    crossing_plan_info.unrealized_expected_crossings = unrealized_expected
-    crossing_plan_info.unrealized_expected_crossing_count = len(unrealized_expected)
-
-
 def _write_crossing_debug_artifacts(
     *,
     debug_path: Path | None,
@@ -617,47 +516,10 @@ def _write_crossing_debug_artifacts(
     plan_text = crossing_plan_info.plan_text
     lines = [str(plan_text if plan_text is not None else "CrossingPlan: unavailable")]
     lines.append("")
+    lines.append(f"planned_events={int(crossing_plan_info.event_count)}")
     lines.append(
-        "loaded_constraints="
-        f"{int(crossing_plan_info.constraint_count)}/"
-        f"{int(crossing_plan_info.event_count)}"
+        f"native_crossing_events={int(crossing_plan_info.native_crossing_event_count or 0)}"
     )
-    lines.append(
-        "realized_crossings="
-        f"{int(crossing_plan_info.actual_crossing_count or 0)}/"
-        f"{int(crossing_plan_info.constraint_count)}"
-    )
-    for crossing in crossing_plan_info.actual_crossings or []:
-        if crossing.get("geometric"):
-            lines.append(
-                "  - "
-                f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')}: "
-                f"segment intersection at {crossing.get('point')}"
-            )
-            continue
-        lines.append(
-            "  - "
-            f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')}: "
-            f"{crossing.get('cell_count')} core-overlap cell(s)"
-        )
-    if crossing_plan_info.unrealized_expected_crossing_count:
-        lines.append("unrealized_expected:")
-        for crossing in crossing_plan_info.unrealized_expected_crossings or []:
-            details = [f"level={crossing.get('level')}"]
-            if crossing.get("unrealized_reason"):
-                details.append(f"reason={crossing.get('unrealized_reason')}")
-            if crossing.get("point"):
-                details.append(f"point={crossing.get('point')}")
-            if crossing.get("required_margin_cells") is not None:
-                details.append(f"required_margin={crossing.get('required_margin_cells')}")
-            if crossing.get("segment_a_margin_cells") is not None:
-                details.append(f"margin_a={crossing.get('segment_a_margin_cells')}")
-            if crossing.get("segment_b_margin_cells") is not None:
-                details.append(f"margin_b={crossing.get('segment_b_margin_cells')}")
-            lines.append(
-                "  - "
-                f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} " + " ".join(details)
-            )
     if crossing_plan_info.illegal_realized_crossing_count:
         lines.append("illegal_realized_crossings:")
         for crossing in crossing_plan_info.illegal_realized_crossings or []:

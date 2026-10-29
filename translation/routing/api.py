@@ -65,7 +65,6 @@ from translation.routing.router_setup import (  # noqa: F401
     dense_obstacle_cell_cap,
 )
 from translation.routing.session import (
-    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     _RouteNetsRustSession,
     route_nets_rust,
 )
@@ -99,10 +98,8 @@ def route_match_and_realize(
     crossing_loss: float = 0.0,
     crossing_mode: str = "lidar-pure",
     crossing_half_size_cells: int = 0,
-    min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     foreign_port_keepout_cells: int = 0,
     fanout_access_mode: str | None = None,
-    allow_only_expected_crossings: bool = True,
     crossing_guidance_net_names: frozenset[str] | None = None,
     obstacle_config: object | None = None,
     debug_dir: str | Path | None = None,
@@ -184,10 +181,8 @@ def route_match_and_realize(
         crossing_loss=crossing_loss,
         crossing_mode=crossing_mode,
         crossing_half_size_cells=crossing_half_size_cells,
-        min_straight_cells_per_crossing=min_straight_cells_per_crossing,
         foreign_port_keepout_cells=foreign_port_keepout_cells,
         fanout_access_mode=fanout_access_mode,
-        allow_only_expected_crossings=allow_only_expected_crossings,
         crossing_guidance_net_names=crossing_guidance_net_names,
         defer_realization=True,
         enable_checked_endpoint_correction=enable_grid_endpoint_correction,

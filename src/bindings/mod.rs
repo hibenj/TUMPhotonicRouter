@@ -17,7 +17,7 @@ use crate::auto_meander::{
     probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
     AutoMeanderConfig, DenseOccupancyPrefix,
 };
-use crate::crossings::{CrossingConfig, CrossingConstraint, CrossingGuidance};
+use crate::crossings::{CrossingConfig, CrossingGuidance};
 use crate::geometry_realization::{
     build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
     centerline_length_um as centerline_length_um_rs,
@@ -124,30 +124,6 @@ impl PyPhotonicRouter {
         Ok(())
     }
 
-    pub(crate) fn crossing_constraints(&self) -> Vec<PyCrossingConstraint> {
-        self.crossing_context
-            .constraints()
-            .iter()
-            .map(PyCrossingConstraint::from)
-            .collect()
-    }
-
-    pub(crate) fn set_crossing_constraints(
-        &mut self,
-        constraints: Vec<PyCrossingConstraint>,
-    ) -> PyResult<()> {
-        for constraint in &constraints {
-            validate_crossing_constraint(constraint)?;
-        }
-        self.crossing_context
-            .replace_constraints(constraints.iter().map(CrossingConstraint::from).collect());
-        Ok(())
-    }
-
-    pub(crate) fn clear_crossing_constraints(&mut self) {
-        self.crossing_context.clear_constraints();
-    }
-
     /// Contribution 1 (crossing-guided search): planned pairs from the
     /// topology plan and the search price of a planned crossing. Soft
     /// guidance only -- pricing in `crossing_search_config`; never a
@@ -169,19 +145,6 @@ impl PyPhotonicRouter {
                 .with_single_discounted_crossing_per_pair(single_discounted_crossing_per_pair),
         );
         Ok(())
-    }
-
-    pub(crate) fn crossing_expected_count(&self, net_id: u64) -> u32 {
-        self.crossing_context.expected_crossing_count(net_id)
-    }
-
-    pub(crate) fn crossing_has_expected_pair(&self, net_id: u64, partner_net_id: u64) -> bool {
-        self.crossing_context
-            .has_expected_pair(net_id, partner_net_id)
-    }
-
-    pub(crate) fn crossing_allows_pair(&self, net_id: u64, partner_net_id: u64) -> bool {
-        self.crossing_context.allows_pair(net_id, partner_net_id)
     }
 
     pub(crate) fn set_long_straight_exempt_net_ids(&mut self, net_ids: Vec<u64>) {
@@ -3156,7 +3119,6 @@ pub fn register_py_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAStarConfig>()?;
     m.add_class::<PyRouterConfig>()?;
     m.add_class::<PyCrossingConfig>()?;
-    m.add_class::<PyCrossingConstraint>()?;
     m.add_class::<PyState>()?;
     m.add_class::<PyRouteJob>()?;
     m.add_class::<PyRouteResult>()?;

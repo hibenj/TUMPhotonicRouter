@@ -332,8 +332,6 @@ def build_crossing_plan_and_port_footprints(
             crossing_loss=float(settings.crossing_loss),
             crossing_search_loss=float(settings.crossing_search_loss),
             crossing_half_size_cells=int(state.resolved_crossing_half_size_cells),
-            min_straight_cells_per_crossing=int(settings.min_straight_cells_per_crossing),
-            allow_only_expected_crossings=settings.effective_allow_only_expected_crossings,
             guidance_net_names=settings.crossing_guidance_net_names,
             config=settings.config.crossing_plan,
         )
@@ -355,9 +353,6 @@ def build_crossing_plan_and_port_footprints(
             f" search_loss={float(state.crossing_plan_info.crossing_search_loss):.1f}"
             f"{guidance_text}"
         )
-    state.crossing_plan_info.requested_allow_only_expected_crossings = bool(
-        settings.allow_only_expected_crossings
-    )
     state.crossing_plan_info.bend_runout_cells_per_crossing = int(state.bend_radius_cells)
     state.crossing_plan_info.fanout_stub_bend_degrees = 45 * int(
         _fanout_stub_bend_steps(settings, state)

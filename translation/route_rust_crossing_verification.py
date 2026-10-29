@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
-from translation.crossing_modes import is_lidar_mode
 from translation.route_rust_geometry import (
     _collinear_segment_overlap_with_params,
     _convex_polygons_overlap_with_area,
@@ -163,10 +162,6 @@ def _verify_realized_route_intersections(
         for net_id, segments in segments_by_net_id.items()
     }
 
-    crossing_mode = str(crossing_plan_info.crossing_mode or "").strip().lower()
-    allow_unexpected = is_lidar_mode(crossing_mode) or not bool(
-        crossing_plan_info.allow_only_expected_crossings
-    )
     realized: list[dict[str, object]] = []
     illegal: list[dict[str, object]] = []
     ignored_endpoint_access: list[dict[str, object]] = []
@@ -182,7 +177,6 @@ def _verify_realized_route_intersections(
                 continue
             pair = frozenset((net_id_a, net_id_b))
             pair_expected = pair in allowed_pairs
-            pair_allowed = allow_unexpected or pair_expected
             for segment_a, len_a, bbox_a in segment_entries_a:
                 for segment_b, len_b, bbox_b in segment_entries_b:
                     if not _um_bboxes_overlap(bbox_a, bbox_b, eps=eps):
@@ -451,11 +445,7 @@ def _verify_realized_route_intersections(
                     if axis_u is not None and axis_v is not None and footprint_half_um > eps:
                         footprint_axis_u = axis_u
                         footprint_axis_v = axis_v
-                        if (
-                            is_lidar_mode(crossing_mode)
-                            and pair_allowed
-                            and (not perpendicular or not footprint_straight)
-                        ):
+                        if not perpendicular or not footprint_straight:
                             footprint_axis_u = (1.0, 0.0)
                             footprint_axis_v = (0.0, 1.0)
                         footprint_polygon = _crossing_footprint_polygon(
@@ -464,7 +454,7 @@ def _verify_realized_route_intersections(
                             axis_v=footprint_axis_v,
                             half_extent_um=footprint_half_um,
                         )
-                        if pair_allowed and footprint_straight:
+                        if footprint_straight:
                             footprint_blockers = _crossing_footprint_blockers(
                                 center=(point_x, point_y),
                                 axis_u=footprint_axis_u,
@@ -477,12 +467,7 @@ def _verify_realized_route_intersections(
                                 },
                                 net_names=net_names,
                             )
-                    legal = (
-                        pair_allowed
-                        and perpendicular
-                        and footprint_straight
-                        and not footprint_blockers
-                    )
+                    legal = perpendicular and footprint_straight and not footprint_blockers
                     if legal:
                         classification = (
                             "legal_expected_crossing"
@@ -497,9 +482,7 @@ def _verify_realized_route_intersections(
                         degraded_reason = None
                     else:
                         classification = "illegal_unexpected_crossing"
-                        if not pair_allowed:
-                            reason = "unexpected_pair"
-                        elif not footprint_straight:
+                        if not footprint_straight:
                             reason = "crossing_footprint_contains_bend"
                         elif not perpendicular:
                             reason = "not_perpendicular"
@@ -671,8 +654,7 @@ def _verify_realized_route_intersections(
                 if isinstance(value, int)
             }
             if (
-                is_lidar_mode(crossing_mode)
-                and crossing_a.get("degraded_reason") is not None
+                crossing_a.get("degraded_reason") is not None
                 and crossing_b.get("degraded_reason") is not None
                 and ids_a.intersection(ids_b)
             ):

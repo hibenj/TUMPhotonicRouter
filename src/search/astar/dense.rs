@@ -1214,11 +1214,9 @@ mod tests {
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
             }],
-            min_straight_cells: 0,
             crossing_half_size_cells: 0,
             bend_runout_cells: 0,
             crossing_loss: 3.0,
-            require_all_partners: false,
             terminal_bump_guard: None,
         };
         let (route, _stats) = test_route_single_net_with_collision_crossing_config_with_stats(

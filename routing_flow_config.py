@@ -14,7 +14,6 @@ from translation.electrical import (
     DEFAULT_WIRE_WIDTH_UM,
 )
 from translation.route_rust import (
-    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     RipupRerouteConfig,
 )
 from translation.route_rust_types import DEFAULT_MEANDER_MAX_HEIGHT_UM
@@ -35,7 +34,6 @@ SCRIPT_ENABLE_PATH_LENGTH_MATCHING = False
 SCRIPT_PATH_LENGTH_MATCH_OUTPUTS = False
 SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM = DEFAULT_MEANDER_MAX_HEIGHT_UM
 SCRIPT_ENABLE_CROSSINGS = True
-SCRIPT_MIN_STRAIGHT_CELLS_PER_CROSSING = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING
 SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS = 6
 SCRIPT_FANOUT_ACCESS_MODE = "legacy-runway"
 SCRIPT_PROACTIVE_CONGESTION_WEIGHT = 0.0
@@ -197,7 +195,6 @@ def build_optical_routing_stage_config(
     enable_crossings: bool,
     crossing_mode: str,
     crossing_half_size_cells: int,
-    min_straight_cells_per_crossing: int,
     foreign_port_keepout_cells: int,
     fanout_access_mode: str | None,
     proactive_congestion_weight: float,
@@ -242,7 +239,6 @@ def build_optical_routing_stage_config(
         crossing_mode=crossing_mode,
         crossing_guidance_net_names=crossing_guidance_net_names,
         crossing_half_size_cells=crossing_half_size_cells,
-        min_straight_cells_per_crossing=min_straight_cells_per_crossing,
         foreign_port_keepout_cells=foreign_port_keepout_cells,
         fanout_access_mode=fanout_access_mode,
         proactive_congestion_weight=proactive_congestion_weight,

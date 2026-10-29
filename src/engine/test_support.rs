@@ -230,7 +230,6 @@ pub(crate) fn crossing_conflict_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJ
     );
     router.crossing_context.set_config(CrossingConfig {
         enabled: true,
-        allow_only_expected_pairs: false,
         ..CrossingConfig::default()
     });
 
@@ -334,7 +333,7 @@ pub(crate) fn crossing_conflict_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJ
 }
 
 /// Router for the B1 kernel tests below: lidar-pure crossing mode
-/// enabled (`enabled: true, allow_only_expected_pairs: false`, matching
+/// enabled (`enabled: true`, matching
 /// `crossing_conflict_fixture`), on a 60 x 60 grid at 1 um/cell, with no
 /// committed routes yet -- the caller inserts those directly.
 pub(crate) fn missing_crossing_event_fixture_router() -> PyPhotonicRouter {
@@ -368,7 +367,6 @@ pub(crate) fn missing_crossing_event_fixture_router() -> PyPhotonicRouter {
     );
     router.crossing_context.set_config(CrossingConfig {
         enabled: true,
-        allow_only_expected_pairs: false,
         ..CrossingConfig::default()
     });
     router

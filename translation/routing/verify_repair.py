@@ -34,7 +34,6 @@ from translation.route_rust_crossing_components import (
     _place_realized_crossing_components,
 )
 from translation.route_rust_crossing_plan import (
-    _augment_crossing_plan_with_realized_overlaps,
     _augment_insertion_loss_report,
     _augment_insertion_loss_report_from_realized_intersections,
     _write_crossing_debug_artifacts,
@@ -900,16 +899,6 @@ def _photonic_repair_failure_preview(
 
 def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, object]]:
     t_refresh_crossings_start = timing.pipeline_timer_start(settings, state)
-    t_overlap_start = timing.pipeline_timer_start(settings, state)
-    if settings.enable_internal_photonic_probe_verification:
-        _augment_crossing_plan_with_realized_overlaps(
-            router=state.router,
-            crossing_plan_info=state.crossing_plan_info,
-            routed_records_by_net_id=state.route_bookkeeping.records_by_id,
-        )
-    timing.record_pipeline_timing(
-        settings, state, "realized_crossing_overlap_augment", t_overlap_start
-    )
     native_crossing_events: list[Any] = []
     if hasattr(state.router, "crossing_events"):
         t_native_events_start = timing.pipeline_timer_start(settings, state)

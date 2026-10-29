@@ -42,7 +42,6 @@ from translation.routing import (
     route_jobs as route_jobs_stage,  # `route_jobs` is a local name in `run`
 )
 from translation.routing.settings import (
-    DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     SessionSettings,
 )
 from translation.routing.state import SessionState
@@ -95,10 +94,8 @@ class _RouteNetsRustSession:
         crossing_loss: float = 0.0,
         crossing_mode: str = "lidar-pure",
         crossing_half_size_cells: int = 0,
-        min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
         foreign_port_keepout_cells: int = 0,
         fanout_access_mode: str | None = None,
-        allow_only_expected_crossings: bool = True,
         crossing_guidance_net_names: frozenset[str] | None = None,
         defer_realization: bool = False,
         enable_checked_endpoint_correction: bool = True,
@@ -211,10 +208,8 @@ class _RouteNetsRustSession:
             crossing_loss=crossing_loss,
             crossing_mode=crossing_mode,
             crossing_half_size_cells=crossing_half_size_cells,
-            min_straight_cells_per_crossing=min_straight_cells_per_crossing,
             foreign_port_keepout_cells=foreign_port_keepout_cells,
             fanout_access_mode=fanout_access_mode,
-            allow_only_expected_crossings=allow_only_expected_crossings,
             crossing_guidance_net_names=crossing_guidance_net_names,
             defer_realization=defer_realization,
             enable_checked_endpoint_correction=enable_checked_endpoint_correction,
@@ -326,10 +321,8 @@ def route_nets_rust(
     crossing_loss: float = 0.0,
     crossing_mode: str = "lidar-pure",
     crossing_half_size_cells: int = 0,
-    min_straight_cells_per_crossing: int = DEFAULT_MIN_STRAIGHT_CELLS_PER_CROSSING,
     foreign_port_keepout_cells: int = 0,
     fanout_access_mode: str | None = None,
-    allow_only_expected_crossings: bool = True,
     crossing_guidance_net_names: frozenset[str] | None = None,
     defer_realization: bool = False,
     enable_checked_endpoint_correction: bool = True,
@@ -374,10 +367,8 @@ def route_nets_rust(
         crossing_loss=crossing_loss,
         crossing_mode=crossing_mode,
         crossing_half_size_cells=crossing_half_size_cells,
-        min_straight_cells_per_crossing=min_straight_cells_per_crossing,
         foreign_port_keepout_cells=foreign_port_keepout_cells,
         fanout_access_mode=fanout_access_mode,
-        allow_only_expected_crossings=allow_only_expected_crossings,
         crossing_guidance_net_names=crossing_guidance_net_names,
         defer_realization=defer_realization,
         enable_checked_endpoint_correction=enable_checked_endpoint_correction,

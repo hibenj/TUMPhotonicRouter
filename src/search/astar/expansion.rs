@@ -817,7 +817,6 @@ pub(crate) fn goal_reached<H: CrossingLegalityHook>(
     within_target_tolerance(context, state)
         && context.accepted_target_angles[state.angle as usize]
         && extension.pending_after_crossing_cells == 0
-        && context.hook.goal_extra_ok(extension)
 }
 
 /// The Tier-1 insert-or-improve on the dense arrays: the fast path a move
@@ -1094,9 +1093,7 @@ pub(crate) fn push_or_improve_extended<H: CrossingLegalityHook>(
     let heap_start =
         (config.collect_detailed_timing && config.diagnostics.hot_loop_timing).then(Instant::now);
     tier2_open.push(OpenEntry {
-        f_score: tentative_g
-            + cost::heuristic_estimate(heuristic, next_state)
-            + context.hook.heuristic_bonus(next_state, next_extension),
+        f_score: tentative_g + cost::heuristic_estimate(heuristic, next_state),
         tie_score: heap_tie_score(tentative_g, config.heap_tie_breaker),
         g_score: tentative_g,
         counter: generation,
@@ -2124,11 +2121,9 @@ mod tests {
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
             }],
-            min_straight_cells: 2,
             crossing_half_size_cells: 2,
             bend_runout_cells: 3,
             crossing_loss: 1.0,
-            require_all_partners: false,
             terminal_bump_guard: None,
         };
         let config = AStarConfig {
@@ -2210,14 +2205,7 @@ mod tests {
             };
             let hook_context =
                 CrossingHookContext::build(&map, &primitives, &config, &crossing, full_bounds);
-            let hook = hook_context.hook(
-                &map,
-                &crossing,
-                &config,
-                primitives.grid_size_um(),
-                None,
-                None,
-            );
+            let hook = hook_context.hook(&map, &crossing, &config, None, None);
             let source = State::new(20, 50, 6);
             let target = State::new(20, 4, 6);
             let accepted = target_angle_acceptance(target, &config);
@@ -2296,14 +2284,7 @@ mod tests {
         let bounds = full_map_bounds(&map);
         let hook_context =
             CrossingHookContext::build(&map, &primitives, &config, &crossing, bounds);
-        let hook = hook_context.hook(
-            &map,
-            &crossing,
-            &config,
-            primitives.grid_size_um(),
-            None,
-            None,
-        );
+        let hook = hook_context.hook(&map, &crossing, &config, None, None);
         let source = State::new(20, 50, 6);
         let target = State::new(20, 4, 6);
         let accepted = target_angle_acceptance(target, &config);

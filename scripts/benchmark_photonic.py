@@ -572,7 +572,6 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
             path_length_match_outputs=args.path_length_match_outputs,
             enable_crossings=args.crossings,
             crossing_half_size_cells=args.crossing_half_size_cells,
-            min_straight_cells_per_crossing=args.min_straight_cells_per_crossing,
             allow_45_degree_turns=args.allow_45_degree_turns,
             bend_radius_um=args.bend_radius_um,
             use_indexed_heap=args.use_indexed_heap,
@@ -868,14 +867,7 @@ def _worker_command(benchmark: str, args: argparse.Namespace) -> list[str]:
         command.append("--path-length-match-outputs")
     if args.crossings:
         command.append("--crossings")
-    command.extend(
-        [
-            "--crossing-half-size-cells",
-            str(args.crossing_half_size_cells),
-            "--min-straight-cells-per-crossing",
-            str(args.min_straight_cells_per_crossing),
-        ]
-    )
+    command.extend(["--crossing-half-size-cells", str(args.crossing_half_size_cells)])
     if args.allow_45_degree_turns:
         command.append("--allow-45-degree-turns")
     if args.include_heater_obstacles:
@@ -1925,7 +1917,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--include-heater-obstacles", action="store_true")
     parser.add_argument("--crossings", action="store_true")
     parser.add_argument("--crossing-half-size-cells", type=int, default=0)
-    parser.add_argument("--min-straight-cells-per-crossing", type=int, default=2)
     parser.add_argument("--ripup-reroute", action="store_true")
     parser.add_argument("--ripup-history-weight", type=float, default=SCRIPT_RIPUP_HISTORY_WEIGHT)
     parser.add_argument(

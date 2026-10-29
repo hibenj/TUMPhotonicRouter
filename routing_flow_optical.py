@@ -37,7 +37,6 @@ class OpticalRoutingStageConfig:
     enable_crossings: bool
     crossing_mode: str
     crossing_half_size_cells: int
-    min_straight_cells_per_crossing: int
     foreign_port_keepout_cells: int
     fanout_access_mode: str | None
     proactive_congestion_weight: float
@@ -114,7 +113,6 @@ def run_photonic_routing_stage(
             crossing_mode=config.crossing_mode,
             crossing_guidance_net_names=config.crossing_guidance_net_names,
             crossing_half_size_cells=int(config.crossing_half_size_cells),
-            min_straight_cells_per_crossing=int(config.min_straight_cells_per_crossing),
             foreign_port_keepout_cells=int(config.foreign_port_keepout_cells),
             fanout_access_mode=config.fanout_access_mode,
             node_depths=metadata.get("node_depths"),

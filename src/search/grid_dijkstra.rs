@@ -159,7 +159,6 @@ fn run_dijkstra(
         &mut open,
         source,
         &heuristic,
-        &hook,
         config,
         stats,
         &mut counter,

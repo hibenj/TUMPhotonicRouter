@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 87 `RoutingConfig` fields (87 with an overlay variable), 50 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 174 in total.
+Totals: 77 `RoutingConfig` fields (77 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 163 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -144,16 +144,6 @@ Mirrors the env reads of `translation/preplaced_crossing_grids.py`'s `crossing_g
 | `column_lead_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_LEAD_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_LEAD_UM` (default 14.0). |
 | `column_pitch_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_PITCH_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_PITCH_UM` (default 16.0). |
 | `corner_margin_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_CORNER_MARGIN_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_CORNER_MARGIN_UM` (default 14.0). |
-| `entry_straight_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_ENTRY_STRAIGHT_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_ENTRY_STRAIGHT_UM` (default 4.0). |
-| `fan_column_pitch_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_FAN_COLUMN_PITCH_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_FAN_COLUMN_PITCH_UM` (default 4.0). |
-| `lane_pitch_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_LANE_PITCH_UM` (default 14.0). |
-| `port_pair_spread_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_PORT_PAIR_SPREAD_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_PORT_PAIR_SPREAD_UM` (default 2.0). |
-| `slot_spread_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_SLOT_SPREAD_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_SLOT_SPREAD_UM` (default 11.0). |
-| `stub_stagger_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_STUB_STAGGER_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_STUB_STAGGER_UM` (default 6.0). |
-| `tile_min_spacing_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_TILE_MIN_SPACING_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_TILE_MIN_SPACING_UM` (default 14.0). |
-| `unrouted_sibling_clearance_um` | `float \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM` | `PHOTONIC_ROUTER_CROSSING_GRID_UNROUTED_SIBLING_CLEARANCE_UM` (default 0.0). |
-| `fan_mode` | `str \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_FAN_MODE` | `PHOTONIC_ROUTER_CROSSING_GRID_FAN_MODE`: string (site default `base.fan_mode`, "tiles"); a blank value is also "unset". |
-| `tile_placement` | `str \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_TILE_PLACEMENT` | `PHOTONIC_ROUTER_CROSSING_GRID_TILE_PLACEMENT`: string (site default "auto"); a blank value is also "unset". |
 | `corners` | `str \| None` | `None` | `PHOTONIC_ROUTER_CROSSING_GRID_CORNERS` | `PHOTONIC_ROUTER_CROSSING_GRID_CORNERS`: string (site default "always"); a blank value is also "unset". |
 | `router_layers` | `frozenset[int]` | `frozenset()` | `PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS` | `PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS`: comma-separated ints (non-digit tokens dropped); default empty. |
 | `trace_column_grid` | `bool` | `False` | `PHOTONIC_ROUTER_TRACE_COLUMN_GRID` | `PHOTONIC_ROUTER_TRACE_COLUMN_GRID`: truthy string. |
@@ -258,7 +248,6 @@ Contribution 2: the pre-placed crossing grid stage (stage 2b).
 | `enable_crossings` | `bool` | `False` | `--crossings` | -- |
 | `crossing_mode` | `str` | `'lidar-pure'` | `--crossing-mode` | -- |
 | `crossing_half_size_cells` | `int` | `0` | -- | -- |
-| `min_straight_cells_per_crossing` | `int` | `2` | `--min-straight-cells-per-crossing` | -- |
 | `foreign_port_keepout_cells` | `int` | `6` | `--foreign-port-keepout-cells` | -- |
 | `fanout_access_mode` | `str \| None` | `'legacy-runway'` | `--fanout-access-mode` | -- |
 | `proactive_congestion_weight` | `float` | `0.0` | `--proactive-congestion-weight` | -- |

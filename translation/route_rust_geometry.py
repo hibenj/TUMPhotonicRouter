@@ -273,13 +273,6 @@ def _collinear_segment_overlap_with_params(
     return (overlap_start, overlap_end, t_start, t_end, u_start, u_end)
 
 
-def _segment_length_cells(
-    segment: tuple[tuple[float, float], tuple[float, float]],
-) -> float:
-    start, end = segment
-    return max(abs(end[0] - start[0]), abs(end[1] - start[1]))
-
-
 def _segment_bbox_um(
     segment: tuple[tuple[float, float], tuple[float, float]],
 ) -> tuple[float, float, float, float]:
@@ -315,45 +308,6 @@ def _segments_are_perpendicular(
     av = (a1[0] - a0[0], a1[1] - a0[1])
     bv = (b1[0] - b0[0], b1[1] - b0[1])
     return abs(av[0] * bv[0] + av[1] * bv[1]) < 1e-9
-
-
-def _first_perpendicular_route_intersection(
-    route_obj_a: object | None,
-    route_obj_b: object | None,
-) -> dict[str, object] | None:
-    waypoints_a = _route_waypoints_from_obj(route_obj_a)
-    waypoints_b = _route_waypoints_from_obj(route_obj_b)
-    if not waypoints_a or not waypoints_b:
-        return None
-
-    for segment_a in _route_segments_from_waypoints(waypoints_a):
-        a0, a1 = segment_a
-        for segment_b in _route_segments_from_waypoints(waypoints_b):
-            b0, b1 = segment_b
-            if not _segments_are_perpendicular(segment_a, segment_b):
-                continue
-            intersection = _segment_intersection_with_params(a0, a1, b0, b1)
-            if intersection is None:
-                continue
-            point_x, point_y, t, u = intersection
-            len_a = _segment_length_cells(segment_a)
-            len_b = _segment_length_cells(segment_b)
-            margin_a = min(max(t, 0.0) * len_a, max(1.0 - t, 0.0) * len_a)
-            margin_b = min(max(u, 0.0) * len_b, max(1.0 - u, 0.0) * len_b)
-            return {
-                "point": [round(float(point_x), 6), round(float(point_y), 6)],
-                "segment_a": [
-                    [round(float(a0[0]), 6), round(float(a0[1]), 6)],
-                    [round(float(a1[0]), 6), round(float(a1[1]), 6)],
-                ],
-                "segment_b": [
-                    [round(float(b0[0]), 6), round(float(b0[1]), 6)],
-                    [round(float(b1[0]), 6), round(float(b1[1]), 6)],
-                ],
-                "segment_a_margin_cells": round(float(margin_a), 6),
-                "segment_b_margin_cells": round(float(margin_b), 6),
-            }
-    return None
 
 
 def _record_centerline_um(
