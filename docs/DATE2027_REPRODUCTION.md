@@ -80,6 +80,11 @@ the 27 cells the excess is 0 everywhere except multiportmmi_64x64 in
 lidar-pure (217 realised, 209 unavoidable, +8), which both contributions
 close.
 
+The path-length-matching flow (heater_s_mod and the twelve cascades) has
+its own baseline and short gate of the same pattern, `scripts/results/
+plm_baseline.sh`, `plm_table.py` and `plm_gate.sh` against
+`docs/plm_baseline.json`: see `docs/PLM_REPRODUCTION.md` (phase 6 slice 0).
+
 ## Verification (2026-09-22, commits bb317c9..bcc86e8, `results_date2027/`)
 
 `reproduce_date2027.sh` in the order ladder, c2-mesh, mesh-base,

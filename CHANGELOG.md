@@ -13,6 +13,21 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Added
 
+- The path-length-matching baseline and gate (phase 6 slice 0): `scripts/results/plm_baseline.sh`
+  routes `heater_s_mod` and the twelve `cascade_{8,12,16}_{compact,diagonal,folded,
+  folded_compact}` under their stable flags into `results_plm/` (config label `plm`,
+  one benchmark per call, `--list` for GNU parallel, `STOP` file, 1 h timeout);
+  `scripts/results/plm_table.py` reads the latest run per benchmark (run.txt,
+  metrics.json, the SUMMARY line and the flow's `path_length_analysis` /
+  `meander_insertion_report` / `electrical_routing` results from the routed GDS's
+  kfactory meta info) into a Markdown table, `--json` pins it, `--compare` checks a
+  root against `docs/plm_baseline.json` on rc, verifier errors, nets, GDS length,
+  meander length, group count, groups over tolerance and the realized group and
+  output spreads (lengths to 0.01 um; times are information only);
+  `scripts/results/plm_gate.sh` is the short gate (two cells, about 10 s).
+  `docs/plm_baseline.json` was captured at 6f1a46d on cda-server-4 on 2026-10-29:
+  all thirteen route clean (rc 0, 0 errors, 0 groups over tolerance, spread 0);
+  `docs/PLM_REPRODUCTION.md` has the table and the procedure.
 - `scripts/results/compare_date2027.py --with-bounds` adds the placement-derived
   lower bound on crossings (band inversions, `scripts/results/crossing_lower_bound.py`,
   table `docs/date2027_crossing_bounds.json` written by its `--json` option) and the

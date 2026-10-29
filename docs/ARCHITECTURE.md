@@ -991,6 +991,10 @@ scripts/test_baseline.sh
 # The reproduction gate: the nine smallest paper cells, about two minutes
 scripts/results/gate_short.sh
 
+# The path-length-matching gate: heater_s_mod and cascade_8_compact against
+# docs/plm_baseline.json, about 10 s (docs/PLM_REPRODUCTION.md)
+scripts/results/plm_gate.sh
+
 # The full 27-cell reproduction (about 2.5 h; RESULTS_ROOT is never results/)
 scripts/results/reproduce_date2027.sh
 .venv/bin/python scripts/results/compare_date2027.py results_date2027 \
