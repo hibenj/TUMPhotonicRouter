@@ -22,11 +22,9 @@ from collections.abc import Iterable, Mapping
 from translation.route_rust_types import RouteJob
 from translation.routing.dispatch import (
     NEGOTIATED_MAX_ROUNDS,
-    _clearance_exempt_cells_for_job,
-    _foreign_keepout_cleanup_cells_for_job,
     _record_route,
     _routing_endpoint_center_um,
-    _state_openings_for_job,
+    native_route_jobs,
 )
 from translation.routing.finalize import (
     _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids,
@@ -142,26 +140,8 @@ def run_detour_pass(
         for net_id in detoured:
             state.router.ripup_route(int(net_id))
             state.route_bookkeeping.clear_route(int(net_id))
-        batch_jobs = []
-        opened_by_id: dict[int, list[tuple[int, int]]] = {}
-        for net_id in detoured:
-            job = jobs_by_id[net_id]
-            source_state, target_state, _, _, opened_cells = _state_openings_for_job(
-                settings, state, job
-            )
-            batch_jobs.append(
-                (
-                    int(job.net_id),
-                    source_state,
-                    target_state,
-                    opened_cells,
-                    _clearance_exempt_cells_for_job(settings, state, job),
-                    _foreign_keepout_cleanup_cells_for_job(settings, state, job),
-                    _routing_endpoint_center_um(settings, state, job, source=True),
-                    _routing_endpoint_center_um(settings, state, job, source=False),
-                )
-            )
-            opened_by_id[int(job.net_id)] = opened_cells
+        batch_jobs = native_route_jobs(settings, state, (jobs_by_id[net_id] for net_id in detoured))
+        opened_by_id = {int(job.net_id): job.opened_cells for job in batch_jobs}
         raw_result = state.router.route_many_with_negotiated_repair_and_commit(
             batch_jobs,
             state.block_radius_cells,

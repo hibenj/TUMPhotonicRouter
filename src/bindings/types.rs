@@ -394,6 +394,62 @@ impl PyState {
     }
 }
 
+/// One net of a negotiated batch as Python hands it to
+/// `PyPhotonicRouter.route_many_with_negotiated_repair_and_commit`: the net
+/// id, the two grid states, the three cell lists (the opened port cells, the
+/// clearance-exempt cells, the foreign keep-out cells the net may clean up)
+/// and the two port centers in micrometers. The engine's own job type is
+/// `NativeRouteJob`; `negotiation::loop_::native_jobs_from_py` converts once,
+/// at the batch boundary.
+#[pyclass(name = "RouteJob")]
+#[derive(Clone)]
+pub struct PyRouteJob {
+    #[pyo3(get)]
+    pub net_id: u64,
+    #[pyo3(get)]
+    pub source: PyState,
+    #[pyo3(get)]
+    pub target: PyState,
+    #[pyo3(get)]
+    pub opened_cells: Vec<(i32, i32)>,
+    #[pyo3(get)]
+    pub clearance_exempt_cells: Vec<(i32, i32)>,
+    #[pyo3(get)]
+    pub foreign_keepout_cleanup_cells: Vec<(i32, i32)>,
+    #[pyo3(get)]
+    pub source_port_um: Option<(f64, f64)>,
+    #[pyo3(get)]
+    pub target_port_um: Option<(f64, f64)>,
+}
+
+#[pymethods]
+impl PyRouteJob {
+    #[new]
+    #[pyo3(signature=(*, net_id, source, target, opened_cells, clearance_exempt_cells, foreign_keepout_cleanup_cells, source_port_um=None, target_port_um=None))]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        net_id: u64,
+        source: PyState,
+        target: PyState,
+        opened_cells: Vec<(i32, i32)>,
+        clearance_exempt_cells: Vec<(i32, i32)>,
+        foreign_keepout_cleanup_cells: Vec<(i32, i32)>,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) -> Self {
+        Self {
+            net_id,
+            source,
+            target,
+            opened_cells,
+            clearance_exempt_cells,
+            foreign_keepout_cleanup_cells,
+            source_port_um,
+            target_port_um,
+        }
+    }
+}
+
 #[pyclass(name = "RouteResult")]
 #[derive(Default)]
 pub struct PyRouteResult {

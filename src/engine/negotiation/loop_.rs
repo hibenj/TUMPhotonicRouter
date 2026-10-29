@@ -20,45 +20,24 @@ use crate::config::NegotiationConfig;
 
 use crate::engine::*;
 
-/// The Python job tuple the `#[pymethods]` wrapper forwards unchanged.
-pub(crate) type PyRouteJobTuple = (
-    u64,
-    PyState,
-    PyState,
-    Vec<(i32, i32)>,
-    Vec<(i32, i32)>,
-    Vec<(i32, i32)>,
-    Option<(f64, f64)>,
-    Option<(f64, f64)>,
-);
-
-/// The Python job tuples as the loop's own jobs -- the one conversion the
-/// `#[pymethods]` wrapper's tuples need before anything native runs.
-pub(crate) fn native_jobs_from_py(jobs: Vec<PyRouteJobTuple>) -> Vec<NativeRouteJob> {
-    jobs.into_iter()
-        .map(
-            |(
-                net_id,
-                source,
-                target,
-                opened_cells,
-                clearance_exempt_cells,
-                static_cleanup_cells,
-                source_port_um,
-                target_port_um,
-            )| {
-                NativeRouteJob::new(
-                    net_id,
-                    source,
-                    target,
-                    opened_cells,
-                    clearance_exempt_cells,
-                    static_cleanup_cells,
-                    source_port_um,
-                    target_port_um,
-                )
-            },
-        )
+/// The Python `RouteJob` objects as the loop's own jobs -- the one
+/// conversion the `#[pymethods]` wrapper's jobs need before anything native
+/// runs. The `foreign_keepout_cleanup_cells` of the Python side are the
+/// `static_cleanup_cells` of `NativeRouteJob`.
+pub(crate) fn native_jobs_from_py(jobs: &[PyRef<'_, PyRouteJob>]) -> Vec<NativeRouteJob> {
+    jobs.iter()
+        .map(|job| {
+            NativeRouteJob::new(
+                job.net_id,
+                job.source,
+                job.target,
+                job.opened_cells.clone(),
+                job.clearance_exempt_cells.clone(),
+                job.foreign_keepout_cleanup_cells.clone(),
+                job.source_port_um,
+                job.target_port_um,
+            )
+        })
         .collect()
 }
 
@@ -203,16 +182,17 @@ fn probe_blockers(probe: &ProbeState, crossing_free: bool) -> Vec<u64> {
 }
 
 impl PyPhotonicRouter {
-    /// The `#[pymethods]` wrapper's entry point: the Python job tuples as
-    /// the loop's own jobs, the loop, and the Python result dictionary.
-    /// Everything between those two conversions is `run_negotiated_batch`,
-    /// which needs no `Python<'_>` token at all -- the loop itself is
-    /// native, and this is the only place in the batch that is not.
+    /// The `#[pymethods]` wrapper's entry point once its `RouteJob`s are
+    /// native (`native_jobs_from_py`): the loop, and the Python result
+    /// dictionary. Everything before that dictionary is
+    /// `run_negotiated_batch`, which needs no `Python<'_>` token at all --
+    /// the loop itself is native, and this is the only place in the batch
+    /// that is not.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn route_many_with_negotiated_repair_and_commit_impl(
         &mut self,
         py: Python<'_>,
-        jobs: Vec<PyRouteJobTuple>,
+        jobs: Vec<NativeRouteJob>,
         block_radius_cells: i32,
         commit_radius_cells: Option<i32>,
         core_radius_cells: Option<i32>,
@@ -221,7 +201,6 @@ impl PyPhotonicRouter {
         history_increment: u32,
         no_ripup: bool,
     ) -> PyResult<PyObject> {
-        let jobs = native_jobs_from_py(jobs);
         let params = NegotiationParams {
             block_radius_cells,
             commit_radius_cells,

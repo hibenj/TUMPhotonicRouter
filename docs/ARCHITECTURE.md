@@ -137,7 +137,7 @@ former native and repair copies; the four ways a repair call differs are fields
 of the call or branches on its kind), `astar_config`, the collision-crossing
 search, and the crossing search configuration, and it calls
 `self.search_engine.search(...)`. Nothing per attempt lives on the router
-struct any more: every knob a search needs arrives in its `SearchCall`. `crossing_reservation.rs` (3,218
+struct any more: every knob a search needs arrives in its `SearchCall`. `crossing_reservation.rs` (2,830
 lines) owns crossing reservations, partner sets and the realized-crossing
 validation. `crossing_geometry.rs` (579 lines) owns the pure geometry used
 there (segment intersection, point-segment distance, parallel overlap,
@@ -149,7 +149,7 @@ section 4.
 
 ### `src/engine/negotiation/` -- the loop and its policies
 
-`mod.rs` (16 lines) is the module list. `loop_.rs` (1,278 lines, 732 of them
+`mod.rs` (16 lines) is the module list. `loop_.rs` (1,257 lines, 711 of them
 code and 546 tests) owns the loop itself in three functions:
 `run_negotiated_batch(jobs, params) -> (RepairBatchState, NegotiationCounters)`
 (103 lines) is the rounds without PyO3, `route_net_this_round(..) -> NetOutcome`
@@ -157,7 +157,14 @@ code and 546 tests) owns the loop itself in three functions:
 (98 lines) is LiDAR's `ripupfailedNets` at round end; the setup, the per-net
 `SearchArgs`, the braid requeue and the post-rip-up guidance are small helpers
 beside them, and `route_many_with_negotiated_repair_and_commit_impl` is the thin
-converter above it (phase 3 slice D of the 2026-10 do-over). Each *rule* the
+converter above it (phase 3 slice D of the 2026-10 do-over). The batch arrives
+from Python as a list of `RouteJob` objects (the `#[pyclass]` in
+`bindings/types.rs`: net id, source and target `State`, the opened,
+clearance-exempt and foreign-keep-out cell lists, the two port centers in
+micrometers, keyword-only constructor, read-only fields); `native_jobs_from_py`
+turns them into the engine's `NativeRouteJob`s once, at the boundary, and
+nothing below it sees Python (phase 3 slice E replaced the eight-field tuples
+the binding took before). The result stays a dictionary. Each *rule* the
 loop applies lives in its own module and can be replaced without touching the
 loop: `budget.rs` (206 lines, `AttemptKind`, `BudgetSchedule`,
 `LadderBudgets`), `crossing_free.rs` (102 lines, `CrossingFreePolicy`,
@@ -172,9 +179,13 @@ one). Section 5 reads the loop in full.
 
 ### `src/bindings/` -- the PyO3 surface
 
-`mod.rs` (3,290 lines) owns the single `#[pymethods]` block of
-`PyPhotonicRouter`: every method Python can call, and nothing else.
-`types.rs` (938 lines) owns the `#[pyclass]` configuration and result types
+`mod.rs` (3,172 lines) owns the single `#[pymethods]` block of
+`PyPhotonicRouter` (81 methods): every method Python can call, and nothing
+else; the seven helpers the block and the engine share (the meander-cache
+invalidation, `clear_static_cells`, `add_history_cells`, the long-straight
+record conversion, `effective_bend_radius_um`) sit in a plain `impl` block
+below it, out of Python's sight.
+`types.rs` (989 lines) owns the `#[pyclass]` configuration, job and result types
 (including `PyRouterConfig`, which validates the search engine name at
 construction). `convert.rs` (578 lines) owns the conversions in both directions
 (route results, batch timing dictionaries, primitive descriptions).
@@ -261,11 +272,13 @@ report boundaries. `timing.py` (38 lines) owns the pipeline timers.
 
 The nine stage modules own one phase each and are named for it:
 `obstacle_context.py` (94), `router_setup.py` (280), `route_jobs.py` (1,664),
-`crossing_plan_stage.py` (656), `handoff.py` (794), `dispatch.py` (569; its
+`crossing_plan_stage.py` (656), `handoff.py` (794), `dispatch.py` (575; its
 route/attempt/failure write-ups live in `diagnostics.py`, 1,205, behind the
-debug path and take no routing decision), `finalize.py` (1,161),
-`verify_repair.py` (1,112), `realize.py` (123); the optional
-`detour_pass.py` (199) sits between finalize and verify. A stage
+debug path and take no routing decision, and its `native_route_jobs` is the
+one place that packs the kernel's `RouteJob`s, for the first routing, the
+detour pass and the two verify-repair passes alike), `finalize.py` (1,161),
+`verify_repair.py` (1,079), `realize.py` (123); the optional
+`detour_pass.py` (179) sits between finalize and verify. A stage
 takes `(settings, state, <its input>)` and returns its product; it calls its
 own helpers by name and another stage's helper through an explicit import. A
 stage must not know the command line, must not read the environment, and must

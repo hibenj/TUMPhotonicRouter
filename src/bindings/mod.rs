@@ -55,6 +55,7 @@ use crate::search::state::State;
 use crate::search::{SearchEnvironment, SearchRequest};
 use crate::static_obstacle_builder::{PortInput, PyStaticCellSet, StaticGridSpec};
 
+use crate::engine::negotiation::loop_::native_jobs_from_py;
 use crate::engine::*;
 pub(crate) mod convert;
 pub(crate) mod meander_py;
@@ -65,35 +66,6 @@ pub(crate) use types::*;
 
 #[pymethods]
 impl PyPhotonicRouter {
-    #[pyo3(signature=(min_bend_radius_um=None))]
-    pub(crate) fn effective_bend_radius_um(
-        &self,
-        min_bend_radius_um: Option<f64>,
-    ) -> PyResult<f64> {
-        let grid_size_um = self.grid.grid_size_um;
-        if !grid_size_um.is_finite() || grid_size_um <= 0.0 {
-            return Err(PyValueError::new_err("grid_size_um must be finite and > 0"));
-        }
-        match min_bend_radius_um {
-            None => {
-                let cells = self.primitive_cfg.bend_radius_cells;
-                actual_bend_radius_um_from_cells_rs(cells, grid_size_um)
-                    .map_err(PyValueError::new_err)
-            }
-            Some(v) => {
-                if !v.is_finite() || v <= 0.0 {
-                    return Err(PyValueError::new_err(
-                        "min_bend_radius_um must be finite and > 0 when provided",
-                    ));
-                }
-                let cells = bend_radius_cells_from_min_radius_rs(v, grid_size_um)
-                    .map_err(PyValueError::new_err)?;
-                actual_bend_radius_um_from_cells_rs(cells, grid_size_um)
-                    .map_err(PyValueError::new_err)
-            }
-        }
-    }
-
     #[pyo3(signature=(min_bend_radius_um=None))]
     pub(crate) fn describe_bend_radius(
         &self,
@@ -199,17 +171,6 @@ impl PyPhotonicRouter {
         Ok(())
     }
 
-    pub(crate) fn clear_crossing_guidance(&mut self) {
-        self.crossing_context.clear_guidance();
-    }
-
-    pub(crate) fn crossing_guidance_planned_pair_count(&self) -> usize {
-        self.crossing_context
-            .guidance()
-            .map(|guidance| guidance.planned_pair_count())
-            .unwrap_or(0)
-    }
-
     pub(crate) fn crossing_expected_count(&self, net_id: u64) -> u32 {
         self.crossing_context.expected_crossing_count(net_id)
     }
@@ -251,24 +212,8 @@ impl PyPhotonicRouter {
         Ok(out)
     }
 
-    pub(crate) fn invalidate_meander_base_prefix(&self) {
-        self.registered_plm.borrow_mut().invalidate_base_prefix();
-    }
-
-    pub(crate) fn ensure_meander_base_prefix(&self) {
-        self.registered_plm
-            .borrow_mut()
-            .ensure_base_prefix_from_obstacle_map(&self.obstacle_map);
-    }
-
     pub(crate) fn invalidate_meander_registered_reserved_index(&self) {
         self.registered_plm.borrow_mut().invalidate_reserved_index();
-    }
-
-    pub(crate) fn ensure_meander_registered_reserved_index(&self) {
-        self.registered_plm
-            .borrow_mut()
-            .ensure_reserved_index(self.grid.width as i32, self.grid.height as i32);
     }
 
     pub(crate) fn add_static_cells(&mut self, cells: Vec<(i32, i32)>) {
@@ -277,21 +222,6 @@ impl PyPhotonicRouter {
             self.static_cells.insert(pack_xy(*x, *y));
         }
         self.obstacle_map.add_static_cells(&cells);
-    }
-    pub(crate) fn clear_static_cells(&mut self) {
-        self.invalidate_meander_base_prefix();
-        self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
-        self.static_cells.clear();
-        self.committed_center_routes.clear();
-        self.committed_realized_center_routes.clear();
-        self.committed_target_terminal_bump_guards.clear();
-        self.committed_opened_cell_keys.clear();
-        self.crossing_events.clear();
-        self.long_straight_congestion_cells.clear();
-        self.long_straight_congestion_records.clear();
-        let mut plm = self.registered_plm.borrow_mut();
-        plm.clear_registered_routes();
-        plm.clear_reserved_cells_and_invalidate_index();
     }
     pub(crate) fn set_static_cells(&mut self, cells: Vec<(i32, i32)>) {
         self.clear_static_cells();
@@ -747,10 +677,6 @@ impl PyPhotonicRouter {
     pub(crate) fn add_port_open_cells(&mut self, cells: Vec<(i32, i32)>) {
         self.port_open_cells.extend(pack_cells(&cells));
     }
-    pub(crate) fn clear_port_open_cells(&mut self) {
-        self.port_open_cells.clear();
-    }
-
     #[pyo3(signature=(source,target,opened_cells=None))]
     pub(crate) fn route_single_net(
         &self,
@@ -847,16 +773,7 @@ impl PyPhotonicRouter {
     fn route_many_with_negotiated_repair_and_commit(
         &mut self,
         py: Python<'_>,
-        jobs: Vec<(
-            u64,
-            PyState,
-            PyState,
-            Vec<(i32, i32)>,
-            Vec<(i32, i32)>,
-            Vec<(i32, i32)>,
-            Option<(f64, f64)>,
-            Option<(f64, f64)>,
-        )>,
+        jobs: Vec<PyRef<'_, PyRouteJob>>,
         block_radius_cells: i32,
         commit_radius_cells: Option<i32>,
         core_radius_cells: Option<i32>,
@@ -867,7 +784,7 @@ impl PyPhotonicRouter {
     ) -> PyResult<PyObject> {
         self.route_many_with_negotiated_repair_and_commit_impl(
             py,
-            jobs,
+            native_jobs_from_py(&jobs),
             block_radius_cells,
             commit_radius_cells,
             core_radius_cells,
@@ -889,17 +806,6 @@ impl PyPhotonicRouter {
             self.invalidate_meander_base_prefix();
         }
         removed
-    }
-
-    pub(crate) fn clear_dynamic(&mut self) {
-        self.remove_crossing_events_for_all_routes();
-        self.obstacle_map.clear_dynamic();
-        self.committed_center_routes.clear();
-        self.committed_realized_center_routes.clear();
-        self.committed_target_terminal_bump_guards.clear();
-        self.committed_opened_cell_keys.clear();
-        self.crossing_events.clear();
-        self.invalidate_meander_base_prefix();
     }
 
     pub(crate) fn get_net_cells(&self, net_id: u64) -> Vec<(i32, i32)> {
@@ -990,126 +896,6 @@ impl PyPhotonicRouter {
             self.invalidate_meander_base_prefix();
         }
         committed
-    }
-
-    #[pyo3(signature=(net_id, cells, block_radius_cells=0, commit_radius_cells=None, clearance_exempt_cells=None, core_radius_cells=None))]
-    pub(crate) fn commit_route_with_clearance(
-        &mut self,
-        net_id: u64,
-        cells: Vec<(i32, i32)>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        clearance_exempt_cells: Option<Vec<(i32, i32)>>,
-        core_radius_cells: Option<i32>,
-    ) -> bool {
-        let route_cells = route_commit_cells(
-            &cells,
-            block_radius_cells,
-            commit_radius_cells.unwrap_or(block_radius_cells),
-            clearance_exempt_cells.as_deref(),
-            self.grid.width as i32,
-            self.grid.height as i32,
-        );
-        let core_cells = route_core_cells(
-            &cells,
-            core_radius_cells.unwrap_or(block_radius_cells),
-            self.grid.width as i32,
-            self.grid.height as i32,
-        );
-        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
-            net_id,
-            &core_cells,
-            &route_cells,
-            clearance_exempt_cells.as_deref().unwrap_or(&[]),
-        );
-        if committed {
-            self.remove_crossing_events_for_net(net_id);
-            self.invalidate_meander_base_prefix();
-        }
-        committed
-    }
-
-    pub(crate) fn dynamic_owners_for_cells(&self, cells: Vec<(i32, i32)>) -> Vec<u64> {
-        let mut owners: Vec<u64> = self
-            .obstacle_map
-            .dynamic_owners_for_cells(&cells)
-            .into_iter()
-            .collect();
-        owners.sort_unstable();
-        owners
-    }
-
-    #[pyo3(signature=(route,block_radius_cells=0))]
-    pub(crate) fn inflated_route_cells(
-        &self,
-        route: &PyRouteResult,
-        block_radius_cells: i32,
-    ) -> Vec<(i32, i32)> {
-        inflate_route_cells(
-            &route.cells,
-            block_radius_cells,
-            self.grid.width as i32,
-            self.grid.height as i32,
-        )
-    }
-
-    #[pyo3(signature=(route,block_radius_cells=0))]
-    pub(crate) fn dynamic_owners_for_route(
-        &self,
-        route: &PyRouteResult,
-        block_radius_cells: i32,
-    ) -> Vec<u64> {
-        let cells = inflate_route_cells(
-            &route.cells,
-            block_radius_cells,
-            self.grid.width as i32,
-            self.grid.height as i32,
-        );
-        self.dynamic_owners_for_cells(cells)
-    }
-
-    #[pyo3(signature=(cells,amount=1))]
-    pub(crate) fn add_history_cells(&mut self, cells: Vec<(i32, i32)>, amount: u32) {
-        for (x, y) in cells {
-            self.obstacle_map.add_history_cost(x, y, amount);
-        }
-    }
-
-    pub(crate) fn long_straight_congestion_records(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<Vec<PyObject>> {
-        let mut out = Vec::with_capacity(self.long_straight_congestion_records.len());
-        for record in &self.long_straight_congestion_records {
-            let d = PyDict::new_bound(py);
-            d.set_item("net_id", record.net_id)?;
-            d.set_item("start", record.start)?;
-            d.set_item("end", record.end)?;
-            d.set_item("length_um", record.length_um)?;
-            d.set_item("marked_cells", record.marked_cells)?;
-            out.push(d.into());
-        }
-        Ok(out)
-    }
-
-    #[pyo3(signature=(route,block_radius_cells=0,amount=1))]
-    pub(crate) fn add_history_for_route(
-        &mut self,
-        route: &PyRouteResult,
-        block_radius_cells: i32,
-        amount: u32,
-    ) {
-        let cells = inflate_route_cells(
-            &route.cells,
-            block_radius_cells,
-            self.grid.width as i32,
-            self.grid.height as i32,
-        );
-        self.add_history_cells(cells, amount);
-    }
-
-    pub(crate) fn clear_history(&mut self) {
-        self.obstacle_map.clear_history();
     }
 
     pub(crate) fn export_debug_svg(&self, route: &PyRouteResult) -> String {
@@ -3276,6 +3062,94 @@ impl PyPhotonicRouter {
     }
 }
 
+/// The helpers the `#[pymethods]` block and the engine share. They sit
+/// outside that block so Python never sees them (phase 3 slice E of the
+/// 2026-10 do-over): each one has Rust callers and no Python caller.
+impl PyPhotonicRouter {
+    pub(crate) fn effective_bend_radius_um(
+        &self,
+        min_bend_radius_um: Option<f64>,
+    ) -> PyResult<f64> {
+        let grid_size_um = self.grid.grid_size_um;
+        if !grid_size_um.is_finite() || grid_size_um <= 0.0 {
+            return Err(PyValueError::new_err("grid_size_um must be finite and > 0"));
+        }
+        match min_bend_radius_um {
+            None => {
+                let cells = self.primitive_cfg.bend_radius_cells;
+                actual_bend_radius_um_from_cells_rs(cells, grid_size_um)
+                    .map_err(PyValueError::new_err)
+            }
+            Some(v) => {
+                if !v.is_finite() || v <= 0.0 {
+                    return Err(PyValueError::new_err(
+                        "min_bend_radius_um must be finite and > 0 when provided",
+                    ));
+                }
+                let cells = bend_radius_cells_from_min_radius_rs(v, grid_size_um)
+                    .map_err(PyValueError::new_err)?;
+                actual_bend_radius_um_from_cells_rs(cells, grid_size_um)
+                    .map_err(PyValueError::new_err)
+            }
+        }
+    }
+
+    pub(crate) fn invalidate_meander_base_prefix(&self) {
+        self.registered_plm.borrow_mut().invalidate_base_prefix();
+    }
+
+    pub(crate) fn ensure_meander_base_prefix(&self) {
+        self.registered_plm
+            .borrow_mut()
+            .ensure_base_prefix_from_obstacle_map(&self.obstacle_map);
+    }
+
+    pub(crate) fn ensure_meander_registered_reserved_index(&self) {
+        self.registered_plm
+            .borrow_mut()
+            .ensure_reserved_index(self.grid.width as i32, self.grid.height as i32);
+    }
+
+    pub(crate) fn clear_static_cells(&mut self) {
+        self.invalidate_meander_base_prefix();
+        self.obstacle_map = ObstacleMap::new(self.grid.width as i32, self.grid.height as i32);
+        self.static_cells.clear();
+        self.committed_center_routes.clear();
+        self.committed_realized_center_routes.clear();
+        self.committed_target_terminal_bump_guards.clear();
+        self.committed_opened_cell_keys.clear();
+        self.crossing_events.clear();
+        self.long_straight_congestion_cells.clear();
+        self.long_straight_congestion_records.clear();
+        let mut plm = self.registered_plm.borrow_mut();
+        plm.clear_registered_routes();
+        plm.clear_reserved_cells_and_invalidate_index();
+    }
+
+    pub(crate) fn add_history_cells(&mut self, cells: Vec<(i32, i32)>, amount: u32) {
+        for (x, y) in cells {
+            self.obstacle_map.add_history_cost(x, y, amount);
+        }
+    }
+
+    pub(crate) fn long_straight_congestion_records(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<Vec<PyObject>> {
+        let mut out = Vec::with_capacity(self.long_straight_congestion_records.len());
+        for record in &self.long_straight_congestion_records {
+            let d = PyDict::new_bound(py);
+            d.set_item("net_id", record.net_id)?;
+            d.set_item("start", record.start)?;
+            d.set_item("end", record.end)?;
+            d.set_item("length_um", record.length_um)?;
+            d.set_item("marked_cells", record.marked_cells)?;
+            out.push(d.into());
+        }
+        Ok(out)
+    }
+}
+
 pub fn register_py_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGridSpec>()?;
     m.add_class::<PyPrimitiveLibraryConfig>()?;
@@ -3284,6 +3158,7 @@ pub fn register_py_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCrossingConfig>()?;
     m.add_class::<PyCrossingConstraint>()?;
     m.add_class::<PyState>()?;
+    m.add_class::<PyRouteJob>()?;
     m.add_class::<PyRouteResult>()?;
     m.add_class::<PyPortAccess>()?;
     m.add_class::<PyPhotonicRouter>()?;

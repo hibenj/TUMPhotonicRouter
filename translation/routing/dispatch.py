@@ -205,6 +205,41 @@ def _clearance_exempt_cell_set_for_job(settings, state, job: RouteJob) -> set[tu
     return set(_clearance_exempt_cells_for_job(settings, state, job))
 
 
+def native_route_jobs(settings, state, jobs: Iterable[RouteJob]) -> list[Any]:
+    """The kernel's `RouteJob` objects for `route_many_with_negotiated_repair_and_commit`.
+
+    One job per Python `RouteJob`, in the order given: the net id, the two grid
+    states and the opened port cells of the static hand-off
+    (`state.route_state_openings_by_id`), the clearance-exempt cells of the
+    batch, the foreign keep-out cells the net may clean up, and the two routing
+    endpoint centers (the fan-out anchor where one exists, the port center
+    otherwise). The first routing, the detour pass and the two verify-repair
+    passes all pack their batches here; `job.opened_cells` on the result is the
+    opened-cell list the callers record with the route.
+    """
+    rust_route_job = state.rust_backend.RouteJob
+    native_jobs: list[Any] = []
+    for job in jobs:
+        source_state, target_state, _, _, opened_cells = _state_openings_for_job(
+            settings, state, job
+        )
+        native_jobs.append(
+            rust_route_job(
+                net_id=int(job.net_id),
+                source=source_state,
+                target=target_state,
+                opened_cells=opened_cells,
+                clearance_exempt_cells=_clearance_exempt_cells_for_job(settings, state, job),
+                foreign_keepout_cleanup_cells=_foreign_keepout_cleanup_cells_for_job(
+                    settings, state, job
+                ),
+                source_port_um=_routing_endpoint_center_um(settings, state, job, source=True),
+                target_port_um=_routing_endpoint_center_um(settings, state, job, source=False),
+            )
+        )
+    return native_jobs
+
+
 def _record_route(
     settings,
     state,
@@ -319,26 +354,11 @@ def dispatch_native_routing(
             "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. Rebuild it "
             "with `maturin develop --release`; the Python routing fallbacks have been removed."
         )
-    batch_jobs: list[
-        tuple[
-            int,
-            Any,
-            Any,
-            list[tuple[int, int]],
-            list[tuple[int, int]],
-            list[tuple[int, int]],
-            tuple[float, float] | None,
-            tuple[float, float] | None,
-        ]
-    ] = []
     batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
     batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
     t_batch_job_pack_start = timing.pipeline_timer_start(settings, state)
-    for job in route_jobs:
-        source_state, target_state, _, _, opened_cells = _state_openings_for_job(
-            settings, state, job
-        )
-        clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
+    batch_jobs = native_route_jobs(settings, state, route_jobs)
+    for job, native_job in zip(route_jobs, batch_jobs, strict=True):
         route_selected_for_debug = (
             settings.debug_route_indices is None or job.route_index in settings.debug_route_indices
         )
@@ -360,19 +380,7 @@ def dispatch_native_routing(
         ):
             _ensure_dir(route_dir)
             diag_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
-        batch_jobs.append(
-            (
-                int(job.net_id),
-                source_state,
-                target_state,
-                opened_cells,
-                clearance_exempt_cells,
-                _foreign_keepout_cleanup_cells_for_job(settings, state, job),
-                _routing_endpoint_center_um(settings, state, job, source=True),
-                _routing_endpoint_center_um(settings, state, job, source=False),
-            )
-        )
-        batch_opened_cells_by_id[int(job.net_id)] = opened_cells
+        batch_opened_cells_by_id[int(job.net_id)] = native_job.opened_cells
         batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
     timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
 

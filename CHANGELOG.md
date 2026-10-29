@@ -13,6 +13,26 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- The negotiated batch takes `RouteJob` objects (phase 3 slice E):
+  `PyPhotonicRouter.route_many_with_negotiated_repair_and_commit` accepts a
+  list of the new `photonic_router._rust.RouteJob` (`#[pyclass]` in
+  `src/bindings/types.rs`; keyword-only constructor over the eight fields
+  `net_id`, `source`, `target`, `opened_cells`, `clearance_exempt_cells`,
+  `foreign_keepout_cleanup_cells`, `source_port_um`, `target_port_um`, each
+  readable) instead of eight-field tuples, and `native_jobs_from_py` converts
+  them to the engine's `NativeRouteJob` once at the boundary. On the Python
+  side `translation/routing/dispatch.py::native_route_jobs(settings, state,
+  jobs)` is the one packer; the first routing, the detour pass
+  (`detour_pass.py`) and the two verify-repair passes (`verify_repair.py`)
+  built the same eight values in four copies before and call it now. The
+  batch result dictionary is unchanged; the nine-cell gate is identical.
+- Seven `PyPhotonicRouter` methods Python never called but the engine does
+  (`invalidate_meander_base_prefix`, `ensure_meander_base_prefix`,
+  `ensure_meander_registered_reserved_index`, `clear_static_cells`,
+  `add_history_cells`, `long_straight_congestion_records`,
+  `effective_bend_radius_um`) moved out of the `#[pymethods]` block into a
+  plain `impl` block, so they leave the Python surface (98 -> 81 pymethods
+  with the removals below); `python/photonic_router/_rust.pyi` regenerated.
 - The negotiated loop in its 150-line shape (phase 3 slice D;
   `src/engine/negotiation/loop_.rs` 1,377 -> 1,278 lines, the module 4,084
   -> 4,046): `run_negotiated_batch` (103 lines) is the rounds, the per-net
@@ -117,6 +137,18 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Removed
 
+- Ten dead `PyPhotonicRouter` pymethods of the negotiation, history, dynamic-
+  and static-map and crossing-guidance surface with no caller in Python
+  (production, tests or scripts) or Rust (phase 3 slice E):
+  `add_history_for_route`, `clear_history`, `clear_dynamic`,
+  `clear_port_open_cells`, `clear_crossing_guidance`,
+  `crossing_guidance_planned_pair_count`, `commit_route_with_clearance`,
+  `inflated_route_cells`, `dynamic_owners_for_route`,
+  `dynamic_owners_for_cells`, and with them the engine helper
+  `remove_crossing_events_for_all_routes` only `clear_dynamic` reached.
+  `ObstacleMap::clear_history` and `::clear_dynamic` stay (the loop uses
+  them). The meander, PLM, realisation, endpoint-correction and port-access
+  pymethods without callers are untouched; they belong to phases 5 and 6.
 - The two negotiation tactics the 27-cell ablation found inert (phase 3
   slice A): the legal-only probe-guided attempt and the direct-crossing
   attempt (`try_lidar_direct_crossing_subset`, the `lidar_direct_crossing`

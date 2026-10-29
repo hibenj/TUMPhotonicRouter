@@ -280,6 +280,7 @@ mod tests {
     use super::*;
     use crate::bindings::PyState;
     use crate::engine::test_support::{small_test_router_with_router_config, test_router_config};
+    use crate::engine::NativeRouteJob;
     use crate::obstacle_map::CellKey;
     use crate::search;
     use crate::search::test_support::{
@@ -414,8 +415,8 @@ mod tests {
             test_router_config(crate::config::SEARCH_ENGINE_GRID_DIJKSTRA).expect("valid engine");
         let mut router = small_test_router_with_router_config(Some(router_config));
         let jobs = vec![
-            (
-                1u64,
+            NativeRouteJob::new(
+                1,
                 PyState::new(1, 2, 0),
                 PyState::new(17, 2, 0),
                 Vec::new(),
@@ -424,8 +425,8 @@ mod tests {
                 None,
                 None,
             ),
-            (
-                2u64,
+            NativeRouteJob::new(
+                2,
                 PyState::new(1, 12, 0),
                 PyState::new(17, 12, 0),
                 Vec::new(),

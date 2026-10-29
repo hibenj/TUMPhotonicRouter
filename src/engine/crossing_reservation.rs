@@ -1461,27 +1461,6 @@ impl PyPhotonicRouter {
         self.invalidate_meander_base_prefix();
     }
 
-    pub(crate) fn remove_crossing_events_for_all_routes(&mut self) {
-        if self.crossing_events.is_empty() {
-            return;
-        }
-        let mut removed_keys = FxHashSet::default();
-        for event in self.crossing_events.drain(..) {
-            removed_keys.extend(event.reservation_keys.iter().copied());
-        }
-        if removed_keys.is_empty() {
-            return;
-        }
-        self.obstacle_map.remove_static_keys(&removed_keys);
-        for key in removed_keys {
-            let (x, y) = unpack_xy(key);
-            if !self.obstacle_map.is_static_blocked(x, y) {
-                self.static_cells.remove(&key);
-            }
-        }
-        self.invalidate_meander_base_prefix();
-    }
-
     pub(crate) fn add_crossing_events(&mut self, events: Vec<CrossingEvent>) {
         if events.is_empty() {
             return;

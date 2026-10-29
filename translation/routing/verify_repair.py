@@ -50,11 +50,8 @@ from translation.route_rust_types import RoutedNetRecord
 from translation.routing import timing
 from translation.routing.dispatch import (
     NEGOTIATED_MAX_ROUNDS,
-    _clearance_exempt_cells_for_job,
-    _foreign_keepout_cleanup_cells_for_job,
     _record_route,
-    _routing_endpoint_center_um,
-    _state_openings_for_job,
+    native_route_jobs,
 )
 from translation.routing.finalize import (
     _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids,
@@ -449,37 +446,10 @@ def _repair_final_illegal_crossings(
         state.router.ripup_route(int(net_id))
         state.route_bookkeeping.clear_route(int(net_id))
 
-    repair_jobs: list[
-        tuple[
-            int,
-            Any,
-            Any,
-            list[tuple[int, int]],
-            list[tuple[int, int]],
-            tuple[float, float] | None,
-            tuple[float, float] | None,
-        ]
-    ] = []
-    opened_by_id: dict[int, list[tuple[int, int]]] = {}
-    for net_id in repair_net_ids:
-        job = state.route_jobs_by_id[net_id]
-        source_state, target_state, _, _, opened_cells = _state_openings_for_job(
-            settings, state, job
-        )
-        clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
-        repair_jobs.append(
-            (
-                int(job.net_id),
-                source_state,
-                target_state,
-                opened_cells,
-                clearance_exempt_cells,
-                _foreign_keepout_cleanup_cells_for_job(settings, state, job),
-                _routing_endpoint_center_um(settings, state, job, source=True),
-                _routing_endpoint_center_um(settings, state, job, source=False),
-            )
-        )
-        opened_by_id[int(job.net_id)] = opened_cells
+    repair_jobs = native_route_jobs(
+        settings, state, (state.route_jobs_by_id[net_id] for net_id in repair_net_ids)
+    )
+    opened_by_id = {int(job.net_id): job.opened_cells for job in repair_jobs}
 
     raw_repair_result = state.router.route_many_with_negotiated_repair_and_commit(
         repair_jobs,
@@ -860,38 +830,10 @@ def _repair_final_photonic_issues(
         state.router.ripup_route(int(net_id))
         state.route_bookkeeping.clear_route(int(net_id))
 
-    repair_jobs: list[
-        tuple[
-            int,
-            Any,
-            Any,
-            list[tuple[int, int]],
-            list[tuple[int, int]],
-            list[tuple[int, int]],
-            tuple[float, float] | None,
-            tuple[float, float] | None,
-        ]
-    ] = []
-    opened_by_id: dict[int, list[tuple[int, int]]] = {}
-    for net_id in repair_net_ids:
-        job = state.route_jobs_by_id[net_id]
-        source_state, target_state, _, _, opened_cells = _state_openings_for_job(
-            settings, state, job
-        )
-        clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
-        repair_jobs.append(
-            (
-                int(job.net_id),
-                source_state,
-                target_state,
-                opened_cells,
-                clearance_exempt_cells,
-                _foreign_keepout_cleanup_cells_for_job(settings, state, job),
-                _routing_endpoint_center_um(settings, state, job, source=True),
-                _routing_endpoint_center_um(settings, state, job, source=False),
-            )
-        )
-        opened_by_id[int(job.net_id)] = opened_cells
+    repair_jobs = native_route_jobs(
+        settings, state, (state.route_jobs_by_id[net_id] for net_id in repair_net_ids)
+    )
+    opened_by_id = {int(job.net_id): job.opened_cells for job in repair_jobs}
 
     raw_repair_result = state.router.route_many_with_negotiated_repair_and_commit(
         repair_jobs,
