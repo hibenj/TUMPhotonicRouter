@@ -14,17 +14,6 @@ use crate::plm::{
     MeanderPlanningProfileTotals, MeanderWrapperProfileTotals, RegisteredRequirementResult,
 };
 
-pub(crate) fn parse_meander_side(side: &str) -> PyResult<MeanderSide> {
-    let normalized = side.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "left" => Ok(MeanderSide::Left),
-        "right" => Ok(MeanderSide::Right),
-        _ => Err(PyValueError::new_err(
-            "side must be either 'left' or 'right'",
-        )),
-    }
-}
-
 pub(crate) fn parse_auto_meander_side_policy(side_policy: &str) -> PyResult<AutoMeanderSidePolicy> {
     let normalized = side_policy.trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -250,40 +239,6 @@ pub(crate) fn auto_meander_plan_to_py_object(
         "max_possible_bumps_from_box_depth",
         max_possible_bumps.max(0),
     )?;
-    Ok(d.into())
-}
-
-pub(crate) fn auto_meander_probe_to_py_object(
-    py: Python<'_>,
-    probe: &crate::auto_meander::AutoRouteAnalyticMeanderProbe,
-) -> PyResult<PyObject> {
-    let d = PyDict::new_bound(py);
-    d.set_item("feasible", probe.feasible)?;
-    d.set_item("candidate_runs", probe.candidate_runs)?;
-    d.set_item("candidate_intervals", probe.candidate_intervals)?;
-    d.set_item("rejected_box_blocked", probe.rejected_box_blocked)?;
-    d.set_item("rejected_planning_failed", probe.rejected_planning_failed)?;
-    d.set_item(
-        "rejected_exact_length_mismatch",
-        probe.rejected_exact_length_mismatch,
-    )?;
-    d.set_item("rejected_too_short", probe.rejected_too_short)?;
-    d.set_item("selected_run_start_index", probe.selected_run_start_index)?;
-    d.set_item("selected_run_end_index", probe.selected_run_end_index)?;
-    d.set_item("selected_run_length_um", probe.selected_run_length_um)?;
-    d.set_item(
-        "selected_interval_length_um",
-        probe.selected_interval_length_um,
-    )?;
-    d.set_item("box_depth_um", probe.selected_box_depth_um)?;
-    if let Some(rect) = probe.selected_grid_rect {
-        d.set_item(
-            "selected_grid_rect",
-            (rect.min_x, rect.max_x, rect.min_y, rect.max_y),
-        )?;
-    } else {
-        d.set_item("selected_grid_rect", Option::<(i32, i32, i32, i32)>::None)?;
-    }
     Ok(d.into())
 }
 

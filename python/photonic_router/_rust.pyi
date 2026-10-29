@@ -105,24 +105,6 @@ class GridSpec:
     @property
     def width(self) -> Any: ...
 
-class PortAccess:
-    @property
-    def access_centerline_um(self) -> Any: ...
-    @property
-    def anchor_angle(self) -> Any: ...
-    @property
-    def anchor_cell(self) -> Any: ...
-    @property
-    def anchor_point_um(self) -> Any: ...
-    @property
-    def entry_angle(self) -> Any: ...
-    @property
-    def port_angle(self) -> Any: ...
-    @property
-    def port_name(self) -> Any: ...
-    @property
-    def port_point_um(self) -> Any: ...
-
 class PrimitiveLibraryConfig:
     def __init__(
         self,
@@ -156,7 +138,6 @@ class PyPhotonicRouter:
     ) -> Any: ...
     def add_static_cells(self, /, cells: Any) -> Any: ...
     def add_static_rects(self, /, rects: Any) -> Any: ...
-    def all_net_core_cells(self, /) -> Any: ...
     def all_net_route_cells(self, /) -> Any: ...
     def apply_checked_endpoint_corrections(
         self,
@@ -179,42 +160,7 @@ class PyPhotonicRouter:
     def build_dynamic_clearance_exempt_cells_for_routes(
         self, /, jobs: Any, commit_radius_cells: Any, min_run_in_length_cells: Any
     ) -> Any: ...
-    def build_port_access(
-        self,
-        /,
-        port_name: Any,
-        x_um: Any,
-        y_um: Any,
-        orientation: Any = None,
-        min_straight_um: Any = 0.0,
-        max_anchor_search_cells: Any = 8,
-        min_bend_radius_um: Any = 0.0,
-    ) -> Any: ...
-    def build_port_accesses(
-        self,
-        /,
-        ports: Any,
-        min_straight_um: Any = 0.0,
-        max_anchor_search_cells: Any = 8,
-        min_bend_radius_um: Any = 0.0,
-    ) -> Any: ...
     def build_port_footprint_cells(self, /, ports: Any) -> Any: ...
-    def cells_for_auto_analytic_meander_box(
-        self,
-        /,
-        route: Any,
-        requested_extra_length_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        max_meander_height_um: Any = 20.0,
-        box_depth_um: Any = 20.0,
-        min_segment_length_um: Any = 10.0,
-        clearance_radius_cells: Any = 0,
-        side_policy: Any = "both",
-        opened_cells: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-    ) -> Any: ...
     def centerline_length_um(self, /, centerline: Any) -> Any: ...
     def centerline_port_corrected_checked(
         self,
@@ -229,35 +175,17 @@ class PyPhotonicRouter:
         source_port_um: Any = None,
         target_port_um: Any = None,
     ) -> Any: ...
-    def check_meander_box_free(
-        self, /, available_box: Any, clearance_radius_cells: Any = 0, opened_cells: Any = None
-    ) -> Any: ...
     def clear_registered_meander_reserved_cells(self, /) -> Any: ...
-    def clear_registered_meander_route_cells(self, /) -> Any: ...
     def commit_route_cells(self, /, net_id: Any, cells: Any) -> Any: ...
     def crossing_config(self, /) -> Any: ...
     def crossing_events(self, /) -> Any: ...
     def crossing_verdicts(self, /) -> Any: ...
-    def describe_bend_radius(self, /, min_bend_radius_um: Any = None) -> Any: ...
     def describe_primitives(self, /) -> Any: ...
     def export_debug_svg(self, /, route: Any) -> Any: ...
     def export_debug_svg_with_obstacle_cells(self, /, route: Any, obstacle_cells: Any) -> Any: ...
     def get_net_cells(self, /, net_id: Any) -> Any: ...
     def get_net_core_cells(self, /, net_id: Any) -> Any: ...
-    def invalidate_meander_registered_reserved_index(self, /) -> Any: ...
     def last_meander_registration_profile(self, /) -> Any: ...
-    def plan_analytic_meander_for_route(
-        self,
-        /,
-        route: Any,
-        requested_extra_length_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        side: Any = "left",
-        available_box: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-    ) -> Any: ...
     def plan_auto_analytic_meander_final_requests_registered_opened_auto_config(
         self,
         /,
@@ -278,40 +206,6 @@ class PyPhotonicRouter:
         self,
         /,
         centerline: Any,
-        requested_extra_length_um: Any,
-        box_depths_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        max_meander_height_um: Any = 20.0,
-        min_segment_length_um: Any = 10.0,
-        endpoint_inset_um: Any = 0.0,
-        clearance_radius_cells: Any = 0,
-        side_policy: Any = "both",
-        opened_cells: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-        extra_blocked_cells: Any = None,
-    ) -> Any: ...
-    def plan_auto_analytic_meander_for_route(
-        self,
-        /,
-        route: Any,
-        requested_extra_length_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        max_meander_height_um: Any = 20.0,
-        box_depth_um: Any = 20.0,
-        min_segment_length_um: Any = 10.0,
-        clearance_radius_cells: Any = 0,
-        side_policy: Any = "both",
-        opened_cells: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-    ) -> Any: ...
-    def plan_auto_analytic_meander_for_route_depth_sweep(
-        self,
-        /,
-        route: Any,
         requested_extra_length_um: Any,
         box_depths_um: Any,
         min_bend_radius_um: Any = None,
@@ -370,55 +264,9 @@ class PyPhotonicRouter:
         side_policy: Any = "both",
         planning_mode: Any = "fill_box_multi_bump",
     ) -> Any: ...
-    def probe_auto_analytic_meander_for_centerline_depth_sweep(
-        self,
-        /,
-        centerline: Any,
-        requested_extra_length_um: Any,
-        box_depths_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        max_meander_height_um: Any = 20.0,
-        min_segment_length_um: Any = 10.0,
-        endpoint_inset_um: Any = 0.0,
-        clearance_radius_cells: Any = 0,
-        side_policy: Any = "both",
-        opened_cells: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-        extra_blocked_cells: Any = None,
-    ) -> Any: ...
-    def probe_auto_analytic_meander_for_route_depth_sweep(
-        self,
-        /,
-        route: Any,
-        requested_extra_length_um: Any,
-        box_depths_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        max_meander_height_um: Any = 20.0,
-        min_segment_length_um: Any = 10.0,
-        endpoint_inset_um: Any = 0.0,
-        clearance_radius_cells: Any = 0,
-        side_policy: Any = "both",
-        opened_cells: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-        extra_blocked_cells: Any = None,
-    ) -> Any: ...
     def raw_dynamic_core_cells(self, /) -> Any: ...
     def raw_dynamic_obstacle_cells(self, /) -> Any: ...
     def raw_static_obstacle_cells(self, /) -> Any: ...
-    def realize_centerline_polygon(self, /, centerline: Any, width_um: Any) -> Any: ...
-    def realize_centerline_polygon_from_planned_auto_meander(
-        self,
-        /,
-        centerline: Any,
-        width_um: Any,
-        selected_run_start_index: Any,
-        selected_run_end_index: Any,
-        meander_centerline: Any,
-    ) -> Any: ...
     def realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents(
         self,
         /,
@@ -450,56 +298,8 @@ class PyPhotonicRouter:
         selected_run_end_index: Any,
         meander_centerline: Any,
     ) -> Any: ...
-    def realize_route_polygon_with_analytic_meander(
-        self,
-        /,
-        route: Any,
-        width_um: Any,
-        requested_extra_length_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        side: Any = "left",
-        available_box: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-    ) -> Any: ...
-    def realize_route_polygon_with_auto_checked_analytic_meander(
-        self,
-        /,
-        route: Any,
-        width_um: Any,
-        requested_extra_length_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        max_meander_height_um: Any = 20.0,
-        box_depth_um: Any = 20.0,
-        min_segment_length_um: Any = 10.0,
-        clearance_radius_cells: Any = 0,
-        side_policy: Any = "both",
-        opened_cells: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-    ) -> Any: ...
-    def realize_route_polygon_with_checked_analytic_meander_box(
-        self,
-        /,
-        route: Any,
-        width_um: Any,
-        requested_extra_length_um: Any,
-        min_bend_radius_um: Any = None,
-        min_straight_um: Any = 0.0,
-        max_bumps: Any = 8,
-        side: Any = "left",
-        available_box: Any = None,
-        clearance_radius_cells: Any = 0,
-        opened_cells: Any = None,
-        planning_mode: Any = "fill_box_multi_bump",
-    ) -> Any: ...
     def realize_route_polygon_with_endpoint_correction(
         self, /, route: Any, width_um: Any, source_port_um: Any = None, target_port_um: Any = None
-    ) -> Any: ...
-    def realize_route_polygon_with_port_access(
-        self, /, route: Any, width_um: Any, source_access: Any = None, target_access: Any = None
     ) -> Any: ...
     def register_meander_route_cells_as_static(
         self, /, routes: Any, base_static_cells: Any, route_clearance_radius_cells: Any = 0

@@ -247,6 +247,61 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Removed
 
+- The dead meander generations and their bindings (phase 6 slice A; the
+  production PLM path -- `route_rust_meanders.py` -> the `plan_*` wrappers of
+  `src/plm.rs` -> `src/auto_meander.rs` -> `src/meander.rs`, realised through
+  the stored `selected_meander_centerline` -- is untouched). Rust: the
+  box-planner section of `src/geometry_realization.rs` (`select_meander_segment`,
+  `RouteAnalyticMeanderPlan`, `plan_analytic_meander_for_route`, the route-level
+  `plan_auto_analytic_meander_for_route{,_depth_sweep,_depth_sweep_with_prefix}`
+  and `probe_..._route_depth_sweep_with_prefix` wrappers,
+  `splice_meander_into_centerline`, the three
+  `realize_route_polygon_with_{analytic_meander,checked_analytic_meander_box,
+  auto_checked_analytic_meander}`), the pre-routing port-access connector
+  (`PortAccess`, `PortAccessConfig`, `PortAccessError`, `build_port_access{,es}`,
+  `realize_route_polygon_with_port_access`, their anchor-search helpers and the
+  `GeometryError::{PortAccess, RouteStartDoesNotMatchSourceAnchor,
+  RouteEndDoesNotMatchTargetAnchor}` variants), the feasibility probe
+  (`AutoRouteAnalyticMeanderProbe`,
+  `probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix`,
+  `auto_meander_probe_to_py_object`), `check_meander_box_free` (the obstacle-map
+  form; the prefix form stays) and `parse_meander_side`; the pyclass
+  `PortAccess` and 19 pymethods with no caller in `python/`, `translation/`,
+  `tests/` or `scripts/` (76 -> 57): `plan_analytic_meander_for_route`,
+  `plan_auto_analytic_meander_for_route`,
+  `plan_auto_analytic_meander_for_route_depth_sweep`,
+  `probe_auto_analytic_meander_for_centerline_depth_sweep`,
+  `probe_auto_analytic_meander_for_route_depth_sweep`,
+  `realize_route_polygon_with_analytic_meander`,
+  `realize_route_polygon_with_checked_analytic_meander_box`,
+  `realize_route_polygon_with_auto_checked_analytic_meander`,
+  `check_meander_box_free`, `cells_for_auto_analytic_meander_box`,
+  `realize_centerline_polygon`, `realize_centerline_polygon_from_planned_auto_meander`,
+  `realize_route_polygon_with_port_access`, `describe_bend_radius`,
+  `clear_registered_meander_route_cells`,
+  `invalidate_meander_registered_reserved_index`, `build_port_access`,
+  `build_port_accesses`, `all_net_core_cells`. Python: the two realisation
+  fallbacks of `route_rust_realization.py` for meander records without a stored
+  centerline (box replanning through `realize_route_polygon_with_analytic_meander`
+  and `..._with_auto_checked_analytic_meander`; such a record now raises), the
+  test-only compat API `insert_meanders_for_requirements` with
+  `MeanderInsertionReport` / `MeanderInsertionResult` and its re-exports, the
+  never-passed `requirement_edge_alternatives` parameter (and the
+  `legacy_single_edge_alternative` candidate reason), and the `hasattr`
+  capability probing of `_build_planner_context` for older backend generations
+  (with the unreachable plain `register_meander_route_cells_as_static` branch; the
+  Python fakes in the tests now carry the production method names). Tests: 32
+  Rust tests of the deleted items went, 10 Rust tests and one Python test were
+  rewritten against the surviving production entry (`plan_auto_for_route` helper
+  on `plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix`,
+  `check_meander_box_free_with_prefix`, `analyze_meander_insertion_for_requirements`).
+  Kept on purpose: `plan_auto_analytic_meander_for_centerline_depth_sweep` (one
+  test), `route_single_net_with_auto_meander_and_commit` (no caller, owner
+  question open; it now calls the centerline planner directly),
+  `centerline_port_corrected_checked` and
+  `realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents`
+  (both reached from production through attribute access, not a call). Nine-cell
+  gate and PLM gate identical, 13-cell PLM compare identical.
 - The hard crossing-constraint API, whose only production writer was
   `router.set_crossing_constraints([])` (phase 4 slice A): Rust
   `CrossingConstraint`, `CrossingContext::{constraints, allowed_pairs,

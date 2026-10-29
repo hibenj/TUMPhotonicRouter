@@ -75,11 +75,6 @@ def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
     return _meander_impl.analyze_meander_insertion_for_requirements(*args, **kwargs)
 
 
-def insert_meanders_for_requirements(*args: Any, **kwargs: Any):
-    _meander_impl._load_rust_backend = _load_rust_backend
-    return _meander_impl.insert_meanders_for_requirements(*args, **kwargs)
-
-
 def route_match_and_realize(
     unrouted_layout: Component,
     schematic: Schematic,

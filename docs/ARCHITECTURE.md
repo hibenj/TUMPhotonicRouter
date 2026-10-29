@@ -142,7 +142,7 @@ lines) owns crossing reservations, partner sets and the realized-crossing
 validation. `crossing_geometry.rs` (about 900 lines) owns the pure geometry used
 there (segment intersection, point-segment distance, parallel overlap,
 collinearity, centerline compression) and the one crossing-legality predicate
-(below). `endpoint_correction.rs` (2,677 lines)
+(below). `endpoint_correction.rs` (1,295 lines)
 owns the checked grid-to-port correction pass. `diagnostics.rs` (248 lines)
 owns the trace records and the batch timers. `test_support.rs` (750 lines,
 `#[cfg(test)]`) owns the engine-side fixtures. No module here implements a search; each one calls the interface of
@@ -213,17 +213,17 @@ one). Section 5 reads the loop in full.
 
 ### `src/bindings/` -- the PyO3 surface
 
-`mod.rs` (3,172 lines) owns the single `#[pymethods]` block of
-`PyPhotonicRouter` (81 methods): every method Python can call, and nothing
+`mod.rs` (2,104 lines) owns the single `#[pymethods]` block of
+`PyPhotonicRouter` (57 methods): every method Python can call, and nothing
 else; the seven helpers the block and the engine share (the meander-cache
 invalidation, `clear_static_cells`, `add_history_cells`, the long-straight
 record conversion, `effective_bend_radius_um`) sit in a plain `impl` block
 below it, out of Python's sight.
-`types.rs` (989 lines) owns the `#[pyclass]` configuration, job and result types
+`types.rs` (859 lines) owns the `#[pyclass]` configuration, job and result types
 (including `PyRouterConfig`, which validates the search engine name at
 construction). `convert.rs` (578 lines) owns the conversions in both directions
 (route results, batch timing dictionaries, primitive descriptions).
-`meander_py.rs` (600 lines) owns the meander-planning bindings. The rule that
+`meander_py.rs` (559 lines) owns the meander-planning bindings. The rule that
 makes this tree readable: bindings convert and delegate, they do not decide.
 Anything that decides belongs in `engine/` or `search/`.
 
@@ -238,10 +238,12 @@ from rasterized geometry (Python extracts the polygons and ports).
 `src/primitives.rs` (427 lines) owns the movement primitives and their
 footprint metadata. `src/crossings.rs` (374 lines) owns the crossing
 constraints and the expected-pair context, deliberately independent of the A*
-hot path. `src/geometry_realization.rs` (6,817 lines) owns centerline-to-polygon
-realization and port access. (The simple-route candidates that lived in
+hot path. `src/geometry_realization.rs` (5,457 lines) owns centerline-to-polygon
+realization and the endpoint-correction geometry (phase 6 slice A of the
+2026-10 do-over deleted the box-planner meander generation and the
+pre-routing port-access connector that lived beside them). (The simple-route candidates that lived in
 `src/simple_routes.rs` are in `src/search/astar/simple_route.rs` since phase 2
-slice F.) `src/meander.rs` (988) and `src/auto_meander.rs` (1,895) own analytic and
+slice F.) `src/meander.rs` (988) and `src/auto_meander.rs` (1,641) own analytic and
 obstacle-aware meander planning; `src/plm.rs` (2,435) owns the path-length
 matching planner. `src/config.rs` (302 lines) owns the typed configuration tree
 (`RouterConfig` and its four groups) -- since Milestone 1, `grep -rn
@@ -343,13 +345,13 @@ reaching it through the `translation.route_rust` re-export.
 
 ### The remaining `translation/*.py`
 
-`route_rust.py` (445 lines) is a re-export shim over `translation.routing`,
+`route_rust.py` (428 lines) is a re-export shim over `translation.routing`,
 kept because the reproduction scripts, the benchmark stable blocks and many
 tests import names from that path; no behaviour lives in it. The modules with
-real content are `route_rust_types.py` (1,380, the shared record and job
+real content are `route_rust_types.py` (1,363, the shared record and job
 types), `route_rust_records.py` (477, the route bookkeeping),
-`route_rust_geometry.py` (686), `route_rust_realization.py` (437),
-`route_rust_endpoint_correction.py` (905), `route_rust_meanders.py` (3,117),
+`route_rust_geometry.py` (686), `route_rust_realization.py` (486),
+`route_rust_endpoint_correction.py` (905), `route_rust_meanders.py` (3,010),
 `route_rust_crossing_plan.py` (689), `route_rust_crossing_components.py` (461),
 `route_rust_crossing_verification.py` (918), `route_rust_debug_artifacts.py`
 (342), `route_rust_analysis.py` (59) and `route_rust_obstacle_config.py` (164).

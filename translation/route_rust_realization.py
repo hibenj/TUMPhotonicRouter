@@ -12,7 +12,6 @@ from gdsfactory.component import Component
 
 from translation.route_rust_records import format_port_endpoint_correction_error
 from translation.route_rust_types import (
-    DEFAULT_MEANDER_MAX_HEIGHT_UM,
     RoutedNetRecord,
     _as_float,
     _as_int,
@@ -250,8 +249,6 @@ def _record_realized_polygon(
     )
     if record.meander_auto_plan is not None:
         plan = record.meander_auto_plan
-        selected_side = plan.get("selected_side")
-        selected_box = plan.get("selected_box")
         selected_run_start_index = plan.get("selected_run_start_index")
         selected_run_end_index = plan.get("selected_run_end_index")
         selected_meander_centerline = plan.get("selected_meander_centerline")
@@ -294,48 +291,10 @@ def _record_realized_polygon(
                 selected_run_end_index=_as_int(selected_run_end_index, 0),
                 meander_centerline=meander_centerline,
             )
-        if (
-            isinstance(selected_side, str)
-            and selected_side in {"left", "right"}
-            and isinstance(selected_box, (tuple, list))
-            and len(selected_box) == 4
-        ):
-            box_tuple = (
-                _as_float(selected_box[0], 0.0),
-                _as_float(selected_box[1], 0.0),
-                _as_float(selected_box[2], 0.0),
-                _as_float(selected_box[3], 0.0),
-            )
-            return router.realize_route_polygon_with_analytic_meander(
-                record.route_obj,
-                float(route_width_um),
-                requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
-                min_bend_radius_um=plan["min_bend_radius_um"],
-                min_straight_um=_as_float(plan["min_straight_um"], 0.0),
-                max_bumps=_as_int(plan["max_bumps"], 8),
-                side=selected_side,
-                available_box=box_tuple,
-                planning_mode=str(plan["planning_mode"]),
-            )
-        # Backward-compatible fallback for older records that lack
-        # persisted selected_side/selected_box metadata.
-        return router.realize_route_polygon_with_auto_checked_analytic_meander(
-            record.route_obj,
-            float(route_width_um),
-            requested_extra_length_um=_as_float(plan["requested_extra_length_um"], 0.0),
-            min_bend_radius_um=plan["min_bend_radius_um"],
-            min_straight_um=_as_float(plan["min_straight_um"], 0.0),
-            max_bumps=_as_int(plan["max_bumps"], 8),
-            max_meander_height_um=_as_float(
-                plan.get("max_meander_height_um", DEFAULT_MEANDER_MAX_HEIGHT_UM),
-                DEFAULT_MEANDER_MAX_HEIGHT_UM,
-            ),
-            box_depth_um=_as_float(plan["box_depth_um"], 20.0),
-            min_segment_length_um=_as_float(plan["min_segment_length_um"], 1.0),
-            clearance_radius_cells=_as_int(plan["clearance_radius_cells"], 0),
-            side_policy=str(plan["side_policy"]),
-            opened_cells=[],
-            planning_mode=str(plan["planning_mode"]),
+        raise RuntimeError(
+            f"meander plan of net {record.net_name!r} carries no selected meander "
+            "centerline; the planner always stores one (phase 6 slice A removed the "
+            "box-replanning fallbacks for records without it)"
         )
     if corrected_centerline:
         try:

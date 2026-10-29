@@ -14,7 +14,6 @@ from typing import Any, Protocol, cast
 from photonic_router.path_length_graph import (
     DelayInsertionCandidate,
     MissingLengthRequirement,
-    PortRef,
     RoutedEdgeKey,
 )
 
@@ -22,8 +21,6 @@ from translation.route_rust_analysis import edge_key_to_dict
 from translation.route_rust_types import (
     DEFAULT_MEANDER_MIN_STRAIGHT_UM,
     MeanderInsertionConfig,
-    MeanderInsertionReport,
-    MeanderInsertionResult,
     RoutedNetRecord,
     _as_float,
     _as_int,
@@ -1486,27 +1483,16 @@ def _build_planner_context(
     unregistered_edge_keys = [
         edge_key for edge_key in by_edge if edge_key not in registerable_edge_key_set
     ]
-    can_use_registered_route_cells = bool(registerable_edge_keys) and hasattr(
-        router,
-        "register_meander_route_cells_as_static",
-    )
-    can_set_static_and_register_route_cells = bool(registerable_edge_keys) and hasattr(
-        router,
-        "set_static_and_register_meander_route_cells_as_static",
-    )
+    # One backend: the combined static-and-route registration runs whenever a
+    # record has a centerline to register; the handle form when the static
+    # cells arrive as a Rust handle and every record registers. (Both flags
+    # feed the setup profile under their old names.)
+    can_use_registered_route_cells = bool(registerable_edge_keys)
+    can_set_static_and_register_route_cells = can_use_registered_route_cells
     can_set_static_and_register_route_cells_with_handle = (
         static_blocked_cell_handle is not None
-        and hasattr(
-            router,
-            "set_static_and_register_meander_route_cells_as_static_handle",
-        )
-        and bool(registerable_edge_keys)
+        and can_use_registered_route_cells
         and not unregistered_edge_keys
-    )
-    can_use_registered_route_cells = (
-        can_use_registered_route_cells
-        or can_set_static_and_register_route_cells
-        or can_set_static_and_register_route_cells_with_handle
     )
     t_base_static_start = time.perf_counter()
     base_static_reused = False
@@ -1554,10 +1540,7 @@ def _build_planner_context(
         else base_static_cells
     )
     set_static_s = 0.0
-    if not (
-        can_set_static_and_register_route_cells
-        or can_set_static_and_register_route_cells_with_handle
-    ):
+    if not can_use_registered_route_cells:
         t_set_static_start = time.perf_counter()
         router.set_static_cells(list(base_static_for_router))
         set_static_s = time.perf_counter() - t_set_static_start
@@ -1602,29 +1585,21 @@ def _build_planner_context(
             t_base_static_list_start = time.perf_counter()
             base_static_registration_cells = list(base_static_for_router)
             base_static_registration_list_s = time.perf_counter() - t_base_static_list_start
-            if can_set_static_and_register_route_cells:
-                indices, open_counts, unique_count = (
-                    router.set_static_and_register_meander_route_cells_as_static(
-                        route_objects,
-                        base_static_registration_cells,
-                        route_occupancy_radius_cells,
-                    )
-                )
-            else:
-                indices, open_counts, unique_count = router.register_meander_route_cells_as_static(
+            indices, open_counts, unique_count = (
+                router.set_static_and_register_meander_route_cells_as_static(
                     route_objects,
                     base_static_registration_cells,
                     route_occupancy_radius_cells,
                 )
+            )
         register_route_cells_call_s = time.perf_counter() - t_register_call_start
-        if hasattr(router, "last_meander_registration_profile"):
-            raw_profile = router.last_meander_registration_profile()
-            if isinstance(raw_profile, Mapping):
-                parsed_profile: dict[str, float] = {}
-                for key, value in raw_profile.items():
-                    if isinstance(key, str) and isinstance(value, (int, float)):
-                        parsed_profile[key] = float(value)
-                rust_registration_profile = parsed_profile
+        raw_profile = router.last_meander_registration_profile()
+        if isinstance(raw_profile, Mapping):
+            parsed_profile: dict[str, float] = {}
+            for key, value in raw_profile.items():
+                if isinstance(key, str) and isinstance(value, (int, float)):
+                    parsed_profile[key] = float(value)
+            rust_registration_profile = parsed_profile
         register_route_cells_s = time.perf_counter() - t_register_start
         registered_unique_route_cell_count = int(unique_count)
         t_registration_map_start = time.perf_counter()
@@ -1634,40 +1609,39 @@ def _build_planner_context(
         registration_result_map_s = time.perf_counter() - t_registration_map_start
         for edge_key in edge_order:
             registered_centerline_lists_by_edge[edge_key] = list(centerline_lists_by_edge[edge_key])
-        if hasattr(router, "register_meander_route_geometries"):
-            t_geometry_start = time.perf_counter()
-            geometry_centerlines: list[list[tuple[float, float]]] = []
-            geometry_open_indices: list[int] = []
-            geometry_max_bumps: list[int] = []
-            t_geometry_prepare_start = time.perf_counter()
-            for edge_key in edge_order:
-                t_centerline_copy_start = time.perf_counter()
-                centerline = list(centerline_lists_by_edge[edge_key])
-                geometry_centerline_copy_s += time.perf_counter() - t_centerline_copy_start
-                t_max_bumps_start = time.perf_counter()
-                max_bumps = _route_geometry_max_meander_bumps(
-                    record=by_edge[edge_key],
-                    grid_size_um=float(grid_size_um_cfg),
-                    bend_radius_um=bend_radius_um,
-                )
-                geometry_max_bumps_s += time.perf_counter() - t_max_bumps_start
-                registered_max_bumps_by_edge[edge_key] = max_bumps
-                geometry_centerlines.append(centerline)
-                geometry_open_indices.append(registered_open_cell_index_by_edge[edge_key])
-                geometry_max_bumps.append(max_bumps)
-            geometry_prepare_s = time.perf_counter() - t_geometry_prepare_start
-            t_geometry_call_start = time.perf_counter()
-            geometry_indices = router.register_meander_route_geometries(
-                geometry_centerlines,
-                geometry_open_indices,
-                geometry_max_bumps,
+        t_geometry_start = time.perf_counter()
+        geometry_centerlines: list[list[tuple[float, float]]] = []
+        geometry_open_indices: list[int] = []
+        geometry_max_bumps: list[int] = []
+        t_geometry_prepare_start = time.perf_counter()
+        for edge_key in edge_order:
+            t_centerline_copy_start = time.perf_counter()
+            centerline = list(centerline_lists_by_edge[edge_key])
+            geometry_centerline_copy_s += time.perf_counter() - t_centerline_copy_start
+            t_max_bumps_start = time.perf_counter()
+            max_bumps = _route_geometry_max_meander_bumps(
+                record=by_edge[edge_key],
+                grid_size_um=float(grid_size_um_cfg),
+                bend_radius_um=bend_radius_um,
             )
-            geometry_call_s = time.perf_counter() - t_geometry_call_start
-            register_route_geometry_s = time.perf_counter() - t_geometry_start
-            t_geometry_result_map_start = time.perf_counter()
-            for edge_key, raw_index in zip(edge_order, geometry_indices, strict=False):
-                registered_geometry_index_by_edge[edge_key] = int(raw_index)
-            geometry_result_map_s = time.perf_counter() - t_geometry_result_map_start
+            geometry_max_bumps_s += time.perf_counter() - t_max_bumps_start
+            registered_max_bumps_by_edge[edge_key] = max_bumps
+            geometry_centerlines.append(centerline)
+            geometry_open_indices.append(registered_open_cell_index_by_edge[edge_key])
+            geometry_max_bumps.append(max_bumps)
+        geometry_prepare_s = time.perf_counter() - t_geometry_prepare_start
+        t_geometry_call_start = time.perf_counter()
+        geometry_indices = router.register_meander_route_geometries(
+            geometry_centerlines,
+            geometry_open_indices,
+            geometry_max_bumps,
+        )
+        geometry_call_s = time.perf_counter() - t_geometry_call_start
+        register_route_geometry_s = time.perf_counter() - t_geometry_start
+        t_geometry_result_map_start = time.perf_counter()
+        for edge_key, raw_index in zip(edge_order, geometry_indices, strict=False):
+            registered_geometry_index_by_edge[edge_key] = int(raw_index)
+        geometry_result_map_s = time.perf_counter() - t_geometry_result_map_start
     setup_profile = {
         "total_s": time.perf_counter() - t_total_start,
         "router_init_s": router_init_s,
@@ -1811,11 +1785,6 @@ def _meander_search_config_to_debug_dict(
 def _candidates_for_requirement(
     req: MissingLengthRequirement,
     *,
-    requirement_edge_alternatives: Mapping[
-        RoutedEdgeKey,
-        Iterable[RoutedEdgeKey],
-    ]
-    | None,
     requirement_delay_candidates: Mapping[
         RoutedEdgeKey,
         Iterable[DelayInsertionCandidate],
@@ -1827,26 +1796,15 @@ def _candidates_for_requirement(
         if explicit_candidates:
             return explicit_candidates
 
-    edge_keys = [req.edge_key]
-    if requirement_edge_alternatives is not None:
-        edge_keys.extend(requirement_edge_alternatives.get(req.edge_key, ()))
-
-    candidates: list[DelayInsertionCandidate] = []
-    seen_edges: set[RoutedEdgeKey] = set()
-    for index, edge_key in enumerate(edge_keys):
-        if edge_key in seen_edges:
-            continue
-        seen_edges.add(edge_key)
-        candidates.append(
-            DelayInsertionCandidate(
-                requirement_edge_key=req.edge_key,
-                edge_keys=(edge_key,),
-                extra_length_um=float(req.missing_length_um),
-                reason="direct_edge" if index == 0 else "legacy_single_edge_alternative",
-                affected_requirement_edge_keys=(req.edge_key,),
-            )
+    return [
+        DelayInsertionCandidate(
+            requirement_edge_key=req.edge_key,
+            edge_keys=(req.edge_key,),
+            extra_length_um=float(req.missing_length_um),
+            reason="direct_edge",
+            affected_requirement_edge_keys=(req.edge_key,),
         )
-    return candidates
+    ]
 
 
 def _requirement_missing_by_edge(
@@ -2276,11 +2234,6 @@ def analyze_meander_insertion_for_requirements(
     route_occupancy_radius_cells: int | None = None,
     meander_box_clearance_radius_cells: int = 0,
     route_clearance_radius_cells: int | None = None,
-    requirement_edge_alternatives: Mapping[
-        RoutedEdgeKey,
-        Iterable[RoutedEdgeKey],
-    ]
-    | None = None,
     requirement_delay_candidates: Mapping[
         RoutedEdgeKey,
         Iterable[DelayInsertionCandidate],
@@ -2411,7 +2364,6 @@ def analyze_meander_insertion_for_requirements(
         work_items: list[_CandidateWorkItem] = []
         for candidate in _candidates_for_requirement(
             req,
-            requirement_edge_alternatives=requirement_edge_alternatives,
             requirement_delay_candidates=requirement_delay_candidates,
         ):
             affected_edges = candidate.affected_requirement_edge_keys or (edge_key,)
@@ -3056,85 +3008,3 @@ def analyze_meander_insertion_for_requirements(
             "using_legacy_meander_path": False,
         },
     )
-
-
-def insert_meanders_for_requirements(
-    routed_net_records: list[RoutedNetRecord],
-    requirements: list[MissingLengthRequirement],
-    *,
-    config: MeanderInsertionConfig,
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool,
-    bend_radius_cells: int,
-) -> tuple[list[RoutedNetRecord], MeanderInsertionReport]:
-    """Compatibility API used by tests for M2 skeleton behavior."""
-    if not config.enabled:
-        return (
-            routed_net_records,
-            MeanderInsertionReport(
-                results=[],
-                total_requested_extra_length_um=0.0,
-                total_inserted_extra_length_um=0.0,
-                unmatched_length_um=0.0,
-            ),
-        )
-
-    updated, raw_report = analyze_meander_insertion_for_requirements(
-        routed_net_records,
-        requirements,
-        config=config,
-        realization_grid_spec=realization_grid_spec,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_cells=bend_radius_cells,
-    )
-    results: list[MeanderInsertionResult] = []
-    raw_results = cast(list[dict[str, object]], raw_report.get("results", []))
-    for item in raw_results:
-        edge_info = item.get("edge", {})
-        if not isinstance(edge_info, dict):
-            edge_info = {}
-        source = edge_info.get("source", {})
-        if not isinstance(source, dict):
-            source = {}
-        target = edge_info.get("target", {})
-        if not isinstance(target, dict):
-            target = {}
-        edge = RoutedEdgeKey(
-            net_name=str(edge_info.get("net_name", "")),
-            source=PortRef(
-                instance=str(source.get("instance", "")),
-                port=str(source.get("port", "")),
-            ),
-            target=PortRef(
-                instance=str(target.get("instance", "")),
-                port=str(target.get("port", "")),
-            ),
-        )
-        status = str(item.get("status", "unknown"))
-        reason = str(item.get("reason", ""))
-        results.append(
-            MeanderInsertionResult(
-                edge=edge,
-                requested_extra_length_um=_as_float(
-                    item.get("requested_extra_length_um", 0.0),
-                    0.0,
-                ),
-                inserted_extra_length_um=_as_float(
-                    item.get("inserted_extra_length_um", 0.0),
-                    0.0,
-                ),
-                status=status,
-                reason=reason,
-            )
-        )
-    report = MeanderInsertionReport(
-        results=results,
-        total_requested_extra_length_um=float(
-            cast(float, raw_report.get("total_requested_extra_length_um", 0.0))
-        ),
-        total_inserted_extra_length_um=float(
-            cast(float, raw_report.get("total_inserted_extra_length_um", 0.0))
-        ),
-        unmatched_length_um=float(cast(float, raw_report.get("unmatched_length_um", 0.0))),
-    )
-    return updated, report

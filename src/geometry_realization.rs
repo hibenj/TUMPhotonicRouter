@@ -5,31 +5,24 @@
 
 use std::error::Error;
 use std::fmt;
-use std::time::Instant;
-
-use rustc_hash::FxHashSet;
 
 #[cfg(test)]
 use crate::auto_meander::{
-    cells_in_grid_rect, extract_axis_aligned_straight_runs, meander_box_to_grid_rect,
-    AutoMeanderSidePolicy,
+    cells_in_grid_rect, check_meander_box_free_with_prefix, extract_axis_aligned_straight_runs,
+    meander_box_to_grid_rect, plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix,
+    AutoMeanderConfig, AutoMeanderSidePolicy, DenseOccupancyPrefix,
 };
 use crate::auto_meander::{
-    check_meander_box_free, plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix,
-    probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix, AutoMeanderConfig,
-    AutoMeanderRejectionDetail, AutoRouteAnalyticMeanderPlan, AutoRouteAnalyticMeanderProbe,
-    DenseOccupancyPrefix, MeanderGridRect, SparseCellIndex,
+    AutoMeanderRejectionDetail, AutoRouteAnalyticMeanderPlan, MeanderGridRect,
 };
-use crate::meander::{
-    plan_analytic_meander, AnalyticMeanderConfig, AnalyticMeanderPlan, MeanderBox,
-    MeanderPlanningError, MeanderPlanningMode, MeanderSide, PhysicalPoint, StraightSegment,
-};
+#[cfg(test)]
+use crate::meander::{MeanderBox, MeanderPlanningMode, MeanderSide};
+use crate::meander::{MeanderPlanningError, PhysicalPoint};
+#[cfg(test)]
 use crate::obstacle_map::{CellKey, ObstacleMap};
 use crate::primitives::{PrimitiveGeometry, PrimitiveLibrary};
 use crate::search::state::{RouteResult, State};
-use crate::static_obstacle_builder::{
-    cell_center_coordinate, grid_cell_center, physical_to_grid, PortInput, StaticGridSpec,
-};
+use crate::static_obstacle_builder::cell_center_coordinate;
 
 pub(crate) const EPS: f64 = 1.0e-9;
 const MITER_LIMIT: f64 = 4.0;
@@ -178,14 +171,6 @@ pub enum GeometryError {
     },
     ZeroLengthSegment,
     NonFiniteCoordinate,
-    RouteStartDoesNotMatchSourceAnchor {
-        route_start: (f64, f64),
-        source_anchor: (f64, f64),
-    },
-    RouteEndDoesNotMatchTargetAnchor {
-        route_end: (f64, f64),
-        target_anchor: (f64, f64),
-    },
     PrimitiveEndpointMismatch {
         primitive_id: u16,
         expected: (f64, f64),
@@ -209,7 +194,6 @@ pub enum GeometryError {
     NoMeanderCandidateSegment,
     PortEndpointCorrectionRequiresUnsupportedStub,
     MeanderPlanningFailed(MeanderPlanningError),
-    PortAccess(PortAccessError),
 }
 
 impl fmt::Display for GeometryError {
@@ -235,20 +219,6 @@ impl fmt::Display for GeometryError {
             ),
             GeometryError::ZeroLengthSegment => write!(f, "centerline contains a zero-length segment"),
             GeometryError::NonFiniteCoordinate => write!(f, "geometry contains a non-finite coordinate"),
-            GeometryError::RouteStartDoesNotMatchSourceAnchor {
-                route_start,
-                source_anchor,
-            } => write!(
-                f,
-                "route start point {route_start:?} does not match source anchor point {source_anchor:?}"
-            ),
-            GeometryError::RouteEndDoesNotMatchTargetAnchor {
-                route_end,
-                target_anchor,
-            } => write!(
-                f,
-                "route end point {route_end:?} does not match target anchor point {target_anchor:?}"
-            ),
             GeometryError::PrimitiveEndpointMismatch {
                 primitive_id,
                 expected,
@@ -315,101 +285,11 @@ impl fmt::Display for GeometryError {
             GeometryError::MeanderPlanningFailed(err) => {
                 write!(f, "analytic meander planning failed: {err:?}")
             }
-            GeometryError::PortAccess(err) => write!(f, "{err}"),
         }
     }
 }
 
 impl Error for GeometryError {}
-
-impl From<PortAccessError> for GeometryError {
-    fn from(value: PortAccessError) -> Self {
-        GeometryError::PortAccess(value)
-    }
-}
-
-/// Configuration for deterministic local port-access geometry.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PortAccessConfig {
-    pub min_straight_um: f64,
-    pub max_anchor_search_cells: i32,
-    pub min_bend_radius_um: f64,
-}
-
-impl Default for PortAccessConfig {
-    fn default() -> Self {
-        Self {
-            min_straight_um: 0.0,
-            max_anchor_search_cells: 8,
-            min_bend_radius_um: 0.0,
-        }
-    }
-}
-
-/// Deterministic pre-routing connector from physical port to grid anchor cell.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PortAccess {
-    pub port_name: String,
-    pub port_point_um: (f64, f64),
-    pub anchor_cell: (i32, i32),
-    pub anchor_point_um: (f64, f64),
-    pub port_angle: u8,
-    pub anchor_angle: u8,
-    /// Compatibility alias; equals `anchor_angle`.
-    pub entry_angle: u8,
-    pub access_centerline_um: Vec<(f64, f64)>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum PortAccessError {
-    NonFinitePortCoordinate {
-        port_name: String,
-    },
-    InvalidConfig(String),
-    AnchorOutOfBounds {
-        port_name: String,
-        anchor_cell: (i32, i32),
-    },
-    AnchorSearchFailed {
-        port_name: String,
-    },
-    ZeroLengthAccess {
-        port_name: String,
-    },
-    NonFiniteAccessCoordinate {
-        port_name: String,
-    },
-}
-
-impl fmt::Display for PortAccessError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PortAccessError::NonFinitePortCoordinate { port_name } => {
-                write!(f, "port '{port_name}' has non-finite physical coordinates")
-            }
-            PortAccessError::InvalidConfig(msg) => write!(f, "invalid port-access config: {msg}"),
-            PortAccessError::AnchorOutOfBounds {
-                port_name,
-                anchor_cell,
-            } => write!(
-                f,
-                "port '{port_name}' selected out-of-bounds anchor cell {anchor_cell:?}"
-            ),
-            PortAccessError::AnchorSearchFailed { port_name } => {
-                write!(f, "failed to find valid anchor cell for port '{port_name}'")
-            }
-            PortAccessError::ZeroLengthAccess { port_name } => {
-                write!(f, "port '{port_name}' access connector has zero length")
-            }
-            PortAccessError::NonFiniteAccessCoordinate { port_name } => write!(
-                f,
-                "port '{port_name}' access connector contains non-finite coordinates"
-            ),
-        }
-    }
-}
-
-impl Error for PortAccessError {}
 
 /// Compress route states by keeping only heading-change points.
 pub fn compress_route_waypoints(states: &[State]) -> Vec<(i32, i32)> {
@@ -3282,71 +3162,6 @@ fn is_vertical_segment(a: (f64, f64), b: (f64, f64)) -> bool {
     (b.0 - a.0).abs() <= EPS && (b.1 - a.1).abs() > EPS
 }
 
-/// Build deterministic local port access from a physical port to a grid anchor.
-pub fn build_port_access(
-    port: &PortInput,
-    grid: &StaticGridSpec,
-    config: &PortAccessConfig,
-) -> Result<PortAccess, PortAccessError> {
-    validate_port_access_config(config)?;
-    if !port.x.is_finite() || !port.y.is_finite() {
-        return Err(PortAccessError::NonFinitePortCoordinate {
-            port_name: port.name.clone(),
-        });
-    }
-
-    let port_angle = orientation_to_angle(port.orientation);
-    let (anchor_cell, anchor_angle, mut access_centerline_um) =
-        select_anchor_and_build_access(port, grid, config)?;
-    let anchor_point_um = grid_cell_center(anchor_cell.0, anchor_cell.1, grid);
-
-    if access_centerline_um.iter().any(|&p| !is_finite_point(p)) {
-        return Err(PortAccessError::NonFiniteAccessCoordinate {
-            port_name: port.name.clone(),
-        });
-    }
-    if access_centerline_um.len() < 2 {
-        return Err(PortAccessError::ZeroLengthAccess {
-            port_name: port.name.clone(),
-        });
-    }
-    if access_centerline_um
-        .windows(2)
-        .any(|w| distance(w[0], w[1]) <= EPS)
-    {
-        return Err(PortAccessError::ZeroLengthAccess {
-            port_name: port.name.clone(),
-        });
-    }
-
-    access_centerline_um[0] = (port.x, port.y);
-    let last = access_centerline_um.len() - 1;
-    access_centerline_um[last] = anchor_point_um;
-
-    Ok(PortAccess {
-        port_name: port.name.clone(),
-        port_point_um: (port.x, port.y),
-        anchor_cell,
-        anchor_point_um,
-        port_angle,
-        anchor_angle,
-        entry_angle: anchor_angle,
-        access_centerline_um,
-    })
-}
-
-/// Build deterministic local port accesses for all physical ports.
-pub fn build_port_accesses(
-    ports: &[PortInput],
-    grid: &StaticGridSpec,
-    config: &PortAccessConfig,
-) -> Result<Vec<PortAccess>, PortAccessError> {
-    ports
-        .iter()
-        .map(|port| build_port_access(port, grid, config))
-        .collect()
-}
-
 /// Generate one closed mitered/beveled waveguide polygon from a centerline.
 pub fn generate_waveguide_polygon(
     centerline: &[(f64, f64)],
@@ -3510,237 +3325,6 @@ pub fn centerline_length_um(centerline: &[(f64, f64)]) -> Result<f64, GeometryEr
     Ok(total)
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct RouteAnalyticMeanderPlan {
-    pub selected_segment_index: usize,
-    pub selected_segment: StraightSegment,
-    pub plan: AnalyticMeanderPlan,
-}
-
-pub(crate) fn select_meander_segment(
-    centerline: &[(f64, f64)],
-    available_box: MeanderBox,
-) -> Result<usize, GeometryError> {
-    if centerline.len() < 2 {
-        return Err(GeometryError::DegenerateRoute);
-    }
-
-    let mut best: Option<(usize, f64)> = None;
-    for (i, w) in centerline.windows(2).enumerate() {
-        let p0 = w[0];
-        let p1 = w[1];
-        let dx = (p1.0 - p0.0).abs();
-        let dy = (p1.1 - p0.1).abs();
-        let is_horizontal = dy <= EPS && dx > EPS;
-        let is_vertical = dx <= EPS && dy > EPS;
-        if !(is_horizontal || is_vertical) {
-            continue;
-        }
-        let in0 = p0.0 >= available_box.min_x_um - EPS
-            && p0.0 <= available_box.max_x_um + EPS
-            && p0.1 >= available_box.min_y_um - EPS
-            && p0.1 <= available_box.max_y_um + EPS;
-        let in1 = p1.0 >= available_box.min_x_um - EPS
-            && p1.0 <= available_box.max_x_um + EPS
-            && p1.1 >= available_box.min_y_um - EPS
-            && p1.1 <= available_box.max_y_um + EPS;
-        if !(in0 && in1) {
-            continue;
-        }
-        let len = distance(p0, p1);
-        match best {
-            Some((_, cur)) if cur >= len => {}
-            _ => best = Some((i, len)),
-        }
-    }
-
-    best.map(|(idx, _)| idx)
-        .ok_or(GeometryError::NoMeanderCandidateSegment)
-}
-
-pub fn plan_analytic_meander_for_route(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid: &GeometryGridSpec,
-    requested_extra_length_um: f64,
-    min_bend_radius_um: f64,
-    min_straight_um: f64,
-    max_bumps: usize,
-    meander_side: MeanderSide,
-    available_box: MeanderBox,
-    mode: MeanderPlanningMode,
-) -> Result<RouteAnalyticMeanderPlan, GeometryError> {
-    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
-    let selected_segment_index = select_meander_segment(&centerline, available_box)?;
-    let selected_segment = StraightSegment {
-        start: PhysicalPoint {
-            x_um: centerline[selected_segment_index].0,
-            y_um: centerline[selected_segment_index].1,
-        },
-        end: PhysicalPoint {
-            x_um: centerline[selected_segment_index + 1].0,
-            y_um: centerline[selected_segment_index + 1].1,
-        },
-    };
-    let cfg = AnalyticMeanderConfig {
-        requested_extra_length_um,
-        min_bend_radius_um,
-        min_straight_um,
-        max_bumps,
-        max_meander_height_um: 1.0e12,
-        side: meander_side,
-        mode,
-    };
-    let plan = plan_analytic_meander(selected_segment, available_box, &cfg)
-        .map_err(GeometryError::MeanderPlanningFailed)?;
-
-    Ok(RouteAnalyticMeanderPlan {
-        selected_segment_index,
-        selected_segment,
-        plan,
-    })
-}
-
-pub fn plan_auto_analytic_meander_for_route(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid: &GeometryGridSpec,
-    obstacle_map: &ObstacleMap,
-    opened_cells: Option<&FxHashSet<CellKey>>,
-    config: &AutoMeanderConfig,
-) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
-    plan_auto_analytic_meander_for_route_depth_sweep(
-        route,
-        primitives,
-        grid,
-        obstacle_map,
-        opened_cells,
-        config,
-        &[config.box_depth_um],
-    )
-}
-
-pub fn plan_auto_analytic_meander_for_route_depth_sweep(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid: &GeometryGridSpec,
-    obstacle_map: &ObstacleMap,
-    opened_cells: Option<&FxHashSet<CellKey>>,
-    config: &AutoMeanderConfig,
-    box_depths_um: &[f64],
-) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
-    let total_start = Instant::now();
-    if !config.requested_extra_length_um.is_finite()
-        || config.requested_extra_length_um <= 0.0
-        || !config.min_bend_radius_um.is_finite()
-        || config.min_bend_radius_um <= 0.0
-        || !config.min_straight_um.is_finite()
-        || config.min_straight_um < 0.0
-        || config.max_bumps == 0
-        || !config.max_meander_height_um.is_finite()
-        || config.max_meander_height_um <= 0.0
-        || !config.box_depth_um.is_finite()
-        || config.box_depth_um <= 0.0
-        || !config.min_segment_length_um.is_finite()
-        || config.min_segment_length_um <= 0.0
-        || !config.endpoint_inset_um.is_finite()
-        || config.endpoint_inset_um < 0.0
-        || config.clearance_radius_cells < 0
-        || box_depths_um.is_empty()
-    {
-        return Err(GeometryError::InvalidMeanderBox);
-    }
-    for depth_um in box_depths_um {
-        if !depth_um.is_finite() || *depth_um <= 0.0 {
-            return Err(GeometryError::InvalidMeanderBox);
-        }
-    }
-    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
-    let prefix = DenseOccupancyPrefix::from_obstacle_map(obstacle_map, opened_cells);
-    let mut plan = plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
-        &centerline,
-        grid,
-        &prefix,
-        opened_cells,
-        None,
-        None,
-        None,
-        None,
-        config,
-        box_depths_um,
-    )?;
-    plan.profile.total_s = total_start.elapsed().as_secs_f64();
-    Ok(plan)
-}
-
-pub fn plan_auto_analytic_meander_for_route_depth_sweep_with_prefix(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid: &GeometryGridSpec,
-    base_prefix: &DenseOccupancyPrefix,
-    opened_cells: Option<&FxHashSet<CellKey>>,
-    opened_index: Option<&SparseCellIndex>,
-    extra_blocked_cells: Option<&FxHashSet<CellKey>>,
-    extra_blocked_index: Option<&SparseCellIndex>,
-    extra_blocked_overlay_index: Option<&SparseCellIndex>,
-    config: &AutoMeanderConfig,
-    box_depths_um: &[f64],
-) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
-    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
-    plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
-        &centerline,
-        grid,
-        base_prefix,
-        opened_cells,
-        opened_index,
-        extra_blocked_cells,
-        extra_blocked_index,
-        extra_blocked_overlay_index,
-        config,
-        box_depths_um,
-    )
-}
-
-pub fn probe_auto_analytic_meander_for_route_depth_sweep_with_prefix(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid: &GeometryGridSpec,
-    base_prefix: &DenseOccupancyPrefix,
-    opened_cells: Option<&FxHashSet<CellKey>>,
-    extra_blocked_cells: Option<&FxHashSet<CellKey>>,
-    config: &AutoMeanderConfig,
-    box_depths_um: &[f64],
-) -> Result<AutoRouteAnalyticMeanderProbe, GeometryError> {
-    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
-    probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
-        &centerline,
-        grid,
-        base_prefix,
-        opened_cells,
-        extra_blocked_cells,
-        config,
-        box_depths_um,
-    )
-}
-
-pub(crate) fn splice_meander_into_centerline(
-    centerline: &[(f64, f64)],
-    segment_index: usize,
-    meander: &[PhysicalPoint],
-) -> Vec<(f64, f64)> {
-    let mut out = Vec::with_capacity(centerline.len() + meander.len());
-    for p in centerline.iter().take(segment_index + 1).copied() {
-        push_physical_if_different(&mut out, p);
-    }
-    for p in meander.iter().copied() {
-        push_physical_if_different(&mut out, (p.x_um, p.y_um));
-    }
-    for p in centerline.iter().skip(segment_index + 1).copied() {
-        push_physical_if_different(&mut out, p);
-    }
-    out
-}
-
 pub(crate) fn splice_meander_into_centerline_range(
     centerline: &[(f64, f64)],
     start_index: usize,
@@ -3761,124 +3345,6 @@ pub(crate) fn splice_meander_into_centerline_range(
         push_physical_if_different(&mut out, p);
     }
     Ok(out)
-}
-
-pub fn realize_route_polygon_with_analytic_meander(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid: &GeometryGridSpec,
-    width_um: f64,
-    requested_extra_length_um: f64,
-    min_bend_radius_um: f64,
-    min_straight_um: f64,
-    max_bumps: usize,
-    meander_side: MeanderSide,
-    available_box: MeanderBox,
-    mode: MeanderPlanningMode,
-) -> Result<Vec<(f64, f64)>, GeometryError> {
-    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
-    let route_plan = plan_analytic_meander_for_route(
-        route,
-        primitives,
-        grid,
-        requested_extra_length_um,
-        min_bend_radius_um,
-        min_straight_um,
-        max_bumps,
-        meander_side,
-        available_box,
-        mode,
-    )?;
-
-    let modified = splice_meander_into_centerline(
-        &centerline,
-        route_plan.selected_segment_index,
-        &route_plan.plan.centerline,
-    );
-    if modified.len() < 2 {
-        return Err(GeometryError::DegenerateRoute);
-    }
-    if modified.iter().any(|&p| !is_finite_point(p)) {
-        return Err(GeometryError::NonFiniteCoordinate);
-    }
-    if modified.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
-        return Err(GeometryError::ZeroLengthSegment);
-    }
-    generate_waveguide_polygon(&modified, width_um)
-}
-
-pub fn realize_route_polygon_with_checked_analytic_meander_box(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid: &GeometryGridSpec,
-    width_um: f64,
-    requested_extra_length_um: f64,
-    min_bend_radius_um: f64,
-    min_straight_um: f64,
-    max_bumps: usize,
-    meander_side: MeanderSide,
-    available_box: MeanderBox,
-    obstacle_map: &ObstacleMap,
-    opened_cells: Option<&FxHashSet<CellKey>>,
-    clearance_radius_cells: i32,
-    mode: MeanderPlanningMode,
-) -> Result<Vec<(f64, f64)>, GeometryError> {
-    let _rect = check_meander_box_free(
-        available_box,
-        grid,
-        obstacle_map,
-        opened_cells,
-        clearance_radius_cells,
-    )?;
-    realize_route_polygon_with_analytic_meander(
-        route,
-        primitives,
-        grid,
-        width_um,
-        requested_extra_length_um,
-        min_bend_radius_um,
-        min_straight_um,
-        max_bumps,
-        meander_side,
-        available_box,
-        mode,
-    )
-}
-
-pub fn realize_route_polygon_with_auto_checked_analytic_meander(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid: &GeometryGridSpec,
-    width_um: f64,
-    obstacle_map: &ObstacleMap,
-    opened_cells: Option<&FxHashSet<CellKey>>,
-    config: &AutoMeanderConfig,
-) -> Result<Vec<(f64, f64)>, GeometryError> {
-    let centerline = route_to_primitive_centerline(route, primitives, grid)?;
-    let auto = plan_auto_analytic_meander_for_route(
-        route,
-        primitives,
-        grid,
-        obstacle_map,
-        opened_cells,
-        config,
-    )?;
-    let modified = splice_meander_into_centerline_range(
-        &centerline,
-        auto.selected_run_start_index,
-        auto.selected_run_end_index,
-        &auto.replacement_centerline,
-    )?;
-    if modified.len() < 2 {
-        return Err(GeometryError::DegenerateRoute);
-    }
-    if modified.iter().any(|&p| !is_finite_point(p)) {
-        return Err(GeometryError::NonFiniteCoordinate);
-    }
-    if modified.windows(2).any(|w| distance(w[0], w[1]) <= EPS) {
-        return Err(GeometryError::ZeroLengthSegment);
-    }
-    generate_waveguide_polygon(&modified, width_um)
 }
 
 pub fn realize_route_polygon_from_auto_plan(
@@ -3905,308 +3371,6 @@ pub fn realize_route_polygon_from_auto_plan(
         return Err(GeometryError::ZeroLengthSegment);
     }
     generate_waveguide_polygon(&modified, width_um)
-}
-
-/// Full route realization pipeline with explicit source/target port access.
-pub fn realize_route_polygon_with_port_access(
-    route: &RouteResult,
-    primitives: &PrimitiveLibrary,
-    grid: &GeometryGridSpec,
-    width_um: f64,
-    source_access: Option<&PortAccess>,
-    target_access: Option<&PortAccess>,
-) -> Result<Vec<(f64, f64)>, GeometryError> {
-    let primitive_centerline = route_to_primitive_centerline(route, primitives, grid)?;
-
-    if let Some(source) = source_access {
-        if distance(primitive_centerline[0], source.anchor_point_um) > EPS {
-            return Err(GeometryError::RouteStartDoesNotMatchSourceAnchor {
-                route_start: primitive_centerline[0],
-                source_anchor: source.anchor_point_um,
-            });
-        }
-    }
-    if let Some(target) = target_access {
-        let route_end = primitive_centerline[primitive_centerline.len() - 1];
-        if distance(route_end, target.anchor_point_um) > EPS {
-            return Err(GeometryError::RouteEndDoesNotMatchTargetAnchor {
-                route_end,
-                target_anchor: target.anchor_point_um,
-            });
-        }
-    }
-
-    let mut centerline = Vec::with_capacity(
-        primitive_centerline.len()
-            + source_access
-                .map(|a| a.access_centerline_um.len())
-                .unwrap_or(0)
-            + target_access
-                .map(|a| a.access_centerline_um.len())
-                .unwrap_or(0),
-    );
-
-    if let Some(source) = source_access {
-        for point in source.access_centerline_um.iter().copied() {
-            push_physical_if_different(&mut centerline, point);
-        }
-    }
-    for point in primitive_centerline.iter().copied() {
-        push_physical_if_different(&mut centerline, point);
-    }
-    if let Some(target) = target_access {
-        for point in target.access_centerline_um.iter().rev().copied() {
-            push_physical_if_different(&mut centerline, point);
-        }
-    }
-
-    if centerline.len() < 2 {
-        return Err(GeometryError::DegenerateRoute);
-    }
-    generate_waveguide_polygon(&centerline, width_um)
-}
-
-fn validate_port_access_config(config: &PortAccessConfig) -> Result<(), PortAccessError> {
-    if !config.min_straight_um.is_finite() || config.min_straight_um < 0.0 {
-        return Err(PortAccessError::InvalidConfig(
-            "min_straight_um must be finite and >= 0".to_string(),
-        ));
-    }
-    if config.max_anchor_search_cells < 0 {
-        return Err(PortAccessError::InvalidConfig(
-            "max_anchor_search_cells must be >= 0".to_string(),
-        ));
-    }
-    if !config.min_bend_radius_um.is_finite() || config.min_bend_radius_um < 0.0 {
-        return Err(PortAccessError::InvalidConfig(
-            "min_bend_radius_um must be finite and >= 0".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn select_anchor_and_build_access(
-    port: &PortInput,
-    grid: &StaticGridSpec,
-    config: &PortAccessConfig,
-) -> Result<((i32, i32), u8, Vec<(f64, f64)>), PortAccessError> {
-    let base_cell = physical_to_grid(port.x, port.y, grid);
-    let port_angle = orientation_to_angle(port.orientation);
-    let dir = angle_to_unit_vector(port_angle);
-    let lateral_dir = rotate_left(dir);
-    let mut candidates: Vec<(i32, i32, i32, i32, f64, f64)> = Vec::new();
-    for radius in 1..=config.max_anchor_search_cells.max(1) {
-        for dx in -radius..=radius {
-            for dy in -radius..=radius {
-                if dx.abs().max(dy.abs()) != radius {
-                    continue;
-                }
-                let candidate = (base_cell.0 + dx, base_cell.1 + dy);
-                if !in_bounds(candidate, grid) {
-                    continue;
-                }
-                let anchor_point = grid_cell_center(candidate.0, candidate.1, grid);
-                let delta = sub(anchor_point, (port.x, port.y));
-                let forward = dot(delta, dir);
-                if forward <= EPS {
-                    continue;
-                }
-                let lateral = dot(delta, lateral_dir).abs();
-                candidates.push((radius, dx, dy, candidate.0, lateral, forward));
-            }
-        }
-    }
-    candidates.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| a.4.total_cmp(&b.4))
-            .then_with(|| b.5.total_cmp(&a.5))
-            .then_with(|| a.3.cmp(&b.3))
-            .then_with(|| a.2.cmp(&b.2))
-    });
-    for (_, dx, dy, _, _, _) in candidates {
-        let candidate = (base_cell.0 + dx, base_cell.1 + dy);
-        let anchor_point = grid_cell_center(candidate.0, candidate.1, grid);
-        let anchor_angle = port_angle;
-        if let Ok(centerline) = build_access_centerline(
-            (port.x, port.y),
-            anchor_point,
-            port_angle,
-            anchor_angle,
-            &port.name,
-            config,
-        ) {
-            return Ok((candidate, anchor_angle, centerline));
-        }
-    }
-
-    Err(PortAccessError::AnchorSearchFailed {
-        port_name: port.name.clone(),
-    })
-}
-
-fn build_access_centerline(
-    port_point: (f64, f64),
-    anchor_point: (f64, f64),
-    port_angle: u8,
-    anchor_angle: u8,
-    port_name: &str,
-    config: &PortAccessConfig,
-) -> Result<Vec<(f64, f64)>, PortAccessError> {
-    if !is_finite_point(port_point) || !is_finite_point(anchor_point) {
-        return Err(PortAccessError::NonFiniteAccessCoordinate {
-            port_name: port_name.to_string(),
-        });
-    }
-
-    if anchor_angle != port_angle {
-        return Err(PortAccessError::AnchorSearchFailed {
-            port_name: port_name.to_string(),
-        });
-    }
-
-    let u = angle_to_unit_vector(port_angle);
-    let v = rotate_left(u);
-    let delta = sub(anchor_point, port_point);
-    let local_dx = dot(delta, u);
-    let local_dy = dot(delta, v);
-    if local_dx <= EPS {
-        return Err(PortAccessError::AnchorSearchFailed {
-            port_name: port_name.to_string(),
-        });
-    }
-
-    let launch_straight = config.min_straight_um.max(EPS * 10.0);
-    let landing_straight = config.min_straight_um.max(EPS * 10.0);
-    let mut out = Vec::new();
-
-    // Build in local frame (port at origin, +x along port tangent, +y left-normal), then map back.
-    let to_world =
-        |p: (f64, f64)| -> (f64, f64) { add(port_point, add(scale(u, p.0), scale(v, p.1))) };
-    push_physical_if_different(&mut out, to_world((0.0, 0.0)));
-
-    if local_dy.abs() <= EPS {
-        let x1 = launch_straight.min(local_dx);
-        push_physical_if_different(&mut out, to_world((x1, 0.0)));
-        push_physical_if_different(&mut out, to_world((local_dx, 0.0)));
-        if out.len() < 2 {
-            return Err(PortAccessError::ZeroLengthAccess {
-                port_name: port_name.to_string(),
-            });
-        }
-        return Ok(out);
-    }
-
-    let radius = if config.min_bend_radius_um <= EPS {
-        (local_dy.abs() / 2.0).max(EPS * 10.0)
-    } else {
-        config.min_bend_radius_um
-    };
-    if local_dy.abs() + EPS < 2.0 * radius {
-        return Err(PortAccessError::AnchorSearchFailed {
-            port_name: port_name.to_string(),
-        });
-    }
-    let required_dx = launch_straight + landing_straight + 2.0 * radius;
-    if local_dx + EPS < required_dx {
-        return Err(PortAccessError::AnchorSearchFailed {
-            port_name: port_name.to_string(),
-        });
-    }
-    let final_straight = local_dx - required_dx;
-    if final_straight < -EPS {
-        return Err(PortAccessError::AnchorSearchFailed {
-            port_name: port_name.to_string(),
-        });
-    }
-
-    let sign = if local_dy >= 0.0 { 1.0 } else { -1.0 };
-    let abs_dy = local_dy.abs();
-    let p1 = (launch_straight, 0.0);
-    let p2 = (launch_straight + radius, sign * radius);
-    let p3 = (launch_straight + radius, sign * (abs_dy - radius));
-    let p4 = (launch_straight + 2.0 * radius, sign * abs_dy);
-    let p5 = (
-        launch_straight + 2.0 * radius + final_straight,
-        sign * abs_dy,
-    );
-    let p6 = (local_dx - landing_straight, sign * abs_dy);
-    let p7 = (local_dx, sign * abs_dy);
-
-    push_physical_if_different(&mut out, to_world(p1));
-    append_arc_samples(
-        &mut out,
-        to_world(p1),
-        to_world(p2),
-        to_world((launch_straight, sign * radius)),
-        sign > 0.0,
-    );
-    push_physical_if_different(&mut out, to_world(p3));
-    append_arc_samples(
-        &mut out,
-        to_world(p3),
-        to_world(p4),
-        to_world((launch_straight + 2.0 * radius, sign * (abs_dy - radius))),
-        sign < 0.0,
-    );
-    push_physical_if_different(&mut out, to_world(p5));
-    push_physical_if_different(&mut out, to_world(p6));
-    push_physical_if_different(&mut out, to_world(p7));
-
-    if out.iter().any(|p| !is_finite_point(*p))
-        || out.windows(2).any(|w| distance(w[0], w[1]) <= EPS)
-    {
-        return Err(PortAccessError::NonFiniteAccessCoordinate {
-            port_name: port_name.to_string(),
-        });
-    }
-    Ok(out)
-}
-
-fn append_arc_samples(
-    out: &mut Vec<(f64, f64)>,
-    start: (f64, f64),
-    end: (f64, f64),
-    center: (f64, f64),
-    ccw: bool,
-) {
-    let radius = distance(start, center);
-    if radius <= EPS {
-        push_physical_if_different(out, end);
-        return;
-    }
-    let a0 = (start.1 - center.1).atan2(start.0 - center.0);
-    let mut a1 = (end.1 - center.1).atan2(end.0 - center.0);
-    if ccw {
-        while a1 <= a0 {
-            a1 += std::f64::consts::TAU;
-        }
-    } else {
-        while a1 >= a0 {
-            a1 -= std::f64::consts::TAU;
-        }
-    }
-    let arc_span = (a1 - a0).abs();
-    let steps = ((arc_span / std::f64::consts::FRAC_PI_2) * arc_samples_per_90_deg(radius) as f64)
-        .ceil()
-        .max(2.0) as usize;
-    for i in 1..steps {
-        let t = i as f64 / steps as f64;
-        let a = a0 + (a1 - a0) * t;
-        push_physical_if_different(
-            out,
-            (center.0 + radius * a.cos(), center.1 + radius * a.sin()),
-        );
-    }
-    push_physical_if_different(out, end);
-}
-
-fn in_bounds(cell: (i32, i32), grid: &StaticGridSpec) -> bool {
-    cell.0 >= 0 && cell.0 < grid.width && cell.1 >= 0 && cell.1 < grid.height
-}
-
-fn orientation_to_angle(orientation: Option<f64>) -> u8 {
-    let value = orientation.unwrap_or(0.0).rem_euclid(360.0);
-    (value / 45.0).round().rem_euclid(8.0) as u8
 }
 
 fn append_join(
@@ -4421,7 +3585,6 @@ fn rotate_right(v: (f64, f64)) -> (f64, f64) {
 mod tests {
     use super::*;
     use crate::primitives::{create_photonic_primitive_library, PrimitiveLibraryConfig};
-    use crate::static_obstacle_builder::make_grid_spec;
     use rustc_hash::FxHashSet;
 
     fn grid() -> GeometryGridSpec {
@@ -4436,6 +3599,33 @@ mod tests {
             bend_radius_cells: 1,
             allow_45_degree_turns: true,
         })
+    }
+
+    /// The production planner on a route: its primitive centerline, the dense
+    /// occupancy prefix of the obstacle map, one box depth (what the former
+    /// route-level wrapper did before phase 6 slice A deleted it).
+    fn plan_auto_for_route(
+        route: &RouteResult,
+        lib: &PrimitiveLibrary,
+        grid: &GeometryGridSpec,
+        map: &ObstacleMap,
+        opened_cells: Option<&FxHashSet<CellKey>>,
+        cfg: &AutoMeanderConfig,
+    ) -> Result<AutoRouteAnalyticMeanderPlan, GeometryError> {
+        let centerline = route_to_primitive_centerline(route, lib, grid)?;
+        let prefix = DenseOccupancyPrefix::from_obstacle_map(map, opened_cells);
+        plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix(
+            &centerline,
+            grid,
+            &prefix,
+            opened_cells,
+            None,
+            None,
+            None,
+            None,
+            cfg,
+            &[cfg.box_depth_um],
+        )
     }
 
     fn primitive_id_for<F>(lib: &PrimitiveLibrary, start_angle: u8, predicate: F) -> u16
@@ -5633,114 +4823,6 @@ mod tests {
         ));
     }
 
-    fn static_grid() -> StaticGridSpec {
-        make_grid_spec((0.0, 0.0, 10.0, 10.0), 1.0).unwrap()
-    }
-
-    fn tiny_grid() -> StaticGridSpec {
-        make_grid_spec((0.0, 0.0, 1.0, 1.0), 1.0).unwrap()
-    }
-
-    #[test]
-    fn port_at_grid_center_has_direct_access() {
-        let port = PortInput::new("p0".to_string(), 0.5, 0.5, Some(0.0));
-        let access =
-            build_port_access(&port, &static_grid(), &PortAccessConfig::default()).unwrap();
-        assert!(access.anchor_cell.0 >= 0 && access.anchor_cell.1 >= 0);
-        assert_eq!(
-            access.access_centerline_um.first().copied(),
-            Some((0.5, 0.5))
-        );
-        assert_eq!(
-            access.access_centerline_um.last().copied(),
-            Some(access.anchor_point_um)
-        );
-        assert!(access.access_centerline_um.len() >= 2);
-    }
-
-    #[test]
-    fn off_grid_port_ends_access_at_anchor_center() {
-        let port = PortInput::new("p1".to_string(), 0.2, 0.7, Some(0.0));
-        let access =
-            build_port_access(&port, &static_grid(), &PortAccessConfig::default()).unwrap();
-        assert!(access.anchor_cell.0 >= 0 && access.anchor_cell.1 >= 0);
-        assert_eq!(
-            access.access_centerline_um.first().copied(),
-            Some((0.2, 0.7))
-        );
-        assert_eq!(
-            access.access_centerline_um.last().copied(),
-            Some(access.anchor_point_um)
-        );
-        assert!(access.access_centerline_um.len() > 2);
-    }
-
-    #[test]
-    fn access_first_segment_follows_port_orientation() {
-        let port = PortInput::new("p2".to_string(), 1.0, 1.0, Some(0.0));
-        let access =
-            build_port_access(&port, &static_grid(), &PortAccessConfig::default()).unwrap();
-        let p0 = access.access_centerline_um[0];
-        let p1 = access.access_centerline_um[1];
-        assert!(p1.0 > p0.0);
-        assert!((p1.1 - p0.1).abs() <= 1e-9);
-    }
-
-    #[test]
-    fn access_last_segment_follows_anchor_angle() {
-        let port = PortInput::new("p2b".to_string(), 1.0, 1.0, Some(0.0));
-        let access =
-            build_port_access(&port, &static_grid(), &PortAccessConfig::default()).unwrap();
-        let n = access.access_centerline_um.len();
-        let p0 = access.access_centerline_um[n - 2];
-        let p1 = access.access_centerline_um[n - 1];
-        let seg = sub(p1, p0);
-        let dir = angle_to_unit_vector(access.anchor_angle);
-        let perp = rotate_left(dir);
-        assert!(dot(seg, dir) > EPS);
-        assert!(dot(seg, perp).abs() <= 1e-6);
-        assert_eq!(access.anchor_angle, access.entry_angle);
-    }
-
-    #[test]
-    fn access_points_are_finite_and_non_degenerate() {
-        let port = PortInput::new("p3".to_string(), 0.3, 0.8, Some(45.0));
-        let access =
-            build_port_access(&port, &static_grid(), &PortAccessConfig::default()).unwrap();
-        assert!(access
-            .access_centerline_um
-            .iter()
-            .all(|p| p.0.is_finite() && p.1.is_finite()));
-        assert!(access
-            .access_centerline_um
-            .windows(2)
-            .all(|w| distance(w[0], w[1]) > EPS));
-    }
-
-    #[test]
-    fn infeasible_access_returns_explicit_error() {
-        let sg = tiny_grid();
-        let port = PortInput::new("p4".to_string(), 0.1, 0.1, Some(0.0));
-        let cfg = PortAccessConfig {
-            min_straight_um: 5.0,
-            max_anchor_search_cells: 1,
-            min_bend_radius_um: 5.0,
-        };
-        let err = build_port_access(&port, &sg, &cfg).unwrap_err();
-        assert!(matches!(err, PortAccessError::AnchorSearchFailed { .. }));
-    }
-
-    #[test]
-    fn batch_build_port_accesses_returns_one_per_port() {
-        let ports = vec![
-            PortInput::new("b0".to_string(), 0.2, 0.7, Some(0.0)),
-            PortInput::new("b1".to_string(), 0.3, 0.8, Some(45.0)),
-        ];
-        let accesses =
-            build_port_accesses(&ports, &static_grid(), &PortAccessConfig::default()).unwrap();
-        assert_eq!(accesses.len(), ports.len());
-    }
-
     #[test]
     fn straight_route_generates_closed_rectangle() {
         let centerline = vec![(0.5, 0.5), (4.5, 0.5)];
@@ -5797,80 +4879,6 @@ mod tests {
     }
 
     #[test]
-    fn realizes_route_polygon_with_explicit_port_access_endpoints() {
-        let lib = test_lib();
-        let sg = static_grid();
-        let access_cfg = PortAccessConfig {
-            min_straight_um: 0.0,
-            max_anchor_search_cells: 8,
-            min_bend_radius_um: 0.5,
-        };
-        let source = build_port_access(
-            &PortInput::new("s".to_string(), 1.0, 2.5, Some(0.0)),
-            &sg,
-            &access_cfg,
-        )
-        .unwrap();
-        let target = build_port_access(
-            &PortInput::new("t".to_string(), 6.0, 2.5, Some(180.0)),
-            &sg,
-            &access_cfg,
-        )
-        .unwrap();
-
-        let source_state = State::new(
-            source.anchor_cell.0,
-            source.anchor_cell.1,
-            source.entry_angle,
-        );
-        let target_state = State::new(
-            target.anchor_cell.0,
-            target.anchor_cell.1,
-            target.entry_angle,
-        );
-        let straight_pid = lib
-            .get_primitives_for_angle(source_state.angle)
-            .iter()
-            .find(|p| {
-                p.end_angle == source_state.angle
-                    && p.dx == (target_state.x - source_state.x)
-                    && p.dy == (target_state.y - source_state.y)
-            })
-            .map(|p| p.id)
-            .unwrap_or(lib.get_primitives_for_angle(source_state.angle)[0].id);
-
-        let route = RouteResult {
-            states: vec![source_state, target_state],
-            primitives: vec![straight_pid],
-            cells: vec![],
-            compressed_waypoints: vec![],
-            total_length_um: 0.0,
-            total_cost: 0.0,
-            requested_target: target_state,
-            reached_target: target_state,
-            stats: Default::default(),
-        };
-
-        let polygon = realize_route_polygon_with_port_access(
-            &route,
-            &lib,
-            &grid(),
-            1.0,
-            Some(&source),
-            Some(&target),
-        )
-        .unwrap();
-        assert_eq!(polygon.first(), polygon.last());
-        let min_x = polygon.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
-        let max_x = polygon
-            .iter()
-            .map(|p| p.0)
-            .fold(f64::NEG_INFINITY, f64::max);
-        assert!(min_x <= 1.0 + 1e-9);
-        assert!(max_x >= 6.0 - 1e-9);
-    }
-
-    #[test]
     fn realizes_route_polygon_from_primitives_closed_polygon() {
         let lib = test_lib();
         let bend_pid = lib.get_primitives_for_angle(0)[4].id;
@@ -5892,68 +4900,6 @@ mod tests {
         };
         let polygon = realize_route_polygon_from_primitives(&route, &lib, &grid(), 1.0).unwrap();
         assert_eq!(polygon.first(), polygon.last());
-    }
-
-    #[test]
-    fn splice_meander_preserves_endpoints_and_increases_length() {
-        let centerline = vec![(0.0, 0.0), (10.0, 0.0), (15.0, 0.0)];
-        let meander = vec![
-            PhysicalPoint {
-                x_um: 0.0,
-                y_um: 0.0,
-            },
-            PhysicalPoint {
-                x_um: 3.0,
-                y_um: 2.0,
-            },
-            PhysicalPoint {
-                x_um: 7.0,
-                y_um: 2.0,
-            },
-            PhysicalPoint {
-                x_um: 10.0,
-                y_um: 0.0,
-            },
-        ];
-        let spliced = splice_meander_into_centerline(&centerline, 0, &meander);
-        assert_eq!(spliced.first().copied(), Some((0.0, 0.0)));
-        assert_eq!(spliced.last().copied(), Some((15.0, 0.0)));
-        assert!(spliced.windows(2).all(|w| distance(w[0], w[1]) > EPS));
-        let old_len = centerline
-            .windows(2)
-            .map(|w| distance(w[0], w[1]))
-            .sum::<f64>();
-        let new_len = spliced
-            .windows(2)
-            .map(|w| distance(w[0], w[1]))
-            .sum::<f64>();
-        assert!(new_len > old_len);
-        let b = MeanderBox {
-            min_x_um: -1.0,
-            max_x_um: 11.0,
-            min_y_um: -1.0,
-            max_y_um: 3.0,
-        };
-        for p in meander {
-            assert!(p.x_um >= b.min_x_um - EPS && p.x_um <= b.max_x_um + EPS);
-            assert!(p.y_um >= b.min_y_um - EPS && p.y_um <= b.max_y_um + EPS);
-        }
-    }
-
-    #[test]
-    fn select_meander_segment_prefers_longest_fully_contained_axis_aligned() {
-        let centerline = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (7.0, 1.0), (9.0, 3.0)];
-        let idx = select_meander_segment(
-            &centerline,
-            MeanderBox {
-                min_x_um: 1.0,
-                max_x_um: 8.0,
-                min_y_um: -1.0,
-                max_y_um: 2.0,
-            },
-        )
-        .unwrap();
-        assert_eq!(idx, 2);
     }
 
     #[test]
@@ -5980,159 +4926,6 @@ mod tests {
         assert_eq!(runs[1].start_index, 1);
         assert_eq!(runs[1].end_index, 3);
         assert!((runs[1].length_um - 15.0).abs() < EPS);
-    }
-
-    #[test]
-    fn plan_analytic_meander_for_route_returns_plan_and_segment() {
-        let lib = test_lib();
-        let route = RouteResult {
-            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
-            primitives: vec![1],
-            cells: vec![],
-            compressed_waypoints: vec![],
-            total_length_um: 4.0,
-            total_cost: 4.0,
-            requested_target: State::new(5, 2, 0),
-            reached_target: State::new(5, 2, 0),
-            stats: Default::default(),
-        };
-        let plan = plan_analytic_meander_for_route(
-            &route,
-            &lib,
-            &grid(),
-            1.0,
-            0.2,
-            0.1,
-            2,
-            MeanderSide::Left,
-            MeanderBox {
-                min_x_um: 1.4,
-                max_x_um: 5.6,
-                min_y_um: 2.4,
-                max_y_um: 4.0,
-            },
-            MeanderPlanningMode::FillBoxMultiBump,
-        )
-        .unwrap();
-        assert_eq!(plan.selected_segment_index, 0);
-        assert!(plan.plan.bumps >= 1);
-        assert!(plan.plan.inserted_extra_length_um > 0.0);
-        assert!(!plan.plan.centerline.is_empty());
-    }
-
-    #[test]
-    fn realizes_route_polygon_with_analytic_meander_success() {
-        let lib = test_lib();
-        let route = RouteResult {
-            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
-            primitives: vec![1],
-            cells: vec![],
-            compressed_waypoints: vec![],
-            total_length_um: 4.0,
-            total_cost: 4.0,
-            requested_target: State::new(5, 2, 0),
-            reached_target: State::new(5, 2, 0),
-            stats: Default::default(),
-        };
-        let poly = realize_route_polygon_with_analytic_meander(
-            &route,
-            &lib,
-            &grid(),
-            1.0,
-            1.0,
-            0.2,
-            0.1,
-            2,
-            MeanderSide::Left,
-            MeanderBox {
-                min_x_um: 1.4,
-                max_x_um: 5.6,
-                min_y_um: 2.4,
-                max_y_um: 4.0,
-            },
-            MeanderPlanningMode::FillBoxMultiBump,
-        )
-        .unwrap();
-        assert!(poly.len() >= 4);
-        assert!(poly.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
-    }
-
-    #[test]
-    fn analytic_meander_realization_returns_no_candidate_error() {
-        let lib = test_lib();
-        let route = RouteResult {
-            states: vec![State::new(1, 1, 0), State::new(2, 2, 2)],
-            primitives: vec![4],
-            cells: vec![],
-            compressed_waypoints: vec![],
-            total_length_um: 0.0,
-            total_cost: 0.0,
-            requested_target: State::new(2, 2, 2),
-            reached_target: State::new(2, 2, 2),
-            stats: Default::default(),
-        };
-        let err = realize_route_polygon_with_analytic_meander(
-            &route,
-            &lib,
-            &grid(),
-            1.0,
-            2.0,
-            0.2,
-            0.1,
-            2,
-            MeanderSide::Left,
-            MeanderBox {
-                min_x_um: 100.0,
-                max_x_um: 110.0,
-                min_y_um: 100.0,
-                max_y_um: 110.0,
-            },
-            MeanderPlanningMode::FillBoxMultiBump,
-        )
-        .unwrap_err();
-        assert_eq!(err, GeometryError::NoMeanderCandidateSegment);
-    }
-
-    #[test]
-    fn analytic_meander_realization_propagates_planning_failure() {
-        let lib = test_lib();
-        let route = RouteResult {
-            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
-            primitives: vec![1],
-            cells: vec![],
-            compressed_waypoints: vec![],
-            total_length_um: 4.0,
-            total_cost: 4.0,
-            requested_target: State::new(5, 2, 0),
-            reached_target: State::new(5, 2, 0),
-            stats: Default::default(),
-        };
-        let err = realize_route_polygon_with_analytic_meander(
-            &route,
-            &lib,
-            &grid(),
-            1.0,
-            50.0,
-            0.5,
-            0.5,
-            1,
-            MeanderSide::Left,
-            MeanderBox {
-                min_x_um: 1.4,
-                max_x_um: 5.6,
-                min_y_um: 2.4,
-                max_y_um: 2.9,
-            },
-            MeanderPlanningMode::FillBoxMultiBump,
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            GeometryError::MeanderPlanningFailed(
-                MeanderPlanningError::AvailableBoxTooSmall
-                    | MeanderPlanningError::RequestedExtraLengthDoesNotFit
-            )
-        ));
     }
 
     #[test]
@@ -6164,7 +4957,8 @@ mod tests {
     fn meander_box_out_of_bounds_is_error() {
         let map = ObstacleMap::new(5, 5);
         let g = GeometryGridSpec::new(1.0, 0.0, 0.0).unwrap();
-        let err = check_meander_box_free(
+        let prefix = DenseOccupancyPrefix::from_obstacle_map(&map, None);
+        let err = check_meander_box_free_with_prefix(
             MeanderBox {
                 min_x_um: -1.0,
                 max_x_um: 1.0,
@@ -6172,94 +4966,11 @@ mod tests {
                 max_y_um: 1.0,
             },
             &g,
-            &map,
-            None,
+            &prefix,
             0,
         )
         .unwrap_err();
         assert!(matches!(err, GeometryError::MeanderBoxOutOfBounds(_)));
-    }
-
-    #[test]
-    fn checked_analytic_meander_box_realization_succeeds_when_free() {
-        let lib = test_lib();
-        let map = ObstacleMap::new(20, 20);
-        let route = RouteResult {
-            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
-            primitives: vec![1],
-            cells: vec![],
-            compressed_waypoints: vec![],
-            total_length_um: 4.0,
-            total_cost: 4.0,
-            requested_target: State::new(5, 2, 0),
-            reached_target: State::new(5, 2, 0),
-            stats: Default::default(),
-        };
-        let empty = FxHashSet::default();
-        let poly = realize_route_polygon_with_checked_analytic_meander_box(
-            &route,
-            &lib,
-            &grid(),
-            1.0,
-            1.0,
-            0.2,
-            0.1,
-            2,
-            MeanderSide::Left,
-            MeanderBox {
-                min_x_um: 1.4,
-                max_x_um: 5.6,
-                min_y_um: 2.4,
-                max_y_um: 4.0,
-            },
-            &map,
-            Some(&empty),
-            0,
-            MeanderPlanningMode::FillBoxMultiBump,
-        )
-        .unwrap();
-        assert!(poly.len() >= 4);
-    }
-
-    #[test]
-    fn checked_analytic_meander_box_realization_fails_when_blocked() {
-        let lib = test_lib();
-        let mut map = ObstacleMap::new(20, 20);
-        assert!(map.add_static_cell(3, 3));
-        let route = RouteResult {
-            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
-            primitives: vec![1],
-            cells: vec![],
-            compressed_waypoints: vec![],
-            total_length_um: 4.0,
-            total_cost: 4.0,
-            requested_target: State::new(5, 2, 0),
-            reached_target: State::new(5, 2, 0),
-            stats: Default::default(),
-        };
-        let err = realize_route_polygon_with_checked_analytic_meander_box(
-            &route,
-            &lib,
-            &grid(),
-            1.0,
-            3.0,
-            0.2,
-            0.1,
-            2,
-            MeanderSide::Left,
-            MeanderBox {
-                min_x_um: 1.4,
-                max_x_um: 5.6,
-                min_y_um: 2.4,
-                max_y_um: 4.0,
-            },
-            &map,
-            None,
-            0,
-            MeanderPlanningMode::FillBoxMultiBump,
-        )
-        .unwrap_err();
-        assert!(matches!(err, GeometryError::MeanderBoxBlocked { .. }));
     }
 
     #[test]
@@ -6301,8 +5012,7 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p =
-            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p = plan_auto_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert!(!p.plan.centerline.is_empty());
     }
 
@@ -6337,8 +5047,7 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p =
-            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p = plan_auto_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert_eq!(p.plan.side, MeanderSide::Right);
     }
 
@@ -6383,8 +5092,7 @@ mod tests {
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
 
-        let p =
-            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p = plan_auto_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert_eq!(p.plan.side, MeanderSide::Left);
         assert!(p.selected_segment.start.x_um > 3.0);
         assert!(p.selected_segment.end.x_um <= 15.0);
@@ -6477,8 +5185,7 @@ mod tests {
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
 
-        let plan =
-            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let plan = plan_auto_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert!(plan.selected_run_start_index > 0);
     }
 
@@ -6514,8 +5221,7 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let err = plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg)
-            .unwrap_err();
+        let err = plan_auto_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap_err();
         assert!(matches!(
             err,
             GeometryError::NoAutoMeanderCandidate {
@@ -6558,8 +5264,7 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p =
-            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p = plan_auto_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert_eq!(p.selected_segment_index, 0);
         assert_eq!(p.selected_run_start_index, 0);
         assert_eq!(p.selected_run_end_index, 2);
@@ -6640,8 +5345,7 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p =
-            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p = plan_auto_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert!(p.plan.bumps >= 1);
     }
 
@@ -6684,8 +5388,7 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let p =
-            plan_auto_analytic_meander_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
+        let p = plan_auto_for_route(&route, &lib, &grid(), &map, None, &cfg).unwrap();
         assert_eq!(p.selected_run_start_index, 0);
         assert_eq!(p.selected_run_end_index, 3);
     }
@@ -6727,8 +5430,7 @@ mod tests {
             side_policy: AutoMeanderSidePolicy::Both,
             mode: MeanderPlanningMode::FillBoxMultiBump,
         };
-        let plan =
-            plan_auto_analytic_meander_for_route(&route, &lib, &grid, &map, None, &cfg).unwrap();
+        let plan = plan_auto_for_route(&route, &lib, &grid, &map, None, &cfg).unwrap();
         assert!(plan.plan.bumps >= 1);
         assert!((cfg.min_bend_radius_um - primitive_bend_radius_um).abs() < EPS);
         for p in &plan.plan.centerline {
@@ -6737,68 +5439,6 @@ mod tests {
             assert!(p.y_um >= plan.selected_box.min_y_um - EPS);
             assert!(p.y_um <= plan.selected_box.max_y_um + EPS);
         }
-    }
-
-    #[test]
-    fn rejects_out_of_bounds_anchor_search() {
-        let sg = static_grid();
-        let config = PortAccessConfig {
-            max_anchor_search_cells: 0,
-            ..Default::default()
-        };
-        let port = PortInput::new("oob".to_string(), -10.0, -10.0, Some(180.0));
-        let err = build_port_access(&port, &sg, &config).unwrap_err();
-        assert!(matches!(err, PortAccessError::AnchorSearchFailed { .. }));
-    }
-
-    #[test]
-    fn rejects_zero_length_access_connector() {
-        let sg = tiny_grid();
-        let port = PortInput::new("zero".to_string(), 0.5, 0.5, Some(0.0));
-        let err = build_port_access(&port, &sg, &PortAccessConfig::default()).unwrap_err();
-        assert!(matches!(
-            err,
-            PortAccessError::ZeroLengthAccess { .. } | PortAccessError::AnchorSearchFailed { .. }
-        ));
-    }
-
-    #[test]
-    fn rejects_mismatched_route_anchor_endpoints() {
-        let lib = test_lib();
-        let route = RouteResult {
-            states: vec![State::new(1, 2, 0), State::new(5, 2, 0)],
-            primitives: vec![1],
-            cells: vec![],
-            compressed_waypoints: vec![],
-            total_length_um: 4.0,
-            total_cost: 4.0,
-            requested_target: State::new(5, 2, 0),
-            reached_target: State::new(5, 2, 0),
-            stats: Default::default(),
-        };
-        let bad_source = PortAccess {
-            port_name: "bad".to_string(),
-            port_point_um: (0.0, 0.0),
-            anchor_cell: (0, 0),
-            anchor_point_um: (0.5, 0.5),
-            port_angle: 0,
-            anchor_angle: 0,
-            entry_angle: 0,
-            access_centerline_um: vec![(0.0, 0.0), (0.5, 0.5)],
-        };
-        let err = realize_route_polygon_with_port_access(
-            &route,
-            &lib,
-            &grid(),
-            1.0,
-            Some(&bad_source),
-            None,
-        )
-        .unwrap_err();
-        assert!(matches!(
-            err,
-            GeometryError::RouteStartDoesNotMatchSourceAnchor { .. }
-        ));
     }
 
     #[test]

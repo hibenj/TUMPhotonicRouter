@@ -20,7 +20,6 @@ if str(PYTHON_SOURCE) not in sys.path:
 
 from translation.routing.api import (  # noqa: E402
     analyze_meander_insertion_for_requirements,
-    insert_meanders_for_requirements,
     route_match_and_realize,
     static_fanout_anchors_um,
 )
@@ -40,7 +39,6 @@ __all__ = [
     "_RouteNetsRustSession",
     "analyze_meander_insertion_for_requirements",
     "dense_obstacle_cell_cap",
-    "insert_meanders_for_requirements",
     "route_match_and_realize",
     "route_nets_rust",
     "static_fanout_anchors_um",

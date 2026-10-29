@@ -10,7 +10,6 @@ use crate::config::{
     SearchOverrides, SEARCH_ENGINE_ASTAR, SEARCH_ENGINE_GRID_DIJKSTRA,
 };
 use crate::crossings::CrossingConfig;
-use crate::geometry_realization::PortAccess;
 use crate::meander::{
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
     bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs,
@@ -535,53 +534,6 @@ pub struct PyRouteResult {
     pub legality_check_time_us: u64,
     #[pyo3(get)]
     pub reconstruction_time_us: u64,
-}
-
-#[pyclass(name = "PortAccess")]
-#[derive(Clone)]
-pub struct PyPortAccess {
-    pub(crate) inner: PortAccess,
-}
-
-#[pymethods]
-impl PyPortAccess {
-    #[getter]
-    pub(crate) fn port_name(&self) -> String {
-        self.inner.port_name.clone()
-    }
-
-    #[getter]
-    pub(crate) fn port_point_um(&self) -> (f64, f64) {
-        self.inner.port_point_um
-    }
-
-    #[getter]
-    pub(crate) fn anchor_cell(&self) -> (i32, i32) {
-        self.inner.anchor_cell
-    }
-
-    #[getter]
-    pub(crate) fn anchor_point_um(&self) -> (f64, f64) {
-        self.inner.anchor_point_um
-    }
-
-    #[getter]
-    pub(crate) fn entry_angle(&self) -> u8 {
-        self.inner.entry_angle
-    }
-    #[getter]
-    pub(crate) fn port_angle(&self) -> u8 {
-        self.inner.port_angle
-    }
-    #[getter]
-    pub(crate) fn anchor_angle(&self) -> u8 {
-        self.inner.anchor_angle
-    }
-
-    #[getter]
-    pub(crate) fn access_centerline_um(&self) -> Vec<(f64, f64)> {
-        self.inner.access_centerline_um.clone()
-    }
 }
 
 /// Binding for `crate::config::RouterConfig` (Milestone 1 of

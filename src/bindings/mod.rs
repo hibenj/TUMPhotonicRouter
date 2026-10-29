@@ -11,38 +11,26 @@ use rustc_hash::FxHashSet;
 
 use crate::auto_meander::{
     cells_in_grid_rect as cells_in_grid_rect_rs,
-    check_meander_box_free_with_prefix as check_meander_box_free_with_prefix_rs,
-    meander_box_to_grid_rect as meander_box_to_grid_rect_rs,
     plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
-    probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix as probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs,
     AutoMeanderConfig, DenseOccupancyPrefix,
 };
 use crate::crossings::{CrossingConfig, CrossingGuidance};
 use crate::geometry_realization::{
-    build_port_access as build_port_access_rs, build_port_accesses as build_port_accesses_rs,
     centerline_length_um as centerline_length_um_rs,
     generate_waveguide_polygon as generate_waveguide_polygon_rs,
-    plan_analytic_meander_for_route as plan_analytic_meander_for_route_rs,
-    plan_auto_analytic_meander_for_route as plan_auto_analytic_meander_for_route_rs,
-    plan_auto_analytic_meander_for_route_depth_sweep_with_prefix as plan_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs,
-    probe_auto_analytic_meander_for_route_depth_sweep_with_prefix as probe_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs,
     realize_centerline_polygon_with_terminal_tangents as realize_centerline_polygon_with_terminal_tangents_rs,
     realize_route_polygon_from_auto_plan as realize_route_polygon_from_auto_plan_rs,
     realize_route_polygon_from_primitives as realize_route_polygon_from_primitives_rs,
-    realize_route_polygon_with_analytic_meander as realize_route_polygon_with_analytic_meander_rs,
-    realize_route_polygon_with_auto_checked_analytic_meander as realize_route_polygon_with_auto_checked_analytic_meander_rs,
-    realize_route_polygon_with_checked_analytic_meander_box as realize_route_polygon_with_checked_analytic_meander_box_rs,
     realize_route_polygon_with_endpoint_correction as realize_route_polygon_with_endpoint_correction_rs,
-    realize_route_polygon_with_port_access as realize_route_polygon_with_port_access_rs,
     route_to_port_corrected_centerline_with_options as route_to_port_corrected_centerline_with_options_rs,
     route_to_primitive_centerline as route_to_primitive_centerline_rs,
-    splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs, GeometryError,
-    GeometryGridSpec, PortAccessConfig,
+    splice_meander_into_centerline_range as splice_meander_into_centerline_range_rs,
+    GeometryGridSpec,
 };
 use crate::meander::{
     actual_bend_radius_um_from_cells as actual_bend_radius_um_from_cells_rs,
-    bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs, MeanderBox,
-    MeanderSide, PhysicalPoint,
+    bend_radius_cells_from_min_radius as bend_radius_cells_from_min_radius_rs, MeanderSide,
+    PhysicalPoint,
 };
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, GridRect, ObstacleMap};
 use crate::plm::{
@@ -53,7 +41,7 @@ use crate::plm::{
 use crate::search::astar::svg::export_route_svg_with_port_open_cells;
 use crate::search::state::State;
 use crate::search::{SearchEnvironment, SearchRequest};
-use crate::static_obstacle_builder::{PortInput, PyStaticCellSet, StaticGridSpec};
+use crate::static_obstacle_builder::{PyStaticCellSet, StaticGridSpec};
 
 use crate::engine::negotiation::loop_::native_jobs_from_py;
 use crate::engine::*;
@@ -66,32 +54,6 @@ pub(crate) use types::*;
 
 #[pymethods]
 impl PyPhotonicRouter {
-    #[pyo3(signature=(min_bend_radius_um=None))]
-    pub(crate) fn describe_bend_radius(
-        &self,
-        py: Python<'_>,
-        min_bend_radius_um: Option<f64>,
-    ) -> PyResult<PyObject> {
-        let primitive_bend_radius_cells = self.primitive_cfg.bend_radius_cells;
-        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
-            primitive_bend_radius_cells,
-            self.grid.grid_size_um,
-        )
-        .map_err(PyValueError::new_err)?;
-        let effective_bend_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let effective_bend_radius_cells =
-            bend_radius_cells_from_min_radius_rs(effective_bend_radius_um, self.grid.grid_size_um)
-                .map_err(PyValueError::new_err)?;
-        let d = PyDict::new_bound(py);
-        d.set_item("grid_size_um", self.grid.grid_size_um)?;
-        d.set_item("primitive_bend_radius_cells", primitive_bend_radius_cells)?;
-        d.set_item("primitive_bend_radius_um", primitive_bend_radius_um)?;
-        d.set_item("requested_min_bend_radius_um", min_bend_radius_um)?;
-        d.set_item("effective_bend_radius_um", effective_bend_radius_um)?;
-        d.set_item("effective_bend_radius_cells", effective_bend_radius_cells)?;
-        Ok(d.into())
-    }
-
     #[new]
     #[pyo3(signature=(grid_spec, primitive_config, astar_config, router_config=None))]
     pub(crate) fn new(
@@ -223,10 +185,6 @@ impl PyPhotonicRouter {
         Ok(out)
     }
 
-    pub(crate) fn invalidate_meander_registered_reserved_index(&self) {
-        self.registered_plm.borrow_mut().invalidate_reserved_index();
-    }
-
     pub(crate) fn add_static_cells(&mut self, cells: Vec<(i32, i32)>) {
         self.invalidate_meander_base_prefix();
         for (x, y) in &cells {
@@ -237,9 +195,6 @@ impl PyPhotonicRouter {
     pub(crate) fn set_static_cells(&mut self, cells: Vec<(i32, i32)>) {
         self.clear_static_cells();
         self.add_static_cells(cells);
-    }
-    pub(crate) fn clear_registered_meander_route_cells(&self) {
-        self.registered_plm.borrow_mut().clear_registered_routes();
     }
     pub(crate) fn clear_registered_meander_reserved_cells(&self) {
         self.registered_plm
@@ -886,23 +841,6 @@ impl PyPhotonicRouter {
         routes
     }
 
-    pub(crate) fn all_net_core_cells(&self) -> Vec<(u64, Vec<(i32, i32)>)> {
-        let mut routes: Vec<(u64, Vec<(i32, i32)>)> = self
-            .obstacle_map
-            .net_route_entries()
-            .filter_map(|(net_id, _)| {
-                self.obstacle_map.get_net_core_cells(net_id).map(|cells| {
-                    (
-                        net_id,
-                        cells.iter().copied().map(unpack_xy).collect::<Vec<_>>(),
-                    )
-                })
-            })
-            .collect();
-        routes.sort_unstable_by_key(|(net_id, _)| *net_id);
-        routes
-    }
-
     pub(crate) fn commit_route_cells(&mut self, net_id: u64, cells: Vec<(i32, i32)>) -> bool {
         let committed = self.obstacle_map.commit_route(net_id, &cells);
         if committed {
@@ -938,93 +876,6 @@ impl PyPhotonicRouter {
             &self.crossing_events,
             self.grid.height as i32,
         )
-    }
-
-    #[pyo3(signature=(port_name,x_um,y_um,orientation=None,min_straight_um=0.0,max_anchor_search_cells=8,min_bend_radius_um=0.0))]
-    pub(crate) fn build_port_access(
-        &self,
-        port_name: String,
-        x_um: f64,
-        y_um: f64,
-        orientation: Option<f64>,
-        min_straight_um: f64,
-        max_anchor_search_cells: i32,
-        min_bend_radius_um: f64,
-    ) -> PyResult<PyPortAccess> {
-        let grid = StaticGridSpec {
-            width: self.grid.width as i32,
-            height: self.grid.height as i32,
-            grid_size_um: self.grid.grid_size_um,
-            origin: (self.grid.origin_x_um, self.grid.origin_y_um),
-            die_bbox: (0.0, 0.0, 0.0, 0.0),
-        };
-        let port = PortInput::new(port_name, x_um, y_um, orientation);
-        let config = PortAccessConfig {
-            min_straight_um,
-            max_anchor_search_cells,
-            min_bend_radius_um,
-        };
-        let access = build_port_access_rs(&port, &grid, &config)
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        Ok(PyPortAccess { inner: access })
-    }
-
-    #[pyo3(signature=(ports,min_straight_um=0.0,max_anchor_search_cells=8,min_bend_radius_um=0.0))]
-    pub(crate) fn build_port_accesses(
-        &self,
-        ports: Vec<(String, f64, f64, Option<f64>)>,
-        min_straight_um: f64,
-        max_anchor_search_cells: i32,
-        min_bend_radius_um: f64,
-    ) -> PyResult<Vec<PyPortAccess>> {
-        let grid = StaticGridSpec {
-            width: self.grid.width as i32,
-            height: self.grid.height as i32,
-            grid_size_um: self.grid.grid_size_um,
-            origin: (self.grid.origin_x_um, self.grid.origin_y_um),
-            die_bbox: (0.0, 0.0, 0.0, 0.0),
-        };
-        let cfg = PortAccessConfig {
-            min_straight_um,
-            max_anchor_search_cells,
-            min_bend_radius_um,
-        };
-        let port_inputs: Vec<PortInput> = ports
-            .into_iter()
-            .map(|(name, x, y, orientation)| PortInput::new(name, x, y, orientation))
-            .collect();
-        let accesses = build_port_accesses_rs(&port_inputs, &grid, &cfg)
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        Ok(accesses
-            .into_iter()
-            .map(|inner| PyPortAccess { inner })
-            .collect())
-    }
-
-    #[pyo3(signature=(route,width_um,source_access=None,target_access=None))]
-    pub(crate) fn realize_route_polygon_with_port_access(
-        &self,
-        route: &PyRouteResult,
-        width_um: f64,
-        source_access: Option<PyPortAccess>,
-        target_access: Option<PyPortAccess>,
-    ) -> PyResult<Vec<(f64, f64)>> {
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let r = to_route_result(route);
-        realize_route_polygon_with_port_access_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            width_um,
-            source_access.as_ref().map(|s| &s.inner),
-            target_access.as_ref().map(|s| &s.inner),
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
     #[pyo3(signature=(route,width_um))]
@@ -1150,43 +1001,6 @@ impl PyPhotonicRouter {
                 source_port_um,
                 target_port_um,
                 allow_unchecked_fallback,
-            )
-            .map_err(PyRuntimeError::new_err)?;
-        let d = PyDict::new_bound(py);
-        d.set_item("centerline", correction.centerline)?;
-        d.set_item("committed_bump", correction.committed_bump)?;
-        d.set_item("candidate_index", correction.candidate_index)?;
-        d.set_item("candidate_label", correction.candidate_label)?;
-        Ok(d.into())
-    }
-
-    #[pyo3(signature=(net_id,centerline,width_um,clearance_radius_cells,core_radius_cells,opened_cells=None,clearance_exempt_cells=None,source_port_um=None,target_port_um=None))]
-    pub(crate) fn centerline_port_corrected_checked(
-        &mut self,
-        py: Python<'_>,
-        net_id: u64,
-        centerline: Vec<(f64, f64)>,
-        width_um: f64,
-        clearance_radius_cells: i32,
-        core_radius_cells: i32,
-        opened_cells: Option<Vec<(i32, i32)>>,
-        clearance_exempt_cells: Option<Vec<(i32, i32)>>,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-    ) -> PyResult<Py<PyDict>> {
-        let _ = clearance_radius_cells;
-        let opened_cell_vec = opened_cells.unwrap_or_default();
-        let clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or_default();
-        let correction = self
-            .centerline_port_corrected_checked_native(
-                net_id,
-                &centerline,
-                width_um,
-                core_radius_cells,
-                &opened_cell_vec,
-                &clearance_exempt_cell_vec,
-                source_port_um,
-                target_port_um,
             )
             .map_err(PyRuntimeError::new_err)?;
         let d = PyDict::new_bound(py);
@@ -1370,16 +1184,6 @@ impl PyPhotonicRouter {
         centerline_length_um_rs(&centerline).map_err(|err| PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature=(centerline,width_um))]
-    pub(crate) fn realize_centerline_polygon(
-        &self,
-        centerline: Vec<(f64, f64)>,
-        width_um: f64,
-    ) -> PyResult<Vec<(f64, f64)>> {
-        generate_waveguide_polygon_rs(&centerline, width_um)
-            .map_err(|err| PyValueError::new_err(err.to_string()))
-    }
-
     #[pyo3(signature=(centerline,width_um,route,source_enabled=true,target_enabled=true))]
     pub(crate) fn realize_centerline_polygon_with_terminal_tangents(
         &self,
@@ -1398,634 +1202,6 @@ impl PyPhotonicRouter {
             target_enabled,
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))
-    }
-
-    #[pyo3(signature=(centerline,width_um,selected_run_start_index,selected_run_end_index,meander_centerline))]
-    pub(crate) fn realize_centerline_polygon_from_planned_auto_meander(
-        &self,
-        centerline: Vec<(f64, f64)>,
-        width_um: f64,
-        selected_run_start_index: usize,
-        selected_run_end_index: usize,
-        meander_centerline: Vec<(f64, f64)>,
-    ) -> PyResult<Vec<(f64, f64)>> {
-        if width_um <= 0.0 {
-            return Err(PyValueError::new_err("width_um must be > 0"));
-        }
-        let _ = centerline_length_um_rs(&centerline)
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let meander_points: Vec<PhysicalPoint> = meander_centerline
-            .into_iter()
-            .map(|(x_um, y_um)| PhysicalPoint { x_um, y_um })
-            .collect();
-        let spliced = splice_meander_into_centerline_range_rs(
-            &centerline,
-            selected_run_start_index,
-            selected_run_end_index,
-            &meander_points,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        generate_waveguide_polygon_rs(&spliced, width_um)
-            .map_err(|err| PyValueError::new_err(err.to_string()))
-    }
-
-    #[pyo3(signature=(centerline,width_um,route,selected_run_start_index,selected_run_end_index,meander_centerline,source_enabled=true,target_enabled=true))]
-    pub(crate) fn realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents(
-        &self,
-        centerline: Vec<(f64, f64)>,
-        width_um: f64,
-        route: &PyRouteResult,
-        selected_run_start_index: usize,
-        selected_run_end_index: usize,
-        meander_centerline: Vec<(f64, f64)>,
-        source_enabled: bool,
-        target_enabled: bool,
-    ) -> PyResult<Vec<(f64, f64)>> {
-        if width_um <= 0.0 {
-            return Err(PyValueError::new_err("width_um must be > 0"));
-        }
-        let _ = centerline_length_um_rs(&centerline)
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let meander_points: Vec<PhysicalPoint> = meander_centerline
-            .into_iter()
-            .map(|(x_um, y_um)| PhysicalPoint { x_um, y_um })
-            .collect();
-        let spliced = splice_meander_into_centerline_range_rs(
-            &centerline,
-            selected_run_start_index,
-            selected_run_end_index,
-            &meander_points,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let r = to_route_result(route);
-        realize_centerline_polygon_with_terminal_tangents_rs(
-            &spliced,
-            &r,
-            width_um,
-            source_enabled,
-            target_enabled,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))
-    }
-
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="fill_box_multi_bump"))]
-    pub(crate) fn realize_route_polygon_with_analytic_meander(
-        &self,
-        route: &PyRouteResult,
-        width_um: f64,
-        requested_extra_length_um: f64,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        side: &str,
-        available_box: Option<(f64, f64, f64, f64)>,
-        planning_mode: &str,
-    ) -> PyResult<Vec<(f64, f64)>> {
-        if width_um <= 0.0 {
-            return Err(PyValueError::new_err("width_um must be > 0"));
-        }
-        if requested_extra_length_um <= 0.0 {
-            return Err(PyValueError::new_err(
-                "requested_extra_length_um must be > 0",
-            ));
-        }
-        if max_bumps == 0 {
-            return Err(PyValueError::new_err("max_bumps must be > 0"));
-        }
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let meander_side = parse_meander_side(side)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
-            PyValueError::new_err(
-                "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
-            )
-        })?;
-        if min_x_um > max_x_um || min_y_um > max_y_um {
-            return Err(PyValueError::new_err(
-                "available_box is malformed: expected min_x<=max_x and min_y<=max_y",
-            ));
-        }
-        let meander_box = MeanderBox {
-            min_x_um,
-            max_x_um,
-            min_y_um,
-            max_y_um,
-        };
-
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let r = to_route_result(route);
-        realize_route_polygon_with_analytic_meander_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            width_um,
-            requested_extra_length_um,
-            effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            meander_side,
-            meander_box,
-            mode,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))
-    }
-
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,clearance_radius_cells=0,opened_cells=None,planning_mode="fill_box_multi_bump"))]
-    pub(crate) fn realize_route_polygon_with_checked_analytic_meander_box(
-        &self,
-        route: &PyRouteResult,
-        width_um: f64,
-        requested_extra_length_um: f64,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        side: &str,
-        available_box: Option<(f64, f64, f64, f64)>,
-        clearance_radius_cells: i32,
-        opened_cells: Option<Vec<(i32, i32)>>,
-        planning_mode: &str,
-    ) -> PyResult<Vec<(f64, f64)>> {
-        if width_um <= 0.0 {
-            return Err(PyValueError::new_err("width_um must be > 0"));
-        }
-        if requested_extra_length_um <= 0.0 {
-            return Err(PyValueError::new_err(
-                "requested_extra_length_um must be > 0",
-            ));
-        }
-        if max_bumps == 0 {
-            return Err(PyValueError::new_err("max_bumps must be > 0"));
-        }
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let meander_side = parse_meander_side(side)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
-            PyValueError::new_err(
-                "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
-            )
-        })?;
-        if min_x_um > max_x_um || min_y_um > max_y_um {
-            return Err(PyValueError::new_err(
-                "available_box is malformed: expected min_x<=max_x and min_y<=max_y",
-            ));
-        }
-        let meander_box = MeanderBox {
-            min_x_um,
-            max_x_um,
-            min_y_um,
-            max_y_um,
-        };
-
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let r = to_route_result(route);
-        let opened_owned;
-        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
-            opened_owned = pack_cells(cells);
-            Some(&opened_owned)
-        } else {
-            Some(&self.port_open_cells)
-        };
-        realize_route_polygon_with_checked_analytic_meander_box_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            width_um,
-            requested_extra_length_um,
-            effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            meander_side,
-            meander_box,
-            &self.obstacle_map,
-            opened_ref,
-            clearance_radius_cells,
-            mode,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))
-    }
-
-    #[pyo3(signature=(available_box,clearance_radius_cells=0,opened_cells=None))]
-    pub(crate) fn check_meander_box_free(
-        &self,
-        py: Python<'_>,
-        available_box: (f64, f64, f64, f64),
-        clearance_radius_cells: i32,
-        opened_cells: Option<Vec<(i32, i32)>>,
-    ) -> PyResult<PyObject> {
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box;
-        if min_x_um > max_x_um || min_y_um > max_y_um {
-            return Err(PyValueError::new_err(
-                "available_box is malformed: expected min_x<=max_x and min_y<=max_y",
-            ));
-        }
-        let meander_box = MeanderBox {
-            min_x_um,
-            max_x_um,
-            min_y_um,
-            max_y_um,
-        };
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let opened_owned;
-        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
-            opened_owned = pack_cells(cells);
-            Some(&opened_owned)
-        } else {
-            Some(&self.port_open_cells)
-        };
-        let prefix = DenseOccupancyPrefix::from_obstacle_map(&self.obstacle_map, opened_ref);
-        let d = PyDict::new_bound(py);
-
-        match meander_box_to_grid_rect_rs(meander_box, &grid, clearance_radius_cells) {
-            Err(e) => {
-                d.set_item("free", false)?;
-                d.set_item("grid_rect", py.None())?;
-                d.set_item("blocked_count", 0u32)?;
-                d.set_item("reason", e.to_string())?;
-                Ok(d.into())
-            }
-            Ok(rect) => {
-                d.set_item(
-                    "grid_rect",
-                    (rect.min_x, rect.max_x, rect.min_y, rect.max_y),
-                )?;
-                match check_meander_box_free_with_prefix_rs(
-                    meander_box,
-                    &grid,
-                    &prefix,
-                    clearance_radius_cells,
-                ) {
-                    Ok(_) => {
-                        d.set_item("free", true)?;
-                        d.set_item("blocked_count", 0u32)?;
-                        d.set_item("reason", "free")?;
-                        Ok(d.into())
-                    }
-                    Err(GeometryError::MeanderBoxBlocked { blocked_count, .. }) => {
-                        d.set_item("free", false)?;
-                        d.set_item("blocked_count", blocked_count)?;
-                        d.set_item("reason", "box_blocked")?;
-                        Ok(d.into())
-                    }
-                    Err(e @ GeometryError::MeanderBoxOutOfBounds(_)) => {
-                        d.set_item("free", false)?;
-                        d.set_item("blocked_count", 0u32)?;
-                        d.set_item("reason", e.to_string())?;
-                        Ok(d.into())
-                    }
-                    Err(e) => Err(PyValueError::new_err(e.to_string())),
-                }
-            }
-        }
-    }
-
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
-    pub(crate) fn plan_auto_analytic_meander_for_route(
-        &self,
-        py: Python<'_>,
-        route: &PyRouteResult,
-        requested_extra_length_um: f64,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        max_meander_height_um: f64,
-        box_depth_um: f64,
-        min_segment_length_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        opened_cells: Option<Vec<(i32, i32)>>,
-        planning_mode: &str,
-    ) -> PyResult<PyObject> {
-        if requested_extra_length_um <= 0.0 {
-            return Err(PyValueError::new_err(
-                "requested_extra_length_um must be > 0",
-            ));
-        }
-        if min_straight_um < 0.0 {
-            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
-        }
-        if max_bumps == 0 {
-            return Err(PyValueError::new_err("max_bumps must be > 0"));
-        }
-        if max_meander_height_um <= 0.0 {
-            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
-        }
-        if box_depth_um <= 0.0 {
-            return Err(PyValueError::new_err("box_depth_um must be > 0"));
-        }
-        if min_segment_length_um <= 0.0 {
-            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
-        }
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
-            self.primitive_cfg.bend_radius_cells,
-            self.grid.grid_size_um,
-        )
-        .map_err(PyValueError::new_err)?;
-        let cfg = AutoMeanderConfig {
-            requested_extra_length_um,
-            min_bend_radius_um: effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            max_meander_height_um,
-            box_depth_um,
-            min_segment_length_um,
-            endpoint_inset_um: 0.0,
-            clearance_radius_cells,
-            side_policy: policy,
-            mode,
-        };
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let r = to_route_result(route);
-        let opened_owned;
-        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
-            opened_owned = pack_cells(cells);
-            Some(&opened_owned)
-        } else {
-            Some(&self.port_open_cells)
-        };
-        let plan = plan_auto_analytic_meander_for_route_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            &self.obstacle_map,
-            opened_ref,
-            &cfg,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-
-        auto_meander_plan_to_py_object(
-            py,
-            &plan,
-            min_bend_radius_um,
-            effective_radius_um,
-            self.primitive_cfg.bend_radius_cells,
-            primitive_bend_radius_um,
-            mode,
-        )
-    }
-
-    #[pyo3(signature=(route,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
-    pub(crate) fn plan_auto_analytic_meander_for_route_depth_sweep(
-        &self,
-        py: Python<'_>,
-        route: &PyRouteResult,
-        requested_extra_length_um: f64,
-        box_depths_um: Vec<f64>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        endpoint_inset_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        opened_cells: Option<Vec<(i32, i32)>>,
-        planning_mode: &str,
-        extra_blocked_cells: Option<Vec<(i32, i32)>>,
-    ) -> PyResult<PyObject> {
-        if requested_extra_length_um <= 0.0 {
-            return Err(PyValueError::new_err(
-                "requested_extra_length_um must be > 0",
-            ));
-        }
-        if box_depths_um.is_empty() {
-            return Err(PyValueError::new_err("box_depths_um must not be empty"));
-        }
-        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return Err(PyValueError::new_err(
-                "box_depths_um values must be finite and > 0",
-            ));
-        }
-        if min_straight_um < 0.0 {
-            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
-        }
-        if max_bumps == 0 {
-            return Err(PyValueError::new_err("max_bumps must be > 0"));
-        }
-        if max_meander_height_um <= 0.0 {
-            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
-        }
-        if min_segment_length_um <= 0.0 {
-            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
-        }
-        if endpoint_inset_um < 0.0 {
-            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
-        }
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
-            self.primitive_cfg.bend_radius_cells,
-            self.grid.grid_size_um,
-        )
-        .map_err(PyValueError::new_err)?;
-        let cfg = AutoMeanderConfig {
-            requested_extra_length_um,
-            min_bend_radius_um: effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            max_meander_height_um,
-            box_depth_um: box_depths_um[0],
-            min_segment_length_um,
-            endpoint_inset_um,
-            clearance_radius_cells,
-            side_policy: policy,
-            mode,
-        };
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let r = to_route_result(route);
-        let opened_owned;
-        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
-            opened_owned = pack_cells(cells);
-            Some(&opened_owned)
-        } else {
-            Some(&self.port_open_cells)
-        };
-        let extra_blocked_owned;
-        let extra_blocked_ref: Option<&FxHashSet<CellKey>> =
-            if let Some(cells) = extra_blocked_cells.as_ref() {
-                extra_blocked_owned = pack_cells(cells);
-                Some(&extra_blocked_owned)
-            } else {
-                None
-            };
-        self.ensure_meander_base_prefix();
-        let plm = self.registered_plm.borrow();
-        let base_prefix = plm
-            .base_prefix
-            .as_ref()
-            .expect("meander base prefix should be initialized");
-        let plan = plan_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            base_prefix,
-            opened_ref,
-            None,
-            extra_blocked_ref,
-            None,
-            None,
-            &cfg,
-            &box_depths_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-
-        auto_meander_plan_to_py_object(
-            py,
-            &plan,
-            min_bend_radius_um,
-            effective_radius_um,
-            self.primitive_cfg.bend_radius_cells,
-            primitive_bend_radius_um,
-            mode,
-        )
-    }
-
-    #[pyo3(signature=(route,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
-    pub(crate) fn probe_auto_analytic_meander_for_route_depth_sweep(
-        &self,
-        py: Python<'_>,
-        route: &PyRouteResult,
-        requested_extra_length_um: f64,
-        box_depths_um: Vec<f64>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        endpoint_inset_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        opened_cells: Option<Vec<(i32, i32)>>,
-        planning_mode: &str,
-        extra_blocked_cells: Option<Vec<(i32, i32)>>,
-    ) -> PyResult<PyObject> {
-        if requested_extra_length_um <= 0.0 {
-            return Err(PyValueError::new_err(
-                "requested_extra_length_um must be > 0",
-            ));
-        }
-        if box_depths_um.is_empty() {
-            return Err(PyValueError::new_err("box_depths_um must not be empty"));
-        }
-        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return Err(PyValueError::new_err(
-                "box_depths_um values must be finite and > 0",
-            ));
-        }
-        if min_straight_um < 0.0 {
-            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
-        }
-        if max_bumps == 0 {
-            return Err(PyValueError::new_err("max_bumps must be > 0"));
-        }
-        if max_meander_height_um <= 0.0 {
-            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
-        }
-        if min_segment_length_um <= 0.0 {
-            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
-        }
-        if endpoint_inset_um < 0.0 {
-            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
-        }
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let cfg = AutoMeanderConfig {
-            requested_extra_length_um,
-            min_bend_radius_um: effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            max_meander_height_um,
-            box_depth_um: box_depths_um[0],
-            min_segment_length_um,
-            endpoint_inset_um,
-            clearance_radius_cells,
-            side_policy: policy,
-            mode,
-        };
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let r = to_route_result(route);
-        let opened_owned;
-        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
-            opened_owned = pack_cells(cells);
-            Some(&opened_owned)
-        } else {
-            Some(&self.port_open_cells)
-        };
-        let extra_blocked_owned;
-        let extra_blocked_ref: Option<&FxHashSet<CellKey>> =
-            if let Some(cells) = extra_blocked_cells.as_ref() {
-                extra_blocked_owned = pack_cells(cells);
-                Some(&extra_blocked_owned)
-            } else {
-                None
-            };
-        self.ensure_meander_base_prefix();
-        let plm = self.registered_plm.borrow();
-        let base_prefix = plm
-            .base_prefix
-            .as_ref()
-            .expect("meander base prefix should be initialized");
-        let probe = probe_auto_analytic_meander_for_route_depth_sweep_with_prefix_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            base_prefix,
-            opened_ref,
-            extra_blocked_ref,
-            &cfg,
-            &box_depths_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        auto_meander_probe_to_py_object(py, &probe)
     }
 
     #[pyo3(signature=(centerline,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
@@ -2493,176 +1669,6 @@ impl PyPhotonicRouter {
         Ok(py_result)
     }
 
-    #[pyo3(signature=(centerline,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
-    pub(crate) fn probe_auto_analytic_meander_for_centerline_depth_sweep(
-        &self,
-        py: Python<'_>,
-        centerline: Vec<(f64, f64)>,
-        requested_extra_length_um: f64,
-        box_depths_um: Vec<f64>,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        max_meander_height_um: f64,
-        min_segment_length_um: f64,
-        endpoint_inset_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        opened_cells: Option<Vec<(i32, i32)>>,
-        planning_mode: &str,
-        extra_blocked_cells: Option<Vec<(i32, i32)>>,
-    ) -> PyResult<PyObject> {
-        if requested_extra_length_um <= 0.0 {
-            return Err(PyValueError::new_err(
-                "requested_extra_length_um must be > 0",
-            ));
-        }
-        if box_depths_um.is_empty() {
-            return Err(PyValueError::new_err("box_depths_um must not be empty"));
-        }
-        if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return Err(PyValueError::new_err(
-                "box_depths_um values must be finite and > 0",
-            ));
-        }
-        if min_straight_um < 0.0 {
-            return Err(PyValueError::new_err("min_straight_um must be >= 0"));
-        }
-        if max_bumps == 0 {
-            return Err(PyValueError::new_err("max_bumps must be > 0"));
-        }
-        if max_meander_height_um <= 0.0 {
-            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
-        }
-        if min_segment_length_um <= 0.0 {
-            return Err(PyValueError::new_err("min_segment_length_um must be > 0"));
-        }
-        if endpoint_inset_um < 0.0 {
-            return Err(PyValueError::new_err("endpoint_inset_um must be >= 0"));
-        }
-        if clearance_radius_cells < 0 {
-            return Err(PyValueError::new_err("clearance_radius_cells must be >= 0"));
-        }
-        let _ = centerline_length_um_rs(&centerline)
-            .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let cfg = AutoMeanderConfig {
-            requested_extra_length_um,
-            min_bend_radius_um: effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            max_meander_height_um,
-            box_depth_um: box_depths_um[0],
-            min_segment_length_um,
-            endpoint_inset_um,
-            clearance_radius_cells,
-            side_policy: policy,
-            mode,
-        };
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let opened_owned;
-        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
-            opened_owned = pack_cells(cells);
-            Some(&opened_owned)
-        } else {
-            Some(&self.port_open_cells)
-        };
-        let extra_blocked_owned;
-        let extra_blocked_ref: Option<&FxHashSet<CellKey>> =
-            if let Some(cells) = extra_blocked_cells.as_ref() {
-                extra_blocked_owned = pack_cells(cells);
-                Some(&extra_blocked_owned)
-            } else {
-                None
-            };
-        self.ensure_meander_base_prefix();
-        let plm = self.registered_plm.borrow();
-        let base_prefix = plm
-            .base_prefix
-            .as_ref()
-            .expect("meander base prefix should be initialized");
-        let probe = probe_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
-            &centerline,
-            &grid,
-            base_prefix,
-            opened_ref,
-            extra_blocked_ref,
-            &cfg,
-            &box_depths_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        auto_meander_probe_to_py_object(py, &probe)
-    }
-
-    #[pyo3(signature=(route,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
-    pub(crate) fn realize_route_polygon_with_auto_checked_analytic_meander(
-        &self,
-        route: &PyRouteResult,
-        width_um: f64,
-        requested_extra_length_um: f64,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        max_meander_height_um: f64,
-        box_depth_um: f64,
-        min_segment_length_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        opened_cells: Option<Vec<(i32, i32)>>,
-        planning_mode: &str,
-    ) -> PyResult<Vec<(f64, f64)>> {
-        if width_um <= 0.0 {
-            return Err(PyValueError::new_err("width_um must be > 0"));
-        }
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let cfg = AutoMeanderConfig {
-            requested_extra_length_um,
-            min_bend_radius_um: effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            max_meander_height_um,
-            box_depth_um,
-            min_segment_length_um,
-            endpoint_inset_um: 0.0,
-            clearance_radius_cells,
-            side_policy: policy,
-            mode,
-        };
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let r = to_route_result(route);
-        let opened_owned;
-        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
-            opened_owned = pack_cells(cells);
-            Some(&opened_owned)
-        } else {
-            Some(&self.port_open_cells)
-        };
-        realize_route_polygon_with_auto_checked_analytic_meander_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            width_um,
-            &self.obstacle_map,
-            opened_ref,
-            &cfg,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))
-    }
-
     #[pyo3(signature=(route,width_um,selected_run_start_index,selected_run_end_index,meander_centerline))]
     pub(crate) fn realize_route_polygon_from_planned_auto_meander(
         &self,
@@ -2697,67 +1703,6 @@ impl PyPhotonicRouter {
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
         generate_waveguide_polygon_rs(&spliced, width_um)
             .map_err(|err| PyValueError::new_err(err.to_string()))
-    }
-
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
-    pub(crate) fn cells_for_auto_analytic_meander_box(
-        &self,
-        route: &PyRouteResult,
-        requested_extra_length_um: f64,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        max_meander_height_um: f64,
-        box_depth_um: f64,
-        min_segment_length_um: f64,
-        clearance_radius_cells: i32,
-        side_policy: &str,
-        opened_cells: Option<Vec<(i32, i32)>>,
-        planning_mode: &str,
-    ) -> PyResult<Vec<(i32, i32)>> {
-        if max_meander_height_um <= 0.0 {
-            return Err(PyValueError::new_err("max_meander_height_um must be > 0"));
-        }
-        let policy = parse_auto_meander_side_policy(side_policy)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let cfg = AutoMeanderConfig {
-            requested_extra_length_um,
-            min_bend_radius_um: effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            max_meander_height_um,
-            box_depth_um,
-            min_segment_length_um,
-            endpoint_inset_um: 0.0,
-            clearance_radius_cells,
-            side_policy: policy,
-            mode,
-        };
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        let r = to_route_result(route);
-        let opened_owned;
-        let opened_ref: Option<&FxHashSet<CellKey>> = if let Some(cells) = opened_cells.as_ref() {
-            opened_owned = pack_cells(cells);
-            Some(&opened_owned)
-        } else {
-            Some(&self.port_open_cells)
-        };
-        let plan = plan_auto_analytic_meander_for_route_rs(
-            &r,
-            &self.primitives,
-            &grid,
-            &self.obstacle_map,
-            opened_ref,
-            &cfg,
-        )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
-        Ok(cells_in_grid_rect_rs(plan.selected_grid_rect))
     }
 
     #[pyo3(signature=(net_id,source,target,width_um,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,box_depth_um=20.0,min_segment_length_um=10.0,route_block_radius_cells=0,meander_clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump"))]
@@ -2870,13 +1815,21 @@ impl PyPhotonicRouter {
             side_policy: policy,
             mode,
         };
-        let auto_plan = plan_auto_analytic_meander_for_route_rs(
-            &result,
-            &self.primitives,
+        let primitive_centerline =
+            route_to_primitive_centerline_rs(&result, &self.primitives, &grid)
+                .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let base_prefix = DenseOccupancyPrefix::from_obstacle_map(&self.obstacle_map, opened_ref);
+        let auto_plan = plan_auto_analytic_meander_for_centerline_depth_sweep_with_prefix_rs(
+            &primitive_centerline,
             &grid,
-            &self.obstacle_map,
+            &base_prefix,
             opened_ref,
+            None,
+            None,
+            None,
+            None,
             &auto_cfg,
+            &[auto_cfg.box_depth_um],
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
 
@@ -2961,117 +1914,84 @@ impl PyPhotonicRouter {
         )?;
         Ok(d.into())
     }
-    pub(crate) fn describe_primitives(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
-        describe_primitives(py, &self.primitives)
-    }
-
-    #[pyo3(signature=(route,requested_extra_length_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,side="left",available_box=None,planning_mode="fill_box_multi_bump"))]
-    pub(crate) fn plan_analytic_meander_for_route(
+    #[pyo3(signature=(centerline,width_um,route,selected_run_start_index,selected_run_end_index,meander_centerline,source_enabled=true,target_enabled=true))]
+    pub(crate) fn realize_centerline_polygon_from_planned_auto_meander_with_terminal_tangents(
         &self,
-        py: Python<'_>,
+        centerline: Vec<(f64, f64)>,
+        width_um: f64,
         route: &PyRouteResult,
-        requested_extra_length_um: f64,
-        min_bend_radius_um: Option<f64>,
-        min_straight_um: f64,
-        max_bumps: usize,
-        side: &str,
-        available_box: Option<(f64, f64, f64, f64)>,
-        planning_mode: &str,
-    ) -> PyResult<PyObject> {
-        if requested_extra_length_um <= 0.0 {
-            return Err(PyValueError::new_err(
-                "requested_extra_length_um must be > 0",
-            ));
+        selected_run_start_index: usize,
+        selected_run_end_index: usize,
+        meander_centerline: Vec<(f64, f64)>,
+        source_enabled: bool,
+        target_enabled: bool,
+    ) -> PyResult<Vec<(f64, f64)>> {
+        if width_um <= 0.0 {
+            return Err(PyValueError::new_err("width_um must be > 0"));
         }
-        if max_bumps == 0 {
-            return Err(PyValueError::new_err("max_bumps must be > 0"));
-        }
-        let meander_side = parse_meander_side(side)?;
-        let mode = parse_meander_planning_mode(planning_mode)?;
-        let primitive_bend_radius_um = actual_bend_radius_um_from_cells_rs(
-            self.primitive_cfg.bend_radius_cells,
-            self.grid.grid_size_um,
-        )
-        .map_err(PyValueError::new_err)?;
-        let effective_radius_um = self.effective_bend_radius_um(min_bend_radius_um)?;
-        let (min_x_um, max_x_um, min_y_um, max_y_um) = available_box.ok_or_else(|| {
-            PyValueError::new_err(
-                "available_box must be provided as (min_x_um, max_x_um, min_y_um, max_y_um)",
-            )
-        })?;
-        if min_x_um > max_x_um || min_y_um > max_y_um {
-            return Err(PyValueError::new_err(
-                "available_box is malformed: expected min_x<=max_x and min_y<=max_y",
-            ));
-        }
-        let meander_box = MeanderBox {
-            min_x_um,
-            max_x_um,
-            min_y_um,
-            max_y_um,
-        };
-
-        let grid = GeometryGridSpec::new(
-            self.grid.grid_size_um,
-            self.grid.origin_x_um,
-            self.grid.origin_y_um,
+        let _ = centerline_length_um_rs(&centerline)
+            .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        let meander_points: Vec<PhysicalPoint> = meander_centerline
+            .into_iter()
+            .map(|(x_um, y_um)| PhysicalPoint { x_um, y_um })
+            .collect();
+        let spliced = splice_meander_into_centerline_range_rs(
+            &centerline,
+            selected_run_start_index,
+            selected_run_end_index,
+            &meander_points,
         )
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
         let r = to_route_result(route);
-        let plan = plan_analytic_meander_for_route_rs(
+        realize_centerline_polygon_with_terminal_tangents_rs(
+            &spliced,
             &r,
-            &self.primitives,
-            &grid,
-            requested_extra_length_um,
-            effective_radius_um,
-            min_straight_um,
-            max_bumps,
-            meander_side,
-            meander_box,
-            mode,
+            width_um,
+            source_enabled,
+            target_enabled,
         )
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+        .map_err(|err| PyValueError::new_err(err.to_string()))
+    }
 
+    #[pyo3(signature=(net_id,centerline,width_um,clearance_radius_cells,core_radius_cells,opened_cells=None,clearance_exempt_cells=None,source_port_um=None,target_port_um=None))]
+    pub(crate) fn centerline_port_corrected_checked(
+        &mut self,
+        py: Python<'_>,
+        net_id: u64,
+        centerline: Vec<(f64, f64)>,
+        width_um: f64,
+        clearance_radius_cells: i32,
+        core_radius_cells: i32,
+        opened_cells: Option<Vec<(i32, i32)>>,
+        clearance_exempt_cells: Option<Vec<(i32, i32)>>,
+        source_port_um: Option<(f64, f64)>,
+        target_port_um: Option<(f64, f64)>,
+    ) -> PyResult<Py<PyDict>> {
+        let _ = clearance_radius_cells;
+        let opened_cell_vec = opened_cells.unwrap_or_default();
+        let clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or_default();
+        let correction = self
+            .centerline_port_corrected_checked_native(
+                net_id,
+                &centerline,
+                width_um,
+                core_radius_cells,
+                &opened_cell_vec,
+                &clearance_exempt_cell_vec,
+                source_port_um,
+                target_port_um,
+            )
+            .map_err(PyRuntimeError::new_err)?;
         let d = PyDict::new_bound(py);
-        d.set_item("selected_segment_index", plan.selected_segment_index)?;
-        d.set_item(
-            "selected_segment",
-            (
-                (
-                    plan.selected_segment.start.x_um,
-                    plan.selected_segment.start.y_um,
-                ),
-                (
-                    plan.selected_segment.end.x_um,
-                    plan.selected_segment.end.y_um,
-                ),
-            ),
-        )?;
-        let py_side = match plan.plan.side {
-            MeanderSide::Left => "left",
-            MeanderSide::Right => "right",
-        };
-        let cl = PyList::empty_bound(py);
-        for p in &plan.plan.centerline {
-            cl.append((p.x_um, p.y_um))?;
-        }
-        d.set_item("centerline", cl)?;
-        d.set_item(
-            "inserted_extra_length_um",
-            plan.plan.inserted_extra_length_um,
-        )?;
-        d.set_item("bumps", plan.plan.bumps)?;
-        d.set_item("side", py_side)?;
-        add_bend_radius_debug_metadata(
-            &d,
-            min_bend_radius_um,
-            effective_radius_um,
-            self.primitive_cfg.bend_radius_cells,
-            primitive_bend_radius_um,
-            mode,
-            None,
-        )?;
+        d.set_item("centerline", correction.centerline)?;
+        d.set_item("committed_bump", correction.committed_bump)?;
+        d.set_item("candidate_index", correction.candidate_index)?;
+        d.set_item("candidate_label", correction.candidate_label)?;
         Ok(d.into())
+    }
+
+    pub(crate) fn describe_primitives(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        describe_primitives(py, &self.primitives)
     }
 }
 
@@ -3173,7 +2093,6 @@ pub fn register_py_router(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyState>()?;
     m.add_class::<PyRouteJob>()?;
     m.add_class::<PyRouteResult>()?;
-    m.add_class::<PyPortAccess>()?;
     m.add_class::<PyPhotonicRouter>()?;
     m.add_function(wrap_pyfunction!(auto_meander_search_config_rs, m)?)?;
     Ok(())

@@ -29,7 +29,6 @@ from translation.route_rust import (
     RustRouteDebugArtifacts,
     analyze_meander_insertion_for_requirements,
     analyze_path_length_matching,
-    insert_meanders_for_requirements,
 )
 from translation.route_rust_analysis import (
     analysis_to_info_dict,
@@ -1962,13 +1961,16 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
             y = 10.0 if route_obj.name == "a" else 20.0
             return [(0.0, y), (100.0, y)]
 
-        def register_meander_route_cells_as_static(
+        def set_static_and_register_meander_route_cells_as_static(
             self,
             routes: list[_RouteObj],
             _base_static_cells: list[tuple[int, int]],
             _route_occupancy_radius_cells: int = 0,
         ) -> tuple[list[int], list[int], int]:
             return list(range(len(routes))), [len(route.cells) for route in routes], 0
+
+        def last_meander_registration_profile(self) -> dict[str, float]:
+            return {}
 
         def register_meander_route_geometries(
             self,
@@ -2188,13 +2190,16 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
         ) -> list[tuple[float, float]]:
             return [(0.0, 10.0), (200.0, 10.0)]
 
-        def register_meander_route_cells_as_static(
+        def set_static_and_register_meander_route_cells_as_static(
             self,
             routes: list[_RouteObj],
             _base_static_cells: list[tuple[int, int]],
             _route_occupancy_radius_cells: int = 0,
         ) -> tuple[list[int], list[int], int]:
             return list(range(len(routes))), [len(route.cells) for route in routes], 0
+
+        def last_meander_registration_profile(self) -> dict[str, float]:
+            return {}
 
         def register_meander_route_geometries(
             self,
@@ -2384,13 +2389,16 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
             y = 10.0 if route_obj.name == "a" else 20.0
             return [(0.0, y), (100.0, y)]
 
-        def register_meander_route_cells_as_static(
+        def set_static_and_register_meander_route_cells_as_static(
             self,
             routes: list[_RouteObj],
             _base_static_cells: list[tuple[int, int]],
             _route_occupancy_radius_cells: int = 0,
         ) -> tuple[list[int], list[int], int]:
             return list(range(len(routes))), [len(route.cells) for route in routes], 0
+
+        def last_meander_registration_profile(self) -> dict[str, float]:
+            return {}
 
         def register_meander_route_geometries(
             self,
@@ -2964,7 +2972,7 @@ def test_meander_commit_uses_rust_reserved_rect_without_python_cells():
     assert "python_reserved_update_s" not in context.commit_profile
 
 
-def test_m2_skeleton_reports_no_candidate_when_too_short():
+def test_too_short_route_reports_no_meander_candidate():
     edge = RoutedEdgeKey(
         net_name="n0",
         source=PortRef(instance="src0", port="o1"),
@@ -2980,7 +2988,7 @@ def test_m2_skeleton_reports_no_candidate_when_too_short():
     )
     req = MissingLengthRequirement(edge_key=edge, missing_length_um=10.0)
 
-    _, report = insert_meanders_for_requirements(
+    _, report = analyze_meander_insertion_for_requirements(
         [record],
         [req],
         config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=10.0),
@@ -2989,8 +2997,9 @@ def test_m2_skeleton_reports_no_candidate_when_too_short():
         bend_radius_cells=4,
     )
 
-    assert len(report.results) == 1
-    assert report.results[0].status in {
+    results = cast(list[dict[str, object]], report["results"])
+    assert len(results) == 1
+    assert results[0]["status"] in {
         "below_minimum_bump",
         "no_candidate",
         "insufficient_space",

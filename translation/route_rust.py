@@ -214,7 +214,6 @@ from translation.route_rust_types import (
 )
 from translation.routing.api import (
     analyze_meander_insertion_for_requirements,
-    insert_meanders_for_requirements,
     route_match_and_realize,
     static_fanout_anchors_um,
 )
@@ -401,7 +400,6 @@ __all__ = [
     "gf",
     "grid_cell_center",
     "importlib",
-    "insert_meanders_for_requirements",
     "json",
     "matching_group_diagnostics_to_info",
     "math",

@@ -1354,23 +1354,6 @@ class MeanderInsertionConfig:
 
 
 @dataclass(frozen=True)
-class MeanderInsertionResult:
-    edge: RoutedEdgeKey
-    requested_extra_length_um: float
-    inserted_extra_length_um: float
-    status: str
-    reason: str
-
-
-@dataclass(frozen=True)
-class MeanderInsertionReport:
-    results: list[MeanderInsertionResult]
-    total_requested_extra_length_um: float
-    total_inserted_extra_length_um: float
-    unmatched_length_um: float
-
-
-@dataclass(frozen=True)
 class RouteRustPipelineResult:
     routed_layout: Component
     debug_artifacts: RustRouteDebugArtifacts
