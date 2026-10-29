@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 77 `RoutingConfig` fields (77 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 163 in total.
+Totals: 78 `RoutingConfig` fields (78 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 164 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -89,6 +89,7 @@ Mirrors Rust `CrossingEngineConfig`.
 | `enable_guided_collision_crossing` | `bool` | `False` | `PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING` | -- |
 | `disable_guided_collision_crossing` | `bool` | `False` | `PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING` | -- |
 | `disable_rust_crossing_validation` | `bool` | `False` | `PHOTONIC_ROUTER_DISABLE_RUST_CROSSING_VALIDATION` | -- |
+| `unified_legality` | `bool` | `False` | `PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY` | `PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`: presence. Ablation switch (do-over phase 4 slice B): decide crossing legality with the one Rust predicate `crossing_geometry::crossing_legality` (one perpendicularity test, one margin `half_size + bend_runout` on the grid route) in the search, the commit check and the post-commit validation, and classify realized crossings in Python from its verdicts (`crossing_verdicts()`) instead of re-deciding them. Off: the three legacy paths and the Python re-decision run as before. |
 
 ### `router.diagnostics` -- `KernelDiagnostics`
 

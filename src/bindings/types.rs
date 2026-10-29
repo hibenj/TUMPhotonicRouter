@@ -630,6 +630,8 @@ pub struct PyRouterConfig {
     #[pyo3(get)]
     pub crossing_disable_rust_crossing_validation: bool,
     #[pyo3(get)]
+    pub crossing_unified_legality: bool,
+    #[pyo3(get)]
     pub diag_native_progress: bool,
     #[pyo3(get)]
     pub diag_native_repair_diag: bool,
@@ -706,6 +708,7 @@ impl PyRouterConfig {
         crossing_enable_guided_collision_crossing=false,
         crossing_disable_guided_collision_crossing=false,
         crossing_disable_rust_crossing_validation=false,
+        crossing_unified_legality=false,
         diag_native_progress=false,
         diag_native_repair_diag=false,
         diag_search_failure_diag=false,
@@ -753,6 +756,7 @@ impl PyRouterConfig {
         crossing_enable_guided_collision_crossing: bool,
         crossing_disable_guided_collision_crossing: bool,
         crossing_disable_rust_crossing_validation: bool,
+        crossing_unified_legality: bool,
         diag_native_progress: bool,
         diag_native_repair_diag: bool,
         diag_search_failure_diag: bool,
@@ -804,6 +808,7 @@ impl PyRouterConfig {
             crossing_enable_guided_collision_crossing,
             crossing_disable_guided_collision_crossing,
             crossing_disable_rust_crossing_validation,
+            crossing_unified_legality,
             diag_native_progress,
             diag_native_repair_diag,
             diag_search_failure_diag,
@@ -867,6 +872,7 @@ impl From<&PyRouterConfig> for RouterConfig {
                 enable_guided_collision_crossing: cfg.crossing_enable_guided_collision_crossing,
                 disable_guided_collision_crossing: cfg.crossing_disable_guided_collision_crossing,
                 disable_rust_crossing_validation: cfg.crossing_disable_rust_crossing_validation,
+                unified_legality: cfg.crossing_unified_legality,
             },
             diagnostics: KernelDiagnostics {
                 native_progress: cfg.diag_native_progress,

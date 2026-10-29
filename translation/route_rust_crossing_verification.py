@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
@@ -65,12 +66,169 @@ def _planned_flag(
     return frozenset((net_id_a, net_id_b)) in planned_pairs
 
 
+#: The verdict reasons of the Rust predicate `crossing_geometry::crossing_legality`
+#: (do-over phase 4 slice B), as `PyPhotonicRouter.crossing_verdicts()` reports them.
+RUST_CROSSING_VERDICT_REASONS: frozenset[str] = frozenset(
+    {
+        "legal",
+        "not_perpendicular",
+        "margin_short_route_before",
+        "margin_short_route_after",
+        "margin_short_partner",
+        "footprint_blocked",
+        "missing_event",
+    }
+)
+
+
+def _rust_verdicts_by_pair(
+    native_crossing_verdicts: Iterable[object] | None,
+) -> dict[frozenset[int], list[dict[str, object]]]:
+    """Index `crossing_verdicts()` records by unordered net pair."""
+    by_pair: dict[frozenset[int], list[dict[str, object]]] = {}
+    if native_crossing_verdicts is None:
+        return by_pair
+    for raw_verdict in native_crossing_verdicts:
+        if not isinstance(raw_verdict, Mapping):
+            try:
+                raw_verdict = dict(cast(Any, raw_verdict))
+            except (TypeError, ValueError):
+                continue
+        try:
+            net_id = int(cast(Any, raw_verdict.get("net_id")))
+            partner_net_id = int(cast(Any, raw_verdict.get("partner_net_id")))
+            raw_point = cast(Any, raw_verdict.get("point"))
+            point = (float(raw_point[0]), float(raw_point[1]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        verdict = dict(raw_verdict)
+        verdict["net_id"] = net_id
+        verdict["partner_net_id"] = partner_net_id
+        verdict["point"] = point
+        by_pair.setdefault(frozenset((net_id, partner_net_id)), []).append(verdict)
+    return by_pair
+
+
+def _nearest_rust_verdict(
+    verdicts_by_pair: Mapping[frozenset[int], list[dict[str, object]]],
+    net_id_a: int,
+    net_id_b: int,
+    point_um: tuple[float, float],
+    *,
+    tolerance_um: float,
+) -> dict[str, object] | None:
+    """The pair's verdict nearest `point_um`, within `tolerance_um` (the 1.5-cell
+    tolerance Rust itself uses to match an event to an intersection)."""
+    best: dict[str, object] | None = None
+    best_distance = float("inf")
+    for verdict in verdicts_by_pair.get(frozenset((net_id_a, net_id_b)), ()):
+        distance = _point_distance_um(point_um, cast(tuple[float, float], verdict["point"]))
+        if distance <= tolerance_um and distance < best_distance:
+            best = verdict
+            best_distance = distance
+    return best
+
+
+def _rust_verdict_fields(
+    verdict: Mapping[str, object],
+    *,
+    net_id_a: int,
+    grid_size_um: float,
+) -> dict[str, object]:
+    """The record fields the verifier reports from a Rust verdict instead of
+    computing: legality, reason, perpendicularity, the straight runs of net a
+    and net b in um (the smaller side of each), the one required margin
+    (`required_margin_cells * grid`), and the verdict itself.
+
+    `verdict["net_id"]` is the net Rust assessed as the route; its runs are
+    `route_*_cells`, the partner's `partner_*_cells`.
+    """
+
+    def _cells(key: str) -> float:
+        try:
+            value = float(cast(Any, verdict.get(key)))
+        except (TypeError, ValueError):
+            return float("inf")
+        return value
+
+    route_margin_cells = min(_cells("route_before_cells"), _cells("route_after_cells"))
+    partner_margin_cells = min(_cells("partner_before_cells"), _cells("partner_after_cells"))
+    if int(cast(Any, verdict.get("net_id"))) == int(net_id_a):
+        margin_a_cells, margin_b_cells = route_margin_cells, partner_margin_cells
+    else:
+        margin_a_cells, margin_b_cells = partner_margin_cells, route_margin_cells
+    try:
+        required_margin_cells = int(cast(Any, verdict.get("required_margin_cells")))
+    except (TypeError, ValueError):
+        required_margin_cells = 0
+    required_margin_um = float(required_margin_cells) * float(grid_size_um)
+
+    def _um(cells: float) -> float:
+        return cells * float(grid_size_um) if math.isfinite(cells) else float("inf")
+
+    return {
+        "legal": bool(verdict.get("legal")),
+        "reason": str(verdict.get("reason") or ""),
+        "perpendicular": bool(verdict.get("perpendicular")),
+        "segment_a_margin_um": _um(margin_a_cells),
+        "segment_b_margin_um": _um(margin_b_cells),
+        "required_margin_um": required_margin_um,
+        "rust_verdict": {
+            "net_id": verdict.get("net_id"),
+            "partner_net_id": verdict.get("partner_net_id"),
+            "reason": verdict.get("reason"),
+            "margin_side": verdict.get("margin_side"),
+            "route_before_cells": verdict.get("route_before_cells"),
+            "route_after_cells": verdict.get("route_after_cells"),
+            "partner_before_cells": verdict.get("partner_before_cells"),
+            "partner_after_cells": verdict.get("partner_after_cells"),
+            "required_margin_cells": verdict.get("required_margin_cells"),
+            "required_after_cells": verdict.get("required_after_cells"),
+            "footprint_blocked": verdict.get("footprint_blocked"),
+            "event_registered": verdict.get("event_registered"),
+            "margins_from_grid": verdict.get("margins_from_grid"),
+        },
+    }
+
+
+def _rounded_margin_um(margin_um: float) -> float | None:
+    """A margin rounded for the record; `None` for an unbounded run (a crossing
+    in the last segment of a search move owes its straight-after cells to the
+    following moves, which Rust reports as an infinite run)."""
+    return round(float(margin_um), 6) if math.isfinite(margin_um) else None
+
+
+def _unified_required_margin_um(
+    crossing_plan_info: CrossingPlanInfo,
+    grid_size_um: float,
+) -> float:
+    """The one margin of the unified rule, `(half_size + bend_runout) * grid`,
+    for records no Rust verdict covers (the verdict's own
+    `required_margin_cells` wins where one exists)."""
+    half_size_cells = max(0, int(crossing_plan_info.crossing_half_size_cells or 0))
+    runout_cells = max(0, int(crossing_plan_info.bend_runout_cells_per_crossing or 0))
+    return float(half_size_cells + runout_cells) * float(grid_size_um)
+
+
 def _verify_realized_route_intersections(
     *,
     crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
     realization_grid_spec: tuple[int, int, float, float, float],
+    native_crossing_verdicts: Iterable[object] | None = None,
+    unified_legality: bool = False,
 ) -> list[dict[str, object]]:
+    """Classify every realized route intersection.
+
+    Legacy (``unified_legality`` off): the classification is computed here from
+    the geometry (perpendicularity, footprint straightness, footprint blockers).
+    Unified (on): the classification is the Rust predicate's verdict for the
+    intersection (``native_crossing_verdicts`` = ``router.crossing_verdicts()``),
+    matched by net pair and point; an intersection Rust never assessed is
+    ``missing_event``. The geometric exemptions (endpoint access, shared
+    segment endpoints), the collinear-overlap check and the footprint-polygon
+    overlap check are geometry, not legality, and run in both modes.
+    """
     if not crossing_plan_info.enabled:
         crossing_plan_info.realized_intersections = []
         crossing_plan_info.illegal_realized_crossings = []
@@ -86,6 +244,15 @@ def _verify_realized_route_intersections(
         crossing_plan_info.bend_runout_cells_per_crossing or 0
     )
     required_margin_um = footprint_half_um
+    if unified_legality:
+        # One margin: the Rust rule's `(half_size + bend_runout) * grid`,
+        # reported as both the required and the search margin.
+        required_margin_um = _unified_required_margin_um(crossing_plan_info, float(grid_size_um))
+        search_required_margin_um = required_margin_um
+    verdicts_by_pair = _rust_verdicts_by_pair(
+        native_crossing_verdicts if unified_legality else None
+    )
+    verdict_tolerance_um = 1.5 * float(grid_size_um)
     allowed_pairs: set[frozenset[int]] = set()
     net_names: dict[int, str] = {}
     for raw_event in crossing_plan_info.events:
@@ -432,16 +599,47 @@ def _verify_realized_route_intersections(
                                     }
                                 )
                                 continue
-                    perpendicular = _segments_are_perpendicular(segment_a, segment_b)
                     contact_adjacent = margin_a <= eps and margin_b <= eps
                     axis_u = _segment_unit_vector(segment_a)
                     axis_v = _segment_unit_vector(segment_b)
                     footprint_polygon: list[tuple[float, float]] = []
                     footprint_blockers: list[dict[str, object]] = []
-                    footprint_straight = required_margin_um <= eps or (
-                        margin_a + eps >= required_margin_um
-                        and margin_b + eps >= required_margin_um
-                    )
+                    rust_fields: dict[str, object] | None = None
+                    record_required_margin_um = required_margin_um
+                    if unified_legality:
+                        # The Rust predicate's verdict for this intersection
+                        # decides; nothing below re-tests it.
+                        rust_verdict = _nearest_rust_verdict(
+                            verdicts_by_pair,
+                            net_id_a,
+                            net_id_b,
+                            (point_x, point_y),
+                            tolerance_um=verdict_tolerance_um,
+                        )
+                        if rust_verdict is not None:
+                            rust_fields = _rust_verdict_fields(
+                                rust_verdict,
+                                net_id_a=net_id_a,
+                                grid_size_um=float(grid_size_um),
+                            )
+                            perpendicular = bool(rust_fields["perpendicular"])
+                            margin_a = float(cast(float, rust_fields["segment_a_margin_um"]))
+                            margin_b = float(cast(float, rust_fields["segment_b_margin_um"]))
+                            record_required_margin_um = float(
+                                cast(float, rust_fields["required_margin_um"])
+                            )
+                            footprint_straight = bool(rust_fields["legal"]) or str(
+                                rust_fields["reason"]
+                            ) in {"footprint_blocked", "missing_event", "not_perpendicular"}
+                        else:
+                            perpendicular = False
+                            footprint_straight = False
+                    else:
+                        perpendicular = _segments_are_perpendicular(segment_a, segment_b)
+                        footprint_straight = required_margin_um <= eps or (
+                            margin_a + eps >= required_margin_um
+                            and margin_b + eps >= required_margin_um
+                        )
                     if axis_u is not None and axis_v is not None and footprint_half_um > eps:
                         footprint_axis_u = axis_u
                         footprint_axis_v = axis_v
@@ -454,7 +652,7 @@ def _verify_realized_route_intersections(
                             axis_v=footprint_axis_v,
                             half_extent_um=footprint_half_um,
                         )
-                        if footprint_straight:
+                        if footprint_straight and not unified_legality:
                             footprint_blockers = _crossing_footprint_blockers(
                                 center=(point_x, point_y),
                                 axis_u=footprint_axis_u,
@@ -467,7 +665,12 @@ def _verify_realized_route_intersections(
                                 },
                                 net_names=net_names,
                             )
-                    legal = perpendicular and footprint_straight and not footprint_blockers
+                    if rust_fields is not None:
+                        legal = bool(rust_fields["legal"])
+                    elif unified_legality:
+                        legal = False
+                    else:
+                        legal = perpendicular and footprint_straight and not footprint_blockers
                     if legal:
                         classification = (
                             "legal_expected_crossing"
@@ -475,6 +678,16 @@ def _verify_realized_route_intersections(
                             else "legal_unexpected_crossing"
                         )
                         reason = None
+                        degraded_reason = None
+                    elif rust_fields is not None:
+                        classification = "illegal_unexpected_crossing"
+                        reason = str(rust_fields["reason"]) or "crossing_footprint_invalid"
+                        degraded_reason = None
+                    elif unified_legality and not contact_adjacent:
+                        # Rust assessed no intersection here: a crossing without
+                        # a registered event, as the Rust validator would call it.
+                        classification = "illegal_unexpected_crossing"
+                        reason = "missing_event"
                         degraded_reason = None
                     elif contact_adjacent:
                         classification = "contact_adjacent_geometry"
@@ -548,9 +761,9 @@ def _verify_realized_route_intersections(
                         ),
                         "segment_a_um": _rounded_segment(segment_a),
                         "segment_b_um": _rounded_segment(segment_b),
-                        "segment_a_margin_um": round(float(margin_a), 6),
-                        "segment_b_margin_um": round(float(margin_b), 6),
-                        "required_margin_um": round(float(required_margin_um), 6),
+                        "segment_a_margin_um": _rounded_margin_um(margin_a),
+                        "segment_b_margin_um": _rounded_margin_um(margin_b),
+                        "required_margin_um": round(float(record_required_margin_um), 6),
                         "crossing_footprint_half_um": round(
                             float(footprint_half_um),
                             6,
@@ -560,7 +773,11 @@ def _verify_realized_route_intersections(
                             6,
                         ),
                         "search_required_margin_um": round(
-                            float(search_required_margin_um),
+                            float(
+                                record_required_margin_um
+                                if unified_legality
+                                else search_required_margin_um
+                            ),
                             6,
                         ),
                         "crossing_footprint_polygon_um": [
@@ -576,6 +793,14 @@ def _verify_realized_route_intersections(
                         record["reason"] = reason
                     if degraded_reason is not None:
                         record["degraded_reason"] = degraded_reason
+                    if unified_legality:
+                        record["legality_source"] = (
+                            "rust_crossing_verdict"
+                            if rust_fields is not None
+                            else "no_rust_crossing_verdict"
+                        )
+                        if rust_fields is not None:
+                            record["rust_verdict"] = rust_fields["rust_verdict"]
                     realized.append(record)
                     if classification.startswith("illegal_"):
                         illegal.append(record)
@@ -703,6 +928,8 @@ def _populate_realized_intersections_from_native_crossing_events(
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
     native_crossing_events: Iterable[object],
     realization_grid_spec: tuple[int, int, float, float, float],
+    native_crossing_verdicts: Iterable[object] | None = None,
+    unified_legality: bool = False,
 ) -> list[dict[str, object]]:
     """Populate realized crossing metadata from A*-accepted native events.
 
@@ -710,6 +937,14 @@ def _populate_realized_intersections_from_native_crossing_events(
     crossing moves; this function converts those accepted events into the
     physical metadata needed for crossing component placement and for the final
     external Python geometry verifier.
+
+    With ``unified_legality`` on, each event carries the Rust predicate's
+    verdict for its point (``native_crossing_verdicts`` =
+    ``router.crossing_verdicts()``): classification, reason, perpendicularity
+    and margins come from it, and a verdict Rust recorded for a point no event
+    covers is reported as its own record. The returned list holds the records
+    the verdicts call illegal (always empty in the legacy mode, which trusts
+    the events).
     """
     if not crossing_plan_info.enabled:
         crossing_plan_info.realized_intersections = []
@@ -727,9 +962,18 @@ def _populate_realized_intersections_from_native_crossing_events(
     search_required_margin_um = footprint_half_um + float(grid_size_um) * int(
         crossing_plan_info.bend_runout_cells_per_crossing or 0
     )
+    if unified_legality:
+        required_margin_um = _unified_required_margin_um(crossing_plan_info, float(grid_size_um))
+        search_required_margin_um = required_margin_um
+    verdicts_by_pair = _rust_verdicts_by_pair(
+        native_crossing_verdicts if unified_legality else None
+    )
+    verdict_tolerance_um = 1.5 * float(grid_size_um)
+    matched_verdict_ids: set[int] = set()
 
     planned_pairs = _planned_pairs_from_plan_info(crossing_plan_info)
     realized: list[dict[str, object]] = []
+    illegal: list[dict[str, object]] = []
     seen: set[tuple[int, int, int, int]] = set()
     for raw_event in native_crossing_events:
         if not isinstance(raw_event, Mapping):
@@ -854,38 +1098,77 @@ def _populate_realized_intersections_from_native_crossing_events(
             origin_x_um=float(origin_x_um),
             origin_y_um=float(origin_y_um),
         )
-        realized.append(
-            {
-                "net_id_a": int(net_id_a),
-                "net_id_b": int(net_id_b),
-                "net_name_a": record_a.net_name if record_a is not None else str(net_id_a),
-                "net_name_b": record_b.net_name if record_b is not None else str(net_id_b),
-                "point_um": _rounded_point(point_um),
-                "grid_cell": (
-                    [int(grid_cell[0]), int(grid_cell[1])] if grid_cell is not None else None
-                ),
-                "segment_a_um": _rounded_segment(segment_a),
-                "segment_b_um": _rounded_segment(segment_b),
-                "segment_a_length_um": round(float(len_a), 6),
-                "segment_b_length_um": round(float(len_b), 6),
-                "segment_a_margin_um": round(float(margin_a), 6),
-                "segment_b_margin_um": round(float(margin_b), 6),
-                "required_margin_um": round(float(required_margin_um), 6),
-                "search_required_margin_um": round(float(search_required_margin_um), 6),
-                "crossing_footprint_half_um": round(float(footprint_half_um), 6),
-                "crossing_footprint_um": round(2.0 * float(footprint_half_um), 6),
-                "crossing_footprint_polygon_um": [
-                    _rounded_point(point) for point in footprint_polygon
-                ],
-                "crossing_footprint_blockers": [],
-                "expected_pair": True,
-                "planned": _planned_flag(planned_pairs, net_id_a, net_id_b),
-                "perpendicular": True,
-                "classification": "legal_native_crossing",
-                "source": "native_crossing_events",
-                "reservation_cells": list(raw_event.get("reservation_cells", [])),
-            }
-        )
+        record: dict[str, object] = {
+            "net_id_a": int(net_id_a),
+            "net_id_b": int(net_id_b),
+            "net_name_a": record_a.net_name if record_a is not None else str(net_id_a),
+            "net_name_b": record_b.net_name if record_b is not None else str(net_id_b),
+            "point_um": _rounded_point(point_um),
+            "grid_cell": (
+                [int(grid_cell[0]), int(grid_cell[1])] if grid_cell is not None else None
+            ),
+            "segment_a_um": _rounded_segment(segment_a),
+            "segment_b_um": _rounded_segment(segment_b),
+            "segment_a_length_um": round(float(len_a), 6),
+            "segment_b_length_um": round(float(len_b), 6),
+            "segment_a_margin_um": round(float(margin_a), 6),
+            "segment_b_margin_um": round(float(margin_b), 6),
+            "required_margin_um": round(float(required_margin_um), 6),
+            "search_required_margin_um": round(float(search_required_margin_um), 6),
+            "crossing_footprint_half_um": round(float(footprint_half_um), 6),
+            "crossing_footprint_um": round(2.0 * float(footprint_half_um), 6),
+            "crossing_footprint_polygon_um": [_rounded_point(point) for point in footprint_polygon],
+            "crossing_footprint_blockers": [],
+            "expected_pair": True,
+            "planned": _planned_flag(planned_pairs, net_id_a, net_id_b),
+            "perpendicular": True,
+            "classification": "legal_native_crossing",
+            "source": "native_crossing_events",
+            "reservation_cells": list(raw_event.get("reservation_cells", [])),
+        }
+        if unified_legality:
+            rust_verdict = _nearest_rust_verdict(
+                verdicts_by_pair,
+                net_id_a,
+                net_id_b,
+                point_um,
+                tolerance_um=verdict_tolerance_um,
+            )
+            if rust_verdict is not None:
+                matched_verdict_ids.add(id(rust_verdict))
+                _apply_rust_verdict_to_native_record(
+                    record,
+                    rust_verdict,
+                    net_id_a=net_id_a,
+                    grid_size_um=float(grid_size_um),
+                )
+            else:
+                record["legality_source"] = "no_rust_crossing_verdict"
+        realized.append(record)
+        if str(record.get("classification", "")).startswith("illegal_"):
+            illegal.append(record)
+
+    if unified_legality:
+        # Verdicts for points no event covers: Rust assessed them, so they are
+        # reported as their own records (legal or not) rather than dropped.
+        for pair_verdicts in verdicts_by_pair.values():
+            for verdict in pair_verdicts:
+                if id(verdict) in matched_verdict_ids:
+                    continue
+                record = _native_record_from_rust_verdict(
+                    verdict,
+                    routed_records_by_net_id=routed_records_by_net_id,
+                    planned_pairs=planned_pairs,
+                    footprint_half_um=footprint_half_um,
+                    grid_size_um=float(grid_size_um),
+                    origin_x_um=float(origin_x_um),
+                    origin_y_um=float(origin_y_um),
+                )
+                if record is None:
+                    continue
+                realized.append(record)
+                if str(record.get("classification", "")).startswith("illegal_"):
+                    illegal.append(record)
 
     crossing_plan_info.realized_intersections = realized
     crossing_plan_info.realized_intersection_count = len(realized)
@@ -893,6 +1176,118 @@ def _populate_realized_intersections_from_native_crossing_events(
     crossing_plan_info.routes_missing_corrected_centerline_count = 0
     crossing_plan_info.ignored_endpoint_access_intersections = []
     crossing_plan_info.ignored_endpoint_access_intersection_count = 0
-    crossing_plan_info.illegal_realized_crossings = []
-    crossing_plan_info.illegal_realized_crossing_count = 0
-    return []
+    crossing_plan_info.illegal_realized_crossings = illegal
+    crossing_plan_info.illegal_realized_crossing_count = len(illegal)
+    return illegal
+
+
+def _apply_rust_verdict_to_native_record(
+    record: dict[str, object],
+    verdict: Mapping[str, object],
+    *,
+    net_id_a: int,
+    grid_size_um: float,
+) -> None:
+    """Overwrite a native event record's legality fields with the Rust verdict's."""
+    fields = _rust_verdict_fields(verdict, net_id_a=net_id_a, grid_size_um=grid_size_um)
+    record["perpendicular"] = fields["perpendicular"]
+    record["segment_a_margin_um"] = _rounded_margin_um(cast(float, fields["segment_a_margin_um"]))
+    record["segment_b_margin_um"] = _rounded_margin_um(cast(float, fields["segment_b_margin_um"]))
+    record["required_margin_um"] = round(float(cast(float, fields["required_margin_um"])), 6)
+    record["search_required_margin_um"] = record["required_margin_um"]
+    record["legality_source"] = "rust_crossing_verdict"
+    record["rust_verdict"] = fields["rust_verdict"]
+    if bool(fields["legal"]):
+        record["classification"] = "legal_native_crossing"
+        record.pop("reason", None)
+    else:
+        record["classification"] = "illegal_unexpected_crossing"
+        record["reason"] = str(fields["reason"]) or "crossing_footprint_invalid"
+
+
+def _native_record_from_rust_verdict(
+    verdict: Mapping[str, object],
+    *,
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord],
+    planned_pairs: set[frozenset[int]] | None,
+    footprint_half_um: float,
+    grid_size_um: float,
+    origin_x_um: float,
+    origin_y_um: float,
+) -> dict[str, object] | None:
+    """A realized-intersection record for a Rust verdict no native event covers."""
+    try:
+        net_id_a = int(cast(Any, verdict.get("net_id")))
+        net_id_b = int(cast(Any, verdict.get("partner_net_id")))
+        point_um = cast(tuple[float, float], verdict["point"])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+    def _segment_um(
+        raw: object,
+    ) -> tuple[tuple[float, float], tuple[float, float]] | None:
+        if not isinstance(raw, (tuple, list)) or len(raw) != 2:
+            return None
+        try:
+            return (
+                _grid_point_to_physical_um(
+                    (float(raw[0][0]), float(raw[0][1])),
+                    grid_size_um=grid_size_um,
+                    origin_x_um=origin_x_um,
+                    origin_y_um=origin_y_um,
+                ),
+                _grid_point_to_physical_um(
+                    (float(raw[1][0]), float(raw[1][1])),
+                    grid_size_um=grid_size_um,
+                    origin_x_um=origin_x_um,
+                    origin_y_um=origin_y_um,
+                ),
+            )
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    segment_a = _segment_um(verdict.get("route_segment"))
+    segment_b = _segment_um(verdict.get("partner_segment"))
+    record_a = routed_records_by_net_id.get(net_id_a)
+    record_b = routed_records_by_net_id.get(net_id_b)
+    grid_cell = _physical_point_to_grid_cell(
+        point_um,
+        grid_size_um=grid_size_um,
+        origin_x_um=origin_x_um,
+        origin_y_um=origin_y_um,
+    )
+    footprint_polygon: list[tuple[float, float]] = []
+    axis_u = _segment_unit_vector(segment_a) if segment_a is not None else None
+    axis_v = _segment_unit_vector(segment_b) if segment_b is not None else None
+    if axis_u is not None and axis_v is not None and footprint_half_um > 0.0:
+        footprint_polygon = _crossing_footprint_polygon(
+            center=point_um,
+            axis_u=axis_u,
+            axis_v=axis_v,
+            half_extent_um=footprint_half_um,
+        )
+    record: dict[str, object] = {
+        "net_id_a": net_id_a,
+        "net_id_b": net_id_b,
+        "net_name_a": record_a.net_name if record_a is not None else str(net_id_a),
+        "net_name_b": record_b.net_name if record_b is not None else str(net_id_b),
+        "point_um": _rounded_point(point_um),
+        "grid_cell": ([int(grid_cell[0]), int(grid_cell[1])] if grid_cell is not None else None),
+        "segment_a_um": _rounded_segment(segment_a) if segment_a is not None else None,
+        "segment_b_um": _rounded_segment(segment_b) if segment_b is not None else None,
+        "crossing_footprint_half_um": round(float(footprint_half_um), 6),
+        "crossing_footprint_um": round(2.0 * float(footprint_half_um), 6),
+        "crossing_footprint_polygon_um": [_rounded_point(point) for point in footprint_polygon],
+        "crossing_footprint_blockers": [],
+        "expected_pair": True,
+        "planned": _planned_flag(planned_pairs, net_id_a, net_id_b),
+        "source": "native_crossing_verdicts",
+        "reservation_cells": [],
+    }
+    _apply_rust_verdict_to_native_record(
+        record,
+        verdict,
+        net_id_a=net_id_a,
+        grid_size_um=grid_size_um,
+    )
+    return record

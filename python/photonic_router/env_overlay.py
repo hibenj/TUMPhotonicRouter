@@ -430,6 +430,11 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("router", "crossing", "disable_rust_crossing_validation"),
         presence,
     ),
+    EnvVar(
+        _PREFIX + "UNIFIED_CROSSING_LEGALITY",
+        ("router", "crossing", "unified_legality"),
+        presence,
+    ),
     # Diagnostics (src/py_router.rs)
     EnvVar(_PREFIX + "NATIVE_PROGRESS", ("router", "diagnostics", "native_progress"), presence),
     EnvVar(

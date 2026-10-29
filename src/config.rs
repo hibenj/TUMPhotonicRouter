@@ -115,6 +115,13 @@ pub struct CrossingEngineConfig {
     pub enable_guided_collision_crossing: bool,
     pub disable_guided_collision_crossing: bool,
     pub disable_rust_crossing_validation: bool,
+    /// `PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`: presence. Ablation switch (do-over phase 4 slice B):
+    /// decide crossing legality with the one predicate `crossing_geometry::crossing_legality` (one
+    /// perpendicularity test, one margin `half_size + bend_runout` on the grid route) in the search,
+    /// the commit check and the post-commit validation, and report its verdicts to Python
+    /// (`crossing_verdicts()`), which then classifies realized crossings from them instead of
+    /// re-deciding. Off: the three legacy paths run as before.
+    pub unified_legality: bool,
 }
 
 /// Endpoint-bump net-name trace selector
@@ -273,6 +280,7 @@ mod tests {
         assert!(!cfg.enable_guided_collision_crossing);
         assert!(!cfg.disable_guided_collision_crossing);
         assert!(!cfg.disable_rust_crossing_validation);
+        assert!(!cfg.unified_legality);
     }
 
     #[test]

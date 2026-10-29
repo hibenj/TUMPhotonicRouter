@@ -139,13 +139,47 @@ search, and the crossing search configuration, and it calls
 `self.search_engine.search(...)`. Nothing per attempt lives on the router
 struct any more: every knob a search needs arrives in its `SearchCall`. `crossing_reservation.rs` (2,830
 lines) owns crossing reservations, partner sets and the realized-crossing
-validation. `crossing_geometry.rs` (579 lines) owns the pure geometry used
+validation. `crossing_geometry.rs` (about 900 lines) owns the pure geometry used
 there (segment intersection, point-segment distance, parallel overlap,
-collinearity, centerline compression). `endpoint_correction.rs` (2,677 lines)
+collinearity, centerline compression) and the one crossing-legality predicate
+(below). `endpoint_correction.rs` (2,677 lines)
 owns the checked grid-to-port correction pass. `diagnostics.rs` (248 lines)
 owns the trace records and the batch timers. `test_support.rs` (750 lines,
 `#[cfg(test)]`) owns the engine-side fixtures. No module here implements a search; each one calls the interface of
 section 4.
+
+**Crossing legality.** Behind `RouterConfig::crossing.unified_legality`
+(`PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`, default off; do-over phase 4
+slice B) there is one predicate, `crossing_geometry::crossing_legality(
+&CrossingCandidate, &CrossingLegalityRule) -> CrossingVerdict`: one
+perpendicularity test (normalised dot product within 1e-6; grid angles map onto
+it through `grid_angle_direction`), one margin `required_margin_cells =
+half_size + bend_runout` on the GRID route (the compressed waypoints, on which a
+bend contributes its arms as straight cells) for the route's run before the
+crossing and both sides of the partner, `half_size` cells of pure straight after
+it (the search's straight-after debt, paid by straight primitives only), then
+`footprint_blocked` (a dynamic cell of a third net inside the element's
+`half_size` window) and `missing_event` (post-commit only: no registered
+`CrossingEvent` within 1.5 cells). The verdict is `Legal` or the first failing
+reason (`not_perpendicular`, `margin_short_{route_before,route_after,partner}`,
+`footprint_blocked`, `missing_event`). With the switch on, the search hook
+(`crossing_rules.rs`, `crossing_move_outcome_with_segments`), the commit check
+(`invalid_crossing_intersections_for_route`) and the post-commit validation
+(`unified_crossing_assessment`, which also registers the events and records
+one `CrossingVerdictRecord` per realized intersection for the
+`crossing_verdicts()` binding) all call it with the router's one
+`crossing_legality_rule()`, so the search never produces a crossing the commit
+rejects; Python (`route_rust_crossing_verification.py`) then classifies realized
+crossings from those verdicts and does not re-decide them (the endpoint-access
+and shared-endpoint exemptions, the collinear-overlap check and the
+footprint-polygon overlap check are geometry and stay; `photonic_verification.py`
+still checks the realised GDS polygons). With the switch off, the three legacy
+paths run exactly as before -- the search's own checks, the grid check with its
+`half_size + bend_runout` before / `half_size` after rule, and the realized
+validator's `half_size * grid` margin on the realized centerline -- and Python
+re-decides from its own footprint geometry (`footprint_half_um` from the placed
+component's bounding box, `_crossing_footprint_blockers`). The 27-cell ablation
+decides which side stays; the later slice deletes the other.
 
 ### `src/engine/negotiation/` -- the loop and its policies
 

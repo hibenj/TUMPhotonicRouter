@@ -2123,6 +2123,7 @@ mod tests {
             }],
             crossing_half_size_cells: 2,
             bend_runout_cells: 3,
+            unified_legality: false,
             crossing_loss: 1.0,
             terminal_bump_guard: None,
         };

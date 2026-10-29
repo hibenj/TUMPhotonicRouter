@@ -82,6 +82,11 @@ pub struct PyPhotonicRouter {
     pub(crate) committed_target_terminal_bump_guards: FxHashMap<u64, TerminalBumpGuard>,
     pub(crate) committed_opened_cell_keys: FxHashMap<u64, FxHashSet<CellKey>>,
     pub(crate) crossing_events: Vec<CrossingEvent>,
+    /// The verdicts of the unified crossing-legality predicate for every
+    /// realized intersection the post-commit validation assessed, one per
+    /// (net, partner, point); empty unless `router_config.crossing.
+    /// unified_legality` is on. Read by the `crossing_verdicts()` binding.
+    pub(crate) crossing_verdicts: Vec<CrossingVerdictRecord>,
     pub(crate) static_cells: FxHashSet<CellKey>,
     pub(crate) port_open_cells: FxHashSet<CellKey>,
     pub(crate) registered_plm: RefCell<RegisteredPlmContext>,
@@ -209,6 +214,7 @@ impl PyPhotonicRouter {
             committed_target_terminal_bump_guards: FxHashMap::default(),
             committed_opened_cell_keys: FxHashMap::default(),
             crossing_events: Vec::new(),
+            crossing_verdicts: Vec::new(),
             static_cells: FxHashSet::default(),
             port_open_cells: FxHashSet::default(),
             registered_plm: RefCell::new(RegisteredPlmContext::default()),

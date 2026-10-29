@@ -175,6 +175,54 @@ impl PyPhotonicRouter {
         Ok(out)
     }
 
+    /// The unified predicate's verdict for every realized intersection the
+    /// post-commit validation assessed (do-over phase 4 slice B; empty unless
+    /// `RouterConfig.crossing_unified_legality`). One dict per
+    /// (net, partner, point): the point in um, the two grid segments, `legal`,
+    /// `reason` (`legal`, `not_perpendicular`, `margin_short_<side>`,
+    /// `footprint_blocked`, `missing_event`), `perpendicular`, the four
+    /// straight runs and the two required margins in grid cells,
+    /// `footprint_blocked`, `event_registered`, and `margins_from_grid`
+    /// (false when the grid route had no intersection near the point and the
+    /// realized straights were measured instead).
+    pub(crate) fn crossing_verdicts(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        let mut out = Vec::with_capacity(self.crossing_verdicts.len());
+        for record in &self.crossing_verdicts {
+            let d = PyDict::new_bound(py);
+            let candidate = &record.candidate;
+            d.set_item("net_id", record.net_id)?;
+            d.set_item("partner_net_id", record.partner_net_id)?;
+            d.set_item("point", record.point)?;
+            d.set_item("route_segment", record.route_segment)?;
+            d.set_item("partner_segment", record.partner_segment)?;
+            d.set_item("legal", record.verdict.is_legal())?;
+            d.set_item("reason", record.verdict.reason())?;
+            d.set_item(
+                "margin_side",
+                record.verdict.margin_side().map(|side| side.name()),
+            )?;
+            d.set_item(
+                "perpendicular",
+                directions_are_perpendicular(
+                    candidate.route_direction,
+                    candidate.partner_direction,
+                ),
+            )?;
+            d.set_item("route_before_cells", candidate.route_before_cells)?;
+            d.set_item("route_after_cells", candidate.route_after_cells)?;
+            d.set_item("partner_before_cells", candidate.partner_before_cells)?;
+            d.set_item("partner_after_cells", candidate.partner_after_cells)?;
+            d.set_item("required_margin_cells", record.rule.required_margin_cells())?;
+            d.set_item("required_after_cells", record.rule.required_after_cells())?;
+            d.set_item("footprint_blocked", candidate.footprint_blocked)?;
+            d.set_item("event_registered", candidate.event_registered)?;
+            d.set_item("margins_from_grid", record.margins_from_grid)?;
+            d.set_item("grid_size_um", self.grid.grid_size_um)?;
+            out.push(d.into());
+        }
+        Ok(out)
+    }
+
     pub(crate) fn invalidate_meander_registered_reserved_index(&self) {
         self.registered_plm.borrow_mut().invalidate_reserved_index();
     }
@@ -400,6 +448,7 @@ impl PyPhotonicRouter {
         self.committed_target_terminal_bump_guards.clear();
         self.committed_opened_cell_keys.clear();
         self.crossing_events.clear();
+        self.crossing_verdicts.clear();
         profile.reset_s += reset_start.elapsed().as_secs_f64();
         let base_static_pack_start = Instant::now();
         let base_static_keys = pack_cells(&base_static_cells);
@@ -493,6 +542,7 @@ impl PyPhotonicRouter {
         self.committed_target_terminal_bump_guards.clear();
         self.committed_opened_cell_keys.clear();
         self.crossing_events.clear();
+        self.crossing_verdicts.clear();
         self.static_cells = base_static_keys.clone();
         {
             let mut plm = self.registered_plm.borrow_mut();
@@ -3082,6 +3132,7 @@ impl PyPhotonicRouter {
         self.committed_target_terminal_bump_guards.clear();
         self.committed_opened_cell_keys.clear();
         self.crossing_events.clear();
+        self.crossing_verdicts.clear();
         self.long_straight_congestion_cells.clear();
         self.long_straight_congestion_records.clear();
         let mut plm = self.registered_plm.borrow_mut();

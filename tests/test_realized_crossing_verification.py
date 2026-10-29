@@ -645,3 +645,238 @@ def test_insertion_loss_report_uses_final_realized_intersections():
     assert by_net_id[2]["crossing_count"] == 1
     assert by_net_id[3]["crossing_count"] == 0
     assert by_net_id[1]["crossing_loss"] == 0.2
+
+
+# --- phase 4 slice B: the verifier reports the Rust verdicts under the switch ---
+
+
+def _rust_verdict(**overrides: object) -> dict[str, object]:
+    """A `PyPhotonicRouter.crossing_verdicts()` record: net 2 (the route,
+    vertical) crossing net 1 (the partner, horizontal) at (5, 5) um on a
+    1 um grid, half size 2 and run-out 1 (margin 3, after 2), every straight
+    run 5 cells, footprint clear, event registered."""
+    verdict: dict[str, object] = {
+        "net_id": 2,
+        "partner_net_id": 1,
+        "point": (5.0, 5.0),
+        "route_segment": ((5, 0), (5, 10)),
+        "partner_segment": ((0, 5), (10, 5)),
+        "legal": True,
+        "reason": "legal",
+        "margin_side": None,
+        "perpendicular": True,
+        "route_before_cells": 5.0,
+        "route_after_cells": 5.0,
+        "partner_before_cells": 5.0,
+        "partner_after_cells": 5.0,
+        "required_margin_cells": 3,
+        "required_after_cells": 2,
+        "footprint_blocked": False,
+        "event_registered": True,
+        "margins_from_grid": True,
+        "grid_size_um": 1.0,
+    }
+    verdict.update(overrides)
+    return verdict
+
+
+def _unified_plan_info() -> CrossingPlanInfo:
+    info = _plan_info()
+    info.bend_runout_cells_per_crossing = 1
+    return info
+
+
+def test_unified_verifier_reports_the_rust_verdict_instead_of_deciding():
+    info = _unified_plan_info()
+    verdict = _rust_verdict()
+
+    illegal = _verify_realized_route_intersections(
+        crossing_plan_info=info,
+        routed_records_by_net_id={
+            1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
+            2: _record("b", ((5.0, 0.0), (5.0, 10.0))),
+        },
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[verdict],
+        unified_legality=True,
+    )
+
+    assert illegal == []
+    crossing = info.realized_intersections[0]
+    assert crossing["classification"] == "legal_expected_crossing"
+    assert "reason" not in crossing
+    assert crossing["legality_source"] == "rust_crossing_verdict"
+    assert crossing["perpendicular"] is True
+    # One margin, (half_size + bend_runout) * grid, reported as both fields.
+    assert crossing["required_margin_um"] == 3.0
+    assert crossing["search_required_margin_um"] == 3.0
+    # Net a (1) is the verdict's partner, net b (2) its route: 5 cells each.
+    assert crossing["segment_a_margin_um"] == 5.0
+    assert crossing["segment_b_margin_um"] == 5.0
+    assert crossing["rust_verdict"]["reason"] == "legal"
+    assert crossing["rust_verdict"]["event_registered"] is True
+    # The footprint polygon is still built from the geometry for the
+    # component placement.
+    assert len(crossing["crossing_footprint_polygon_um"]) == 4
+    assert crossing["crossing_footprint_blockers"] == []
+
+
+@pytest.mark.parametrize(
+    ("reason", "margin_side"),
+    [
+        ("not_perpendicular", None),
+        ("margin_short_route_before", "route_before"),
+        ("margin_short_route_after", "route_after"),
+        ("margin_short_partner", "partner"),
+        ("footprint_blocked", None),
+        ("missing_event", None),
+    ],
+)
+def test_unified_verifier_classification_equals_the_rust_verdict(reason, margin_side):
+    info = _unified_plan_info()
+    verdict = _rust_verdict(legal=False, reason=reason, margin_side=margin_side)
+
+    illegal = _verify_realized_route_intersections(
+        crossing_plan_info=info,
+        routed_records_by_net_id={
+            1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
+            2: _record("b", ((5.0, 0.0), (5.0, 10.0))),
+        },
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[verdict],
+        unified_legality=True,
+    )
+
+    assert len(illegal) == 1
+    crossing = info.realized_intersections[0]
+    assert crossing["classification"] == "illegal_unexpected_crossing"
+    assert crossing["reason"] == reason
+    assert crossing["rust_verdict"]["margin_side"] == margin_side
+    assert crossing["legality_source"] == "rust_crossing_verdict"
+
+
+def test_unified_verifier_does_not_retest_the_geometry():
+    # A visibly non-perpendicular pair in the Python geometry, but Rust's
+    # verdict (matched by pair and point, within 1.5 cells) says legal and
+    # perpendicular: the verifier reports Rust's verdict.
+    info = _unified_plan_info()
+    verdict = _rust_verdict(point=(5.4, 5.0))
+
+    illegal = _verify_realized_route_intersections(
+        crossing_plan_info=info,
+        routed_records_by_net_id={
+            1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
+            2: _record("b", ((5.0, 0.0), (7.0, 10.0))),
+        },
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[verdict],
+        unified_legality=True,
+    )
+
+    assert illegal == []
+    crossing = info.realized_intersections[0]
+    assert crossing["classification"] == "legal_expected_crossing"
+    assert crossing["perpendicular"] is True
+
+    # Switch off: the same inputs are re-decided from the geometry, as before.
+    legacy_info = _unified_plan_info()
+    legacy_illegal = _verify_realized_route_intersections(
+        crossing_plan_info=legacy_info,
+        routed_records_by_net_id={
+            1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
+            2: _record("b", ((5.0, 0.0), (7.0, 10.0))),
+        },
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[verdict],
+        unified_legality=False,
+    )
+    assert len(legacy_illegal) == 1
+    legacy_crossing = legacy_info.realized_intersections[0]
+    assert legacy_crossing["reason"] == "not_perpendicular"
+    assert "legality_source" not in legacy_crossing
+
+
+def test_unified_verifier_calls_an_intersection_without_a_rust_verdict_missing_event():
+    info = _unified_plan_info()
+
+    illegal = _verify_realized_route_intersections(
+        crossing_plan_info=info,
+        routed_records_by_net_id={
+            1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
+            2: _record("b", ((5.0, 0.0), (5.0, 10.0))),
+        },
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[],
+        unified_legality=True,
+    )
+
+    assert len(illegal) == 1
+    crossing = info.realized_intersections[0]
+    assert crossing["classification"] == "illegal_unexpected_crossing"
+    assert crossing["reason"] == "missing_event"
+    assert crossing["legality_source"] == "no_rust_crossing_verdict"
+
+
+def test_unified_native_events_path_reports_the_verdict_and_unmatched_verdicts():
+    from translation.route_rust_crossing_verification import (
+        _populate_realized_intersections_from_native_crossing_events,
+    )
+
+    info = _unified_plan_info()
+    event = {
+        "net_id": 2,
+        "partner_net_id": 1,
+        "point": (5.0, 5.0),
+        "route_segment": ((5, 0), (5, 10)),
+        "partner_segment": ((0, 5), (10, 5)),
+        "route_angle": 2,
+        "partner_angle": 0,
+        "reservation_cells": [],
+    }
+    short = _rust_verdict(
+        net_id=3,
+        partner_net_id=1,
+        point=(12.0, 5.0),
+        legal=False,
+        reason="margin_short_partner",
+        margin_side="partner",
+        partner_after_cells=1.0,
+        event_registered=False,
+    )
+
+    illegal = _populate_realized_intersections_from_native_crossing_events(
+        crossing_plan_info=info,
+        routed_records_by_net_id={},
+        native_crossing_events=[event],
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[_rust_verdict(), short],
+        unified_legality=True,
+    )
+
+    assert len(info.realized_intersections) == 2
+    matched, unmatched = info.realized_intersections
+    assert matched["classification"] == "legal_native_crossing"
+    assert matched["legality_source"] == "rust_crossing_verdict"
+    assert matched["required_margin_um"] == 3.0
+    assert matched["search_required_margin_um"] == 3.0
+    assert matched["rust_verdict"]["reason"] == "legal"
+    assert unmatched["source"] == "native_crossing_verdicts"
+    assert unmatched["classification"] == "illegal_unexpected_crossing"
+    assert unmatched["reason"] == "margin_short_partner"
+    assert unmatched["segment_a_margin_um"] == 5.0  # net 3 is the route: 5 cells
+    assert unmatched["segment_b_margin_um"] == 1.0  # net 1 is the partner: 1 cell
+    assert illegal == [unmatched]
+
+    # Switch off: the events are trusted as before and the verdicts ignored.
+    legacy_info = _unified_plan_info()
+    legacy_illegal = _populate_realized_intersections_from_native_crossing_events(
+        crossing_plan_info=legacy_info,
+        routed_records_by_net_id={},
+        native_crossing_events=[event],
+        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[_rust_verdict(), short],
+        unified_legality=False,
+    )
+    assert legacy_illegal == []
+    assert len(legacy_info.realized_intersections) == 1
+    assert "legality_source" not in legacy_info.realized_intersections[0]

@@ -96,6 +96,7 @@ fn collision_crossing_search_accepts_expected_dynamic_core_collision() {
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 3.0,
         terminal_bump_guard: None,
     };
@@ -199,6 +200,7 @@ fn planned_partner_crossing_uses_its_own_price_and_unplanned_pays_crossing_loss(
         ],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 3.0,
         terminal_bump_guard: None,
     };
@@ -253,6 +255,7 @@ fn budget_config(partner: CrossingSearchPartner) -> CrossingSearchConfig {
         partners: vec![partner],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 3.0,
         terminal_bump_guard: None,
     }
@@ -301,6 +304,7 @@ fn budget_is_per_partner_two_planned_partners_are_both_discounted() {
         ],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 3.0,
         terminal_bump_guard: None,
     };
@@ -335,6 +339,7 @@ fn partners_without_price_override_price_like_the_baseline() {
         ],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 3.0,
         terminal_bump_guard: None,
     };
@@ -423,6 +428,7 @@ fn crossing_move_detects_offset_diagonal_halo_contact() {
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -531,6 +537,7 @@ fn perpendicular_diagonal_x_approach_move_is_rejected_and_containing_move_accept
         }],
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -678,6 +685,7 @@ fn consecutive_perpendicular_diagonal_crossings_on_one_line() {
         ],
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 1.0,
         terminal_bump_guard: None,
     };
@@ -762,6 +770,7 @@ fn consecutive_perpendicular_diagonal_crossings_with_benchmark_margin() {
         ],
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
+        unified_legality: false,
         crossing_loss: 1.0,
         terminal_bump_guard: None,
     };
@@ -844,6 +853,7 @@ fn vertical_route_crosses_two_horizontal_partners_with_benchmark_margin() {
         ],
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
+        unified_legality: false,
         crossing_loss: 1.0,
         terminal_bump_guard: None,
     };
@@ -869,8 +879,12 @@ fn vertical_route_crosses_two_horizontal_partners_with_benchmark_margin() {
 
 /// Vertical descent across two full-width horizontal partners `gap`
 /// cells apart, benchmark crossing config (half_size 2). Returns the
-/// route (if any) and the search stats.
-fn vertical_descent_across_two_horizontals(gap: i32) -> (Option<RouteResult>, RouteSearchStats) {
+/// route (if any) and the search stats. `unified_legality` selects the
+/// one predicate (phase 4 slice B) over the legacy checks.
+fn vertical_descent_across_two_horizontals(
+    gap: i32,
+    unified_legality: bool,
+) -> (Option<RouteResult>, RouteSearchStats) {
     let mut map = ObstacleMap::new(60, 80);
     let y_a = 40;
     let y_b = 40 - gap;
@@ -912,6 +926,7 @@ fn vertical_descent_across_two_horizontals(gap: i32) -> (Option<RouteResult>, Ro
         ],
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
+        unified_legality,
         crossing_loss: 1.0,
         terminal_bump_guard: None,
     };
@@ -995,6 +1010,7 @@ fn diagonal_route_across_two_parallel_backslash_partners(
         ],
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
+        unified_legality: false,
         crossing_loss: 1.0,
         terminal_bump_guard: None,
     };
@@ -1055,7 +1071,7 @@ fn diagonal_route_crosses_two_parallel_diagonals_five_steps_apart() {
 /// pair (predicate 2), so the full-width partners make this unroutable.
 #[test]
 fn vertical_descent_refuses_two_crossings_three_cells_apart() {
-    let (route, stats) = vertical_descent_across_two_horizontals(3);
+    let (route, stats) = vertical_descent_across_two_horizontals(3, false);
     assert!(
         stats.crossing_reject_reservation_overlap > 0,
         "the second crossing must be rejected for window overlap"
@@ -1069,7 +1085,7 @@ fn vertical_descent_refuses_two_crossings_three_cells_apart() {
 /// Four cells apart the windows [38,42] and [34,38] still share y=38.
 #[test]
 fn vertical_descent_refuses_two_crossings_four_cells_apart() {
-    let (route, stats) = vertical_descent_across_two_horizontals(4);
+    let (route, stats) = vertical_descent_across_two_horizontals(4, false);
     assert!(stats.crossing_reject_reservation_overlap > 0);
     assert!(route.is_none());
 }
@@ -1077,7 +1093,7 @@ fn vertical_descent_refuses_two_crossings_four_cells_apart() {
 /// Five cells apart (2*half_size + 1) the windows are disjoint: routes.
 #[test]
 fn vertical_descent_crosses_two_partners_five_cells_apart() {
-    let (route, stats) = vertical_descent_across_two_horizontals(5);
+    let (route, stats) = vertical_descent_across_two_horizontals(5, false);
     assert!(
         route.is_some(),
         "disjoint windows must route (overlap rejects: {}, accepted: {})",
@@ -1085,6 +1101,28 @@ fn vertical_descent_crosses_two_partners_five_cells_apart() {
         stats.crossing_accepted
     );
     assert_eq!(stats.crossing_reject_reservation_overlap, 0);
+}
+
+/// Phase 4 slice B: with `unified_legality` the kernel's crossing-move
+/// evaluator asks the one predicate instead of its legacy checks, and the
+/// answer is the same: five cells apart routes the same cells with the
+/// same number of accepted crossings, four cells apart is refused.
+#[test]
+fn unified_predicate_decides_the_vertical_descent_like_the_legacy_checks() {
+    let (legacy_route, legacy_stats) = vertical_descent_across_two_horizontals(5, false);
+    let (unified_route, unified_stats) = vertical_descent_across_two_horizontals(5, true);
+    let legacy_route = legacy_route.expect("legacy routes five cells apart");
+    let unified_route = unified_route.expect("the unified predicate routes five cells apart");
+    assert_eq!(unified_route.cells, legacy_route.cells);
+    assert_eq!(
+        unified_stats.crossing_accepted,
+        legacy_stats.crossing_accepted
+    );
+    assert!(unified_stats.crossing_accepted >= 2);
+
+    let (route, stats) = vertical_descent_across_two_horizontals(4, true);
+    assert!(route.is_none(), "four cells apart is refused in both modes");
+    assert!(stats.crossing_reject_reservation_overlap > 0);
 }
 
 /// Predicate 1 (only straight cells inside the crossing window), route
@@ -1129,6 +1167,7 @@ fn crossing_inside_turn_arm(
         }],
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -1222,6 +1261,7 @@ fn matrix_row1_turn_arm_counts_as_straight_run() {
         partners: Vec::new(),
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -1304,6 +1344,7 @@ fn matrix_row2_before_margin_on_a_pure_straight_approach() {
             }],
             crossing_half_size_cells: 2,
             bend_runout_cells: 3,
+            unified_legality: false,
             crossing_loss: 0.0,
             terminal_bump_guard: None,
         };
@@ -1405,6 +1446,7 @@ fn matrix_row3_partner_margin_on_the_raw_polyline() {
             }],
             crossing_half_size_cells: 2,
             bend_runout_cells: 3,
+            unified_legality: false,
             crossing_loss: 0.0,
             terminal_bump_guard: None,
         };
@@ -1474,6 +1516,7 @@ fn matrix_row4_crossing_at_a_partner_endpoint_with_half_size_zero() {
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 1,
+        unified_legality: false,
         crossing_loss: 3.0,
         terminal_bump_guard: None,
     };
@@ -1537,6 +1580,7 @@ fn crossing_move_rejects_parallel_diagonal_on_mirrored_halo_side() {
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -1613,6 +1657,7 @@ fn crossing_move_rejects_bend_arm_non_perpendicular_intersection() {
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -1673,6 +1718,7 @@ fn crossing_pending_rejects_bend_while_debt_open() {
         partners: Vec::new(),
         crossing_half_size_cells: 0,
         bend_runout_cells: 2,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -1746,6 +1792,7 @@ fn crossing_pending_margin_rejects_bend_kink_inside_margin() {
         partners: Vec::new(),
         crossing_half_size_cells: 0,
         bend_runout_cells: 3,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -1796,6 +1843,7 @@ fn crossing_pending_margin_rejects_wrong_followup_direction() {
         partners: Vec::new(),
         crossing_half_size_cells: 0,
         bend_runout_cells: 2,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -1865,6 +1913,7 @@ fn crossing_move_rejects_internal_bend_kink_before_after_margin() {
         }],
         crossing_half_size_cells: 1,
         bend_runout_cells: 2,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -1927,6 +1976,7 @@ fn crossing_pending_rejects_bend_regardless_of_diagonal_arm_length() {
         partners: Vec::new(),
         crossing_half_size_cells: 0,
         bend_runout_cells: 4,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -2018,6 +2068,7 @@ fn terminal_bump_guard_test_setup(
         }],
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: Some(TerminalBumpGuard {
             axis: TerminalBumpAxis::Horizontal,
@@ -2281,6 +2332,7 @@ fn crossing_move_rejects_two_crossings_with_overlapping_windows_in_one_move() {
         // would cross both is rejected (intra-move window check).
         crossing_half_size_cells: 5,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -2373,6 +2425,7 @@ fn crossing_pending_after_keeps_debt_of_the_later_crossing() {
         // crossing is what the outcome carries.
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -2442,6 +2495,7 @@ fn crossing_move_marks_n35_n32_short_after_runout_as_pending() {
         }],
         crossing_half_size_cells: 3,
         bend_runout_cells: 2,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -2518,6 +2572,7 @@ fn crossing_margin_counts_terminal_bend_arm_before_next_crossing() {
         partners: Vec::new(),
         crossing_half_size_cells: 2,
         bend_runout_cells: 2,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -2558,6 +2613,7 @@ fn crossing_margin_counts_terminal_bend_arm_before_next_crossing() {
         }],
         crossing_half_size_cells: 2,
         bend_runout_cells: 2,
+        unified_legality: false,
         crossing_loss: 0.0,
         terminal_bump_guard: None,
     };
@@ -2765,6 +2821,7 @@ mod kernel_hook_dispatch {
             }],
             crossing_half_size_cells: 0,
             bend_runout_cells: 0,
+            unified_legality: false,
             crossing_loss: 3.0,
             terminal_bump_guard: None,
         };
@@ -2869,6 +2926,7 @@ mod kernel_hook_dispatch {
             }],
             crossing_half_size_cells: 0,
             bend_runout_cells: 0,
+            unified_legality: false,
             crossing_loss: 3.0,
             terminal_bump_guard: None,
         };

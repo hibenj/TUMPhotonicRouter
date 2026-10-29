@@ -290,6 +290,10 @@ def _illegal_legal_crossing_reason(crossing: CrossingRecord) -> str | None:
     degraded_reason = _as_str_or_none(crossing.details.get("degraded_reason"))
     if degraded_reason:
         return degraded_reason
+    if crossing.details.get("legality_source") == "rust_crossing_verdict":
+        # Phase 4 slice B: the record reports the Rust predicate's verdict;
+        # this report does not re-decide it from the stored segments.
+        return None
 
     perpendicular = crossing.details.get("perpendicular")
     if perpendicular is False:

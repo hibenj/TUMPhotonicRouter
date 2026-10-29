@@ -93,6 +93,7 @@ pub(crate) fn test_router_config(search_engine: &str) -> PyResult<PyRouterConfig
         false,
         false,
         false,
+        false,
         None,
         false,
         false,

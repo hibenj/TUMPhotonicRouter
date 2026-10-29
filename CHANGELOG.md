@@ -11,6 +11,38 @@ The do-over of 2026-10 (analysis and phase plan: the owner's
 and freeze, changes no routing behaviour; the nine-cell paper reproduction
 (`scripts/results/gate_short.sh`) is the check for every slice.
 
+### Added
+
+- One crossing-legality predicate behind a switch (phase 4 slice B).
+  `RouterConfig.crossing.unified_legality` (`PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`,
+  presence; Rust `CrossingEngineConfig`, `PyRouterConfig.crossing_unified_legality`,
+  the Python dataclass, the env overlay; default off). On, the search hook, the
+  commit check and the post-commit validation all decide a crossing with
+  `crossing_geometry::crossing_legality(&CrossingCandidate, &CrossingLegalityRule)
+  -> CrossingVerdict` (`Legal`, `NotPerpendicular`, `MarginShort { side }`,
+  `FootprintBlocked`, `MissingEvent`): one perpendicularity test (normalised dot
+  product within 1e-6), one margin `half_size + bend_runout` cells on the grid
+  route for the run before the crossing and both sides of the partner, `half_size`
+  pure straight cells after it (the search's debt rule), the footprint check
+  (`footprint_blocked`: a third net's dynamic cell in the element's window, the
+  obstacle-map form of the Python footprint-blocker check) and the registered
+  event. The post-commit validation (`unified_crossing_assessment`) registers the
+  legal assessments as the net's `CrossingEvent`s and records one
+  `CrossingVerdictRecord` per realized intersection; the new
+  `PyPhotonicRouter.crossing_verdicts()` reports them (legal, reason, the four
+  straight runs and the two required margins in cells, perpendicularity,
+  footprint, event, the matched grid segments). `translation/
+  route_rust_crossing_verification.py` then classifies realized crossings from
+  those verdicts (`legality_source`, `rust_verdict` on each record;
+  `required_margin_um` = `search_required_margin_um` = `required_margin_cells *
+  grid`; an intersection Rust never assessed is `missing_event`) instead of
+  re-deciding them; the repair loop maps the new reasons onto its tactics
+  (`_repair_reason`); `CrossingPlanInfo` carries `native_crossing_verdicts`,
+  `native_crossing_verdict_count`, `unified_crossing_legality`. Off, the three
+  legacy paths and the Python re-decision run byte-identically (nine-cell gate:
+  all reproduced cells match); the 27-cell ablation decides, and a later slice
+  deletes the losing side.
+
 ### Changed
 
 - The crossing plan comes from the placement, not from the layered-DAG

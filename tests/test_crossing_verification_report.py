@@ -222,6 +222,40 @@ def test_report_rejects_degraded_non_perpendicular_component_crossing():
     assert report.issues[0].details["reason"] == "not_perpendicular"
 
 
+def test_report_does_not_retest_a_crossing_classified_from_a_rust_verdict():
+    """Phase 4 slice B: a record whose legality is the Rust predicate's
+    verdict (`legality_source`) is not re-decided from its stored segments,
+    whatever the segments look like; without that marker the same record is."""
+    plan = _plan_with_legal_crossing()
+    crossing = plan["realized_intersections"][0]
+    crossing["segment_b_um"] = [[5.0, 0.0], [9.0, 10.0]]
+    crossing["perpendicular"] = True
+    crossing["legality_source"] = "rust_crossing_verdict"
+    components = [
+        {
+            "component_name": "crossing",
+            "point_um": [5.0, 5.0],
+            "component_bbox_um": [10.0, 10.0],
+            "rotation_deg": 0.0,
+        }
+    ]
+
+    report = build_crossing_verification_report(
+        crossing_plan_info=plan,
+        realized_crossing_components=components,
+    )
+    assert report.success is True
+    assert list(report.issues) == []
+
+    del crossing["legality_source"]
+    legacy_report = build_crossing_verification_report(
+        crossing_plan_info=plan,
+        realized_crossing_components=components,
+    )
+    assert [issue.code for issue in legacy_report.issues] == ["illegal_realized_crossing"]
+    assert legacy_report.issues[0].details["reason"] == "not_perpendicular"
+
+
 def test_report_flags_protected_segment_movement():
     report = build_crossing_verification_report(
         crossing_plan_info={"enabled": True},

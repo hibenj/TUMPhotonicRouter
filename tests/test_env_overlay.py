@@ -305,6 +305,7 @@ RUST_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING",
         "PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING",
         "PHOTONIC_ROUTER_DISABLE_RUST_CROSSING_VALIDATION",
+        "PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY",
         # Diagnostics (src/py_router.rs)
         "PHOTONIC_ROUTER_NATIVE_PROGRESS",
         "PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG",
@@ -419,6 +420,7 @@ def test_router_config_default_to_rust_round_trips_defaults():
         rust_cfg.negotiation_disable_post_ripup_guidance
         == cfg.negotiation.disable_post_ripup_guidance
     )
+    assert rust_cfg.crossing_unified_legality == cfg.crossing.unified_legality
     assert rust_cfg.search_astar_timeout_ms == cfg.search.astar_timeout_ms
     assert rust_cfg.search_max_dense_states == cfg.search.max_dense_states
     assert (

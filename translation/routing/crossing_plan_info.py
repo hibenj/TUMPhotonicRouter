@@ -190,6 +190,17 @@ class CrossingPlanInfo:
     native_crossing_event_count: int | None = None
     """How many. w:8"""
 
+    native_crossing_verdicts: list[Any] | None = None
+    """The unified predicate's verdicts (`router.crossing_verdicts()`), when
+    `RouterConfig.crossing.unified_legality` is on. w:8"""
+
+    native_crossing_verdict_count: int | None = None
+    """How many. w:8"""
+
+    unified_crossing_legality: bool | None = None
+    """Whether the realized crossings were classified from the Rust verdicts
+    (`RouterConfig.crossing.unified_legality`) rather than re-decided here. w:8"""
+
     final_crossing_repair_attempts: list[dict[str, Any]] | None = None
     """One record per final illegal-crossing repair attempt. w:8"""
 

@@ -46,7 +46,9 @@ def test_router_crossing_context_is_disabled_by_default():
     assert cfg.crossing_half_size_cells == 0
 
 
-def _collision_crossing_router(*, crossing_half_size_cells: int = 0):
+def _collision_crossing_router(
+    *, crossing_half_size_cells: int = 0, unified_legality: bool = False
+):
     backend = _load_rust_backend()
     assert backend is not None
 
@@ -66,6 +68,7 @@ def _collision_crossing_router(*, crossing_half_size_cells: int = 0):
             use_routing_window=False,
             heuristic_mode="distance",
         ),
+        backend.RouterConfig(crossing_unified_legality=unified_legality),
     )
     router.set_crossing_config(
         backend.CrossingConfig(
@@ -106,6 +109,119 @@ def test_collision_crossing_route_uses_local_dynamic_intersection():
     assert tuple(events[0]["point"]) == (8.5, 6.5)
     assert tuple(events[0]["route_segment"]) == ((2, 6), (14, 6))
     assert tuple(events[0]["partner_segment"]) == ((8, 2), (8, 10))
+
+
+def test_unified_legality_verdicts_match_the_events_and_the_python_verifier():
+    """Phase 4 slice B: with `crossing_unified_legality` the router records
+    one verdict per realized crossing, and the Python verifier's
+    classification is that verdict, not a re-decision."""
+    from types import SimpleNamespace
+
+    from photonic_router.path_length_graph import PortRef
+
+    from translation.route_rust_crossing_verification import (
+        _populate_realized_intersections_from_native_crossing_events,
+        _verify_realized_route_intersections,
+    )
+    from translation.route_rust_types import RoutedNetRecord
+    from translation.routing.crossing_plan_info import CrossingPlanInfo
+
+    backend, router = _collision_crossing_router(crossing_half_size_cells=1, unified_legality=True)
+    assert router.crossing_verdicts() == []
+
+    router.route_single_net_and_commit(
+        1,
+        backend.State(8, 2, 2),
+        backend.State(8, 10, 2),
+        block_radius_cells=0,
+    )
+    router.add_static_cells([(x, 4) for x in range(3, 14)] + [(x, 8) for x in range(3, 14)])
+    router.route_single_net_and_commit(
+        2,
+        backend.State(2, 6, 0),
+        backend.State(14, 6, 0),
+        block_radius_cells=0,
+    )
+
+    events = router.crossing_events()
+    verdicts = router.crossing_verdicts()
+    assert len(events) == 1
+    assert len(verdicts) == 1
+    verdict = verdicts[0]
+    assert (verdict["net_id"], verdict["partner_net_id"]) == (2, 1)
+    assert verdict["legal"] is True
+    assert verdict["reason"] == "legal"
+    assert verdict["perpendicular"] is True
+    assert verdict["event_registered"] is True
+    assert verdict["footprint_blocked"] is False
+    assert verdict["margins_from_grid"] is True
+    # half_size 1 + bend_radius 1: one margin of two cells, one cell after.
+    assert verdict["required_margin_cells"] == 2
+    assert verdict["required_after_cells"] == 1
+    assert tuple(verdict["point"]) == tuple(events[0]["point"])
+    assert tuple(verdict["route_segment"]) == tuple(events[0]["route_segment"])
+    assert tuple(verdict["partner_segment"]) == tuple(events[0]["partner_segment"])
+    assert verdict["route_before_cells"] == 6.0  # (2,6)->(14,6) crosses x = 8
+    assert verdict["partner_before_cells"] == 4.0  # (8,2)->(8,10) crosses y = 6
+
+    info = CrossingPlanInfo.from_dict(
+        {"enabled": True, "crossing_half_size_cells": 1, "events": []}
+    )
+    info.bend_runout_cells_per_crossing = 1
+    grid_spec = (20, 14, 1.0, 0.0, 0.0)
+    illegal = _populate_realized_intersections_from_native_crossing_events(
+        crossing_plan_info=info,
+        routed_records_by_net_id={},
+        native_crossing_events=events,
+        realization_grid_spec=grid_spec,
+        native_crossing_verdicts=verdicts,
+        unified_legality=True,
+    )
+    assert illegal == []
+    native = info.realized_intersections[0]
+    assert native["classification"] == "legal_native_crossing"
+    assert native["legality_source"] == "rust_crossing_verdict"
+    assert native["required_margin_um"] == 2.0
+    assert native["rust_verdict"]["reason"] == "legal"
+
+    def _record(name: str, centerline) -> RoutedNetRecord:
+        return RoutedNetRecord(
+            net_name=name,
+            source=PortRef(instance=f"{name}_src", port="o1"),
+            target=PortRef(instance=f"{name}_dst", port="o1"),
+            route_obj=SimpleNamespace(),
+            total_length_um=0.0,
+            corrected_centerline_um=centerline,
+        )
+
+    # The realized centerlines run through the cell centers.
+    full_info = CrossingPlanInfo.from_dict(
+        {"enabled": True, "crossing_half_size_cells": 1, "events": []}
+    )
+    full_info.bend_runout_cells_per_crossing = 1
+    full_info.crossing_mode = "lidar-pure"
+    illegal = _verify_realized_route_intersections(
+        crossing_plan_info=full_info,
+        routed_records_by_net_id={
+            1: _record("a", ((8.5, 2.5), (8.5, 10.5))),
+            2: _record("b", ((2.5, 6.5), (14.5, 6.5))),
+        },
+        realization_grid_spec=grid_spec,
+        native_crossing_verdicts=verdicts,
+        unified_legality=True,
+    )
+    assert illegal == []
+    crossing = full_info.realized_intersections[0]
+    assert crossing["classification"] == "legal_unexpected_crossing"
+    assert crossing["legality_source"] == "rust_crossing_verdict"
+    assert "reason" not in crossing
+    assert crossing["required_margin_um"] == 2.0
+    assert crossing["search_required_margin_um"] == 2.0
+
+    # A rip-up drops the verdict with the event.
+    assert router.ripup_route(2) is True
+    assert router.crossing_events() == []
+    assert router.crossing_verdicts() == []
 
 
 def test_collision_crossing_route_reserves_crossing_footprint():

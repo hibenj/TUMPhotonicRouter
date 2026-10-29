@@ -383,6 +383,195 @@ pub(crate) fn compress_physical_centerline(points: Vec<(f64, f64)>) -> Vec<(f64,
     out
 }
 
+/// Which straight run of a crossing candidate fell short of the rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MarginSide {
+    /// The route's straight run before the crossing point.
+    RouteBefore,
+    /// The route's pure straight run after the crossing point.
+    RouteAfter,
+    /// The partner's straight run on either side of the crossing point.
+    Partner,
+}
+
+impl MarginSide {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            MarginSide::RouteBefore => "route_before",
+            MarginSide::RouteAfter => "route_after",
+            MarginSide::Partner => "partner",
+        }
+    }
+}
+
+/// The one verdict of [`crossing_legality`]: legal, or the single reason the
+/// candidate is not. The reasons are tested in the order listed and the
+/// first failing one is the verdict, so a non-perpendicular candidate is
+/// `NotPerpendicular` whatever its margins.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CrossingVerdict {
+    Legal,
+    NotPerpendicular,
+    MarginShort {
+        side: MarginSide,
+        have_cells: f64,
+        need_cells: f64,
+    },
+    FootprintBlocked,
+    MissingEvent,
+}
+
+impl CrossingVerdict {
+    pub(crate) fn is_legal(&self) -> bool {
+        matches!(self, CrossingVerdict::Legal)
+    }
+
+    /// The reason as the diagnostics, the commit errors and the Python
+    /// verifier spell it: `legal`, `not_perpendicular`,
+    /// `margin_short_<side>`, `footprint_blocked`, `missing_event`.
+    pub(crate) fn reason(&self) -> &'static str {
+        match self {
+            CrossingVerdict::Legal => "legal",
+            CrossingVerdict::NotPerpendicular => "not_perpendicular",
+            CrossingVerdict::MarginShort {
+                side: MarginSide::RouteBefore,
+                ..
+            } => "margin_short_route_before",
+            CrossingVerdict::MarginShort {
+                side: MarginSide::RouteAfter,
+                ..
+            } => "margin_short_route_after",
+            CrossingVerdict::MarginShort {
+                side: MarginSide::Partner,
+                ..
+            } => "margin_short_partner",
+            CrossingVerdict::FootprintBlocked => "footprint_blocked",
+            CrossingVerdict::MissingEvent => "missing_event",
+        }
+    }
+
+    pub(crate) fn margin_side(&self) -> Option<MarginSide> {
+        match self {
+            CrossingVerdict::MarginShort { side, .. } => Some(*side),
+            _ => None,
+        }
+    }
+}
+
+/// The margin rule of a crossing, in grid cells of the GRID route (the
+/// compressed waypoints, on which a bend contributes its arms as straight
+/// cells). `required_margin_cells` = `half_size + bend_runout` is the one
+/// margin: the crossing element's half footprint plus the run-out that pays
+/// for a bend arm counted as straight. It applies to the route's run
+/// before the crossing and to both sides of the partner. After the crossing
+/// the route owes `half_size` cells of PURE straight (the element's own
+/// footprint; the search pays this debt with straight primitives only, so a
+/// bend may follow it directly -- Point 2 of 2026-09-03, which found that
+/// demanding `required_margin_cells` after the crossing discards
+/// kernel-legal, realized-clean routes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CrossingLegalityRule {
+    pub(crate) half_size_cells: i32,
+    pub(crate) bend_runout_cells: i32,
+}
+
+impl CrossingLegalityRule {
+    pub(crate) fn required_margin_cells(&self) -> i32 {
+        self.half_size_cells.max(0) + self.bend_runout_cells.max(0)
+    }
+
+    pub(crate) fn required_after_cells(&self) -> i32 {
+        self.half_size_cells.max(0)
+    }
+}
+
+/// One crossing as the predicate sees it: the two directions (any scale,
+/// grid-angle unit vectors or physical segment vectors), the four straight
+/// runs in grid cells, whether the crossing element's footprint cells carry
+/// an unrelated net, and whether a `CrossingEvent` is registered for it
+/// (`None` before commit, when no event can exist yet).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CrossingCandidate {
+    pub(crate) route_direction: (f64, f64),
+    pub(crate) partner_direction: (f64, f64),
+    pub(crate) route_before_cells: f64,
+    pub(crate) route_after_cells: f64,
+    pub(crate) partner_before_cells: f64,
+    pub(crate) partner_after_cells: f64,
+    pub(crate) footprint_blocked: bool,
+    pub(crate) event_registered: Option<bool>,
+}
+
+/// The one perpendicularity test: the normalised dot product of the two
+/// directions is at most 1e-6 in magnitude. Grid angles map onto it through
+/// [`grid_angle_direction`]; a zero-length direction is never perpendicular.
+pub(crate) fn directions_are_perpendicular(a: (f64, f64), b: (f64, f64)) -> bool {
+    let len_a = (a.0 * a.0 + a.1 * a.1).sqrt();
+    let len_b = (b.0 * b.0 + b.1 * b.1).sqrt();
+    if len_a <= 1e-9 || len_b <= 1e-9 {
+        return false;
+    }
+    ((a.0 * b.0 + a.1 * b.1) / (len_a * len_b)).abs() <= 1e-6
+}
+
+/// The unit step of a grid direction angle (0..8, see `DIRECTIONS`).
+pub(crate) fn grid_angle_direction(angle: u8) -> (f64, f64) {
+    let (dx, dy) = DIRECTIONS[usize::from(angle % 8)];
+    (f64::from(dx), f64::from(dy))
+}
+
+/// THE crossing-legality predicate (do-over phase 4 slice B, behind
+/// `RouterConfig::crossing.unified_legality`). The search hook, the commit
+/// check and the post-commit validation all call it with the same rule, so
+/// the search never produces a crossing the commit rejects. Tests, in
+/// order: perpendicular; route before >= `required_margin_cells`; route
+/// after >= `required_after_cells`; partner on both sides >=
+/// `required_margin_cells`; footprint not blocked; event registered when
+/// the caller knows (`Some(false)` is `MissingEvent`, `None` skips the
+/// test). Margins compare with a 1e-9 tolerance, as every legacy path did.
+pub(crate) fn crossing_legality(
+    candidate: &CrossingCandidate,
+    rule: &CrossingLegalityRule,
+) -> CrossingVerdict {
+    if !directions_are_perpendicular(candidate.route_direction, candidate.partner_direction) {
+        return CrossingVerdict::NotPerpendicular;
+    }
+    let need = f64::from(rule.required_margin_cells());
+    let need_after = f64::from(rule.required_after_cells());
+    let eps = 1e-9;
+    if candidate.route_before_cells + eps < need {
+        return CrossingVerdict::MarginShort {
+            side: MarginSide::RouteBefore,
+            have_cells: candidate.route_before_cells,
+            need_cells: need,
+        };
+    }
+    if candidate.route_after_cells + eps < need_after {
+        return CrossingVerdict::MarginShort {
+            side: MarginSide::RouteAfter,
+            have_cells: candidate.route_after_cells,
+            need_cells: need_after,
+        };
+    }
+    let partner_margin = candidate
+        .partner_before_cells
+        .min(candidate.partner_after_cells);
+    if partner_margin + eps < need {
+        return CrossingVerdict::MarginShort {
+            side: MarginSide::Partner,
+            have_cells: partner_margin,
+            need_cells: need,
+        };
+    }
+    if candidate.footprint_blocked {
+        return CrossingVerdict::FootprintBlocked;
+    }
+    if candidate.event_registered == Some(false) {
+        return CrossingVerdict::MissingEvent;
+    }
+    CrossingVerdict::Legal
+}
+
 /// Unit tests for the pure geometry helpers, Milestone 6 Slice 3 of
 /// `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`.
 /// Every number below is hand-computed on a right-angle or axis-aligned
@@ -576,6 +765,169 @@ mod tests {
         assert_eq!(
             compress_physical_centerline(vec![(0.0, 0.0), (0.0, 0.0)]),
             vec![(0.0, 0.0), (0.0, 0.0)]
+        );
+    }
+
+    /// A candidate that passes every test of `crossing_legality` under
+    /// `RULE` (half 2, run-out 3: margin 5 before and on the partner, 2
+    /// after): horizontal route, vertical partner, generous straights,
+    /// clear footprint, event registered.
+    const RULE: CrossingLegalityRule = CrossingLegalityRule {
+        half_size_cells: 2,
+        bend_runout_cells: 3,
+    };
+
+    fn legal_candidate() -> CrossingCandidate {
+        CrossingCandidate {
+            route_direction: (1.0, 0.0),
+            partner_direction: (0.0, 1.0),
+            route_before_cells: 8.0,
+            route_after_cells: 8.0,
+            partner_before_cells: 8.0,
+            partner_after_cells: 8.0,
+            footprint_blocked: false,
+            event_registered: Some(true),
+        }
+    }
+
+    #[test]
+    fn crossing_legality_rule_has_one_margin_and_the_half_footprint_after() {
+        assert_eq!(RULE.required_margin_cells(), 5);
+        assert_eq!(RULE.required_after_cells(), 2);
+        // Negative inputs clamp to zero, as the legacy
+        // `crossing_required_margin_cells` did.
+        let clamped = CrossingLegalityRule {
+            half_size_cells: -1,
+            bend_runout_cells: -4,
+        };
+        assert_eq!(clamped.required_margin_cells(), 0);
+        assert_eq!(clamped.required_after_cells(), 0);
+    }
+
+    #[test]
+    fn crossing_legality_accepts_a_perpendicular_crossing_with_margins_and_an_event() {
+        assert_eq!(
+            crossing_legality(&legal_candidate(), &RULE),
+            CrossingVerdict::Legal
+        );
+        // The same crossing before commit (no event can exist yet).
+        let pre_commit = CrossingCandidate {
+            event_registered: None,
+            ..legal_candidate()
+        };
+        assert!(crossing_legality(&pre_commit, &RULE).is_legal());
+    }
+
+    #[test]
+    fn crossing_legality_rejects_a_non_perpendicular_pair_before_anything_else() {
+        // A diagonal against a horizontal: 45 degrees, not 90. The margins
+        // are also short, but the perpendicularity test comes first.
+        let candidate = CrossingCandidate {
+            partner_direction: (1.0, 1.0),
+            route_before_cells: 0.0,
+            ..legal_candidate()
+        };
+        let verdict = crossing_legality(&candidate, &RULE);
+        assert_eq!(verdict, CrossingVerdict::NotPerpendicular);
+        assert_eq!(verdict.reason(), "not_perpendicular");
+        // The grid angles map onto the same test: angle 1 (1,1) against
+        // angle 3 (-1,1) is perpendicular, 1 against 2 (0,1) is not.
+        assert!(directions_are_perpendicular(
+            grid_angle_direction(1),
+            grid_angle_direction(3)
+        ));
+        assert!(!directions_are_perpendicular(
+            grid_angle_direction(1),
+            grid_angle_direction(2)
+        ));
+        // Opposite directions of the same axis are perpendicular too
+        // (angle 0 against 6 as well as against 2).
+        assert!(directions_are_perpendicular(
+            grid_angle_direction(0),
+            grid_angle_direction(6)
+        ));
+        // A zero-length direction is never perpendicular.
+        assert!(!directions_are_perpendicular((0.0, 0.0), (0.0, 1.0)));
+    }
+
+    #[test]
+    fn crossing_legality_accepts_a_margin_exactly_at_the_limit_and_rejects_one_cell_less() {
+        let at_limit = CrossingCandidate {
+            route_before_cells: 5.0,
+            route_after_cells: 2.0,
+            partner_before_cells: 5.0,
+            partner_after_cells: 5.0,
+            ..legal_candidate()
+        };
+        assert!(crossing_legality(&at_limit, &RULE).is_legal());
+        // Floating-point noise below the limit still passes (1e-9 tolerance).
+        let noisy = CrossingCandidate {
+            route_before_cells: 5.0 - 1e-12,
+            ..at_limit
+        };
+        assert!(crossing_legality(&noisy, &RULE).is_legal());
+
+        let before_short = CrossingCandidate {
+            route_before_cells: 4.0,
+            ..at_limit
+        };
+        assert_eq!(
+            crossing_legality(&before_short, &RULE),
+            CrossingVerdict::MarginShort {
+                side: MarginSide::RouteBefore,
+                have_cells: 4.0,
+                need_cells: 5.0,
+            }
+        );
+        let after_short = CrossingCandidate {
+            route_after_cells: 1.0,
+            ..at_limit
+        };
+        let verdict = crossing_legality(&after_short, &RULE);
+        assert_eq!(verdict.margin_side(), Some(MarginSide::RouteAfter));
+        assert_eq!(verdict.reason(), "margin_short_route_after");
+        // The partner side reports the smaller of its two runs.
+        let partner_short = CrossingCandidate {
+            partner_after_cells: 4.0,
+            ..at_limit
+        };
+        assert_eq!(
+            crossing_legality(&partner_short, &RULE),
+            CrossingVerdict::MarginShort {
+                side: MarginSide::Partner,
+                have_cells: 4.0,
+                need_cells: 5.0,
+            }
+        );
+    }
+
+    #[test]
+    fn crossing_legality_rejects_a_blocked_footprint_and_a_missing_event() {
+        let blocked = CrossingCandidate {
+            footprint_blocked: true,
+            ..legal_candidate()
+        };
+        assert_eq!(
+            crossing_legality(&blocked, &RULE),
+            CrossingVerdict::FootprintBlocked
+        );
+        let unregistered = CrossingCandidate {
+            event_registered: Some(false),
+            ..legal_candidate()
+        };
+        let verdict = crossing_legality(&unregistered, &RULE);
+        assert_eq!(verdict, CrossingVerdict::MissingEvent);
+        assert_eq!(verdict.reason(), "missing_event");
+        assert!(!verdict.is_legal());
+        // A blocked footprint outranks the missing event.
+        let both = CrossingCandidate {
+            footprint_blocked: true,
+            event_registered: Some(false),
+            ..legal_candidate()
+        };
+        assert_eq!(
+            crossing_legality(&both, &RULE),
+            CrossingVerdict::FootprintBlocked
         );
     }
 }

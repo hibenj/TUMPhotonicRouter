@@ -6,6 +6,10 @@
 //! Slice 2, dissolving `mod unified_kernel`); pure code motion, no
 //! behaviour change.
 
+use crate::engine::crossing_geometry::{
+    crossing_legality, grid_angle_direction, CrossingCandidate, CrossingLegalityRule,
+    CrossingVerdict, MarginSide,
+};
 use crate::obstacle_map::{pack_xy, CellKey, NetId, ObstacleMap};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
 use crate::search::astar::config::{
@@ -72,6 +76,12 @@ pub struct CrossingSearchConfig {
     pub bend_runout_cells: i32,
     pub crossing_loss: f64,
     pub terminal_bump_guard: Option<TerminalBumpGuard>,
+    /// `RouterConfig::crossing.unified_legality` (do-over phase 4 slice B):
+    /// decide every crossing candidate of the search with the one predicate
+    /// `crate::engine::crossing_geometry::crossing_legality`, built from the
+    /// same numbers the legacy checks below read. Off: the legacy checks
+    /// decide, exactly as before.
+    pub unified_legality: bool,
 }
 
 pub(crate) fn crossing_required_margin_cells(
@@ -1067,6 +1077,48 @@ pub(crate) fn record_perpendicular_crossing_reject(
 /// (0 for the others and for budgeted partners beyond the 64th). The budget
 /// bits are the only use of `crossed_mask` (the window mode's partner
 /// tracking that once shared the field is gone).
+/// Books a reject of the unified predicate on the legacy counters: the
+/// same counter the legacy check for that reason incremented, so the search
+/// statistics keep their meaning across the switch.
+pub(crate) fn record_unified_crossing_reject(
+    stats: &mut RouteSearchStats,
+    crossing: &CrossingSearchConfig,
+    partner_net_id: NetId,
+    verdict: CrossingVerdict,
+    search_start: Option<&Instant>,
+) {
+    match verdict {
+        CrossingVerdict::Legal => {}
+        CrossingVerdict::NotPerpendicular => {
+            stats.crossing_reject_not_perpendicular += 1;
+        }
+        CrossingVerdict::MarginShort {
+            side: MarginSide::RouteAfter,
+            ..
+        } => {
+            record_perpendicular_crossing_reject(stats, crossing, partner_net_id, search_start);
+            stats.crossing_reject_pending_straight += 1;
+            if crossing.diagnostics.analysis_crossing_partner_counters {
+                *stats
+                    .crossing_after_margin_by_partner
+                    .entry(partner_net_id)
+                    .or_insert(0) += 1;
+            }
+        }
+        CrossingVerdict::MarginShort { .. } => {
+            record_perpendicular_crossing_reject(stats, crossing, partner_net_id, search_start);
+            stats.crossing_reject_margin += 1;
+        }
+        CrossingVerdict::FootprintBlocked => {
+            record_perpendicular_crossing_reject(stats, crossing, partner_net_id, search_start);
+            stats.crossing_reject_unmatched_footprint += 1;
+        }
+        CrossingVerdict::MissingEvent => {
+            stats.crossing_reject_unmatched_footprint += 1;
+        }
+    }
+}
+
 pub(crate) fn crossing_partner_budget_bits(crossing: &CrossingSearchConfig) -> Vec<u64> {
     let mut next_bit = 0u32;
     crossing
@@ -1351,7 +1403,74 @@ pub(crate) fn crossing_move_outcome_with_segments(
                     {
                         continue;
                     }
-                    if !grid_axes_are_perpendicular(route_segment.angle, partner_segment.angle) {
+                    if crossing.unified_legality {
+                        // Phase 4 slice B: the one predicate decides, from the
+                        // same numbers the legacy checks below read. A
+                        // crossing in the move's LAST segment owes its
+                        // straight-after cells to the following pure
+                        // straights (`pending_after_crossing_cells`), so only
+                        // an inner segment can be short after the point here.
+                        let rule = CrossingLegalityRule {
+                            half_size_cells: crossing.crossing_half_size_cells,
+                            bend_runout_cells: crossing.bend_runout_cells,
+                        };
+                        let segment_is_terminal = route_segment_idx + 1 == primitive_segments.len();
+                        let candidate = CrossingCandidate {
+                            route_direction: grid_angle_direction(route_segment.angle),
+                            partner_direction: grid_angle_direction(partner_segment.angle),
+                            route_before_cells: if route_segment.starts_after_kink {
+                                distance_on_segment
+                            } else {
+                                f64::from(current_key.straight_run_cells) + distance_on_segment
+                            },
+                            route_after_cells: if segment_is_terminal {
+                                f64::INFINITY
+                            } else {
+                                route_segment.length - distance_on_segment
+                            },
+                            partner_before_cells: u * partner_segment.length,
+                            partner_after_cells: (1.0 - u) * partner_segment.length,
+                            footprint_blocked: !crossing_reservation_window_is_clear(
+                                obstacle_map,
+                                crossing.net_id,
+                                partner.net_id,
+                                port_open_cells,
+                                x,
+                                y,
+                                reservation_margin,
+                            ),
+                            event_registered: None,
+                        };
+                        let verdict = crossing_legality(&candidate, &rule);
+                        if !verdict.is_legal() {
+                            record_unified_crossing_reject(
+                                stats,
+                                crossing,
+                                partner.net_id,
+                                verdict,
+                                search_start,
+                            );
+                            trace_crossing_candidate(
+                                crossing,
+                                partner.net_id,
+                                verdict.reason(),
+                                x,
+                                y,
+                                route_segment.angle,
+                                partner_segment.angle,
+                                required_margin,
+                                candidate
+                                    .partner_before_cells
+                                    .min(candidate.partner_after_cells),
+                                distance_from_primitive_start,
+                                route_segment.length - distance_on_segment,
+                            );
+                            return None;
+                        }
+                    }
+                    if !crossing.unified_legality
+                        && !grid_axes_are_perpendicular(route_segment.angle, partner_segment.angle)
+                    {
                         trace_crossing_candidate(
                             crossing,
                             partner.net_id,
@@ -1370,7 +1489,9 @@ pub(crate) fn crossing_move_outcome_with_segments(
                     }
                     let partner_margin =
                         (u * partner_segment.length).min((1.0 - u) * partner_segment.length);
-                    if partner_margin + 1.0e-9 < f64::from(required_margin) {
+                    if !crossing.unified_legality
+                        && partner_margin + 1.0e-9 < f64::from(required_margin)
+                    {
                         record_perpendicular_crossing_reject(
                             stats,
                             crossing,
@@ -1393,15 +1514,17 @@ pub(crate) fn crossing_move_outcome_with_segments(
                         stats.crossing_reject_margin += 1;
                         return None;
                     }
-                    if !crossing_reservation_window_is_clear(
-                        obstacle_map,
-                        crossing.net_id,
-                        partner.net_id,
-                        port_open_cells,
-                        x,
-                        y,
-                        reservation_margin,
-                    ) {
+                    if !crossing.unified_legality
+                        && !crossing_reservation_window_is_clear(
+                            obstacle_map,
+                            crossing.net_id,
+                            partner.net_id,
+                            port_open_cells,
+                            x,
+                            y,
+                            reservation_margin,
+                        )
+                    {
                         record_perpendicular_crossing_reject(
                             stats,
                             crossing,
@@ -1590,7 +1713,9 @@ pub(crate) fn crossing_move_outcome_with_segments(
             stats.crossing_reject_pending_straight += 1;
             return None;
         }
-        if intersection.distance_before_on_segment + 1.0e-9 < f64::from(required_margin) {
+        if !crossing.unified_legality
+            && intersection.distance_before_on_segment + 1.0e-9 < f64::from(required_margin)
+        {
             let partner = &crossing.partners[intersection.partner_idx];
             record_perpendicular_crossing_reject(stats, crossing, partner.net_id, search_start);
             trace_crossing_candidate(

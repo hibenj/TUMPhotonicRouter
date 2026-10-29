@@ -67,6 +67,8 @@ class CrossingEngineConfig:
     enable_guided_collision_crossing: bool = False
     disable_guided_collision_crossing: bool = False
     disable_rust_crossing_validation: bool = False
+    #: `PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`: presence. Ablation switch (do-over phase 4 slice B): decide crossing legality with the one Rust predicate `crossing_geometry::crossing_legality` (one perpendicularity test, one margin `half_size + bend_runout` on the grid route) in the search, the commit check and the post-commit validation, and classify realized crossings in Python from its verdicts (`crossing_verdicts()`) instead of re-deciding them. Off: the three legacy paths and the Python re-decision run as before.
+    unified_legality: bool = False
 
 
 @dataclass(frozen=True)
@@ -291,6 +293,7 @@ class RouterConfig:
             crossing_enable_guided_collision_crossing=c.enable_guided_collision_crossing,
             crossing_disable_guided_collision_crossing=c.disable_guided_collision_crossing,
             crossing_disable_rust_crossing_validation=c.disable_rust_crossing_validation,
+            crossing_unified_legality=c.unified_legality,
             diag_native_progress=d.native_progress,
             diag_native_repair_diag=d.native_repair_diag,
             diag_search_failure_diag=d.search_failure_diag,

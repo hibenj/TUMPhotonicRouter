@@ -255,6 +255,7 @@ impl PyPhotonicRouter {
             partners,
             crossing_half_size_cells: crossing_cfg.crossing_half_size_cells,
             bend_runout_cells: self.primitive_cfg.bend_radius_cells,
+            unified_legality: self.router_config.crossing.unified_legality,
             crossing_loss: crossing_loss_override.unwrap_or(crossing_cfg.crossing_loss),
             terminal_bump_guard: self.terminal_bump_guard_for_target(target, target_port_um),
         }
