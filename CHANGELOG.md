@@ -21,6 +21,11 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
   with the rule set in `pyproject.toml`; the remaining scoped ignores are
   listed there with their reasons.
 - `docs/CONFIGURATION.md` regenerated (a union type's member order).
+- The simple-route (straight/L/Z) shortcut runs in one place, the engine's
+  probe before each ordinary search; the second copy inside the single-net
+  search body is gone (phase 2 slice B). The static-only probe keeps it
+  explicitly. Routes are unchanged on the nine-cell gate; the single-net
+  `route_single_net` API now always runs the kernel.
 
 ### Added
 

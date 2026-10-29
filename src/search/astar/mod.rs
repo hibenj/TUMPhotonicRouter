@@ -30,7 +30,6 @@ use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
 use crate::primitives::PrimitiveLibrary;
 use config::AStarConfig;
 use crossing_rules::{CrossingHookContext, NoCrossingHook};
-use simple::try_simple_route_with_config;
 use window::{run_windowed_single_net_search, RoutingBounds};
 
 use crate::search::state::{RouteResult, RouteSearchStats, State};
@@ -127,9 +126,11 @@ fn rejected_outcome() -> SearchOutcome {
 /// * the crossing-partner entry guard runs only for `crossing: Some(_)`;
 ///   the four config/geometry guards run for every request, with the same
 ///   message-free `None` results as before;
-/// * the simple-route shortcut is the *plain* path's alone
-///   (`crossing: None && dynamic_expansion: None`) -- exactly the wrapper
-///   that had it; every other path goes straight to the windowed kernel;
+/// * every path goes straight to the windowed kernel; the simple-route
+///   probe is the engine's (`src/engine/search_calls.rs`), which runs it
+///   before every ordinary search and before the static-only probe, so the
+///   shortcut this body used to repeat on the plain path never fired on a
+///   different map;
 /// * the separate *reservation* anchor set exists only when the crossing
 ///   part carries `reservation_open_cells: Some(_)` -- the old
 ///   collision-crossing wrapper's case. With `None` the old crossing-config
@@ -207,36 +208,6 @@ fn run_search(env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome
     } else {
         None
     };
-
-    let takes_shortcuts = request.crossing.is_none() && request.dynamic_expansion.is_none();
-    if takes_shortcuts {
-        let simple_route_start = if config.collect_detailed_timing {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        let simple_route = try_simple_route_with_config(
-            obstacle_map,
-            primitives,
-            source,
-            target,
-            port_open_cells,
-            config,
-        );
-        if let Some(simple_route_start) = simple_route_start.as_ref() {
-            stats.simple_route_time_us += simple_route_start.elapsed().as_micros();
-        }
-        if let Some(mut simple_route) = simple_route {
-            simple_route.stats = stats.clone();
-            return SearchOutcome {
-                route: Some(with_route_search_total_time(
-                    simple_route,
-                    route_search_total_start.as_ref(),
-                )),
-                stats,
-            };
-        }
-    }
 
     let route = run_windowed_single_net_search(
         obstacle_map,
@@ -317,11 +288,11 @@ mod tests {
     use crate::search;
     use crate::search::test_support::*;
 
-    /// The plain request (no crossing part, no dynamic expansion) is the
-    /// only one `run_search` lets take the simple-route shortcut; it must
-    /// route like every other path.
+    /// The plain request (no crossing part, no dynamic expansion) runs the
+    /// windowed kernel with `NoCrossingHook`; it must route like every
+    /// other path.
     #[test]
-    fn net_search_plain_request_takes_the_shortcut_path() {
+    fn net_search_plain_request_takes_the_dense_kernel_path() {
         let (map, library, source, target, config) = plain_request_fixture();
         let env = search::SearchEnvironment {
             obstacle_map: &map,
@@ -454,9 +425,10 @@ mod tests {
     /// stashing the Slice 3 working tree and re-running this fixture set
     /// on that commit. Kept passing unchanged through the whole rewrite,
     /// it is the independent check that the extraction never changed a
-    /// comparison, a tie-break or a floating-point operation's order: the
-    /// base fixture never even enters the unified kernel loop (it takes
-    /// the simple-route shortcut, hence the all-zero search counters).
+    /// comparison, a tie-break or a floating-point operation's order. Since
+    /// phase 2 slice B the base fixture enters the kernel too (the
+    /// simple-route shortcut lives in the engine), so its block pins only
+    /// the route cost and waypoint count.
     #[test]
     fn determinism_pin_matches_commit_5a5edb8() {
         {
@@ -475,13 +447,12 @@ mod tests {
             };
             let outcome = search::AStarSearch.search(&env, &request);
             let route = outcome.route.expect("base fixture should route");
-            assert_eq!(outcome.stats.expanded_states, 0, "base expanded_states");
-            assert_eq!(
-                outcome.stats.generated_neighbors, 0,
-                "base generated_neighbors"
-            );
-            assert_eq!(outcome.stats.heap_pushes, 0, "base heap_pushes");
-            assert_eq!(outcome.stats.heap_pops, 0, "base heap_pops");
+            // Phase 2 slice B: the plain request enters the kernel (the
+            // simple-route shortcut moved to the engine), so the counters
+            // are no longer zero; the route it finds is the same straight
+            // run at the same cost.
+            assert!(outcome.stats.expanded_states > 0, "base expanded_states");
+            assert!(outcome.stats.heap_pops > 0, "base heap_pops");
             assert_eq!(route.total_cost, 7.0, "base total_cost");
             assert_eq!(route.compressed_waypoints.len(), 2, "base waypoint count");
         }

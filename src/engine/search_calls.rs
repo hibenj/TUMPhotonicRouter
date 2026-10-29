@@ -1601,9 +1601,25 @@ impl PyPhotonicRouter {
             obstacle_map: &static_only_obstacle_map,
             primitives: &self.primitives,
         };
+        let source = State::new(source.x, source.y, source.angle);
+        let target = State::new(target.x, target.y, target.angle);
+        // The simple-route probe used to sit inside the search body for
+        // every plain request; it stays here, before the kernel, so the
+        // static-only probe keeps answering with the same straight/L/Z
+        // routes it always did.
+        if let Some(route) = try_simple_route_with_config(
+            &static_only_obstacle_map,
+            &self.primitives,
+            source,
+            target,
+            Some(opened_ref),
+            &cfg,
+        ) {
+            return Ok(route);
+        }
         let request = SearchRequest {
-            source: State::new(source.x, source.y, source.angle),
-            target: State::new(target.x, target.y, target.angle),
+            source,
+            target,
             port_open_cells: Some(opened_ref),
             dynamic_expansion: None,
             crossing: None,

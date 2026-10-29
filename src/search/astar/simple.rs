@@ -493,13 +493,12 @@ mod tests {
     use crate::geometry_realization::{route_to_primitive_centerline, GeometryGridSpec};
     use crate::primitives::{create_photonic_primitive_library, PrimitiveLibraryConfig};
     use crate::search::astar::config::{HeapTieBreaker, PrimitiveOrdering};
-    use crate::search::astar::route_single_net_with_config;
     use crate::search::test_support::*;
 
     #[test]
     fn simple_straight_route_used_before_astar() {
         let map = ObstacleMap::new(10, 6);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
@@ -519,7 +518,7 @@ mod tests {
     #[test]
     fn simple_l_route_used_before_astar() {
         let map = ObstacleMap::new(10, 10);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
@@ -539,7 +538,7 @@ mod tests {
     #[test]
     fn simple_z_route_used_before_astar() {
         let map = ObstacleMap::new(20, 20);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
@@ -584,7 +583,7 @@ mod tests {
     fn simple_z_route_has_primitives_and_replay_centerline() {
         let map = ObstacleMap::new(20, 20);
         let library = primitive_library_no45_bend1();
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &library,
             State::new(1, 1, 0),
@@ -611,7 +610,7 @@ mod tests {
     #[test]
     fn simple_45_diagonal_straight_route_used_before_astar() {
         let map = ObstacleMap::new(10, 10);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library(),
             State::new(1, 1, 1),
@@ -633,7 +632,7 @@ mod tests {
     #[test]
     fn simple_45_l_route_used_before_astar() {
         let map = ObstacleMap::new(12, 8);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library(),
             State::new(1, 1, 0),
@@ -654,7 +653,7 @@ mod tests {
     #[test]
     fn simple_45_z_route_used_before_astar() {
         let map = ObstacleMap::new(14, 8);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library(),
             State::new(1, 1, 0),
@@ -679,7 +678,7 @@ mod tests {
     fn simple_45_z_route_can_use_alternative_lane_when_preferred_is_blocked() {
         let mut map = ObstacleMap::new(14, 8);
         map.add_static_cell(5, 3);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library(),
             State::new(1, 1, 0),
@@ -701,10 +700,11 @@ mod tests {
         assert!(!result.cells.iter().any(|&(x, y)| map.is_blocked(x, y)));
     }
 
+    /// `enable_simple_routes: false` short-circuits the module to `None`.
     #[test]
-    fn simple_route_disabled_uses_astar() {
+    fn simple_route_disabled_answers_none() {
         let map = ObstacleMap::new(10, 6);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
@@ -715,9 +715,8 @@ mod tests {
                 enable_simple_routes: false,
                 ..AStarConfig::default()
             },
-        )
-        .expect("A* route should exist with simple routes disabled");
-        assert!(result.stats.expanded_states > 0);
+        );
+        assert!(result.is_none());
     }
 
     #[test]
@@ -728,11 +727,13 @@ mod tests {
         assert_eq!(config.heap_tie_breaker, HeapTieBreaker::SmallerG);
     }
 
+    /// A blocked straight run has no simple candidate; the engine falls
+    /// back to the kernel.
     #[test]
-    fn simple_route_blocked_falls_back_to_astar() {
+    fn blocked_simple_route_answers_none() {
         let mut map = ObstacleMap::new(12, 8);
         map.add_static_cell(3, 1);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library(),
             State::new(1, 1, 0),
@@ -743,9 +744,8 @@ mod tests {
                 enable_simple_routes: true,
                 ..AStarConfig::default()
             },
-        )
-        .expect("A* fallback should route around blocked simple path");
-        assert!(result.stats.expanded_states > 0);
+        );
+        assert!(result.is_none());
     }
 
     #[test]
@@ -757,7 +757,7 @@ mod tests {
         opened.insert(pack_xy(1, 1));
         opened.insert(pack_xy(5, 1));
 
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library_no45_bend2(),
             State::new(1, 1, 0),
@@ -836,7 +836,7 @@ mod tests {
     fn simple_route_rejects_blocked_middle_cell() {
         let mut map = ObstacleMap::new(7, 1);
         map.add_static_cell(3, 0);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library(),
             State::new(1, 0, 0),
@@ -858,7 +858,7 @@ mod tests {
         map.add_static_cell(3, 0);
         let mut opened = FxHashSet::default();
         opened.insert(pack_xy(3, 0));
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library_no45_bend1(),
             State::new(1, 0, 0),
@@ -880,7 +880,7 @@ mod tests {
         let mut map = ObstacleMap::new(7, 1);
         map.add_static_cell(1, 0);
         map.add_static_cell(5, 0);
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &primitive_library(),
             State::new(1, 0, 0),
@@ -898,11 +898,13 @@ mod tests {
         assert_eq!(result.states.last().copied(), Some(State::new(5, 0, 0)));
     }
 
+    /// With simple routes disabled the module answers `None`; the kernel
+    /// (the engine's next step) routes the straight run itself.
     #[test]
-    fn disabling_simple_routes_preserves_old_behavior() {
+    fn disabled_simple_routes_answer_none() {
         let map = ObstacleMap::new(10, 5);
         let library = primitive_library();
-        let result = route_single_net_with_config(
+        let result = try_simple_route_with_config(
             &map,
             &library,
             State::new(1, 2, 0),
@@ -913,9 +915,7 @@ mod tests {
                 enable_simple_routes: false,
                 ..AStarConfig::default()
             },
-        )
-        .expect("A* should still find the old straight route");
-        assert!(!result.primitives.is_empty());
-        assert!(result.stats.expanded_states > 0);
+        );
+        assert!(result.is_none());
     }
 }

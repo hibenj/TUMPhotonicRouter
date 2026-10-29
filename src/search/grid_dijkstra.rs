@@ -23,9 +23,8 @@
 //!   (crossing) machinery is unreachable. A `SearchRequest` carrying a
 //!   `crossing` part is refused outright, with
 //!   `RouteSearchStats::unsupported_request = 1`.
-//! * **No simple-route shortcut.** Every request runs the real
-//!   search, so a fixture's cost is the search's own answer, not a
-//!   shortcut's.
+//! * **No shortcuts.** Every request runs the real search, so a
+//!   fixture's cost is the search's own answer.
 //!
 //! Dynamic expansion *is* supported: its radius and clearance-exempt cells
 //! are arguments of the shared `build_search_grid`, so they cost nothing
@@ -305,9 +304,8 @@ mod tests {
     }
 
     /// Oracle check on the plain fixture of
-    /// `net_search_plain_request_takes_the_shortcut_path`. A* answers this
-    /// one from the simple-route shortcut, the Dijkstra runs the real
-    /// uniform-cost search; both reach the same cost.
+    /// `net_search_plain_request_takes_the_dense_kernel_path`. A* and the
+    /// Dijkstra both run a real search; both reach the same cost.
     #[test]
     fn dijkstra_matches_the_astar_cost_on_the_plain_fixture() {
         let (map, library, source, target, config) = plain_request_fixture();
