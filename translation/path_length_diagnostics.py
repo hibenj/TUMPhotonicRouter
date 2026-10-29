@@ -9,13 +9,14 @@ from photonic_router.path_length_graph import (
     PathLengthAnalysisResult,
 )
 
-from translation.path_length_candidates import (
+from translation.path_length_requirements import (
+    PATH_LENGTH_MATCH_TOLERANCE_UM,
     edge_identity,
     edge_identity_from_info,
     edge_key_to_dict,
     requirement_to_dict,
 )
-from translation.path_length_requirements import PATH_LENGTH_MATCH_TOLERANCE_UM
+from translation.route_rust_types import MeanderEdgeReport, MeanderInsertionReport
 
 #: Tolerance for the realized (bookkept-by-physical-edge) arrival spread of a
 #: group, in um: one nanometre, the database unit; the planned check keeps
@@ -75,7 +76,7 @@ def matching_groups_to_info(analysis: PathLengthAnalysisResult) -> list[dict[str
 
 def matching_group_diagnostics_to_info(
     analysis: PathLengthAnalysisResult,
-    meander_report: dict[str, object] | None,
+    meander_report: MeanderInsertionReport | None,
     *,
     adjusted_requirements: list[MissingLengthRequirement] | None = None,
     lifted_groups: list[dict[str, object]] | None = None,
@@ -183,7 +184,7 @@ def matching_group_diagnostics_to_info(
 
 def output_matching_diagnostics_to_info(
     output_matching_info: dict[str, object] | None,
-    meander_report: dict[str, object] | None,
+    meander_report: MeanderInsertionReport | None,
     *,
     tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
     analysis: PathLengthAnalysisResult | None = None,
@@ -490,35 +491,15 @@ def _incoming_edge_timing_to_dict(
 
 
 def realized_extra_by_edge_identity(
-    meander_report: dict[str, object] | None,
+    meander_report: MeanderInsertionReport | None,
 ) -> dict[tuple[str, str, str, str, str], float]:
-    """The meander report's realized extra length per physical edge, by edge identity.
-
-    A report without ``realized_extra_length_um_by_edge`` (no meander
-    planned, a report written before 2026-10-05, or a planner stub in a
-    test) falls back to the booked ``inserted_extra_length_um`` of its
-    results, i.e. the realized placement is then assumed to equal the
-    booking.
-    """
-    realized: dict[tuple[str, str, str, str, str], float] = {}
-    if not meander_report:
-        return realized
-    if "realized_extra_length_um_by_edge" not in meander_report:
-        inserted_by_edge, _, _, _ = _meander_result_maps(_meander_results(meander_report))
-        return dict(inserted_by_edge)
-    entries = meander_report.get("realized_extra_length_um_by_edge", [])
-    if not isinstance(entries, list):
-        return realized
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        edge_id = edge_identity_from_info(entry.get("edge"))
-        if edge_id is None:
-            continue
-        realized[edge_id] = realized.get(edge_id, 0.0) + object_to_float(
-            entry.get("extra_length_um", 0.0)
-        )
-    return realized
+    """The meander report's realized extra length per physical edge, by edge identity."""
+    if meander_report is None:
+        return {}
+    return {
+        edge_identity(edge_key): float(extra)
+        for edge_key, extra in meander_report.realized_extra_by_edge.items()
+    }
 
 
 def realized_arrivals(
@@ -554,41 +535,34 @@ def realized_arrivals(
     return output_arrival, arrival_by_edge
 
 
-def _meander_results(meander_report: dict[str, object] | None) -> list[dict[str, object]]:
-    if not isinstance(meander_report, dict):
-        return []
-    raw_results = meander_report.get("results", [])
-    if not isinstance(raw_results, list):
-        return []
-    return [item for item in raw_results if isinstance(item, dict)]
+def _meander_results(meander_report: MeanderInsertionReport | None) -> list[MeanderEdgeReport]:
+    return list(meander_report.results) if meander_report is not None else []
 
 
 def _meander_result_maps(
-    results: list[dict[str, object]],
+    results: list[MeanderEdgeReport],
 ) -> tuple[
     dict[tuple[str, str, str, str, str], float],
     dict[tuple[str, str, str, str, str], str],
     dict[tuple[str, str, str, str, str], float],
     dict[tuple[str, str, str, str, str], str],
 ]:
+    """Per requiring edge: the booked extra, the status (a planned entry wins), the unmatched, the reason."""
     inserted_by_edge: dict[tuple[str, str, str, str, str], float] = {}
     status_by_edge: dict[tuple[str, str, str, str, str], str] = {}
     unmatched_by_edge: dict[tuple[str, str, str, str, str], float] = {}
     reason_by_edge: dict[tuple[str, str, str, str, str], str] = {}
     for item in results:
-        edge_id = edge_identity_from_info(item.get("edge"))
-        if edge_id is None:
-            continue
-        inserted_by_edge[edge_id] = inserted_by_edge.get(edge_id, 0.0) + object_to_float(
-            item.get("inserted_extra_length_um", 0.0)
+        edge_id = edge_identity(item.edge)
+        inserted_by_edge[edge_id] = inserted_by_edge.get(edge_id, 0.0) + float(
+            item.inserted_extra_length_um
         )
-        status = str(item.get("status", "unknown"))
         previous_status = status_by_edge.get(edge_id)
         if previous_status is None or previous_status != "planned":
-            status_by_edge[edge_id] = status
-            reason_by_edge[edge_id] = str(item.get("reason", ""))
-        unmatched_by_edge[edge_id] = unmatched_by_edge.get(edge_id, 0.0) + object_to_float(
-            item.get("unmatched_length_um", 0.0)
+            status_by_edge[edge_id] = item.status
+            reason_by_edge[edge_id] = item.reason
+        unmatched_by_edge[edge_id] = unmatched_by_edge.get(edge_id, 0.0) + float(
+            item.unmatched_length_um
         )
     return inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge
 

@@ -1353,11 +1353,188 @@ class MeanderInsertionConfig:
     auto_meander_endpoint_inset_um: float | None = None
 
 
+def edge_key_to_dict(edge_key: RoutedEdgeKey) -> dict[str, object]:
+    return {
+        "net_name": edge_key.net_name,
+        "source": {"instance": edge_key.source.instance, "port": edge_key.source.port},
+        "target": {"instance": edge_key.target.instance, "port": edge_key.target.port},
+    }
+
+
+#: The scalar fields of a Rust meander plan the report keeps for a planned
+#: requirement (its ``plan``): what the console listing and the GDS meta info
+#: show per meander. The plan's centerline and candidate counts stay out.
+MEANDER_PLAN_INFO_KEYS: tuple[str, ...] = (
+    "planning_mode",
+    "effective_bend_radius_um",
+    "primitive_bend_radius_um",
+    "selected_box",
+    "selected_grid_rect",
+    "bumps",
+    "visual_bumps",
+    "u_turns",
+    "quarter_turns",
+    "side",
+    "endpoint_inset_um",
+    "selected_interval_length_um",
+)
+
+
+@dataclass
+class MeanderEdgeReport:
+    """One path-length requirement's meander result (phase 6 slice B).
+
+    ``inserted_extra_length_um`` is what the bookkeeping credits to the
+    requiring ``edge``; the meander itself is drawn on ``planned_edges`` (the
+    requiring edge or a delay-insertion candidate upstream of it) and
+    ``physical_inserted_extra_length_um`` is its total there. A requirement
+    satisfied through another requirement's candidate (a shared upstream
+    bundle) carries that requirement in ``satisfied_by_requirement_edge``.
+    ``plan`` is the Rust plan of the drawn meander (its scalars go into the
+    info dict, see ``MEANDER_PLAN_INFO_KEYS``).
+    """
+
+    edge: RoutedEdgeKey
+    requested_extra_length_um: float
+    status: str
+    reason: str = ""
+    inserted_extra_length_um: float = 0.0
+    physical_inserted_extra_length_um: float = 0.0
+    unmatched_length_um: float = 0.0
+    candidate_reason: str | None = None
+    planned_edges: tuple[RoutedEdgeKey, ...] = ()
+    satisfied_by_requirement_edge: RoutedEdgeKey | None = None
+    planner_requested_extra_length_um: float = 0.0
+    existing_physical_extra_length_um: float = 0.0
+    plan: Mapping[str, object] | None = None
+
+    def to_info_dict(self) -> dict[str, object]:
+        info: dict[str, object] = {
+            "edge": edge_key_to_dict(self.edge),
+            "requested_extra_length_um": float(self.requested_extra_length_um),
+            "status": self.status,
+            "reason": self.reason,
+            "inserted_extra_length_um": float(self.inserted_extra_length_um),
+            "physical_inserted_extra_length_um": float(self.physical_inserted_extra_length_um),
+            "unmatched_length_um": float(self.unmatched_length_um),
+            "planner_requested_extra_length_um": float(self.planner_requested_extra_length_um),
+            "existing_physical_extra_length_um": float(self.existing_physical_extra_length_um),
+            "selected_candidate_reason": self.candidate_reason,
+            "planned_edges": [edge_key_to_dict(edge_key) for edge_key in self.planned_edges],
+        }
+        if self.satisfied_by_requirement_edge is not None:
+            info["satisfied_by_requirement_edge"] = edge_key_to_dict(
+                self.satisfied_by_requirement_edge
+            )
+        if self.plan is not None:
+            for key in MEANDER_PLAN_INFO_KEYS:
+                if key in self.plan:
+                    info[key] = self.plan[key]
+        return info
+
+
+@dataclass
+class MeanderPlanningProfile:
+    """Timers, counters and per-candidate attempts of one meander planning run.
+
+    Built only under ``--debug-meanders``; nothing the acceptance decision or
+    the SUMMARY line needs lives here.
+    """
+
+    planner_calls: int = 0
+    planner_elapsed_s: float = 0.0
+    final_planner_calls: int = 0
+    final_planner_elapsed_s: float = 0.0
+    commit_elapsed_s: float = 0.0
+    setup_profile: dict[str, float] = field(default_factory=dict)
+    selection_setup_profile: dict[str, float] = field(default_factory=dict)
+    final_setup_profile: dict[str, float] = field(default_factory=dict)
+    commit_profile: dict[str, float] = field(default_factory=dict)
+    rust_planner_profile: dict[str, float] = field(default_factory=dict)
+    rust_wrapper_profile: dict[str, float] = field(default_factory=dict)
+    #: per candidate reason: attempts, planned, no_candidate, edge calls, elapsed
+    candidate_profile: dict[str, dict[str, object]] = field(default_factory=dict)
+    #: per requirement: the request vector Rust saw and the outcome per candidate
+    requirement_attempts: list[dict[str, object]] = field(default_factory=list)
+    search_config: dict[str, object] = field(default_factory=dict)
+
+    def to_info_dict(self) -> dict[str, object]:
+        return {
+            "planner_calls": int(self.planner_calls),
+            "planner_elapsed_s": float(self.planner_elapsed_s),
+            "final_planner_calls": int(self.final_planner_calls),
+            "final_planner_elapsed_s": float(self.final_planner_elapsed_s),
+            "commit_elapsed_s": float(self.commit_elapsed_s),
+            "setup_profile": dict(self.setup_profile),
+            "selection_setup_profile": dict(self.selection_setup_profile),
+            "final_setup_profile": dict(self.final_setup_profile),
+            "commit_profile": dict(self.commit_profile),
+            "rust_planner_profile": dict(self.rust_planner_profile),
+            "rust_wrapper_profile": dict(self.rust_wrapper_profile),
+            "candidate_profile": dict(self.candidate_profile),
+            "requirement_attempts": list(self.requirement_attempts),
+            "search_config": dict(self.search_config),
+        }
+
+
+@dataclass
+class MeanderInsertionReport:
+    """The meander planning result the flow and the acceptance diagnostics read.
+
+    ``results`` has one entry per requirement (plus one per further
+    requirement a shared candidate satisfied); ``realized_extra_by_edge`` is
+    the bookkeeping by physical edge (2026-10-05): the meander actually drawn
+    on each edge, which the realized arrivals and spreads are computed from.
+    ``to_info_dict`` is the GDS meta info (``meander_insertion_report``) and
+    carries the profile only when one was built.
+    """
+
+    results: list[MeanderEdgeReport]
+    total_requested_extra_length_um: float
+    total_inserted_extra_length_um: float
+    total_physical_inserted_extra_length_um: float
+    total_disregarded_extra_length_um: float
+    unmatched_length_um: float
+    realized_extra_by_edge: dict[RoutedEdgeKey, float]
+    minimum_insertable_extra_length_um: float
+    final_planning_mode: str = "none"
+    profile: MeanderPlanningProfile | None = None
+
+    def to_info_dict(self) -> dict[str, object]:
+        info: dict[str, object] = {
+            "results": [entry.to_info_dict() for entry in self.results],
+            "total_requested_extra_length_um": float(self.total_requested_extra_length_um),
+            "total_inserted_extra_length_um": float(self.total_inserted_extra_length_um),
+            "total_physical_inserted_extra_length_um": float(
+                self.total_physical_inserted_extra_length_um
+            ),
+            # Bookkeeping by physical edge (2026-10-05, owner): the meander a
+            # result books on its requiring edge may be drawn on a
+            # delay-insertion candidate upstream (through heaters, or on all
+            # inputs of an MMI whose outputs all require the same extra), so
+            # a net's realized length is its routed length plus THIS entry,
+            # not plus the result's inserted_extra_length_um.
+            "realized_extra_length_um_by_edge": [
+                {"edge": edge_key_to_dict(edge_key), "extra_length_um": float(extra)}
+                for edge_key, extra in self.realized_extra_by_edge.items()
+            ],
+            "total_disregarded_extra_length_um": float(self.total_disregarded_extra_length_um),
+            "unmatched_length_um": float(self.unmatched_length_um),
+            "minimum_insertable_extra_length_um": float(self.minimum_insertable_extra_length_um),
+            "final_planning_mode": self.final_planning_mode,
+        }
+        if self.profile is not None:
+            info.update(self.profile.to_info_dict())
+        return info
+
+
 @dataclass(frozen=True)
 class RouteRustPipelineResult:
     routed_layout: Component
     debug_artifacts: RustRouteDebugArtifacts
     path_length_analysis_info: dict[str, object] | None = None
     meander_requirements_info: list[dict[str, object]] | None = None
+    #: the GDS meta info form of ``meander_insertion_report``
     meander_insertion_report_info: dict[str, object] | None = None
     pipeline_timings_s: dict[str, float] = field(default_factory=dict)
+    meander_insertion_report: MeanderInsertionReport | None = None

@@ -65,6 +65,42 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- Rust decides the meander cascade, the PLM reports go behind `--debug-meanders`
+  (phase 6 slice B; the thirteen PLM cells of `docs/plm_baseline.json`, the two-cell
+  PLM gate and the nine-cell reproduction gate reproduce exactly). One policy owner:
+  `translation/route_rust_meanders.py` (1,855 lines, from 3,010) sends one Rust call
+  per requirement with the request vector (the candidate bundles in order, one
+  requested extra length per edge -- the edge's new total where it already carries
+  a planned meander -- and the requiring edge as the same-edge split fallback) to
+  the new `PyPhotonicRouter.plan_auto_analytic_meander_requirement_requests_
+  registered_opened_auto_config` (`plm.rs::plan_registered_geometry_requirement_
+  requests`, which `plan_registered_geometry_requirement_candidates` now wraps),
+  and one final call with every physical edge's total as before. The Python-side
+  "mixed" planner (one Rust call per edge for bundles whose edges already carried
+  a meander, tried ahead of the batch) and the Python split fallback after the
+  batch are deleted; the three bindings they alone used
+  (`plan_auto_analytic_meander_{requirement_candidate_indices,geometry_sequence,
+  split_request}_registered_opened_auto_config`) are removed. Reports: the planner
+  returns a `MeanderInsertionReport` of `MeanderEdgeReport`s (`route_rust_types.py`;
+  edge, requested, credited and physical inserted length, planned edges, status,
+  reason, the drawn plan's scalars) that `path_length_diagnostics.py` and
+  `routing_flow_plm.py` (227 lines, from 336) consume; `to_info_dict()` is the GDS
+  meta info `meander_insertion_report` with the keys `plm_table.py`, the overview
+  SVG and the e2e tests read unchanged. Timers, counters (`planner_calls`,
+  `bundle_*`, `requirement_batch_*`, the setup, commit and Rust profile splits) and
+  the per-candidate attempts are built only when `--debug-meanders true` (the
+  existing flow flag, now threaded to `route_match_and_realize(debug_meanders=)`)
+  and then land in `MeanderPlanningProfile`; the SUMMARY tokens
+  (`plm_groups`, `plm_over_tolerance`, `meander_inserted_um`) and the acceptance
+  decision are computed unconditionally. The `hasattr` probes on the Rust router
+  and backend (`route_port_corrected_centerline`,
+  `add_registered_meander_reserved_grid_rect`, `auto_meander_search_config_rs`,
+  the blocked-cell handle's `cells`, the planner methods) are gone; the test
+  fakes carry those methods. `translation/path_length_candidates.py` is folded
+  into `path_length_requirements.py` and the `route_rust_analysis.py` facade is
+  dropped (every importer takes the real module). Tests: 41 + 3 before, 43 + 3
+  after (the split test now pins the request vector, one test pins that no
+  profile is built without the flag, one that the planner context builds none).
 - Contribution 2 takes a `StageSchedule` and refuses non-layered designs
   (phase 4 slice D). `CrossingDemand.stage_schedule()` (new type
   `StageSchedule` in `python/photonic_router/crossing_demand.py`) is the

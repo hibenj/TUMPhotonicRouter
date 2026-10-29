@@ -388,6 +388,301 @@ fn plan_registered_geometry_sequence_at_endpoint(
     Ok(candidate_result)
 }
 
+/// The same-edge split a requirement falls back to when none of its
+/// candidates plans (phase 6 slice B: the requiring edge's geometry, its whole
+/// request, the smallest legal chunk and the most parts to try). It is the
+/// selection-pass twin of the final pass's direct -> split cascade.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SplitFallbackRequest {
+    pub geometry_index: usize,
+    pub requested_extra_length_um: f64,
+    pub min_insertable_extra_um: f64,
+    pub max_parts: usize,
+}
+
+/// The result of `plan_registered_geometry_requirement_requests`: the
+/// candidate results (the split's part-count attempts appended after the
+/// candidates, re-indexed from `candidate_count`) and which branch planned.
+pub struct RegisteredRequirementRequestsResult {
+    pub result: RegisteredRequirementResult,
+    /// `"rust_registered_candidate"` when a candidate planned,
+    /// `"rust_registered_split_route_runs"` when the same-edge split did,
+    /// `"none"` when nothing did.
+    pub planning_mode: &'static str,
+    /// The number of chunks of the planned split, when the split planned.
+    pub split_part_count: Option<usize>,
+}
+
+fn empty_requirement_result(
+    box_depths_um: &[f64],
+    endpoint_insets_um: &[f64],
+    fixed_endpoint_inset: bool,
+) -> RegisteredRequirementResult {
+    RegisteredRequirementResult {
+        selected_candidate_index: None,
+        candidate_results: Vec::new(),
+        planner_profile_total: MeanderPlanningProfileTotals::default(),
+        wrapper_profile_total: MeanderWrapperProfileTotals::default(),
+        endpoint_inset_um: endpoint_insets_um.first().copied().unwrap_or(0.0),
+        attempted_endpoint_insets_um: Vec::new(),
+        box_depths_um: box_depths_um.to_vec(),
+        endpoint_insets_um: endpoint_insets_um.to_vec(),
+        fixed_endpoint_inset,
+    }
+}
+
+/// Plan one requirement from its request vector: every candidate is a bundle
+/// of registered geometries with one requested extra length per edge (the
+/// edge's new total where it already carries a planned meander), tried in
+/// order at each endpoint inset; the first bundle whose edges all plan as one
+/// sequence wins. When no candidate plans and a split fallback is given, the
+/// requiring edge is tried as two or more same-edge chunks
+/// (`plan_registered_geometry_split_request`). This is the one place that
+/// decides a requirement's candidate, direct or split plan; the Python side
+/// only builds the vector.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_registered_geometry_requirement_requests(
+    candidate_geometry_indices: &[Vec<usize>],
+    candidate_requested_extra_lengths_um: &[Vec<f64>],
+    split_fallback: Option<SplitFallbackRequest>,
+    registered_geometries: &[RegisteredMeanderGeometry],
+    registered_open_cells: &[FxHashSet<CellKey>],
+    registered_open_indices: &[SparseCellIndex],
+    base_prefix: &DenseOccupancyPrefix,
+    reserved_index: Option<&SparseCellIndex>,
+    grid: &GeometryGridSpec,
+    grid_width: i32,
+    grid_height: i32,
+    box_depths_um: &[f64],
+    endpoint_insets_um: &[f64],
+    fixed_endpoint_inset: bool,
+    effective_radius_um: f64,
+    min_straight_um: f64,
+    max_meander_height_um: f64,
+    min_segment_length_um: f64,
+    clearance_radius_cells: i32,
+    side_policy: AutoMeanderSidePolicy,
+    mode: MeanderPlanningMode,
+) -> Result<RegisteredRequirementRequestsResult, String> {
+    let candidate_count = candidate_geometry_indices.len();
+    if candidate_count != candidate_requested_extra_lengths_um.len() {
+        return Err(
+            "candidate geometry and requested length inputs must have matching lengths".into(),
+        );
+    }
+    if candidate_count == 0 && split_fallback.is_none() {
+        return Err("candidate list must not be empty".into());
+    }
+    if box_depths_um.is_empty() {
+        return Err("box_depths_um must not be empty".into());
+    }
+    if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+        return Err("box_depths_um values must be finite and > 0".into());
+    }
+    if endpoint_insets_um.is_empty() {
+        return Err("endpoint_insets_um must not be empty".into());
+    }
+    if endpoint_insets_um
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+    {
+        return Err("endpoint_insets_um values must be finite and >= 0".into());
+    }
+    if candidate_requested_extra_lengths_um
+        .iter()
+        .flatten()
+        .any(|value| *value <= 0.0)
+    {
+        return Err("candidate requested lengths must be > 0".into());
+    }
+    if min_straight_um < 0.0 {
+        return Err("min_straight_um must be >= 0".into());
+    }
+    if max_meander_height_um <= 0.0 {
+        return Err("max_meander_height_um must be > 0".into());
+    }
+    if min_segment_length_um <= 0.0 {
+        return Err("min_segment_length_um must be > 0".into());
+    }
+    if clearance_radius_cells < 0 {
+        return Err("clearance_radius_cells must be >= 0".into());
+    }
+    if candidate_geometry_indices
+        .iter()
+        .any(|candidate| candidate.is_empty())
+    {
+        return Err("candidate bundles must not be empty".into());
+    }
+    if candidate_geometry_indices
+        .iter()
+        .zip(candidate_requested_extra_lengths_um.iter())
+        .any(|(indices, lengths)| indices.len() != lengths.len())
+    {
+        return Err(
+            "candidate geometry and requested length inputs must have matching lengths".into(),
+        );
+    }
+
+    let mut attempted_endpoint_insets_um: Vec<f64> = Vec::with_capacity(endpoint_insets_um.len());
+    let mut last_result: Option<RegisteredRequirementResult> = None;
+
+    if candidate_count > 0 {
+        for endpoint_inset_um in endpoint_insets_um {
+            attempted_endpoint_insets_um.push(*endpoint_inset_um);
+            let reserved_snapshot_start = Instant::now();
+            let mut call_wrapper_profile = MeanderWrapperProfileTotals::default();
+            call_wrapper_profile.reserved_snapshot_s +=
+                reserved_snapshot_start.elapsed().as_secs_f64();
+            let mut call_profile_totals = MeanderPlanningProfileTotals::default();
+            let mut candidate_results = Vec::with_capacity(candidate_count);
+            let mut selected_candidate_index: Option<usize> = None;
+
+            for candidate_index in 0..candidate_count {
+                let candidate_result = plan_registered_geometry_sequence_at_endpoint(
+                    candidate_index,
+                    &candidate_geometry_indices[candidate_index],
+                    &candidate_requested_extra_lengths_um[candidate_index],
+                    registered_geometries,
+                    registered_open_cells,
+                    registered_open_indices,
+                    base_prefix,
+                    reserved_index,
+                    grid,
+                    grid_width,
+                    grid_height,
+                    box_depths_um,
+                    *endpoint_inset_um,
+                    effective_radius_um,
+                    min_straight_um,
+                    max_meander_height_um,
+                    min_segment_length_um,
+                    clearance_radius_cells,
+                    side_policy,
+                    mode,
+                    &mut call_profile_totals,
+                )?;
+
+                let planned = candidate_result.failed_reason.is_none();
+                call_wrapper_profile.add(&candidate_result.wrapper_profile_total);
+                candidate_results.push(candidate_result);
+                if planned {
+                    selected_candidate_index = Some(candidate_index);
+                    break;
+                }
+            }
+
+            let result = RegisteredRequirementResult {
+                selected_candidate_index,
+                candidate_results,
+                planner_profile_total: call_profile_totals,
+                wrapper_profile_total: call_wrapper_profile,
+                endpoint_inset_um: *endpoint_inset_um,
+                attempted_endpoint_insets_um: attempted_endpoint_insets_um.clone(),
+                box_depths_um: box_depths_um.to_vec(),
+                endpoint_insets_um: endpoint_insets_um.to_vec(),
+                fixed_endpoint_inset,
+            };
+            if result.selected_candidate_index.is_some() {
+                return Ok(RegisteredRequirementRequestsResult {
+                    result,
+                    planning_mode: "rust_registered_candidate",
+                    split_part_count: None,
+                });
+            }
+            last_result = Some(result);
+        }
+    }
+
+    let mut result = last_result.unwrap_or_else(|| {
+        empty_requirement_result(box_depths_um, endpoint_insets_um, fixed_endpoint_inset)
+    });
+
+    let Some(split) = split_fallback else {
+        return Ok(RegisteredRequirementRequestsResult {
+            result,
+            planning_mode: "none",
+            split_part_count: None,
+        });
+    };
+    // The split needs at least two legal chunks; otherwise there is nothing to try
+    // (the candidates' failure stands).
+    let splittable = split.requested_extra_length_um.is_finite()
+        && split.requested_extra_length_um > 0.0
+        && split.min_insertable_extra_um.is_finite()
+        && split.min_insertable_extra_um > 0.0
+        && split.max_parts >= 2
+        && split
+            .max_parts
+            .min((split.requested_extra_length_um / split.min_insertable_extra_um) as usize)
+            >= 2;
+    if !splittable {
+        return Ok(RegisteredRequirementRequestsResult {
+            result,
+            planning_mode: "none",
+            split_part_count: None,
+        });
+    }
+    let split_result = plan_registered_geometry_split_request(
+        split.geometry_index,
+        split.requested_extra_length_um,
+        split.min_insertable_extra_um,
+        split.max_parts,
+        registered_geometries,
+        registered_open_cells,
+        registered_open_indices,
+        base_prefix,
+        reserved_index,
+        grid,
+        grid_width,
+        grid_height,
+        box_depths_um,
+        endpoint_insets_um,
+        fixed_endpoint_inset,
+        effective_radius_um,
+        min_straight_um,
+        max_meander_height_um,
+        min_segment_length_um,
+        clearance_radius_cells,
+        side_policy,
+        mode,
+    )?;
+    // The split's candidate indices are its part counts (2..); they follow the
+    // candidates, re-indexed from `candidate_count`.
+    let split_part_count = split_result.selected_candidate_index;
+    result
+        .planner_profile_total
+        .add_totals(&split_result.planner_profile_total);
+    result
+        .wrapper_profile_total
+        .add(&split_result.wrapper_profile_total);
+    result
+        .attempted_endpoint_insets_um
+        .extend(split_result.attempted_endpoint_insets_um.iter().copied());
+    for mut candidate in split_result.candidate_results {
+        candidate.candidate_index = candidate_count + candidate.candidate_index - 2;
+        result.candidate_results.push(candidate);
+    }
+    match split_part_count {
+        Some(part_count) => {
+            result.selected_candidate_index = Some(candidate_count + part_count - 2);
+            result.endpoint_inset_um = split_result.endpoint_inset_um;
+            Ok(RegisteredRequirementRequestsResult {
+                result,
+                planning_mode: "rust_registered_split_route_runs",
+                split_part_count: Some(part_count),
+            })
+        }
+        None => Ok(RegisteredRequirementRequestsResult {
+            result,
+            planning_mode: "none",
+            split_part_count: None,
+        }),
+    }
+}
+
+/// The per-candidate form: one requested extra length for every edge of a
+/// candidate and no split fallback (`plan_registered_geometry_requirement_requests`
+/// is the general form).
 #[allow(clippy::too_many_arguments)]
 pub fn plan_registered_geometry_requirement_candidates(
     candidate_geometry_indices: &[Vec<usize>],
@@ -411,123 +706,40 @@ pub fn plan_registered_geometry_requirement_candidates(
     side_policy: AutoMeanderSidePolicy,
     mode: MeanderPlanningMode,
 ) -> Result<RegisteredRequirementResult, String> {
-    let candidate_count = candidate_geometry_indices.len();
-    if candidate_count != candidate_requested_extra_lengths_um.len() {
+    if candidate_geometry_indices.len() != candidate_requested_extra_lengths_um.len() {
         return Err(
             "candidate geometry and requested length inputs must have matching lengths".into(),
         );
     }
-    if candidate_count == 0 {
-        return Err("candidate list must not be empty".into());
-    }
-    if box_depths_um.is_empty() {
-        return Err("box_depths_um must not be empty".into());
-    }
-    if box_depths_um.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-        return Err("box_depths_um values must be finite and > 0".into());
-    }
-    if endpoint_insets_um.is_empty() {
-        return Err("endpoint_insets_um must not be empty".into());
-    }
-    if endpoint_insets_um
+    let per_edge_requests: Vec<Vec<f64>> = candidate_geometry_indices
         .iter()
-        .any(|value| !value.is_finite() || *value < 0.0)
-    {
-        return Err("endpoint_insets_um values must be finite and >= 0".into());
-    }
-    if candidate_requested_extra_lengths_um
-        .iter()
-        .any(|value| *value <= 0.0)
-    {
-        return Err("candidate requested lengths must be > 0".into());
-    }
-    if min_straight_um < 0.0 {
-        return Err("min_straight_um must be >= 0".into());
-    }
-    if max_meander_height_um <= 0.0 {
-        return Err("max_meander_height_um must be > 0".into());
-    }
-    if min_segment_length_um <= 0.0 {
-        return Err("min_segment_length_um must be > 0".into());
-    }
-    if clearance_radius_cells < 0 {
-        return Err("clearance_radius_cells must be >= 0".into());
-    }
-    if candidate_geometry_indices
-        .iter()
-        .any(|candidate| candidate.is_empty())
-    {
-        return Err("candidate bundles must not be empty".into());
-    }
-
-    let mut attempted_endpoint_insets_um: Vec<f64> = Vec::with_capacity(endpoint_insets_um.len());
-    let mut last_result: Option<RegisteredRequirementResult> = None;
-
-    for endpoint_inset_um in endpoint_insets_um {
-        attempted_endpoint_insets_um.push(*endpoint_inset_um);
-        let reserved_snapshot_start = Instant::now();
-        let mut call_wrapper_profile = MeanderWrapperProfileTotals::default();
-        call_wrapper_profile.reserved_snapshot_s += reserved_snapshot_start.elapsed().as_secs_f64();
-        let mut call_profile_totals = MeanderPlanningProfileTotals::default();
-        let mut candidate_results = Vec::with_capacity(candidate_count);
-        let mut selected_candidate_index: Option<usize> = None;
-
-        for candidate_index in 0..candidate_count {
-            let geometry_indices = &candidate_geometry_indices[candidate_index];
-            let requested_extra_length_um = candidate_requested_extra_lengths_um[candidate_index];
-            let requested_extra_lengths_um =
-                vec![requested_extra_length_um; geometry_indices.len()];
-            let candidate_result = plan_registered_geometry_sequence_at_endpoint(
-                candidate_index,
-                geometry_indices,
-                &requested_extra_lengths_um,
-                registered_geometries,
-                registered_open_cells,
-                registered_open_indices,
-                base_prefix,
-                reserved_index,
-                grid,
-                grid_width,
-                grid_height,
-                box_depths_um,
-                *endpoint_inset_um,
-                effective_radius_um,
-                min_straight_um,
-                max_meander_height_um,
-                min_segment_length_um,
-                clearance_radius_cells,
-                side_policy,
-                mode,
-                &mut call_profile_totals,
-            )?;
-
-            let planned = candidate_result.failed_reason.is_none();
-            call_wrapper_profile.add(&candidate_result.wrapper_profile_total);
-            candidate_results.push(candidate_result);
-            if planned {
-                selected_candidate_index = Some(candidate_index);
-                break;
-            }
-        }
-
-        let result = RegisteredRequirementResult {
-            selected_candidate_index,
-            candidate_results,
-            planner_profile_total: call_profile_totals,
-            wrapper_profile_total: call_wrapper_profile,
-            endpoint_inset_um: *endpoint_inset_um,
-            attempted_endpoint_insets_um: attempted_endpoint_insets_um.clone(),
-            box_depths_um: box_depths_um.to_vec(),
-            endpoint_insets_um: endpoint_insets_um.to_vec(),
-            fixed_endpoint_inset,
-        };
-        if result.selected_candidate_index.is_some() {
-            return Ok(result);
-        }
-        last_result = Some(result);
-    }
-
-    last_result.ok_or_else(|| "endpoint inset sweep produced no result".to_string())
+        .zip(candidate_requested_extra_lengths_um.iter())
+        .map(|(indices, requested)| vec![*requested; indices.len()])
+        .collect();
+    plan_registered_geometry_requirement_requests(
+        candidate_geometry_indices,
+        &per_edge_requests,
+        None,
+        registered_geometries,
+        registered_open_cells,
+        registered_open_indices,
+        base_prefix,
+        reserved_index,
+        grid,
+        grid_width,
+        grid_height,
+        box_depths_um,
+        endpoint_insets_um,
+        fixed_endpoint_inset,
+        effective_radius_um,
+        min_straight_um,
+        max_meander_height_um,
+        min_segment_length_um,
+        clearance_radius_cells,
+        side_policy,
+        mode,
+    )
+    .map(|requests_result| requests_result.result)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2431,5 +2643,118 @@ mod tests {
         assert_eq!(result.result.selected_candidate_index, Some(0));
         assert_eq!(result.result.candidate_results.len(), 1);
         assert_eq!(result.result.candidate_results[0].plans.len(), 2);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn call_requirement_requests(
+        fixture: &PlanningFixture,
+        candidate_geometry_indices: &[Vec<usize>],
+        candidate_requested_extra_lengths_um: &[Vec<f64>],
+        split_fallback: Option<SplitFallbackRequest>,
+    ) -> Result<RegisteredRequirementRequestsResult, String> {
+        plan_registered_geometry_requirement_requests(
+            candidate_geometry_indices,
+            candidate_requested_extra_lengths_um,
+            split_fallback,
+            &fixture.registered_geometries,
+            &fixture.registered_open_cells,
+            &fixture.registered_open_indices,
+            &fixture.base_prefix,
+            None,
+            &fixture.grid,
+            fixture.grid_width,
+            fixture.grid_height,
+            DEFAULT_BOX_DEPTHS_UM,
+            DEFAULT_ENDPOINT_INSETS_UM,
+            false,
+            DEFAULT_EFFECTIVE_RADIUS_UM,
+            DEFAULT_MIN_STRAIGHT_UM,
+            DEFAULT_MAX_MEANDER_HEIGHT_UM,
+            DEFAULT_MIN_SEGMENT_LENGTH_UM,
+            DEFAULT_CLEARANCE_RADIUS_CELLS,
+            AutoMeanderSidePolicy::Both,
+            MeanderPlanningMode::FillBoxMultiBump,
+        )
+    }
+
+    #[test]
+    fn requirement_requests_reject_a_per_edge_length_vector_of_the_wrong_size() {
+        let fixture = PlanningFixture::empty_one();
+        assert_string_error(
+            call_requirement_requests(&fixture, &[vec![0]], &[vec![1.0, 1.0]], None),
+            "candidate geometry and requested length inputs must have matching lengths",
+        );
+        assert_string_error(
+            call_requirement_requests(&fixture, &[], &[], None),
+            "candidate list must not be empty",
+        );
+    }
+
+    #[test]
+    fn requirement_requests_plan_one_bundle_with_per_edge_totals() {
+        let map = ObstacleMap::new(GRID_WIDTH, GRID_HEIGHT);
+        let fixture = PlanningFixture::from_map_and_geometries(
+            &map,
+            vec![
+                registered_geometry(vec![(1.5, 2.5), (15.5, 2.5)], 0),
+                registered_geometry(vec![(1.5, 10.5), (15.5, 10.5)], 1),
+            ],
+        );
+        let result = call_requirement_requests(&fixture, &[vec![0, 1]], &[vec![1.0, 2.0]], None)
+            .expect("two straight geometries on an empty map plan as one bundle");
+
+        assert_eq!(result.planning_mode, "rust_registered_candidate");
+        assert_eq!(result.split_part_count, None);
+        assert_eq!(result.result.selected_candidate_index, Some(0));
+        let plans = &result.result.candidate_results[0].plans;
+        assert_eq!(plans.len(), 2);
+        assert!((plans[0].plan.plan.inserted_extra_length_um - 1.0).abs() <= 1.0e-6);
+        assert!((plans[1].plan.plan.inserted_extra_length_um - 2.0).abs() <= 1.0e-6);
+    }
+
+    #[test]
+    fn requirement_requests_fall_back_to_the_same_edge_split() {
+        let map = ObstacleMap::new(GRID_WIDTH, GRID_HEIGHT);
+        let fixture = PlanningFixture::from_map_and_geometries(
+            &map,
+            vec![registered_geometry(vec![(1.5, 10.5), (15.5, 10.5)], 0)],
+        );
+        // 4 um in one meander needs A = 4/2 + r(4 - pi) = 2.17 um of depth,
+        // more than the 1.6 um box; two 2 um chunks need 1.17 um each.
+        let split = SplitFallbackRequest {
+            geometry_index: 0,
+            requested_extra_length_um: 4.0,
+            min_insertable_extra_um: 0.5,
+            max_parts: 4,
+        };
+        let result = call_requirement_requests(&fixture, &[vec![0]], &[vec![4.0]], Some(split))
+            .expect("the split fallback should plan two chunks");
+
+        assert_eq!(result.planning_mode, "rust_registered_split_route_runs");
+        assert_eq!(result.split_part_count, Some(2));
+        // the one candidate failed, the split's first part count follows it
+        assert_eq!(result.result.selected_candidate_index, Some(1));
+        assert_eq!(result.result.candidate_results.len(), 2);
+        assert_eq!(result.result.candidate_results[0].status(), "no_candidate");
+        assert_eq!(result.result.candidate_results[1].candidate_index, 1);
+        assert_eq!(result.result.candidate_results[1].plans.len(), 2);
+
+        // without candidates the split is the only attempt
+        let only_split = call_requirement_requests(&fixture, &[], &[], Some(split))
+            .expect("a split-only request plans");
+        assert_eq!(only_split.planning_mode, "rust_registered_split_route_runs");
+        assert_eq!(only_split.result.selected_candidate_index, Some(0));
+
+        // a request that cannot be cut into two legal chunks keeps the failure
+        let unsplittable = SplitFallbackRequest {
+            min_insertable_extra_um: 3.0,
+            ..split
+        };
+        let kept =
+            call_requirement_requests(&fixture, &[vec![0]], &[vec![4.0]], Some(unsplittable))
+                .expect("an unsplittable fallback is no error");
+        assert_eq!(kept.planning_mode, "none");
+        assert_eq!(kept.result.selected_candidate_index, None);
+        assert_eq!(kept.result.candidate_results.len(), 1);
     }
 }

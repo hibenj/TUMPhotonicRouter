@@ -22,9 +22,9 @@ from photonic_router.path_length_graph import (
 from photonic_router.port_roles import component_port_role, generic_port_roles, no_port_roles
 
 from benchmark_metadata import load_benchmark_metadata
-from translation.path_length_candidates import build_requirement_delay_candidates
 from translation.path_length_requirements import (
     analyze_path_length_matching,
+    build_requirement_delay_candidates,
     compute_output_matching_requirements,
     node_depths,
 )

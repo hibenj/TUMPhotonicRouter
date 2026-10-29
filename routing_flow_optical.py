@@ -121,6 +121,7 @@ def run_photonic_routing_stage(
             debug_stop_after_route_index=config.debug_stop_after_route_index,
             debug_timing=config.debug_timing,
             verbose_route_diagnostics=config.verbose_routes or config.debug_meanders,
+            debug_meanders=config.debug_meanders,
             allow_45_degree_turns=config.allow_45_degree_turns,
             bend_radius_um=config.bend_radius_um,
             use_indexed_heap=config.use_indexed_heap,

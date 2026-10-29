@@ -17,19 +17,21 @@ from photonic_router.static_obstacle_builder import (
 )
 
 from translation import route_rust_meanders as _meander_impl
-from translation.route_rust_analysis import (
+from translation.path_length_diagnostics import (
     analysis_to_info_dict,
+    format_path_length_acceptance_failure,
+    matching_group_diagnostics_to_info,
+    output_matching_diagnostics_to_info,
+    path_length_acceptance_summary,
+)
+from translation.path_length_requirements import (
     analyze_path_length_matching,
     build_requirement_delay_candidates,
     compute_group_lifted_requirements,
     compute_output_matching_requirements,
     delay_candidate_to_dict,
-    format_path_length_acceptance_failure,
-    matching_group_diagnostics_to_info,
     merge_missing_length_requirements,
     minimum_four_bend_extra_length_um,
-    output_matching_diagnostics_to_info,
-    path_length_acceptance_summary,
     requirement_to_dict,
 )
 from translation.route_rust_crossing_components import _place_realized_crossing_components
@@ -124,8 +126,13 @@ def route_match_and_realize(
     path_length_meander_height_um: float = DEFAULT_MEANDER_MAX_HEIGHT_UM,
     enable_grid_endpoint_correction: bool = True,
     config: RoutingConfig | None = None,
+    debug_meanders: bool = False,
 ) -> RouteRustPipelineResult:
-    """Run Phase A->(optional M1)->B entirely in route_rust."""
+    """Run Phase A->(optional M1)->B entirely in route_rust.
+
+    ``debug_meanders`` makes the meander planner build its profile (timers,
+    counters, per-candidate attempts); the plans do not depend on it.
+    """
     route_obstacle_config = obstacle_config
     if debug_dir is None:
         route_obstacle_config = _with_bbox_cell_materialization(
@@ -212,6 +219,7 @@ def route_match_and_realize(
         )
     analysis_info = None
     requirements_info = None
+    meander_report = None
     meander_report_info = None
     records_for_realization = debug_artifacts.routed_net_records
     if enable_path_length_matching:
@@ -352,7 +360,7 @@ def route_match_and_realize(
         }
 
         t_meander_planning_start = time.perf_counter()
-        records_for_realization, meander_report_info = analyze_meander_insertion_for_requirements(
+        records_for_realization, meander_report = analyze_meander_insertion_for_requirements(
             records_for_realization,
             requirements,
             config=meander_config,
@@ -368,18 +376,20 @@ def route_match_and_realize(
                 meander_clearance_policy.plm_candidate_box_clearance_radius_cells
             ),
             requirement_delay_candidates=requirement_delay_candidates,
+            debug_meanders=debug_meanders,
         )
         pipeline_timings_s["meander_planning"] = time.perf_counter() - t_meander_planning_start
+        meander_report_info = meander_report.to_info_dict()
         if analysis_info is not None:
             matching_group_diagnostics = matching_group_diagnostics_to_info(
                 analysis,
-                meander_report_info,
+                meander_report,
                 adjusted_requirements=requirements,
                 lifted_groups=lifted_groups,
             )
             output_matching_diagnostics = output_matching_diagnostics_to_info(
                 output_matching_info,
-                meander_report_info,
+                meander_report,
                 analysis=analysis,
             )
             acceptance_summary = path_length_acceptance_summary(
@@ -478,6 +488,7 @@ def route_match_and_realize(
         path_length_analysis_info=analysis_info,
         meander_requirements_info=requirements_info,
         meander_insertion_report_info=meander_report_info,
+        meander_insertion_report=meander_report,
         pipeline_timings_s=pipeline_timings_s,
     )
 

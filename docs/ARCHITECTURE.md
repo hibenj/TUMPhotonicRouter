@@ -244,8 +244,14 @@ realization and the endpoint-correction geometry (phase 6 slice A of the
 pre-routing port-access connector that lived beside them). (The simple-route candidates that lived in
 `src/simple_routes.rs` are in `src/search/astar/simple_route.rs` since phase 2
 slice F.) `src/meander.rs` (988) and `src/auto_meander.rs` (1,641) own analytic and
-obstacle-aware meander planning; `src/plm.rs` (2,435) owns the path-length
-matching planner. `src/config.rs` (302 lines) owns the typed configuration tree
+obstacle-aware meander planning; `src/plm.rs` (2,760) owns the path-length
+matching planner and, since phase 6 slice B of the 2026-10 do-over, every
+decision in it: `plan_registered_geometry_requirement_requests` takes one
+requirement's request vector (its candidate bundles in order, one requested
+extra length per edge, and the requiring edge as the same-edge split
+fallback) and answers which candidate planned, or the split, or nothing;
+`plan_registered_geometry_final_requests` takes every physical edge's total
+and tries the whole sequence, then each edge direct, then split. `src/config.rs` (302 lines) owns the typed configuration tree
 (`RouterConfig` and its four groups) -- since Milestone 1, `grep -rn
 "env::var\|var_os" src/` is empty, so no algorithm in the crate reads the
 environment.
@@ -351,23 +357,25 @@ tests import names from that path; no behaviour lives in it. The modules with
 real content are `route_rust_types.py` (1,363, the shared record and job
 types), `route_rust_records.py` (477, the route bookkeeping),
 `route_rust_geometry.py` (686), `route_rust_realization.py` (486),
-`route_rust_endpoint_correction.py` (905), `route_rust_meanders.py` (3,010),
+`route_rust_endpoint_correction.py` (905), `route_rust_meanders.py` (1,855),
 `route_rust_crossing_plan.py` (689), `route_rust_crossing_components.py` (461),
 `route_rust_crossing_verification.py` (918), `route_rust_debug_artifacts.py`
-(342), `route_rust_analysis.py` (59) and `route_rust_obstacle_config.py` (164).
+(342) and `route_rust_obstacle_config.py` (164).
 Beside them: `preplaced_crossing_grids.py` (about 1,400 since phase 4
 slice A, contribution 2's crossing-structure placement),
 `crossing_structures.py` (248),
 `crossing_modes.py` (57, the mode vocabulary), `crossing_verification_report.py`
 (803), `photonic_verification.py` (1,155, the authoritative geometry
-verifier), the three `path_length_*.py` modules (about 1,200 together;
+verifier), the two `path_length_*.py` modules (`path_length_requirements.py`,
+658, the timing requirements and, folded in since phase 6 slice B, the
+delay-insertion candidates; `path_length_diagnostics.py`, 587;
 since 2026-10-05 `path_length_diagnostics.py` also carries the path-length
 bookkeeping by physical edge: the meander report's
 `realized_extra_length_um_by_edge` names the edge each meander was actually
 drawn on, which may be a delay-insertion candidate upstream of the requiring
 edge, and the matching-group diagnostics and the acceptance check carry the
 realized lengths, arrivals and spreads, with a 1 nm tolerance on a group's
-realized spread; since 2026-10-07 `path_length_candidates.py` finds those
+realized spread; since 2026-10-07 `build_requirement_delay_candidates` finds those
 upstream candidates by structure, a serial node with one net in and one out
 passing a delay unchanged and a node whose whole output bundle needs the same
 delay taking it on its inputs, whatever the instances are called, and
@@ -379,6 +387,29 @@ SVG `build/routes/<benchmark>_overview.svg` the flow writes under
 with the totals and the chip dimensions), `route_order.py` (203, the net
 orders), `layout_from_schematic.py` (93), `route_gds.py` (179, the
 gdsfactory reference router) and `gds_write_options.py` (18).
+
+Path-length matching, who decides what (phase 6 slice B of the 2026-10
+do-over): `path_length_requirements.py` computes how much extra length each
+edge needs and where it may go (the edge itself, or upstream where every
+group stays matched); `route_rust_meanders.py` (1,855 lines, from 3,010)
+turns that into request vectors and Rust decides every plan. The selection
+pass sends one Rust call per requirement (the candidate bundles in order,
+shared upstream bundle before recursive upstream before the direct edge, each
+edge asked for its new total where it already carries a planned meander, and
+the requiring edge as the same-edge split fallback); the final pass sends
+every physical edge's total in one call and commits what Rust planned
+(sequence, then per edge direct, then split). The Python-side "mixed"
+planner for edges that already carried a meander and the Python split
+fallback are gone, both moved into the Rust call exactly (the thirteen PLM
+cells of `docs/plm_baseline.json` reproduce). The report is a dataclass per
+requirement (`MeanderEdgeReport` in `route_rust_types.py`: edge, requested,
+credited and physical inserted length, planned edges, status, reason) inside
+a `MeanderInsertionReport` that `path_length_diagnostics.py` and the flow's
+`routing_flow_plm.py` (227 lines, from 336) read; its `to_info_dict()` is
+the GDS meta info `meander_insertion_report`. The timers, counters and
+per-candidate attempts (`MeanderPlanningProfile`) are built only under
+`--debug-meanders`; the SUMMARY tokens and the acceptance decision never
+depend on the flag.
 
 Since 2026-10-05 two modules turn a foundry GDS into a benchmark:
 `gds_circuit_extraction.py` (about 550 lines) walks the hierarchy of a
@@ -635,7 +666,7 @@ scripts and the benchmark stable blocks. The siblings are the flow's stage
 helpers, still at the repository root and imported by `photonic_router.flow`:
 `routing_flow_config.py` (269, the `SCRIPT_*` defaults and option resolution),
 `routing_flow_optical.py` (176, the call into `route_match_and_realize`),
-`routing_flow_verification.py` (391), `routing_flow_plm.py` (332),
+`routing_flow_verification.py` (391), `routing_flow_plm.py` (227),
 `routing_flow_electrical.py` (200), `routing_flow_reporting.py` (551, console
 output and timing formatting), `routing_flow_stats.py` (227, the legacy stats
 collector) and `routing_flow_component_info.py` (24).

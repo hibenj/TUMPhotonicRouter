@@ -22,6 +22,20 @@ from tests.fixtures.synthetic_layouts import (
     PATH_LENGTH_NODE_TYPES,
     path_length_schematic,
 )
+from translation.path_length_diagnostics import (
+    analysis_to_info_dict,
+    format_path_length_acceptance_failure,
+    matching_group_diagnostics_to_info,
+    output_matching_diagnostics_to_info,
+    path_length_acceptance_summary,
+)
+from translation.path_length_requirements import (
+    build_requirement_delay_candidates,
+    compute_group_lifted_requirements,
+    compute_output_matching_requirements,
+    merge_missing_length_requirements,
+    minimum_four_bend_extra_length_um,
+)
 from translation.route_rust import (
     MeanderInsertionConfig,
     RoutedNetRecord,
@@ -30,25 +44,17 @@ from translation.route_rust import (
     analyze_meander_insertion_for_requirements,
     analyze_path_length_matching,
 )
-from translation.route_rust_analysis import (
-    analysis_to_info_dict,
-    build_requirement_delay_candidates,
-    compute_group_lifted_requirements,
-    compute_output_matching_requirements,
-    format_path_length_acceptance_failure,
-    matching_group_diagnostics_to_info,
-    merge_missing_length_requirements,
-    minimum_four_bend_extra_length_um,
-    output_matching_diagnostics_to_info,
-    path_length_acceptance_summary,
-)
 from translation.route_rust_meanders import (
     _axis_aligned_centerline_run_lengths_um,
     _build_planner_context,
+    _CandidateWorkItem,
+    _ContextProfile,
     _meander_search_config,
     _MeanderPlannerContext,
+    _MeanderSearchConfig,
     _normalize_minimum_insertable_request,
 )
+from translation.route_rust_types import MeanderEdgeReport, MeanderInsertionReport
 from translation.routing import api as routing_api
 
 
@@ -83,6 +89,45 @@ def _build_real_route_obj_for_test(
     return router.route_single_net(source, target)
 
 
+def _report(
+    results: list[MeanderEdgeReport],
+    *,
+    realized: dict[RoutedEdgeKey, float] | None = None,
+) -> MeanderInsertionReport:
+    """A meander report with the given results and realized placement."""
+    requested = sum(entry.requested_extra_length_um for entry in results)
+    inserted = sum(entry.inserted_extra_length_um for entry in results)
+    return MeanderInsertionReport(
+        results=results,
+        total_requested_extra_length_um=requested,
+        total_inserted_extra_length_um=inserted,
+        total_physical_inserted_extra_length_um=inserted,
+        total_disregarded_extra_length_um=0.0,
+        unmatched_length_um=max(0.0, requested - inserted),
+        realized_extra_by_edge=dict(realized or {}),
+        minimum_insertable_extra_length_um=0.0,
+    )
+
+
+def _search_config() -> _MeanderSearchConfig:
+    return _MeanderSearchConfig(
+        min_straight_um=1.0,
+        min_segment_um=1.0,
+        max_height_um=80.0,
+        box_depths_um=[80.0],
+        endpoint_inset_um=0.0,
+        endpoint_insets_um=[0.0],
+    )
+
+
+def _real_search_config_rs() -> Any:
+    """The real backend's search policy for the fake backends below."""
+    backend = _load_rust_backend()
+    if backend is None:
+        pytest.skip("Rust backend unavailable for the meander search policy.")
+    return staticmethod(backend.auto_meander_search_config_rs)
+
+
 def test_planner_context_uses_static_handle_when_registration_fast_path_is_unavailable():
     class _RouteObj:
         cells = [(4, 4)]
@@ -98,8 +143,8 @@ def test_planner_context_uses_static_handle_when_registration_fast_path_is_unava
         def set_static_cells(self, cells: list[tuple[int, int]]) -> None:
             self.static_cells = cells
 
-        def add_static_cells(self, _cells: list[tuple[int, int]]) -> None:
-            return None
+        def route_port_corrected_centerline(self, _route_obj: object) -> list[tuple[float, float]]:
+            return []
 
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
@@ -128,12 +173,14 @@ def test_planner_context_uses_static_handle_when_registration_fast_path_is_unava
         bend_radius_cells=4,
         static_blocked_cells=None,
         static_blocked_cell_handle=_StaticHandle(),
+        debug_meanders=True,
     )
 
     assert context.base_static_cells == {(1, 2), (3, 4)}
     assert set(cast(Any, context.router).static_cells) == {(1, 2), (3, 4)}
-    assert context.setup_profile["base_static_from_handle"] == 1.0
-    assert context.setup_profile["base_static_cell_count"] == 2.0
+    assert context.profile is not None
+    assert context.profile.setup_profile["base_static_from_handle"] == 1.0
+    assert context.profile.setup_profile["base_static_cell_count"] == 2.0
 
 
 def test_planner_context_avoids_python_route_cell_bookkeeping_without_registration():
@@ -147,8 +194,8 @@ def test_planner_context_avoids_python_route_cell_bookkeeping_without_registrati
         def set_static_cells(self, cells: list[tuple[int, int]]) -> None:
             self.static_cells = list(cells)
 
-        def add_static_cells(self, cells: list[tuple[int, int]]) -> None:
-            self.static_cells.extend(cells)
+        def route_port_corrected_centerline(self, _route_obj: object) -> list[tuple[float, float]]:
+            return []
 
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
@@ -177,15 +224,62 @@ def test_planner_context_avoids_python_route_cell_bookkeeping_without_registrati
         bend_radius_cells=4,
         static_blocked_cells=[(3, 3)],
         route_clearance_radius_cells=1,
+        debug_meanders=True,
     )
 
     assert set(cast(Any, context.router).static_cells) == {(3, 3)}
-    assert context.setup_profile["route_occupancy_radius_cells"] == 1.0
-    assert context.setup_profile["meander_box_clearance_radius_cells"] == 0.0
-    assert context.setup_profile["route_clearance_radius_cells"] == 1.0
-    assert context.setup_profile["registered_route_cell_acceleration_enabled"] == 0.0
+    assert context.route_occupancy_radius_cells == 1
+    assert context.profile is not None
+    assert context.profile.setup_profile["route_occupancy_radius_cells"] == 1.0
+    assert context.profile.setup_profile["meander_box_clearance_radius_cells"] == 0.0
+    assert context.profile.setup_profile["registered_route_cell_acceleration_enabled"] == 0.0
     assert not hasattr(context, "route_cells_by_edge")
     assert not hasattr(context, "base_open_cells_for_edge")
+
+
+def test_planner_context_builds_no_profile_without_debug_meanders():
+    class _RouteObj:
+        cells = [(4, 4)]
+
+    class _FakeRouter:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def set_static_cells(self, _cells: list[tuple[int, int]]) -> None:
+            return None
+
+        def route_port_corrected_centerline(self, _route_obj: object) -> list[tuple[float, float]]:
+            return []
+
+    class _FakeBackend:
+        GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
+        PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
+        AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
+        PyPhotonicRouter = _FakeRouter
+
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src", port="o1"),
+        target=PortRef(instance="dst", port="o1"),
+    )
+    context = _build_planner_context(
+        rust_backend=cast(Any, _FakeBackend),
+        routed_net_records=[
+            RoutedNetRecord(
+                net_name=edge.net_name,
+                source=edge.source,
+                target=edge.target,
+                route_obj=_RouteObj(),
+                total_length_um=10.0,
+            )
+        ],
+        realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
+        allow_45_degree_turns=False,
+        bend_radius_cells=4,
+        static_blocked_cells=[(3, 3)],
+    )
+
+    assert context.profile is None
 
 
 def test_axis_aligned_centerline_run_lengths_are_sorted_descending():
@@ -206,98 +300,98 @@ def test_axis_aligned_centerline_run_lengths_are_sorted_descending():
     ]
 
 
-def test_split_request_calls_rust_split_planner():
+def test_requirement_request_carries_the_split_fallback_to_rust():
+    """The selection pass sends one vector per requirement: the candidates with
+    their per-edge totals and the requiring edge as the split fallback; Rust
+    answers which branch planned (here the three-chunk split)."""
     edge = RoutedEdgeKey(
         net_name="n0",
         source=PortRef(instance="src", port="o1"),
         target=PortRef(instance="dst", port="o1"),
     )
 
-    class _FakeSplitRouter:
+    class _FakeRouter:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        def plan_auto_analytic_meander_split_request_registered_opened_auto_config(
+        def plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
             self,
-            geometry_index: int,
-            requested_extra_length_um: float,
-            min_insertable_extra_length_um: float,
+            candidate_geometry_indices: list[list[int]],
+            candidate_requested_extra_lengths_um: list[list[float]],
             **kwargs: object,
         ) -> dict[str, object]:
             self.calls.append(
                 {
-                    "geometry_index": geometry_index,
-                    "requested_extra_length_um": requested_extra_length_um,
-                    "min_insertable_extra_length_um": min_insertable_extra_length_um,
+                    "candidate_geometry_indices": candidate_geometry_indices,
+                    "candidate_requested_extra_lengths_um": candidate_requested_extra_lengths_um,
                     **kwargs,
                 }
             )
+            plans = [{"inserted_extra_length_um": 40.0, "endpoint_inset_um": 0.0}] * 3
             return {
                 "status": "planned",
-                "selected_candidate_index": 3,
-                "plans": [
-                    {"inserted_extra_length_um": 40.0},
-                    {"inserted_extra_length_um": 40.0},
-                    {"inserted_extra_length_um": 40.0},
+                "planning_mode": "rust_registered_split_route_runs",
+                "selected_candidate_index": 2,
+                "split_part_count": 3,
+                "plans": plans,
+                "candidate_results": [
+                    {"candidate_index": 0, "status": "no_candidate", "reason": "x", "plans": []},
+                    {"candidate_index": 1, "status": "no_candidate", "reason": "y", "plans": []},
+                    {"candidate_index": 2, "status": "planned", "reason": "", "plans": plans},
                 ],
-                "planner_profile_total": {},
-                "wrapper_profile_total": {},
             }
 
-    fake_router = _FakeSplitRouter()
+    fake_router = _FakeRouter()
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=object(),
+        total_length_um=90.0,
+    )
     context = _MeanderPlannerContext(
         router=cast(Any, fake_router),
-        by_edge={
-            edge: RoutedNetRecord(
-                net_name=edge.net_name,
-                source=edge.source,
-                target=edge.target,
-                route_obj=object(),
-                total_length_um=90.0,
-            )
-        },
+        by_edge={edge: record},
         updated={},
-        registered_open_cell_index_by_edge={},
-        registered_open_cell_count_by_edge={edge: 7},
         registered_geometry_index_by_edge={edge: 42},
-        max_bumps_by_edge={},
-        centerline_lists_by_edge={
-            edge: [
-                (0.0, 0.0),
-                (40.0, 0.0),
-                (40.0, 5.0),
-                (70.0, 5.0),
-                (70.0, 10.0),
-                (90.0, 10.0),
-            ]
-        },
+        max_bumps_by_edge={edge: 5},
         base_static_cells=set(),
         grid_size_um=1.0,
         bend_radius_um=10.0,
-        setup_profile={},
-        candidate_setup_profile={},
-        commit_profile={},
-        rust_planner_profile={},
-        rust_wrapper_profile={},
+    )
+    direct = DelayInsertionCandidate(
+        requirement_edge_key=edge,
+        edge_keys=(edge,),
+        extra_length_um=120.0,
+        reason="direct_edge",
+        affected_requirement_edge_keys=(edge,),
     )
 
-    attempt = context.plan_split_request_registered(
-        edge_key=edge,
-        requested=120.0,
+    outcome = context.plan_requirement_requests_registered(
+        work_items=[
+            _CandidateWorkItem(
+                candidate=direct,
+                affected_edges=(edge,),
+                requests_by_edge={edge: 120.0},
+                credit_extra_length=120.0,
+                existing_physical_extra_length=0.0,
+            )
+        ],
+        split_edge_key=edge,
+        split_requested=120.0,
         min_insertable_extra_um=30.0,
-        min_straight_um=1.0,
-        min_seg_um=1.0,
-        max_height_um=80.0,
+        search_config=_search_config(),
         auto_endpoint_inset_um=None,
     )
 
-    assert attempt is not None
     assert fake_router.calls == [
         {
-            "geometry_index": 42,
-            "requested_extra_length_um": 120.0,
+            "candidate_geometry_indices": [[42]],
+            "candidate_requested_extra_lengths_um": [[120.0]],
+            "split_geometry_index": 42,
+            "split_requested_extra_length_um": 120.0,
             "min_insertable_extra_length_um": 30.0,
-            "max_parts": 8,
+            "max_split_parts": 8,
             "min_bend_radius_um": None,
             "min_straight_um": 1.0,
             "max_meander_height_um": 80.0,
@@ -308,8 +402,10 @@ def test_split_request_calls_rust_split_planner():
             "planning_mode": "fill_box_multi_bump",
         }
     ]
-    assert attempt[-1] == 3
-    assert len(attempt[0]) == 3
+    assert outcome.selected_work_index is None
+    assert outcome.split_part_count == 3
+    assert [planned_edge for planned_edge, *_ in outcome.plans] == [edge, edge, edge]
+    assert outcome.edge_calls == 5  # two failed candidates, three planned chunks
 
 
 def test_build_graph_from_schematic_tracks_port_directions_and_fanout_shape():
@@ -628,7 +724,7 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
         routed_net_records: list[RoutedNetRecord],
         requirements: list[MissingLengthRequirement],
         **_kwargs: object,
-    ) -> tuple[list[RoutedNetRecord], dict[str, object]]:
+    ) -> tuple[list[RoutedNetRecord], MeanderInsertionReport]:
         required_by_edge = {req.edge_key: req.missing_length_um for req in requirements}
         assert required_by_edge[short_edge] == pytest.approx(25.5)
         assert required_by_edge[long_edge] == pytest.approx(25.0)
@@ -658,50 +754,27 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
             else record
             for record in routed_net_records
         ]
-        return updated, {
-            "results": [
-                {
-                    "edge": {
-                        "net_name": short_edge.net_name,
-                        "source": {
-                            "instance": short_edge.source.instance,
-                            "port": short_edge.source.port,
-                        },
-                        "target": {
-                            "instance": short_edge.target.instance,
-                            "port": short_edge.target.port,
-                        },
-                    },
-                    "status": "planned",
-                    "requested_extra_length_um": 25.5,
-                    "inserted_extra_length_um": 25.5,
-                    "unmatched_length_um": 0.0,
-                },
-                {
-                    "edge": {
-                        "net_name": long_edge.net_name,
-                        "source": {
-                            "instance": long_edge.source.instance,
-                            "port": long_edge.source.port,
-                        },
-                        "target": {
-                            "instance": long_edge.target.instance,
-                            "port": long_edge.target.port,
-                        },
-                    },
-                    "status": "planned",
-                    "requested_extra_length_um": 25.0,
-                    "inserted_extra_length_um": 25.0,
-                    "unmatched_length_um": 0.0,
-                },
+        return updated, _report(
+            [
+                MeanderEdgeReport(
+                    edge=short_edge,
+                    requested_extra_length_um=25.5,
+                    status="planned",
+                    inserted_extra_length_um=25.5,
+                    physical_inserted_extra_length_um=25.5,
+                    planned_edges=(short_edge,),
+                ),
+                MeanderEdgeReport(
+                    edge=long_edge,
+                    requested_extra_length_um=25.0,
+                    status="planned",
+                    inserted_extra_length_um=25.0,
+                    physical_inserted_extra_length_um=25.0,
+                    planned_edges=(long_edge,),
+                ),
             ],
-            "total_requested_extra_length_um": 50.5,
-            "total_inserted_extra_length_um": 50.5,
-            "total_disregarded_extra_length_um": 0.0,
-            "unmatched_length_um": 0.0,
-            "planner_calls": 2,
-            "minimum_insertable_extra_length_um": 25.132741228718345,
-        }
+            realized={short_edge: 25.5, long_edge: 25.0},
+        )
 
     monkeypatch.setattr(
         routing_api,
@@ -844,36 +917,20 @@ def test_route_match_and_realize_rejects_unrealized_lifted_plm(monkeypatch):
         _routed_net_records: list[RoutedNetRecord],
         requirements: list[MissingLengthRequirement],
         **_kwargs: object,
-    ) -> tuple[list[RoutedNetRecord], dict[str, object]]:
+    ) -> tuple[list[RoutedNetRecord], MeanderInsertionReport]:
         required_by_edge = {req.edge_key: req.missing_length_um for req in requirements}
-        return records, {
-            "results": [
-                {
-                    "edge": {
-                        "net_name": edge.net_name,
-                        "source": {
-                            "instance": edge.source.instance,
-                            "port": edge.source.port,
-                        },
-                        "target": {
-                            "instance": edge.target.instance,
-                            "port": edge.target.port,
-                        },
-                    },
-                    "status": "no_candidate",
-                    "reason": "synthetic planning failure",
-                    "requested_extra_length_um": required_by_edge[edge],
-                    "inserted_extra_length_um": 0.0,
-                    "unmatched_length_um": required_by_edge[edge],
-                }
+        return records, _report(
+            [
+                MeanderEdgeReport(
+                    edge=edge,
+                    requested_extra_length_um=required_by_edge[edge],
+                    status="no_candidate",
+                    reason="synthetic planning failure",
+                    unmatched_length_um=required_by_edge[edge],
+                )
                 for edge in (short_edge, long_edge)
-            ],
-            "total_requested_extra_length_um": sum(required_by_edge.values()),
-            "total_inserted_extra_length_um": 0.0,
-            "total_disregarded_extra_length_um": 0.0,
-            "unmatched_length_um": sum(required_by_edge.values()),
-            "planner_calls": 2,
-        }
+            ]
+        )
 
     monkeypatch.setattr(
         routing_api,
@@ -954,26 +1011,18 @@ def test_matching_group_diagnostics_reports_post_meander_residuals():
         node_types=PATH_LENGTH_NODE_TYPES,
         internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
     )
-    report = {
-        "results": [
-            {
-                "edge": {
-                    "net_name": edge_short.net_name,
-                    "source": {
-                        "instance": edge_short.source.instance,
-                        "port": edge_short.source.port,
-                    },
-                    "target": {
-                        "instance": edge_short.target.instance,
-                        "port": edge_short.target.port,
-                    },
-                },
-                "status": "planned",
-                "inserted_extra_length_um": 20.0,
-                "unmatched_length_um": 0.0,
-            }
-        ]
-    }
+    report = _report(
+        [
+            MeanderEdgeReport(
+                edge=edge_short,
+                requested_extra_length_um=20.0,
+                status="planned",
+                inserted_extra_length_um=20.0,
+                planned_edges=(edge_short,),
+            )
+        ],
+        realized={edge_short: 20.0},
+    )
 
     groups = matching_group_diagnostics_to_info(result, report)
 
@@ -1026,26 +1075,15 @@ def test_matching_group_diagnostics_tracks_disregarded_small_residual():
         node_types=PATH_LENGTH_NODE_TYPES,
         internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
     )
-    report = {
-        "results": [
-            {
-                "edge": {
-                    "net_name": edge_short.net_name,
-                    "source": {
-                        "instance": edge_short.source.instance,
-                        "port": edge_short.source.port,
-                    },
-                    "target": {
-                        "instance": edge_short.target.instance,
-                        "port": edge_short.target.port,
-                    },
-                },
-                "status": "below_minimum_bump",
-                "inserted_extra_length_um": 0.0,
-                "unmatched_length_um": 0.0,
-            }
+    report = _report(
+        [
+            MeanderEdgeReport(
+                edge=edge_short,
+                requested_extra_length_um=0.5,
+                status="below_minimum_bump",
+            )
         ]
-    }
+    )
 
     groups = matching_group_diagnostics_to_info(result, report)
 
@@ -1155,16 +1193,20 @@ def test_output_matching_diagnostics_fail_unrealized_output_requirement():
             },
         ],
     }
-    report = {
-        "results": [
-            {
-                "edge": edge_info,
-                "status": "no_candidate",
-                "inserted_extra_length_um": 0.0,
-                "unmatched_length_um": 20.0,
-            }
+    report = _report(
+        [
+            MeanderEdgeReport(
+                edge=RoutedEdgeKey(
+                    net_name="out_short",
+                    source=PortRef(instance="mmi0", port="o3"),
+                    target=PortRef(instance="gc_out0", port="o1"),
+                ),
+                requested_extra_length_um=20.0,
+                status="no_candidate",
+                unmatched_length_um=20.0,
+            )
         ]
-    }
+    )
 
     diagnostics = output_matching_diagnostics_to_info(output_info, report)
     summary = path_length_acceptance_summary(diagnostics)
@@ -1980,19 +2022,23 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
         ) -> list[int]:
             return list(range(len(centerlines)))
 
-        def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+        def add_registered_meander_reserved_grid_rect(
+            self, min_x: int, max_x: int, min_y: int, max_y: int
+        ) -> int:
+            return (max_x - min_x + 1) * (max_y - min_y + 1)
+
+        def plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
             self,
             candidate_geometry_indices: list[list[int]],
-            candidate_requested_extra_lengths_um: list[float],
+            candidate_requested_extra_lengths_um: list[list[float]],
             **_kwargs: object,
         ) -> dict[str, object]:
-            requested = float(candidate_requested_extra_lengths_um[0])
             plans = []
-            for edge_index, _geometry_index in enumerate(candidate_geometry_indices[0]):
+            for edge_index, requested in enumerate(candidate_requested_extra_lengths_um[0]):
                 offset = 10 if edge_index == 0 else 20
                 plans.append(
                     {
-                        "inserted_extra_length_um": requested,
+                        "inserted_extra_length_um": float(requested),
                         "effective_bend_radius_um": 4.0,
                         "primitive_bend_radius_um": 4.0,
                         "selected_box": (0.0, 10.0, 0.0, 10.0),
@@ -2011,6 +2057,8 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
                 )
             return {
                 "status": "planned",
+                "planning_mode": "rust_registered_candidate",
+                "split_part_count": None,
                 "selected_candidate_index": 0,
                 "plans": plans,
                 "candidate_results": [
@@ -2085,6 +2133,7 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
         PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
+        auto_meander_search_config_rs = _real_search_config_rs()
 
     monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: _FakeBackend)
 
@@ -2145,6 +2194,7 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
                 )
             ]
         },
+        debug_meanders=True,
     )
 
     updated_by_edge = {
@@ -2155,14 +2205,19 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
         ): record
         for record in updated
     }
-    results = cast(list[dict[str, object]], report["results"])
-    assert results[0]["status"] == "planned"
-    assert results[0]["selected_candidate_reason"] == "common_mode_upstream_bundle"
-    assert results[0]["selected_candidate_edge_count"] == 2
-    assert results[0]["inserted_extra_length_um"] == pytest.approx(32.0)
-    assert results[0]["physical_inserted_extra_length_um"] == pytest.approx(64.0)
-    assert report["planner_calls"] == 4
-    assert report["final_planner_calls"] == 2
+    results = report.results
+    assert results[0].status == "planned"
+    assert results[0].candidate_reason == "common_mode_upstream_bundle"
+    assert results[0].planned_edges == (edge_a, edge_b)
+    assert results[0].inserted_extra_length_um == pytest.approx(32.0)
+    assert results[0].physical_inserted_extra_length_um == pytest.approx(64.0)
+    assert report.realized_extra_by_edge == {
+        edge_a: pytest.approx(32.0),
+        edge_b: pytest.approx(32.0),
+    }
+    assert report.profile is not None
+    assert report.profile.planner_calls == 4
+    assert report.profile.final_planner_calls == 2
     assert updated_by_edge[edge_a].meander_auto_plan is not None
     assert updated_by_edge[edge_b].meander_auto_plan is not None
 
@@ -2209,13 +2264,18 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
         ) -> list[int]:
             return list(range(len(centerlines)))
 
-        def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+        def add_registered_meander_reserved_grid_rect(
+            self, min_x: int, max_x: int, min_y: int, max_y: int
+        ) -> int:
+            return (max_x - min_x + 1) * (max_y - min_y + 1)
+
+        def plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
             self,
             candidate_geometry_indices: list[list[int]],
-            candidate_requested_extra_lengths_um: list[float],
+            candidate_requested_extra_lengths_um: list[list[float]],
             **_kwargs: object,
         ) -> dict[str, object]:
-            requested = float(candidate_requested_extra_lengths_um[0])
+            requested = float(candidate_requested_extra_lengths_um[0][0])
             planned_requests.append(requested)
             plan = {
                 "inserted_extra_length_um": requested,
@@ -2236,6 +2296,8 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
             }
             return {
                 "status": "planned",
+                "planning_mode": "rust_registered_candidate",
+                "split_part_count": None,
                 "selected_candidate_index": 0,
                 "plans": [plan],
                 "candidate_results": [
@@ -2303,6 +2365,7 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
         PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
+        auto_meander_search_config_rs = _real_search_config_rs()
 
     monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: _FakeBackend)
 
@@ -2354,15 +2417,18 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
         },
     )
 
-    results = cast(list[dict[str, object]], report["results"])
+    results = report.results
     final_plan = cast(dict[str, object], updated[0].meander_auto_plan)
 
+    # the second requirement asks the physical edge for its new total, 125
     assert planned_requests == pytest.approx([100.0, 125.0, 125.0])
-    assert results[0]["inserted_extra_length_um"] == pytest.approx(100.0)
-    assert results[1]["inserted_extra_length_um"] == pytest.approx(25.0)
-    assert results[1]["planner_requested_extra_length_um"] == pytest.approx(125.0)
-    assert results[1]["existing_physical_extra_length_um"] == pytest.approx(100.0)
-    assert results[1]["physical_inserted_delta_um"] == pytest.approx(25.0)
+    assert results[0].inserted_extra_length_um == pytest.approx(100.0)
+    assert results[1].inserted_extra_length_um == pytest.approx(25.0)
+    assert results[1].planner_requested_extra_length_um == pytest.approx(125.0)
+    assert results[1].existing_physical_extra_length_um == pytest.approx(100.0)
+    assert results[1].physical_inserted_extra_length_um == pytest.approx(125.0)
+    assert results[1].planned_edges == (physical_edge,)
+    assert report.realized_extra_by_edge == {physical_edge: pytest.approx(125.0)}
     assert final_plan["requested_extra_length_um"] == pytest.approx(125.0)
 
 
@@ -2408,15 +2474,18 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
         ) -> list[int]:
             return list(range(len(centerlines)))
 
-        def plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
+        def plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
             self,
             candidate_geometry_indices: list[list[int]],
-            candidate_requested_extra_lengths_um: list[float],
+            candidate_requested_extra_lengths_um: list[list[float]],
             **_kwargs: object,
         ) -> dict[str, object]:
-            requested = float(candidate_requested_extra_lengths_um[0])
+            requested = float(candidate_requested_extra_lengths_um[0][0])
+            # the first edge planned, the second did not: no bundle
             return {
                 "status": "no_candidate",
+                "planning_mode": "none",
+                "split_part_count": None,
                 "selected_candidate_index": None,
                 "plans": [],
                 "candidate_results": [
@@ -2425,7 +2494,7 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
                         "status": "no_candidate",
                         "reason": f"no exact meander candidate for {requested}",
                         "failed_edge_index": len(candidate_geometry_indices[0]) - 1,
-                        "plans": [],
+                        "plans": [{"inserted_extra_length_um": requested}],
                     }
                 ],
                 "endpoint_inset_um": 4.0,
@@ -2438,6 +2507,7 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
         PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
+        auto_meander_search_config_rs = _real_search_config_rs()
 
     monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: _FakeBackend)
 
@@ -2498,12 +2568,17 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
                 )
             ]
         },
+        debug_meanders=True,
     )
 
-    results = cast(list[dict[str, object]], report["results"])
-    assert results[0]["status"] == "no_candidate"
-    assert results[0]["inserted_extra_length_um"] == pytest.approx(0.0)
-    assert report["planner_calls"] == 2
+    results = report.results
+    assert results[0].status == "no_candidate"
+    assert results[0].inserted_extra_length_um == pytest.approx(0.0)
+    assert results[0].unmatched_length_um == pytest.approx(32.0)
+    assert results[0].planned_edges == ()
+    assert report.realized_extra_by_edge == {}
+    assert report.profile is not None
+    assert report.profile.planner_calls == 2
     assert all(record.meander_auto_plan is None for record in updated)
 
 
@@ -2538,18 +2613,62 @@ def test_main_meander_report_uses_auto_multi_bump_path():
     )
 
     assert updated[0].total_length_um == 30.0
-    results = cast(list[dict[str, object]], report["results"])
+    results = report.results
     assert len(results) == 1
     entry = results[0]
-    assert entry["status"] != "unsupported_route_object"
-    assert entry.get("reason", "") != "route-object mutation not implemented yet"
-    assert entry.get("planning_mode") == "fill_box_multi_bump"
-    bumps_obj = entry.get("bumps", 0)
-    assert isinstance(bumps_obj, (int, float))
-    assert int(bumps_obj) >= 1
-    assert entry.get("using_legacy_meander_path") is False
-    assert entry.get("effective_bend_radius_um") == pytest.approx(4.0)
-    assert entry.get("primitive_bend_radius_um") == pytest.approx(4.0)
+    assert entry.status == "planned"
+    assert entry.plan is not None
+    assert entry.plan["planning_mode"] == "fill_box_multi_bump"
+    assert int(cast(int, entry.plan["bumps"])) >= 1
+    assert entry.plan["effective_bend_radius_um"] == pytest.approx(4.0)
+    assert entry.plan["primitive_bend_radius_um"] == pytest.approx(4.0)
+    info = report.to_info_dict()
+    assert info["results"][0]["bumps"] == entry.plan["bumps"]
+    assert info["total_inserted_extra_length_um"] == pytest.approx(32.0)
+
+
+def test_meander_report_builds_no_profile_without_debug_meanders():
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src0", port="o1"),
+        target=PortRef(instance="gate0", port="i0"),
+    )
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=_build_real_route_obj_for_test(10, 10, 60, 10),
+        total_length_um=30.0,
+    )
+    req = MissingLengthRequirement(edge_key=edge, missing_length_um=32.0)
+    kwargs: dict[str, Any] = {
+        "config": MeanderInsertionConfig(
+            enabled=True,
+            min_candidate_straight_length_um=5.0,
+            max_meander_height_um=40.0,
+            auto_meander_endpoint_inset_um=0.0,
+        ),
+        "realization_grid_spec": (200, 200, 1.0, 0.0, 0.0),
+        "allow_45_degree_turns": True,
+        "bend_radius_cells": 4,
+    }
+
+    _, report = analyze_meander_insertion_for_requirements([record], [req], **kwargs)
+    assert report.profile is None
+    info = report.to_info_dict()
+    assert "planner_calls" not in info and "setup_profile" not in info
+
+    _, debug_report = analyze_meander_insertion_for_requirements(
+        [record], [req], debug_meanders=True, **kwargs
+    )
+    assert debug_report.profile is not None
+    assert debug_report.profile.planner_calls >= 2
+    assert debug_report.profile.search_config["endpoint_insets_um"] == [0.0]
+    assert len(debug_report.profile.requirement_attempts) == 1
+    assert debug_report.to_info_dict()["planner_calls"] == debug_report.profile.planner_calls
+    assert debug_report.results[0].inserted_extra_length_um == pytest.approx(
+        report.results[0].inserted_extra_length_um
+    )
 
 
 def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
@@ -2589,10 +2708,12 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
         realization_grid_spec=(256, 256, 1.0, 0.0, 0.0),
         allow_45_degree_turns=False,
         bend_radius_cells=7,
+        debug_meanders=True,
     )
-    fixed_results = cast(list[dict[str, object]], fixed_report["results"])
-    assert fixed_results[0]["status"] == "no_candidate"
-    assert fixed_results[0]["endpoint_inset_candidates_um"] == [7.0]
+    fixed_results = fixed_report.results
+    assert fixed_results[0].status == "no_candidate"
+    assert fixed_report.profile is not None
+    assert fixed_report.profile.search_config["endpoint_insets_um"] == [7.0]
 
     updated, report = analyze_meander_insertion_for_requirements(
         [record],
@@ -2605,28 +2726,22 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
         realization_grid_spec=(256, 256, 1.0, 0.0, 0.0),
         allow_45_degree_turns=False,
         bend_radius_cells=7,
+        debug_meanders=True,
     )
 
-    results = cast(list[dict[str, object]], report["results"])
-    entry = results[0]
-    search_config = cast(dict[str, object], report["search_config"])
-    endpoint_inset_candidates = cast(
-        list[float],
-        entry["endpoint_inset_candidates_um"],
-    )
-    search_endpoint_insets = cast(
-        list[float],
-        search_config["endpoint_insets_um"],
-    )
-    assert entry["status"] == "planned"
-    assert entry["inserted_extra_length_um"] == pytest.approx(100.0)
-    assert cast(float, entry["endpoint_inset_um"]) < 7.0
-    assert endpoint_inset_candidates[:3] == [7.0, 5.25, 3.5]
+    entry = report.results[0]
+    assert report.profile is not None
+    search_config = report.profile.search_config
+    search_endpoint_insets = cast(list[float], search_config["endpoint_insets_um"])
+    assert entry.status == "planned"
+    assert entry.inserted_extra_length_um == pytest.approx(100.0)
+    assert entry.plan is not None
+    assert cast(float, entry.plan["endpoint_inset_um"]) < 7.0
     assert search_config["max_height_um"] == pytest.approx(40.0)
     assert search_config["endpoint_inset_policy"] == "adaptive"
     assert search_endpoint_insets == [7.0, 5.25, 3.5, 1.75, 0.0]
-    assert entry["visual_bumps"] == 2
-    assert entry["quarter_turns"] == 8
+    assert entry.plan["visual_bumps"] == 2
+    assert entry.plan["quarter_turns"] == 8
     assert updated[0].meander_auto_plan is not None
 
 
@@ -2643,12 +2758,6 @@ def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
     )
     astar = rust_backend.AStarConfig(max_iterations=200_000)
     router = rust_backend.PyPhotonicRouter(grid, primitive, astar)
-    if not hasattr(
-        router,
-        "plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config",
-    ):
-        pytest.skip("Rust backend lacks registered geometry requirement PLM API.")
-
     route_obj = router.route_single_net(
         rust_backend.State(20, 60, 0),
         rust_backend.State(180, 60, 0),
@@ -2690,17 +2799,19 @@ def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
         "side_policy": "both",
         "planning_mode": "fill_box_multi_bump",
     }
-    registered_result = router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
-        [geometry_indices],
-        [kwargs["requested_extra_length_um"]],
-        min_bend_radius_um=kwargs["min_bend_radius_um"],
-        min_straight_um=kwargs["min_straight_um"],
-        max_meander_height_um=kwargs["max_meander_height_um"],
-        min_segment_length_um=kwargs["min_segment_length_um"],
-        auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
-        clearance_radius_cells=kwargs["clearance_radius_cells"],
-        side_policy=kwargs["side_policy"],
-        planning_mode=kwargs["planning_mode"],
+    registered_result = (
+        router.plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
+            [geometry_indices],
+            [[kwargs["requested_extra_length_um"]]],
+            min_bend_radius_um=kwargs["min_bend_radius_um"],
+            min_straight_um=kwargs["min_straight_um"],
+            max_meander_height_um=kwargs["max_meander_height_um"],
+            min_segment_length_um=kwargs["min_segment_length_um"],
+            auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
+            clearance_radius_cells=kwargs["clearance_radius_cells"],
+            side_policy=kwargs["side_policy"],
+            planning_mode=kwargs["planning_mode"],
+        )
     )
     legacy = router.plan_auto_analytic_meander_for_centerline_depth_sweep(
         centerline,
@@ -2726,17 +2837,19 @@ def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
         selected_rect[2],
         selected_rect[3],
     )
-    shifted_result = router.plan_auto_analytic_meander_requirement_candidate_indices_registered_opened_auto_config(
-        [geometry_indices],
-        [kwargs["requested_extra_length_um"]],
-        min_bend_radius_um=kwargs["min_bend_radius_um"],
-        min_straight_um=kwargs["min_straight_um"],
-        max_meander_height_um=kwargs["max_meander_height_um"],
-        min_segment_length_um=kwargs["min_segment_length_um"],
-        auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
-        clearance_radius_cells=kwargs["clearance_radius_cells"],
-        side_policy=kwargs["side_policy"],
-        planning_mode=kwargs["planning_mode"],
+    shifted_result = (
+        router.plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
+            [geometry_indices],
+            [[kwargs["requested_extra_length_um"]]],
+            min_bend_radius_um=kwargs["min_bend_radius_um"],
+            min_straight_um=kwargs["min_straight_um"],
+            max_meander_height_um=kwargs["max_meander_height_um"],
+            min_segment_length_um=kwargs["min_segment_length_um"],
+            auto_endpoint_inset_um=kwargs["endpoint_inset_um"],
+            clearance_radius_cells=kwargs["clearance_radius_cells"],
+            side_policy=kwargs["side_policy"],
+            planning_mode=kwargs["planning_mode"],
+        )
     )
 
     assert shifted_result["status"] == "planned"
@@ -2745,12 +2858,16 @@ def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
     assert shifted["selected_grid_rect"] != selected_rect
 
     router.clear_registered_meander_reserved_cells()
+    # one candidate with the same geometry twice: the second plan avoids the
+    # first one's box (the sequence reserves within the candidate)
     sequence_result = (
-        router.plan_auto_analytic_meander_geometry_sequence_registered_opened_auto_config(
-            [geometry_indices[0], geometry_indices[0]],
+        router.plan_auto_analytic_meander_requirement_requests_registered_opened_auto_config(
+            [[geometry_indices[0], geometry_indices[0]]],
             [
-                kwargs["requested_extra_length_um"],
-                kwargs["requested_extra_length_um"],
+                [
+                    kwargs["requested_extra_length_um"],
+                    kwargs["requested_extra_length_um"],
+                ]
             ],
             min_bend_radius_um=kwargs["min_bend_radius_um"],
             min_straight_um=kwargs["min_straight_um"],
@@ -2763,6 +2880,7 @@ def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
         )
     )
     assert sequence_result["status"] == "planned"
+    assert sequence_result["planning_mode"] == "rust_registered_candidate"
     sequence_plans = cast(list[dict[str, object]], sequence_result["plans"])
     assert len(sequence_plans) == 2
     assert sequence_plans[0]["inserted_extra_length_um"] == pytest.approx(
@@ -2806,7 +2924,7 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
     )
     req = MissingLengthRequirement(edge_key=edge, missing_length_um=1459.0)
 
-    _, report = analyze_meander_insertion_for_requirements(
+    updated, report = analyze_meander_insertion_for_requirements(
         [record],
         [req],
         config=MeanderInsertionConfig(
@@ -2817,22 +2935,25 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
         realization_grid_spec=(1200, 100, 1.0, 0.0, 0.0),
         allow_45_degree_turns=False,
         bend_radius_cells=2,
+        debug_meanders=True,
     )
 
-    results = cast(list[dict[str, object]], report["results"])
+    results = report.results
     assert len(results) == 1
     entry = results[0]
-    assert entry["status"] == "planned"
-    assert entry["inserted_extra_length_um"] == pytest.approx(1459.0)
-    assert entry["unmatched_length_um"] == pytest.approx(0.0)
-    assert int(cast(int, entry["max_bumps"])) == 259
+    assert entry.status == "planned"
+    assert entry.inserted_extra_length_um == pytest.approx(1459.0)
+    assert entry.unmatched_length_um == pytest.approx(0.0)
+    committed_plan = cast(dict[str, object], updated[0].meander_auto_plan)
+    assert int(cast(int, committed_plan["max_bumps"])) == 259
     # 1459 um at r = 2 within 20 um of height: legs = ceil(1459 / (20 - 2r(4 - pi)))
     # = 80, i.e. 79 U-turns.
-    assert int(cast(int, entry["bumps"])) == 79
-    assert entry.get("effective_bend_radius_um") is not None
-    assert float(cast(float, entry["planning_elapsed_s"])) >= 0.0
-    assert float(cast(float, report["planner_elapsed_s"])) >= 0.0
-    assert report["final_planning_mode"] == "rust_registered_sequence"
+    assert entry.plan is not None
+    assert int(cast(int, entry.plan["bumps"])) == 79
+    assert entry.plan.get("effective_bend_radius_um") is not None
+    assert report.profile is not None
+    assert report.profile.planner_elapsed_s >= 0.0
+    assert report.final_planning_mode == "rust_registered_sequence"
 
 
 def test_meander_planning_requires_registered_rust_planner(monkeypatch):
@@ -2845,14 +2966,15 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
         def set_static_cells(self, cells: object) -> None:
             captured["static_cells"] = cells
 
-        def add_static_cells(self, cells: object) -> None:
-            captured["added_static_cells"] = cells
+        def route_port_corrected_centerline(self, _route_obj: object) -> list[tuple[float, float]]:
+            return []
 
     class _FakeBackend:
         GridSpec = staticmethod(lambda *args, **kwargs: ("grid", args, kwargs))
         PrimitiveLibraryConfig = staticmethod(lambda *args, **kwargs: ("primitive", args, kwargs))
         AStarConfig = staticmethod(lambda *args, **kwargs: ("astar", args, kwargs))
         PyPhotonicRouter = _FakeRouter
+        auto_meander_search_config_rs = _real_search_config_rs()
 
     monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: _FakeBackend)
 
@@ -2889,10 +3011,10 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
     assert (7, 8) not in static_cells
     assert (9, 10) not in static_cells
     assert updated[0].opened_cells == record.opened_cells
-    results = cast(list[dict[str, object]], report["results"])
-    assert results[0]["status"] == "no_candidate"
-    assert "Rust registered PLM planner is required" in str(results[0]["reason"])
-    assert report["candidate_engine_counts"] == {"rust_registered_unavailable": 1}
+    results = report.results
+    assert results[0].status == "no_candidate"
+    assert "could not prepare candidate inputs" in results[0].reason
+    assert report.final_planning_mode == "none"
 
 
 def test_meander_commit_uses_rust_reserved_rect_without_python_cells():
@@ -2933,19 +3055,12 @@ def test_meander_commit_uses_rust_reserved_rect_without_python_cells():
         updated={
             committed_edge: committed_record,
         },
-        registered_open_cell_index_by_edge={},
-        registered_open_cell_count_by_edge={},
         registered_geometry_index_by_edge={},
         max_bumps_by_edge={},
-        centerline_lists_by_edge={},
         base_static_cells=set(),
         grid_size_um=1.0,
         bend_radius_um=4.0,
-        setup_profile={},
-        candidate_setup_profile={},
-        commit_profile={},
-        rust_planner_profile={},
-        rust_wrapper_profile={},
+        profile=_ContextProfile(),
     )
 
     context.commit_planned_edge(
@@ -2957,19 +3072,23 @@ def test_meander_commit_uses_rust_reserved_rect_without_python_cells():
             "box_depth_um": 10.0,
         },
         requested=12.0,
-        used_reserved_overlay=True,
         max_bumps=1,
-        min_straight_um=5.0,
-        max_height_um=40.0,
-        min_seg_um=5.0,
+        search_config=_search_config(),
         endpoint_inset_um=0.0,
     )
 
     assert captured["registered_rect"] == (3, 4, 5, 6)
     assert not hasattr(context, "reserved_meander_cells")
     assert not hasattr(context, "pending_reserved_meander_rects")
-    assert "grid_rect_cells_s" not in context.commit_profile
-    assert "python_reserved_update_s" not in context.commit_profile
+    assert context.profile is not None
+    assert set(context.profile.commit_profile) == {
+        "blocked_recheck_s",
+        "rust_reserved_rect_update_s",
+        "planned_record_s",
+    }
+    committed = cast(dict[str, object], context.updated[committed_edge].meander_auto_plan)
+    assert committed["requested_extra_length_um"] == pytest.approx(12.0)
+    assert committed["selected_grid_rect"] == (3, 4, 5, 6)
 
 
 def test_too_short_route_reports_no_meander_candidate():
@@ -2997,13 +3116,9 @@ def test_too_short_route_reports_no_meander_candidate():
         bend_radius_cells=4,
     )
 
-    results = cast(list[dict[str, object]], report["results"])
+    results = report.results
     assert len(results) == 1
-    assert results[0]["status"] in {
-        "below_minimum_bump",
-        "no_candidate",
-        "insufficient_space",
-    }
+    assert results[0].status in {"below_minimum_bump", "no_candidate"}
 
 
 def test_near_minimum_meander_request_normalizes_roundoff():
@@ -3109,26 +3224,14 @@ def test_matching_group_diagnostics_use_the_realized_placement_of_a_meander():
         internal_delays_um=PATH_LENGTH_INTERNAL_DELAYS_UM,
     )
 
-    def edge_info(edge: RoutedEdgeKey) -> dict[str, object]:
-        return {
-            "net_name": edge.net_name,
-            "source": {"instance": edge.source.instance, "port": edge.source.port},
-            "target": {"instance": edge.target.instance, "port": edge.target.port},
-        }
-
-    booked = {
-        "edge": edge_info(short_edge),
-        "status": "planned",
-        "inserted_extra_length_um": 20.0,
-        "unmatched_length_um": 0.0,
-    }
+    booked = MeanderEdgeReport(
+        edge=short_edge,
+        requested_extra_length_um=20.0,
+        status="planned",
+        inserted_extra_length_um=20.0,
+    )
     # realized where booked: balanced in both views
-    report = {
-        "results": [booked],
-        "realized_extra_length_um_by_edge": [
-            {"edge": edge_info(short_edge), "extra_length_um": 20.0}
-        ],
-    }
+    report = _report([booked], realized={short_edge: 20.0})
     groups = matching_group_diagnostics_to_info(result, report)
     assert len(groups) == 1
     by_net = {edge["edge"]["net_name"]: edge for edge in groups[0]["incoming_edges"]}
@@ -3140,12 +3243,7 @@ def test_matching_group_diagnostics_use_the_realized_placement_of_a_meander():
 
     # realized on the other edge: the planned view still says balanced, the
     # realized view reports the imbalance and the acceptance fails on it
-    report_misplaced = {
-        "results": [booked],
-        "realized_extra_length_um_by_edge": [
-            {"edge": edge_info(long_edge), "extra_length_um": 20.0}
-        ],
-    }
+    report_misplaced = _report([booked], realized={long_edge: 20.0})
     groups = matching_group_diagnostics_to_info(result, report_misplaced)
     assert groups[0]["within_tolerance"] is True
     assert groups[0]["realized_arrival_spread_um"] == pytest.approx(40.0)
@@ -3155,7 +3253,16 @@ def test_matching_group_diagnostics_use_the_realized_placement_of_a_meander():
     assert summary["realized_failed_group_count"] == 1
     assert "realized bookkeeping" in format_path_length_acceptance_failure(summary)
 
-    # a report without the realized table (an older report, a planner stub)
-    # falls back to the booking
-    groups = matching_group_diagnostics_to_info(result, {"results": [booked]})
-    assert groups[0]["realized_arrival_spread_um"] == pytest.approx(0.0)
+    # the GDS meta info form carries the realized table per edge
+    info = report_misplaced.to_info_dict()
+    assert info["realized_extra_length_um_by_edge"] == [
+        {
+            "edge": {
+                "net_name": long_edge.net_name,
+                "source": {"instance": "gc_1", "port": "o1"},
+                "target": {"instance": "mmi_0", "port": "o1"},
+            },
+            "extra_length_um": 20.0,
+        }
+    ]
+    assert info["results"][0]["inserted_extra_length_um"] == pytest.approx(20.0)

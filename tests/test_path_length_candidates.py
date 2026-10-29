@@ -13,8 +13,10 @@ from types import SimpleNamespace
 
 from photonic_router.path_length_graph import MissingLengthRequirement, PortRef, RoutedEdgeKey
 
-from translation.path_length_candidates import build_requirement_delay_candidates
-from translation.path_length_requirements import analyze_path_length_matching
+from translation.path_length_requirements import (
+    analyze_path_length_matching,
+    build_requirement_delay_candidates,
+)
 from translation.route_rust_types import RoutedNetRecord
 
 

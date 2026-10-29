@@ -1,10 +1,18 @@
-"""Requirement construction for path-length matching."""
+"""Requirement construction and delay-insertion candidates for path-length matching.
+
+The timing requirements (how much extra length each edge needs, the group
+lifts, the optional output matching) and the candidates that say where that
+length may go (the edge itself, or upstream where every group stays matched,
+told by structure). Until phase 6 slice B the candidates lived in their own
+module behind the ``route_rust_analysis`` facade.
+"""
 
 from __future__ import annotations
 
 import math
 
 from photonic_router.path_length_graph import (
+    DelayInsertionCandidate,
     MissingLengthRequirement,
     NodeIncomingEdgeTiming,
     NodeType,
@@ -17,10 +25,322 @@ from photonic_router.path_length_graph import (
     list_edges_requiring_meander,
 )
 
-from translation.path_length_candidates import edge_key_to_dict, requirement_to_dict
-from translation.route_rust_types import DEFAULT_MEANDER_MIN_STRAIGHT_UM, RoutedNetRecord
+from translation.route_rust_types import (
+    DEFAULT_MEANDER_MIN_STRAIGHT_UM,
+    RoutedNetRecord,
+    edge_key_to_dict,
+)
 
 PATH_LENGTH_MATCH_TOLERANCE_UM = 1.0e-6
+
+__all__ = [
+    "PATH_LENGTH_MATCH_TOLERANCE_UM",
+    "adjusted_output_arrivals_for_requirements",
+    "analysis_edge_maps",
+    "analyze_path_length_matching",
+    "analyze_path_length_matching_for_graph",
+    "build_requirement_delay_candidates",
+    "compute_group_lifted_requirements",
+    "compute_output_matching_requirements",
+    "delay_candidate_to_dict",
+    "edge_identity",
+    "edge_identity_from_info",
+    "edge_key_to_dict",
+    "merge_missing_length_requirements",
+    "minimum_four_bend_extra_length_um",
+    "node_depths",
+    "requirement_to_dict",
+    "routed_net_records_to_edge_lengths",
+]
+
+
+def requirement_to_dict(req: MissingLengthRequirement) -> dict[str, object]:
+    return {
+        "edge": edge_key_to_dict(req.edge_key),
+        "missing_length_um": float(req.missing_length_um),
+    }
+
+
+def delay_candidate_to_dict(candidate: DelayInsertionCandidate) -> dict[str, object]:
+    return {
+        "requirement_edge": edge_key_to_dict(candidate.requirement_edge_key),
+        "edges": [edge_key_to_dict(edge_key) for edge_key in candidate.edge_keys],
+        "extra_length_um": float(candidate.extra_length_um),
+        "reason": candidate.reason,
+        "affected_requirement_edges": [
+            edge_key_to_dict(edge_key) for edge_key in candidate.affected_requirement_edge_keys
+        ],
+    }
+
+
+def edge_identity(edge_key: RoutedEdgeKey) -> tuple[str, str, str, str, str]:
+    return (
+        edge_key.net_name,
+        edge_key.source.instance,
+        edge_key.source.port,
+        edge_key.target.instance,
+        edge_key.target.port,
+    )
+
+
+def edge_identity_from_info(edge_info: object) -> tuple[str, str, str, str, str] | None:
+    if not isinstance(edge_info, dict):
+        return None
+    source = edge_info.get("source", {})
+    target = edge_info.get("target", {})
+    if not isinstance(source, dict) or not isinstance(target, dict):
+        return None
+    return (
+        str(edge_info.get("net_name", "")),
+        str(source.get("instance", "")),
+        str(source.get("port", "")),
+        str(target.get("instance", "")),
+        str(target.get("port", "")),
+    )
+
+
+def analysis_edge_maps(
+    analysis: PathLengthAnalysisResult,
+) -> tuple[dict[str, list[RoutedEdgeKey]], dict[str, list[RoutedEdgeKey]]]:
+    incoming_by_node: dict[str, list[RoutedEdgeKey]] = {
+        node_name: [] for node_name in analysis.node_timings
+    }
+    outgoing_by_node: dict[str, list[RoutedEdgeKey]] = {
+        node_name: [] for node_name in analysis.node_timings
+    }
+    for timing in analysis.node_timings.values():
+        for edge_timing in timing.incoming_edges:
+            edge_key = edge_timing.edge_key
+            # along the light: the key names the net as routed, which may be
+            # written against the light
+            incoming_by_node.setdefault(analysis.target_instance(edge_key), []).append(edge_key)
+            outgoing_by_node.setdefault(analysis.source_instance(edge_key), []).append(edge_key)
+    return incoming_by_node, outgoing_by_node
+
+
+def build_requirement_delay_candidates(
+    analysis: PathLengthAnalysisResult,
+    requirements: list[MissingLengthRequirement],
+    *,
+    max_recursive_pushback_depth: int = 8,
+    tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
+) -> dict[RoutedEdgeKey, list[DelayInsertionCandidate]]:
+    """Build conservative insertion candidates for each timing requirement.
+
+    Direct candidates always insert on the required edge. Upstream candidates
+    are found by recursively moving equal-delay requirements through
+    transparent serial elements and complete common-mode output bundles,
+    both told by structure, not by name (owner's rule, 2026-10-07: upstream
+    only where every group stays matched): a node with exactly one incoming
+    and one outgoing edge passes a delay unchanged, and a node whose whole
+    output bundle needs the same delay can take it on its inputs instead,
+    because every path through it gets the delay.
+    """
+    incoming_by_node, outgoing_by_node = analysis_edge_maps(analysis)
+    missing_by_edge = {req.edge_key: float(req.missing_length_um) for req in requirements}
+    candidates: dict[RoutedEdgeKey, list[DelayInsertionCandidate]] = {}
+
+    def _edge_tuple_identity(
+        edge_keys: tuple[RoutedEdgeKey, ...],
+    ) -> tuple[tuple[str, str, str, str, str], ...]:
+        return tuple(edge_identity(edge_key) for edge_key in edge_keys)
+
+    def _dedupe_edge_tuple(
+        edge_keys: tuple[RoutedEdgeKey, ...],
+    ) -> tuple[RoutedEdgeKey, ...]:
+        deduped: list[RoutedEdgeKey] = []
+        seen: set[RoutedEdgeKey] = set()
+        for edge_key in edge_keys:
+            if edge_key in seen:
+                continue
+            seen.add(edge_key)
+            deduped.append(edge_key)
+        return tuple(deduped)
+
+    def _candidate_sort_key(candidate: DelayInsertionCandidate) -> tuple[int, int, int]:
+        shared_rank = 0 if len(candidate.affected_requirement_edge_keys) > 1 else 1
+        edge_count_rank = -len(candidate.edge_keys)
+        recursive_rank = 0 if candidate.reason.startswith("recursive") else 1
+        return shared_rank, recursive_rank, edge_count_rank
+
+    def _complete_common_mode_source(
+        edge_keys: tuple[RoutedEdgeKey, ...],
+    ) -> str | None:
+        if len(edge_keys) < 2:
+            return None
+        source_instances = {analysis.source_instance(edge_key) for edge_key in edge_keys}
+        if len(source_instances) != 1:
+            return None
+        source_instance = next(iter(source_instances))
+        outgoing = tuple(outgoing_by_node.get(source_instance, ()))
+        incoming = tuple(incoming_by_node.get(source_instance, ()))
+        if len(outgoing) < 2 or len(incoming) < 1:
+            return None
+        if set(edge_keys) != set(outgoing):
+            return None
+        return source_instance
+
+    def _append_candidate(
+        edge_candidates: list[DelayInsertionCandidate],
+        seen_candidates: set[
+            tuple[
+                tuple[tuple[str, str, str, str, str], ...],
+                tuple[tuple[str, str, str, str, str], ...],
+                int,
+            ]
+        ],
+        *,
+        requirement_edge_key: RoutedEdgeKey,
+        edge_keys: tuple[RoutedEdgeKey, ...],
+        extra_length_um: float,
+        reason: str,
+        affected_requirement_edge_keys: tuple[RoutedEdgeKey, ...],
+    ) -> None:
+        edge_keys = _dedupe_edge_tuple(edge_keys)
+        if not edge_keys or len(edge_keys) != len(set(edge_keys)):
+            return
+        affected_requirement_edge_keys = tuple(
+            sorted(
+                _dedupe_edge_tuple(affected_requirement_edge_keys),
+                key=edge_identity,
+            )
+        )
+        key = (
+            _edge_tuple_identity(edge_keys),
+            _edge_tuple_identity(affected_requirement_edge_keys),
+            round(float(extra_length_um) / max(tolerance_um, 1.0e-12)),
+        )
+        if key in seen_candidates:
+            return
+        seen_candidates.add(key)
+        edge_candidates.append(
+            DelayInsertionCandidate(
+                requirement_edge_key=requirement_edge_key,
+                edge_keys=edge_keys,
+                extra_length_um=float(extra_length_um),
+                reason=reason,
+                affected_requirement_edge_keys=affected_requirement_edge_keys,
+            )
+        )
+
+    for req in requirements:
+        if req.missing_length_um <= tolerance_um:
+            continue
+        edge_key = req.edge_key
+        requested = float(req.missing_length_um)
+        edge_candidates: list[DelayInsertionCandidate] = []
+        seen_candidates: set[
+            tuple[
+                tuple[tuple[str, str, str, str, str], ...],
+                tuple[tuple[str, str, str, str, str], ...],
+                int,
+            ]
+        ] = set()
+        queue: list[
+            tuple[
+                tuple[RoutedEdgeKey, ...],
+                tuple[RoutedEdgeKey, ...],
+                float,
+                str,
+                int,
+            ]
+        ] = [((edge_key,), (edge_key,), requested, "direct_edge", 0)]
+
+        source_instance = analysis.source_instance(edge_key)
+        source_outgoing = outgoing_by_node.get(source_instance, [])
+        source_incoming = incoming_by_node.get(source_instance, [])
+        if len(source_outgoing) >= 2 and len(source_incoming) >= 1:
+            common_delay = min(
+                missing_by_edge.get(outgoing_edge, 0.0) for outgoing_edge in source_outgoing
+            )
+            if common_delay > tolerance_um and requested <= common_delay + tolerance_um:
+                affected_edges = tuple(
+                    outgoing_edge
+                    for outgoing_edge in source_outgoing
+                    if missing_by_edge.get(outgoing_edge, 0.0) >= common_delay - tolerance_um
+                )
+                if len(affected_edges) >= 2 and set(affected_edges) == set(source_outgoing):
+                    queue.append(
+                        (
+                            tuple(source_incoming),
+                            affected_edges,
+                            common_delay,
+                            "common_mode_upstream_bundle",
+                            0,
+                        )
+                    )
+
+        seen_states: set[
+            tuple[
+                tuple[tuple[str, str, str, str, str], ...],
+                tuple[tuple[str, str, str, str, str], ...],
+                int,
+            ]
+        ] = set()
+        while queue:
+            current_edges, affected_edges, extra_length_um, reason, depth = queue.pop(0)
+            current_edges = _dedupe_edge_tuple(current_edges)
+            affected_edges = _dedupe_edge_tuple(affected_edges)
+            state_key = (
+                _edge_tuple_identity(current_edges),
+                _edge_tuple_identity(affected_edges),
+                round(float(extra_length_um) / max(tolerance_um, 1.0e-12)),
+            )
+            if state_key in seen_states:
+                continue
+            seen_states.add(state_key)
+            _append_candidate(
+                edge_candidates,
+                seen_candidates,
+                requirement_edge_key=edge_key,
+                edge_keys=current_edges,
+                extra_length_um=extra_length_um,
+                reason=reason,
+                affected_requirement_edge_keys=affected_edges,
+            )
+
+            if depth >= max_recursive_pushback_depth:
+                continue
+
+            for index, current_edge in enumerate(current_edges):
+                source = analysis.source_instance(current_edge)
+                incoming = incoming_by_node.get(source, [])
+                outgoing = outgoing_by_node.get(source, [])
+                if len(incoming) != 1 or len(outgoing) != 1 or outgoing[0] != current_edge:
+                    continue
+                next_edges = tuple(
+                    incoming[0] if i == index else edge for i, edge in enumerate(current_edges)
+                )
+                queue.append(
+                    (
+                        next_edges,
+                        affected_edges,
+                        extra_length_um,
+                        "transparent_serial_upstream"
+                        if len(current_edges) == 1 and depth == 0
+                        else "recursive_transparent_serial_upstream",
+                        depth + 1,
+                    )
+                )
+
+            common_source = _complete_common_mode_source(current_edges)
+            if common_source is not None:
+                queue.append(
+                    (
+                        tuple(incoming_by_node.get(common_source, ())),
+                        affected_edges,
+                        extra_length_um,
+                        "recursive_common_mode_upstream_bundle",
+                        depth + 1,
+                    )
+                )
+
+        candidates[edge_key] = sorted(
+            edge_candidates,
+            key=_candidate_sort_key,
+        )
+
+    return candidates
 
 
 def routed_net_records_to_edge_lengths(
