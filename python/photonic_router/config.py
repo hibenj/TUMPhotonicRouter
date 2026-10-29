@@ -230,8 +230,6 @@ class SearchTuning:
 
     #: `PHOTONIC_ROUTER_MIN_BEND_WEIGHT`: float, default 12.0.
     min_bend_weight: float = 12.0
-    #: `PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT`: float, default 1.0.
-    min_heuristic_weight: float = 1.0
     #: `PHOTONIC_ROUTER_HEAP_TIE_BREAKER`: only exactly `"smaller_g"` or
     #: `"larger_g"` override; any other value (including unset) means
     #: `None`, and the site computes its own default.

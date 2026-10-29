@@ -26,6 +26,14 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
   search body is gone (phase 2 slice B). The static-only probe keeps it
   explicitly. Routes are unchanged on the nine-cell gate; the single-net
   `route_single_net` API now always runs the kernel.
+- One bend weight and an admissible heuristic (phase 2 slice E).
+  `PrimitiveLibraryConfig.bend_weight` is gone (it was always 1.0 and was
+  multiplied into `AStarConfig.bend_weight`), and so are
+  `AStarConfig.heuristic_weight`, `SearchTuning.min_heuristic_weight`,
+  `PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT` and the weighted-A* iteration cap in
+  `router_setup.py`. No paper cell ever ran a weight other than 1.0, so the
+  27-cell reproduction is unchanged; the Dijkstra oracle keeps its zero
+  heuristic.
 
 ### Added
 

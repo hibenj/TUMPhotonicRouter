@@ -112,9 +112,7 @@ def _source_lower_bounds(
         )
         if not target_angle_ok or not reaches_target_ray:
             minimum_bend_units = 1.0 if settings.allow_45_degree_turns else 2.0
-            bend_weight = float(getattr(state.astar_cfg, "bend_weight", 1.0)) * float(
-                getattr(state.primitive_cfg, "bend_weight", 1.0)
-            )
+            bend_weight = float(getattr(state.astar_cfg, "bend_weight", 1.0))
             heading_lower_bound += minimum_bend_units * bend_weight
     return distance, heading_lower_bound
 

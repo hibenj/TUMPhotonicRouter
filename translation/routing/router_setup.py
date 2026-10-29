@@ -30,7 +30,7 @@ def configure_router_and_grid(
 ) -> None:
     """Build the Rust grid/primitive/A* configs, construct `self.router`, and extract raw static geometry.
 
-    Tunes `self.astar_cfg` (heuristic mode/weight, bend weight, heap tie-breaker,
+    Tunes `self.astar_cfg` (heuristic mode, bend weight, heap tie-breaker,
     proactive congestion, routing-window sizing) based on `self.allow_45_degree_turns`,
     `self.crossing_mode`, and related settings, resolves `self.clearance_policy` and the
     block/commit/core radii, constructs `self.router` (`PyPhotonicRouter`), and extracts
@@ -90,35 +90,6 @@ def configure_router_and_grid(
     if settings.allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
         effective_heuristic_mode = "diagonal_aware"
     state.astar_cfg.heuristic_mode = effective_heuristic_mode
-    min_heuristic_weight = float(settings.config.search.min_heuristic_weight)
-    if (
-        settings.allow_45_degree_turns
-        and not settings.enable_crossings
-        and min_heuristic_weight > 1.0
-        and hasattr(state.astar_cfg, "max_iterations")
-    ):
-        # This cap was sized for Weighted A* (min weight > 1.0), which
-        # reaches targets in few expansions; admissible search (1.0)
-        # legitimately needs the caller's full iteration budget
-        # (heater_s_mod's mmi_extra_3->mmi_extra_4 net exhausts 50k).
-        # The condition reads `not settings.enable_crossings` because it
-        # used to read `not collision_crossing_mode`, and that was exactly
-        # `enable_crossings and is_collision_mode(crossing_mode)`: with the
-        # collision mode gone (Milestone 8 Slice B) the mode half is always
-        # false, so the negation collapses to the crossings flag alone.
-        state.astar_cfg.max_iterations = min(int(state.astar_cfg.max_iterations), 50_000)
-    if settings.allow_45_degree_turns and hasattr(state.astar_cfg, "heuristic_weight"):
-        # 1.0 is admissible A*: cheapest paths, no weighted-search
-        # geometry artifacts (chicanes, overshoot detours), and the only
-        # weight at which multiportmmi_16x16 routes completely. 1.25 is
-        # the old Weighted A* behavior (fewer expanded states, up to 25%
-        # suboptimal paths); benes_16x16 still pins it in its
-        # STABLE_ROUTING_ENV until its no-candidate endpoint-correction
-        # hole is fixed -- see
-        # .agent/execplans/2026-08-31-admissible-astar-heuristic-45-degree.md.
-        state.astar_cfg.heuristic_weight = max(
-            float(state.astar_cfg.heuristic_weight), min_heuristic_weight
-        )
     if settings.allow_45_degree_turns and hasattr(state.astar_cfg, "bend_weight"):
         # A bend costs bend_weight per angle-eighth of turn (see
         # src/primitives.rs's bend_cost field); boosting it keeps 45-degree

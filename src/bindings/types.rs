@@ -67,20 +67,17 @@ pub struct PyPrimitiveLibraryConfig {
     pub bend_radius_cells: i32,
     #[pyo3(get, set)]
     pub allow_45_degree_turns: bool,
-    #[pyo3(get, set)]
-    pub bend_weight: f64,
 }
 
 #[pymethods]
 impl PyPrimitiveLibraryConfig {
     #[new]
-    #[pyo3(signature=(grid_size_um=0.5,straight_short_cells=1,straight_long_cells=4,bend_radius_cells=2,bend_weight=1.0,allow_45_degree_turns=true))]
+    #[pyo3(signature=(grid_size_um=0.5,straight_short_cells=1,straight_long_cells=4,bend_radius_cells=2,allow_45_degree_turns=true))]
     pub(crate) fn new(
         grid_size_um: f64,
         straight_short_cells: i32,
         straight_long_cells: i32,
         bend_radius_cells: i32,
-        bend_weight: f64,
         allow_45_degree_turns: bool,
     ) -> Self {
         Self {
@@ -89,7 +86,6 @@ impl PyPrimitiveLibraryConfig {
             straight_long_cells,
             bend_radius_cells,
             allow_45_degree_turns,
-            bend_weight,
         }
     }
 
@@ -162,8 +158,6 @@ pub struct PyAStarConfig {
     #[pyo3(get, set)]
     pub heuristic_mode: String,
     #[pyo3(get, set)]
-    pub heuristic_weight: f64,
-    #[pyo3(get, set)]
     pub heap_tie_breaker: String,
     #[pyo3(get, set)]
     pub max_search_time_ms: u64,
@@ -172,7 +166,7 @@ pub struct PyAStarConfig {
 #[pymethods]
 impl PyAStarConfig {
     #[new]
-    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,proactive_congestion_weight=0.0,proactive_congestion_radius_cells=0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string(),heuristic_mode="heading_aware".to_string(),heuristic_weight=1.0))]
+    #[pyo3(signature=(max_iterations=100_000,bend_weight=1.0,target_tolerance_cells=0,require_target_angle=true,allowed_target_angles=None,use_routing_window=true,routing_window_min_margin_cells=12,routing_window_scale=0.35,routing_window_max_expansions=3,routing_window_fallback_full_grid=true,routing_window_growth=0.5,max_dense_obstacle_cells=10_000_000,ignore_dynamic_obstacles=false,history_weight=0.0,proactive_congestion_weight=0.0,proactive_congestion_radius_cells=0,collect_detailed_timing=false,use_indexed_heap=false,primitive_ordering="library".to_string(),heuristic_mode="heading_aware".to_string()))]
     pub(crate) fn new(
         max_iterations: usize,
         bend_weight: f64,
@@ -194,7 +188,6 @@ impl PyAStarConfig {
         use_indexed_heap: bool,
         primitive_ordering: String,
         heuristic_mode: String,
-        heuristic_weight: f64,
     ) -> Self {
         Self {
             max_iterations,
@@ -220,7 +213,6 @@ impl PyAStarConfig {
             use_indexed_heap,
             primitive_ordering,
             heuristic_mode,
-            heuristic_weight,
             heap_tie_breaker: "smaller_g".to_string(),
             max_search_time_ms: 0,
         }

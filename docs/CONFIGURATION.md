@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 90 `RoutingConfig` fields (90 with an overlay variable), 50 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 177 in total.
+Totals: 89 `RoutingConfig` fields (89 with an overlay variable), 50 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 176 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -185,7 +185,6 @@ Mirrors the search-tuning env reads of `translation/route_rust.py`.
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
 | `min_bend_weight` | `float` | `12.0` | `PHOTONIC_ROUTER_MIN_BEND_WEIGHT` | `PHOTONIC_ROUTER_MIN_BEND_WEIGHT`: float, default 12.0. |
-| `min_heuristic_weight` | `float` | `1.0` | `PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT` | `PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT`: float, default 1.0. |
 | `heap_tie_breaker` | `str \| None` | `None` | `PHOTONIC_ROUTER_HEAP_TIE_BREAKER` | `PHOTONIC_ROUTER_HEAP_TIE_BREAKER`: only exactly `"smaller_g"` or `"larger_g"` override; any other value (including unset) means `None`, and the site computes its own default. |
 | `long_straight_exempt_dense_fanout` | `bool \| None` | `None` | `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT` | `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT`: `== "1"`. `None` = unset -- SELF-SET by `routing_flow.py` to True when pre-placed crossing grids are enabled and this field is still `None`; the site tests `is True`. |
 

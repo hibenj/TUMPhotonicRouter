@@ -79,7 +79,6 @@ pub(crate) fn parse_heap_tie_breaker(value: &str) -> PyResult<HeapTieBreaker> {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn astar_config_from_py(
     astar_cfg: &PyAStarConfig,
-    primitive_cfg: &PyPrimitiveLibraryConfig,
     ignore_dynamic_obstacles: Option<bool>,
     enable_simple_routes: Option<bool>,
     history_weight: Option<f64>,
@@ -117,7 +116,7 @@ pub(crate) fn astar_config_from_py(
     Ok(AStarConfig {
         diagnostics: router_config.diagnostics.clone(),
         max_iterations: astar_cfg.max_iterations,
-        bend_weight: astar_cfg.bend_weight * primitive_cfg.bend_weight,
+        bend_weight: astar_cfg.bend_weight,
         target_tolerance_cells: astar_cfg.target_tolerance_cells,
         require_target_angle: astar_cfg.require_target_angle,
         allowed_target_angles_mask,
@@ -146,7 +145,6 @@ pub(crate) fn astar_config_from_py(
         use_indexed_heap: astar_cfg.use_indexed_heap,
         primitive_ordering,
         heuristic_mode,
-        heuristic_weight: astar_cfg.heuristic_weight,
         heap_tie_breaker,
         require_terminal_straights: false,
         max_search_time_ms,
@@ -1958,7 +1956,7 @@ mod tests {
         let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
         let router = PyPhotonicRouter::new(
             grid,
-            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
+            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, true),
             PyAStarConfig::new(
                 10000,
                 1.0,
@@ -1980,7 +1978,6 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
-                1.0,
             ),
             None,
         );
@@ -2022,7 +2019,7 @@ mod tests {
         let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
         let mut router = PyPhotonicRouter::new(
             grid,
-            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
+            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, true),
             PyAStarConfig::new(
                 10000,
                 1.0,
@@ -2044,7 +2041,6 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
-                1.0,
             ),
             None,
         );
@@ -2202,13 +2198,11 @@ mod tests {
             false,
             "library".to_string(),
             "distance".to_string(),
-            1.0,
         );
-        let primitive_cfg = PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true);
 
         let unset = RouterConfig::default();
         assert_eq!(
-            astar_config_from_py(&astar_cfg, &primitive_cfg, None, None, None, None, &unset)
+            astar_config_from_py(&astar_cfg, None, None, None, None, &unset)
                 .unwrap()
                 .max_dense_states,
             default
@@ -2222,7 +2216,7 @@ mod tests {
             ..RouterConfig::default()
         };
         assert_eq!(
-            astar_config_from_py(&astar_cfg, &primitive_cfg, None, None, None, None, &zero)
+            astar_config_from_py(&astar_cfg, None, None, None, None, &zero)
                 .unwrap()
                 .max_dense_states,
             default
@@ -2236,17 +2230,9 @@ mod tests {
             ..RouterConfig::default()
         };
         assert_eq!(
-            astar_config_from_py(
-                &astar_cfg,
-                &primitive_cfg,
-                None,
-                None,
-                None,
-                None,
-                &overridden
-            )
-            .unwrap()
-            .max_dense_states,
+            astar_config_from_py(&astar_cfg, None, None, None, None, &overridden)
+                .unwrap()
+                .max_dense_states,
             30_000_000
         );
     }
@@ -2588,7 +2574,7 @@ mod tests {
         let grid = PyGridSpec::new(40, 40, 1.0, 0.0, 0.0).unwrap();
         let mut router = PyPhotonicRouter::new(
             grid,
-            PyPrimitiveLibraryConfig::new(1.0, 2, 4, 2, 1.0, false),
+            PyPrimitiveLibraryConfig::new(1.0, 2, 4, 2, false),
             PyAStarConfig::new(
                 10000,
                 1.0,
@@ -2610,7 +2596,6 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
-                1.0,
             ),
             None,
         );
@@ -2743,7 +2728,7 @@ mod tests {
         let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
         let router = PyPhotonicRouter::new(
             grid,
-            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
+            PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, true),
             PyAStarConfig::new(
                 10000,
                 1.0,
@@ -2765,7 +2750,6 @@ mod tests {
                 false,
                 "library".to_string(),
                 "distance".to_string(),
-                1.0,
             ),
             None,
         );

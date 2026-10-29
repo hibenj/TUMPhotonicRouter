@@ -116,7 +116,7 @@ pub(crate) fn small_test_router_with_router_config(
     let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
     PyPhotonicRouter::new(
         grid,
-        PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, 1.0, true),
+        PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, true),
         PyAStarConfig::new(
             10000,
             1.0,
@@ -138,7 +138,6 @@ pub(crate) fn small_test_router_with_router_config(
             false,
             "library".to_string(),
             "distance".to_string(),
-            1.0,
         ),
         router_config,
     )
@@ -183,7 +182,7 @@ pub(crate) fn crossing_conflict_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJ
     let grid = PyGridSpec::new(60, 60, 1.0, 0.0, 0.0).unwrap();
     let mut router = PyPhotonicRouter::new(
         grid,
-        PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+        PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, true),
         PyAStarConfig::new(
             10000,
             1.0,
@@ -205,7 +204,6 @@ pub(crate) fn crossing_conflict_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJ
             false,
             "library".to_string(),
             "distance".to_string(),
-            1.0,
         ),
         None,
     );
@@ -319,7 +317,7 @@ pub(crate) fn missing_crossing_event_fixture_router() -> PyPhotonicRouter {
     let grid = PyGridSpec::new(60, 60, 1.0, 0.0, 0.0).unwrap();
     let mut router = PyPhotonicRouter::new(
         grid,
-        PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+        PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, true),
         PyAStarConfig::new(
             10000,
             1.0,
@@ -341,7 +339,6 @@ pub(crate) fn missing_crossing_event_fixture_router() -> PyPhotonicRouter {
             false,
             "library".to_string(),
             "distance".to_string(),
-            1.0,
         ),
         None,
     );
@@ -555,7 +552,7 @@ pub(crate) fn crossing_partner_discovery_test_router() -> PyPhotonicRouter {
     let grid = PyGridSpec::new(32, 32, 1.0, 0.0, 0.0).unwrap();
     let mut router = PyPhotonicRouter::new(
         grid,
-        PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, 1.0, true),
+        PyPrimitiveLibraryConfig::new(1.0, 1, 4, 1, true),
         PyAStarConfig::new(
             10000,
             1.0,
@@ -577,7 +574,6 @@ pub(crate) fn crossing_partner_discovery_test_router() -> PyPhotonicRouter {
             false,
             "library".to_string(),
             "distance".to_string(),
-            1.0,
         ),
         None,
     );

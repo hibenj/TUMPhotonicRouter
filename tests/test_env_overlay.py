@@ -383,7 +383,6 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
         # Search tuning (translation/route_rust.py)
         "PHOTONIC_ROUTER_MIN_BEND_WEIGHT",
-        "PHOTONIC_ROUTER_MIN_HEURISTIC_WEIGHT",
         "PHOTONIC_ROUTER_HEAP_TIE_BREAKER",
         "PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT",
         # Flow diagnostics (translation/route_rust.py, route_rust_endpoint_correction.py)

@@ -680,7 +680,6 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
     ),
     # Search tuning (translation/route_rust.py)
     EnvVar(_PREFIX + "MIN_BEND_WEIGHT", ("search", "min_bend_weight"), plain_float),
-    EnvVar(_PREFIX + "MIN_HEURISTIC_WEIGHT", ("search", "min_heuristic_weight"), plain_float),
     EnvVar(_PREFIX + "HEAP_TIE_BREAKER", ("search", "heap_tie_breaker"), heap_tie_breaker_override),
     EnvVar(
         _PREFIX + "LONG_STRAIGHT_EXEMPT_DENSE_FANOUT",

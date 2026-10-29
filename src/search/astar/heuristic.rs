@@ -116,7 +116,7 @@ impl SearchHeuristic {
             target,
             grid_size_um: primitives.grid_size_um(),
             mode,
-            weight: config.heuristic_weight.max(0.0),
+            weight: 1.0,
         }
     }
 

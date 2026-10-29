@@ -235,16 +235,9 @@ impl PyPhotonicRouter {
             bend_radius_cells: primitive_config.bend_radius_cells,
             allow_45_degree_turns: primitive_config.allow_45_degree_turns,
         });
-        let astar_cfg_cached = astar_config_from_py(
-            &astar_config,
-            &primitive_config,
-            None,
-            None,
-            None,
-            None,
-            &router_config,
-        )
-        .map_err(|err| err.to_string());
+        let astar_cfg_cached =
+            astar_config_from_py(&astar_config, None, None, None, None, &router_config)
+                .map_err(|err| err.to_string());
         let search_engine = search_engine_for(&router_config);
         Self {
             obstacle_map: ObstacleMap::new(grid_spec.width as i32, grid_spec.height as i32),
