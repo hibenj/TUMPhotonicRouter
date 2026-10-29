@@ -219,6 +219,16 @@ impl DenseDynamicCoreOwnerGrid {
     }
 }
 
+/// The window as an inclusive grid rectangle.
+fn bounds_rect(bounds: RoutingBounds) -> GridRect {
+    GridRect {
+        x_min: bounds.min_x,
+        y_min: bounds.min_y,
+        x_max: bounds.max_x,
+        y_max: bounds.max_y,
+    }
+}
+
 pub(crate) fn intersect_bounds_rect(bounds: RoutingBounds, rect: GridRect) -> Option<GridRect> {
     let x_min = bounds.min_x.max(rect.x_min);
     let y_min = bounds.min_y.max(rect.y_min);
@@ -334,13 +344,21 @@ impl DenseRoutingGrid {
             Some(())
         };
 
-        for rect in obstacle_map.static_rects() {
-            let Some(rect) = intersect_bounds_rect(bounds, *rect) else {
-                continue;
-            };
+        // Static blockage: one pass over the window. The map's flags plane
+        // carries explicit static cells and rasterised static rectangles
+        // alike, so this marks exactly the cells the rectangle walk plus the
+        // static-key walk used to mark.
+        let map_rect = GridRect {
+            x_min: 0,
+            y_min: 0,
+            x_max: obstacle_map.width() - 1,
+            y_max: obstacle_map.height() - 1,
+        };
+        let window_in_map = intersect_bounds_rect(bounds, map_rect);
+        if let Some(rect) = window_in_map {
             for y in rect.y_min..=rect.y_max {
                 for x in rect.x_min..=rect.x_max {
-                    if opened_contains(x, y) {
+                    if !obstacle_map.is_static_blocked(x, y) || opened_contains(x, y) {
                         continue;
                     }
                     let idx = local_idx(x, y)?;
@@ -353,41 +371,20 @@ impl DenseRoutingGrid {
                 }
             }
         }
-
-        for key in obstacle_map.static_obstacle_keys() {
-            let (x, y) = unpack_xy(key);
-            if opened_contains(x, y) {
-                continue;
-            }
-            let Some(idx) = local_idx(x, y) else {
-                continue;
-            };
-            mark_blocked(
-                idx,
-                &mut blocked_cells,
-                &mut blocked_bits,
-                &mut blocked_count,
-            )?;
-        }
-
-        if !ignore_dynamic_obstacles {
-            let dynamic_expansion_radius_cells = dynamic_expansion_radius_cells.max(0);
-            for key in obstacle_map.dynamic_obstacle_keys() {
-                let (x, y) = unpack_xy(key);
-                for dx in -dynamic_expansion_radius_cells..=dynamic_expansion_radius_cells {
-                    for dy in -dynamic_expansion_radius_cells..=dynamic_expansion_radius_cells {
-                        let Some(nx) = x.checked_add(dx) else {
-                            continue;
-                        };
-                        let Some(ny) = y.checked_add(dy) else {
-                            continue;
-                        };
-                        if dynamic_clearance_exempt_contains(nx, ny) {
+        // A window that leaves the map (tests only; production windows are
+        // clamped to it) still sees the static rectangles that reach past the
+        // map edge, which the plane cannot carry.
+        if window_in_map != Some(bounds_rect(bounds)) {
+            for rect in obstacle_map.static_rects() {
+                let Some(rect) = intersect_bounds_rect(bounds, *rect) else {
+                    continue;
+                };
+                for y in rect.y_min..=rect.y_max {
+                    for x in rect.x_min..=rect.x_max {
+                        if obstacle_map.in_bounds(x, y) || opened_contains(x, y) {
                             continue;
                         }
-                        let Some(idx) = local_idx(nx, ny) else {
-                            continue;
-                        };
+                        let idx = local_idx(x, y)?;
                         mark_blocked(
                             idx,
                             &mut blocked_cells,
@@ -399,22 +396,97 @@ impl DenseRoutingGrid {
             }
         }
 
+        if !ignore_dynamic_obstacles {
+            let dynamic_expansion_radius_cells = dynamic_expansion_radius_cells.max(0);
+            // Only dynamic cells within the expansion radius of the window can
+            // mark a window cell, so scan that band of the map and nothing else.
+            let scan = window_in_map.map(|rect| GridRect {
+                x_min: rect
+                    .x_min
+                    .saturating_sub(dynamic_expansion_radius_cells)
+                    .max(0),
+                y_min: rect
+                    .y_min
+                    .saturating_sub(dynamic_expansion_radius_cells)
+                    .max(0),
+                x_max: rect
+                    .x_max
+                    .saturating_add(dynamic_expansion_radius_cells)
+                    .min(obstacle_map.width() - 1),
+                y_max: rect
+                    .y_max
+                    .saturating_add(dynamic_expansion_radius_cells)
+                    .min(obstacle_map.height() - 1),
+            });
+            if let Some(scan) = scan {
+                for y in scan.y_min..=scan.y_max {
+                    for x in scan.x_min..=scan.x_max {
+                        if !obstacle_map.is_dynamic_blocked(x, y) {
+                            continue;
+                        }
+                        for dx in -dynamic_expansion_radius_cells..=dynamic_expansion_radius_cells {
+                            for dy in
+                                -dynamic_expansion_radius_cells..=dynamic_expansion_radius_cells
+                            {
+                                let Some(nx) = x.checked_add(dx) else {
+                                    continue;
+                                };
+                                let Some(ny) = y.checked_add(dy) else {
+                                    continue;
+                                };
+                                if dynamic_clearance_exempt_contains(nx, ny) {
+                                    continue;
+                                }
+                                let Some(idx) = local_idx(nx, ny) else {
+                                    continue;
+                                };
+                                mark_blocked(
+                                    idx,
+                                    &mut blocked_cells,
+                                    &mut blocked_bits,
+                                    &mut blocked_count,
+                                )?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(history) = history.as_mut() {
-            for (key, cost) in obstacle_map.history_entries() {
-                let (x, y) = unpack_xy(key);
-                let Some(idx) = local_idx(x, y) else {
-                    continue;
-                };
-                history[idx] = cost;
+            if obstacle_map.has_history_costs() {
+                if let Some(rect) = window_in_map {
+                    for y in rect.y_min..=rect.y_max {
+                        for x in rect.x_min..=rect.x_max {
+                            let cost = obstacle_map.get_history_cost(x, y);
+                            if cost == 0 {
+                                continue;
+                            }
+                            let Some(idx) = local_idx(x, y) else {
+                                continue;
+                            };
+                            history[idx] = cost;
+                        }
+                    }
+                }
             }
         }
         if let Some(congestion) = congestion.as_mut() {
-            for (key, cost) in obstacle_map.congestion_entries() {
-                let (x, y) = unpack_xy(key);
-                let Some(idx) = local_idx(x, y) else {
-                    continue;
-                };
-                congestion[idx] = cost;
+            if obstacle_map.has_congestion_costs() {
+                if let Some(rect) = window_in_map {
+                    for y in rect.y_min..=rect.y_max {
+                        for x in rect.x_min..=rect.x_max {
+                            let cost = obstacle_map.get_congestion_cost(x, y);
+                            if cost == 0 {
+                                continue;
+                            }
+                            let Some(idx) = local_idx(x, y) else {
+                                continue;
+                            };
+                            congestion[idx] = cost;
+                        }
+                    }
+                }
             }
         }
 

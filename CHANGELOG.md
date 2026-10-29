@@ -34,6 +34,19 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
   `router_setup.py`. No paper cell ever ran a weight other than 1.0, so the
   27-cell reproduction is unchanged; the Dijkstra oracle keeps its zero
   heuristic.
+- `ObstacleMap` is a dense per-cell grid database (phase 2 slice D). Every
+  cell owns one record: a flags byte (static cell, static rectangle, dynamic
+  halo, dynamic core), three `u16` reference counts, the dynamic owner, and
+  lazily allocated history and congestion costs (15 bytes per cell, 23 with
+  costs). It replaces the five hash maps keyed by cell, the per-row static
+  rectangle interval index and the two cost hash maps; static rectangles are
+  rasterised into their flag bit when set, so every "is this cell free"
+  question reads one byte, and the dense search grid is built by one pass
+  over the window instead of walking rectangles, static keys and dynamic
+  keys. The cold planes are shared copy-on-write, so the engine's per-net
+  static-only probe clone costs what it did before. Public API unchanged;
+  the per-cell accessors now iterate in grid order (all callers sort or
+  build sets). Nine-cell gate identical.
 
 ### Added
 

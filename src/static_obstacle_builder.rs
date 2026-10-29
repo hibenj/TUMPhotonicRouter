@@ -901,35 +901,7 @@ where
     I: IntoIterator<Item = CellKey>,
 {
     assert!(radius >= 0, "radius must be non-negative");
-    let mut inflated = FxHashSet::default();
-
-    for key in cells {
-        let (gx, gy) = unpack_xy(key);
-        if !in_bounds(gx, gy, width, height) {
-            continue;
-        }
-
-        for dx in -radius..=radius {
-            for dy in -radius..=radius {
-                let include = match metric {
-                    ClearanceMetric::Manhattan => dx.abs() + dy.abs() <= radius,
-                    ClearanceMetric::Chebyshev => dx.abs().max(dy.abs()) <= radius,
-                };
-
-                if !include {
-                    continue;
-                }
-
-                let nx = gx + dx;
-                let ny = gy + dy;
-                if in_bounds(nx, ny, width, height) {
-                    inflated.insert(pack_xy(nx, ny));
-                }
-            }
-        }
-    }
-
-    inflated
+    crate::obstacle_map::inflate_packed_cells(cells, width, height, radius, metric)
 }
 
 #[pyfunction]

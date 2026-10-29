@@ -1,8 +1,71 @@
 //! Single-layer obstacle map and routing database primitives.
 //!
 //! The map is the source of truth for blocked cells. It stores static layout
-//! obstacles separately from dynamic routed-net occupancy so future routers can
+//! obstacles separately from dynamic routed-net occupancy so routers can
 //! commit, rip up, and reroute nets without rebuilding fixed layout geometry.
+//!
+//! # Representation: one dense record per cell
+//!
+//! Every in-bounds cell `(x, y)` owns one record at index `y * width + x`.
+//! The record is stored column-wise, one plane per field, so that the field
+//! every search step reads is one byte wide and the cold fields are only
+//! allocated once something writes them:
+//!
+//! | plane               | type    | meaning                                              |
+//! |---------------------|---------|------------------------------------------------------|
+//! | `flags`             | `u8`    | [`STATIC_BIT`], [`STATIC_RECT_BIT`], [`DYNAMIC_BIT`], [`DYNAMIC_CORE_BIT`] |
+//! | `static_refs`       | `u16`   | explicit static references (`add_static_cell(s)`/`add_static_keys`) |
+//! | `dynamic_refs`      | `u16`   | committed routes whose blocked footprint (core + clearance halo) covers the cell |
+//! | `dynamic_core_refs` | `u16`   | committed routes whose core covers the cell          |
+//! | `owner`             | `NetId` | the cell's dynamic owner, [`NO_OWNER`] when none      |
+//! | `history_cost`      | `u32`   | accumulated rip-up history penalty                   |
+//! | `congestion_cost`   | `u32`   | accumulated soft congestion penalty                  |
+//!
+//! That is 15 bytes per cell for the routing database proper and 8 more once
+//! history or congestion costs exist (a 19043 x 6398 map, the largest paper
+//! cell, is 122 M cells: 122 MB of flags, 1.8 GB with every plane allocated).
+//! `flags` is allocated with the map; every other plane is empty until its
+//! first write (an empty plane reads as all zero / `NO_OWNER`) and is shared
+//! copy-on-write between a map and its clones. The engine clones the whole
+//! map once per net for its static-only probe and immediately calls
+//! [`ObstacleMap::clear_dynamic`] on the clone, so sharing keeps that clone at
+//! the cost of copying the one-byte `flags` plane.
+//!
+//! # Invariants
+//!
+//! * `STATIC_BIT` is set iff `static_refs > 0`; `DYNAMIC_BIT` iff
+//!   `dynamic_refs > 0`; `DYNAMIC_CORE_BIT` iff `dynamic_core_refs > 0`.
+//! * `STATIC_RECT_BIT` is set iff at least one rectangle in `static_rects`
+//!   covers the cell. Rectangles are rasterised into the bit when they are
+//!   added; `clear_static_rects`/`set_static_rects` clear the bit plane-wide
+//!   and rasterise again. A rectangle may reach outside the map (clearance
+//!   halos of boundary geometry do); only its in-bounds cells are rasterised,
+//!   and `is_static_blocked` consults the rectangle list for the
+//!   out-of-bounds cells so that they answer as they always did.
+//! * "Is this cell free" is answered by the `flags` byte alone:
+//!   [`ObstacleMap::is_blocked`] is `STATIC_BIT | STATIC_RECT_BIT | DYNAMIC_BIT`
+//!   (out of bounds counts as blocked), and `check_cell_free(x, y, opened)`
+//!   is "not `DYNAMIC_BIT`, and either `opened` contains the cell or neither
+//!   static bit is set". `rect_blocked`, `rect_free`, `check_cells_free` and
+//!   `check_primitive_footprint_free` are loops over `check_cell_free`.
+//! * Owners. `owner` is the first net that committed a footprint over the
+//!   cell; when that net is ripped up, the cell passes to the first other net
+//!   (in `net_routes` iteration order) whose committed footprint still covers
+//!   it. The inverted index "every net whose committed footprint covers the
+//!   cell" is `owner` plus `co_owners[key]`, where `co_owners` is a hash map
+//!   keyed by cell that only holds the second and later owners, so it is
+//!   empty unless footprints overlap (clearance halos, crossings). The index
+//!   mirrors `net_routes` exactly: a cell has an owner iff some committed
+//!   route covers it, every covering net is listed once, and no other net is.
+//!   `owner` therefore never disagrees with the index, which is why the two
+//!   bookkeeping structures of the old hash-map representation (first owner
+//!   and owner list) collapse into one slot plus an overflow map.
+//! * Per-net cell lists (`net_routes`, `net_core_routes`) are keyed by net
+//!   and unchanged. Iteration over the per-cell accessors
+//!   (`static_obstacle_keys`, `dynamic_obstacle_entries`, ...) is in grid
+//!   order (`y` outer, `x` inner).
+
+use std::sync::Arc;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -11,6 +74,10 @@ pub type CellKey = u64;
 
 /// Application-level net identifier.
 pub type NetId = u64;
+
+/// Owner slot value of a cell no committed route covers. Net ids are
+/// application-level indices; `NetId::MAX` is never one of them.
+const NO_OWNER: NetId = NetId::MAX;
 
 /// Distance metric used when expanding blocked cells by clearance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +108,13 @@ pub struct GridRect {
     pub y_max: i32,
 }
 
+impl GridRect {
+    #[inline]
+    fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x_min && x <= self.x_max && y >= self.y_min && y <= self.y_max
+    }
+}
+
 /// Pack signed `(x, y)` grid coordinates into a compact `u64` key.
 ///
 /// The operation preserves the full `i32` coordinate range using two's-complement
@@ -58,32 +132,148 @@ pub fn unpack_xy(key: CellKey) -> (i32, i32) {
     (x, y)
 }
 
+/// Expand packed cells by `radius` in `metric`, clipped to a `width` x
+/// `height` grid; input cells outside the grid contribute nothing. The one
+/// clearance loop behind [`ObstacleMap::inflate_cells`] and
+/// `static_obstacle_builder::inflate_keys`.
+pub(crate) fn inflate_packed_cells<I>(
+    cells: I,
+    width: i32,
+    height: i32,
+    radius: i32,
+    metric: ClearanceMetric,
+) -> FxHashSet<CellKey>
+where
+    I: IntoIterator<Item = CellKey>,
+{
+    let in_bounds = |x: i32, y: i32| x >= 0 && y >= 0 && x < width && y < height;
+    let mut inflated = FxHashSet::default();
+    for key in cells {
+        let (x, y) = unpack_xy(key);
+        if !in_bounds(x, y) {
+            continue;
+        }
+        for dx in -radius..=radius {
+            for dy in -radius..=radius {
+                let inside_metric = match metric {
+                    ClearanceMetric::Manhattan => dx.abs() + dy.abs() <= radius,
+                    ClearanceMetric::Chebyshev => dx.abs().max(dy.abs()) <= radius,
+                };
+                if !inside_metric {
+                    continue;
+                }
+                let nx = x + dx;
+                let ny = y + dy;
+                if in_bounds(nx, ny) {
+                    inflated.insert(pack_xy(nx, ny));
+                }
+            }
+        }
+    }
+    inflated
+}
+
+/// One cold field of the per-cell record: a plane that is empty (reads as
+/// `none` everywhere) until its first write and that clones of the map share
+/// until one side writes to it.
+#[derive(Clone, Debug)]
+struct Plane<T: Copy>(Arc<Vec<T>>);
+
+impl<T: Copy> Plane<T> {
+    fn empty() -> Self {
+        Self(Arc::new(Vec::new()))
+    }
+
+    #[inline]
+    fn is_allocated(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    /// Value at `idx`, `none` while the plane is unallocated.
+    #[inline]
+    fn get(&self, idx: usize, none: T) -> T {
+        self.0.get(idx).copied().unwrap_or(none)
+    }
+
+    /// Writable slot at `idx`; allocates the plane (`cell_count` cells of
+    /// `none`) on the first write and unshares it from clones.
+    #[inline]
+    fn slot(&mut self, idx: usize, cell_count: usize, none: T) -> &mut T {
+        let cells = Arc::make_mut(&mut self.0);
+        if cells.is_empty() {
+            *cells = vec![none; cell_count];
+        }
+        &mut cells[idx]
+    }
+
+    /// Drop every value (the plane is unallocated again).
+    fn clear(&mut self) {
+        self.0 = Arc::new(Vec::new());
+    }
+
+    /// `(idx, value)` of every cell whose value is not `none`, in grid order.
+    fn set_cells(&self, none: T) -> impl Iterator<Item = (usize, T)> + '_
+    where
+        T: PartialEq,
+    {
+        self.0
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(move |&(_, value)| value != none)
+    }
+}
+
+impl Plane<u16> {
+    /// Add one reference at `idx`. Returns true when the count was zero.
+    fn increment(&mut self, idx: usize, cell_count: usize) -> bool {
+        let count = self.slot(idx, cell_count, 0);
+        let was_zero = *count == 0;
+        *count = count
+            .checked_add(1)
+            .expect("cell reference count overflowed u16");
+        was_zero
+    }
+
+    /// Remove one reference at `idx`. Returns `None` when there was none,
+    /// otherwise whether the count is now zero.
+    fn decrement(&mut self, idx: usize, cell_count: usize) -> Option<bool> {
+        if self.get(idx, 0) == 0 {
+            return None;
+        }
+        let count = self.slot(idx, cell_count, 0);
+        *count -= 1;
+        Some(*count == 0)
+    }
+}
+
 /// Single-layer obstacle map for photonic waveguide routing.
 ///
 /// Static obstacles represent fixed geometry from the Python/gdsfactory side.
 /// Dynamic obstacles represent committed routed waveguides and can be ripped up
-/// by net. Both maps use reference counts, so overlapping blockages remain
-/// blocked until every owner is removed.
+/// by net. Both use reference counts, so overlapping blockages remain blocked
+/// until every owner is removed. See the module documentation for the
+/// per-cell record and its invariants.
 #[derive(Clone, Debug)]
 pub struct ObstacleMap {
     width: i32,
     height: i32,
-    occupancy: Vec<u8>,
+    /// Hot plane, one byte per cell, always allocated: the `*_BIT` flags.
+    flags: Vec<u8>,
+    static_refs: Plane<u16>,
+    dynamic_refs: Plane<u16>,
+    dynamic_core_refs: Plane<u16>,
+    owner: Plane<NetId>,
+    history_cost: Plane<u32>,
+    congestion_cost: Plane<u32>,
+    /// Second and later dynamic owners of multi-owner cells (see the module
+    /// documentation); absent or empty for single-owner cells.
+    co_owners: FxHashMap<CellKey, Vec<NetId>>,
+    /// Compact static rectangles as given, for [`Self::static_rects`] and for
+    /// their cells outside the map.
     static_rects: Vec<GridRect>,
-    static_rect_rows: FxHashMap<i32, Vec<(i32, i32)>>,
-    static_obstacles: FxHashMap<CellKey, u16>,
-    dynamic_obstacles: FxHashMap<CellKey, u16>,
-    dynamic_core_obstacles: FxHashMap<CellKey, u16>,
-    dynamic_cell_owner: FxHashMap<CellKey, NetId>,
     net_routes: FxHashMap<NetId, Vec<CellKey>>,
-    /// Inverted index mirroring `net_routes`: for every net `N` in
-    /// `net_routes` and every cell key `K` in `N`'s cell set, the entry for
-    /// `K` here contains `N` exactly once, and no other entries exist. This
-    /// lets owner lookups avoid scanning every committed net's cell set.
-    dynamic_owner_index: FxHashMap<CellKey, Vec<NetId>>,
     net_core_routes: FxHashMap<NetId, Vec<CellKey>>,
-    history_cost: FxHashMap<CellKey, u32>,
-    congestion_cost: FxHashMap<CellKey, u32>,
 }
 
 impl ObstacleMap {
@@ -104,18 +294,17 @@ impl ObstacleMap {
         Self {
             width,
             height,
-            occupancy: vec![0; cell_count],
+            flags: vec![0; cell_count],
+            static_refs: Plane::empty(),
+            dynamic_refs: Plane::empty(),
+            dynamic_core_refs: Plane::empty(),
+            owner: Plane::empty(),
+            history_cost: Plane::empty(),
+            congestion_cost: Plane::empty(),
+            co_owners: FxHashMap::default(),
             static_rects: Vec::new(),
-            static_rect_rows: FxHashMap::default(),
-            static_obstacles: FxHashMap::default(),
-            dynamic_obstacles: FxHashMap::default(),
-            dynamic_core_obstacles: FxHashMap::default(),
-            dynamic_cell_owner: FxHashMap::default(),
             net_routes: FxHashMap::default(),
-            dynamic_owner_index: FxHashMap::default(),
             net_core_routes: FxHashMap::default(),
-            history_cost: FxHashMap::default(),
-            congestion_cost: FxHashMap::default(),
         }
     }
 
@@ -149,15 +338,16 @@ impl ObstacleMap {
         unpack_xy(key)
     }
 
+    // ----------------------------------------------------------------------
+    // Static obstacles
+    // ----------------------------------------------------------------------
+
     /// Add one static obstacle reference. Returns false if the cell is out of bounds.
     pub fn add_static_cell(&mut self, x: i32, y: i32) -> bool {
-        if !self.in_bounds(x, y) {
+        let Some(idx) = self.dense_idx(x, y) else {
             return false;
-        }
-        let key = pack_xy(x, y);
-        if Self::increment_ref(&mut self.static_obstacles, key) {
-            self.set_occupancy_bit(x, y, STATIC_BIT);
-        }
+        };
+        self.add_static_ref(idx);
         true
     }
 
@@ -165,7 +355,7 @@ impl ObstacleMap {
     pub fn add_static_rect(&mut self, rect: GridRect) {
         if let Some(rect) = normalize_rect(rect) {
             self.static_rects.push(rect);
-            self.index_static_rect(rect);
+            self.rasterize_static_rect(rect);
         }
     }
 
@@ -173,7 +363,7 @@ impl ObstacleMap {
     pub fn add_static_rects(&mut self, rects: &[GridRect]) {
         for rect in rects.iter().copied().filter_map(normalize_rect) {
             self.static_rects.push(rect);
-            self.index_static_rect(rect);
+            self.rasterize_static_rect(rect);
         }
     }
 
@@ -193,13 +383,9 @@ impl ObstacleMap {
         let mut added = 0;
         for &key in keys {
             let (x, y) = unpack_xy(key);
-            if !self.in_bounds(x, y) {
-                continue;
+            if self.add_static_cell(x, y) {
+                added += 1;
             }
-            if Self::increment_ref(&mut self.static_obstacles, key) {
-                self.set_occupancy_bit(x, y, STATIC_BIT);
-            }
-            added += 1;
         }
         added
     }
@@ -207,13 +393,14 @@ impl ObstacleMap {
     /// Remove all compact static rectangles.
     pub fn clear_static_rects(&mut self) {
         self.static_rects.clear();
-        self.static_rect_rows.clear();
+        for cell in &mut self.flags {
+            *cell &= !STATIC_RECT_BIT;
+        }
     }
 
     /// Replace all compact static rectangles.
     pub fn set_static_rects(&mut self, rects: &[GridRect]) {
-        self.static_rects.clear();
-        self.static_rect_rows.clear();
+        self.clear_static_rects();
         self.add_static_rects(rects);
     }
 
@@ -222,61 +409,75 @@ impl ObstacleMap {
         &self.static_rects
     }
 
-    /// Packed cell keys with explicit static obstacle references.
+    /// Packed cell keys with explicit static obstacle references (rectangle
+    /// cells are not listed), in grid order.
     pub fn static_obstacle_keys(&self) -> impl Iterator<Item = CellKey> + '_ {
-        self.static_obstacles.keys().copied()
+        self.static_refs
+            .set_cells(0)
+            .map(move |(idx, _)| self.key_of_idx(idx))
     }
 
-    /// Packed cell keys with dynamic route obstacle references.
+    /// Packed cell keys with dynamic route obstacle references, in grid order.
     pub fn dynamic_obstacle_keys(&self) -> impl Iterator<Item = CellKey> + '_ {
-        self.dynamic_obstacles.keys().copied()
+        self.dynamic_refs
+            .set_cells(0)
+            .map(move |(idx, _)| self.key_of_idx(idx))
     }
 
-    /// Packed dynamic route obstacle cells with their reference counts.
+    /// Packed dynamic route obstacle cells with their reference counts, in grid order.
     pub fn dynamic_obstacle_entries(&self) -> impl Iterator<Item = (CellKey, u16)> + '_ {
-        self.dynamic_obstacles
-            .iter()
-            .map(|(&key, &refs)| (key, refs))
+        self.dynamic_refs
+            .set_cells(0)
+            .map(move |(idx, refs)| (self.key_of_idx(idx), refs))
     }
 
-    /// Packed dynamic route core cells with their reference counts.
+    /// Packed dynamic route core cells with their reference counts, in grid order.
     pub fn dynamic_core_obstacle_entries(&self) -> impl Iterator<Item = (CellKey, u16)> + '_ {
-        self.dynamic_core_obstacles
-            .iter()
-            .map(|(&key, &refs)| (key, refs))
+        self.dynamic_core_refs
+            .set_cells(0)
+            .map(move |(idx, refs)| (self.key_of_idx(idx), refs))
     }
 
-    /// Packed cell keys with accumulated rip-up history costs.
+    /// Packed cell keys with accumulated rip-up history costs, in grid order.
     pub fn history_entries(&self) -> impl Iterator<Item = (CellKey, u32)> + '_ {
-        self.history_cost.iter().map(|(&key, &cost)| (key, cost))
+        self.history_cost
+            .set_cells(0)
+            .map(move |(idx, cost)| (self.key_of_idx(idx), cost))
     }
 
-    /// Packed cell keys with accumulated soft congestion costs.
+    /// Packed cell keys with accumulated soft congestion costs, in grid order.
     pub fn congestion_entries(&self) -> impl Iterator<Item = (CellKey, u32)> + '_ {
-        self.congestion_cost.iter().map(|(&key, &cost)| (key, cost))
+        self.congestion_cost
+            .set_cells(0)
+            .map(move |(idx, cost)| (self.key_of_idx(idx), cost))
+    }
+
+    /// True when some cell carries a rip-up history cost (cheap pre-check
+    /// for a window scan over [`Self::get_history_cost`]).
+    pub(crate) fn has_history_costs(&self) -> bool {
+        self.history_cost.is_allocated()
+    }
+
+    /// True when some cell carries a soft congestion cost.
+    pub(crate) fn has_congestion_costs(&self) -> bool {
+        self.congestion_cost.is_allocated()
     }
 
     /// Remove every static obstacle entry (compact + cell-based).
     pub fn clear_static_cells(&mut self) {
-        self.static_obstacles.clear();
+        self.static_refs.clear();
         self.static_rects.clear();
-        self.static_rect_rows.clear();
-        for cell in &mut self.occupancy {
-            *cell &= !STATIC_BIT;
+        for cell in &mut self.flags {
+            *cell &= !(STATIC_BIT | STATIC_RECT_BIT);
         }
     }
 
     /// Remove one static obstacle reference. Returns true when a reference was removed.
     pub fn remove_static_cell(&mut self, x: i32, y: i32) -> bool {
-        if !self.in_bounds(x, y) {
+        let Some(idx) = self.dense_idx(x, y) else {
             return false;
-        }
-        let key = pack_xy(x, y);
-        let removed = Self::decrement_ref(&mut self.static_obstacles, key);
-        if removed && !self.static_obstacles.contains_key(&key) {
-            self.clear_occupancy_bit(x, y, STATIC_BIT);
-        }
-        removed
+        };
+        self.remove_static_ref(idx)
     }
 
     /// Remove many packed static obstacle references.
@@ -288,62 +489,56 @@ impl ObstacleMap {
         let mut removed_count = 0;
         for &key in keys {
             let (x, y) = unpack_xy(key);
-            if !self.in_bounds(x, y) {
-                continue;
-            }
-            let removed = Self::decrement_ref(&mut self.static_obstacles, key);
-            if removed {
+            if self.remove_static_cell(x, y) {
                 removed_count += 1;
-            }
-            if removed && !self.static_obstacles.contains_key(&key) {
-                self.clear_occupancy_bit(x, y, STATIC_BIT);
             }
         }
         removed_count
     }
 
-    /// Return true if a static obstacle blocks this in-bounds cell.
+    /// Return true if a static obstacle blocks this cell.
     ///
-    /// Out-of-bounds cells are not static obstacles, but they are considered
-    /// unavailable by [`Self::is_blocked`] and free-space checks.
+    /// Out-of-bounds cells are not static obstacles unless a compact static
+    /// rectangle reaches them; they are considered unavailable by
+    /// [`Self::is_blocked`] and free-space checks regardless.
     pub fn is_static_blocked(&self, x: i32, y: i32) -> bool {
-        self.read_occupancy_bit(x, y, STATIC_BIT) || self.is_static_rect_blocked(x, y)
+        match self.dense_idx(x, y) {
+            Some(idx) => self.flags[idx] & (STATIC_BIT | STATIC_RECT_BIT) != 0,
+            None => self.static_rects.iter().any(|rect| rect.contains(x, y)),
+        }
     }
 
     /// Return true if a committed route blocks this in-bounds cell.
     pub fn is_dynamic_blocked(&self, x: i32, y: i32) -> bool {
-        self.read_occupancy_bit(x, y, DYNAMIC_BIT)
+        self.read_flag(x, y, DYNAMIC_BIT)
     }
 
     /// Return true if a committed route core blocks this in-bounds cell.
     pub fn is_dynamic_core_blocked(&self, x: i32, y: i32) -> bool {
-        if !self.in_bounds(x, y) {
-            return false;
-        }
-        self.dynamic_core_obstacles.contains_key(&pack_xy(x, y))
+        self.read_flag(x, y, DYNAMIC_CORE_BIT)
     }
 
     /// Return true if the cell is unavailable for routing.
     ///
     /// Out-of-bounds cells are treated as blocked.
     pub fn is_blocked(&self, x: i32, y: i32) -> bool {
-        if !self.in_bounds(x, y) {
-            return true;
+        match self.dense_idx(x, y) {
+            Some(idx) => self.flags[idx] & (STATIC_BIT | STATIC_RECT_BIT | DYNAMIC_BIT) != 0,
+            None => true,
         }
-        self.read_occupancy_bit(x, y, STATIC_BIT)
-            || self.read_occupancy_bit(x, y, DYNAMIC_BIT)
-            || self.is_static_rect_blocked(x, y)
     }
 
     /// Total static plus dynamic reference count for an in-bounds cell.
     pub fn ref_count(&self, x: i32, y: i32) -> u32 {
-        if !self.in_bounds(x, y) {
+        let Some(idx) = self.dense_idx(x, y) else {
             return 0;
-        }
-        let key = pack_xy(x, y);
-        self.static_obstacles.get(&key).copied().unwrap_or(0) as u32
-            + self.dynamic_obstacles.get(&key).copied().unwrap_or(0) as u32
+        };
+        u32::from(self.static_refs.get(idx, 0)) + u32::from(self.dynamic_refs.get(idx, 0))
     }
+
+    // ----------------------------------------------------------------------
+    // Dynamic obstacles: commit and rip-up
+    // ----------------------------------------------------------------------
 
     /// Commit a routed waveguide for `net_id`.
     ///
@@ -373,7 +568,7 @@ impl ObstacleMap {
             .map(|route| route.iter().copied().collect())
             .unwrap_or_default();
         for &key in &keys {
-            let existing_refs = self.dynamic_obstacles.get(&key).copied().unwrap_or(0);
+            let existing_refs = self.dynamic_refs_at_key(key);
             let same_net_refs = u16::from(old_route_keys.contains(&key));
             if existing_refs > same_net_refs {
                 return false;
@@ -383,14 +578,11 @@ impl ObstacleMap {
         self.ripup_route(net_id);
 
         for &key in &keys {
-            let (x, y) = unpack_xy(key);
-            if Self::increment_ref(&mut self.dynamic_obstacles, key) {
-                self.set_occupancy_bit(x, y, DYNAMIC_BIT);
-            }
-            Self::increment_ref(&mut self.dynamic_core_obstacles, key);
-            self.dynamic_cell_owner.entry(key).or_insert(net_id);
+            let idx = self.idx_of_key(key);
+            self.add_dynamic_ref(idx);
+            self.add_dynamic_core_ref(idx);
+            self.add_owner(idx, key, net_id);
         }
-        self.add_owner_index_entries(net_id, &keys);
         self.net_core_routes.insert(net_id, keys.clone());
         self.net_routes.insert(net_id, keys);
         true
@@ -498,9 +690,10 @@ impl ObstacleMap {
             }
             core_keys.push(key);
 
-            let existing_refs = self.dynamic_obstacles.get(&key).copied().unwrap_or(0);
+            let idx = self.idx_of_key(key);
+            let existing_refs = self.dynamic_refs.get(idx, 0);
             let same_net_refs = u16::from(old_route_keys.contains(&key));
-            let existing_core_refs = self.dynamic_core_obstacles.get(&key).copied().unwrap_or(0);
+            let existing_core_refs = self.dynamic_core_refs.get(idx, 0);
             let same_net_core_refs = u16::from(old_core_route_keys.contains(&key));
             let other_core_refs = existing_core_refs.saturating_sub(same_net_core_refs);
             let allowed_clearance_overlap =
@@ -573,16 +766,14 @@ impl ObstacleMap {
         self.ripup_route(net_id);
 
         for &key in &keys {
-            let (x, y) = unpack_xy(key);
-            if Self::increment_ref(&mut self.dynamic_obstacles, key) {
-                self.set_occupancy_bit(x, y, DYNAMIC_BIT);
-            }
-            self.dynamic_cell_owner.entry(key).or_insert(net_id);
+            let idx = self.idx_of_key(key);
+            self.add_dynamic_ref(idx);
+            self.add_owner(idx, key, net_id);
         }
         for &key in &core_keys {
-            Self::increment_ref(&mut self.dynamic_core_obstacles, key);
+            let idx = self.idx_of_key(key);
+            self.add_dynamic_core_ref(idx);
         }
-        self.add_owner_index_entries(net_id, &keys);
         self.net_core_routes.insert(net_id, core_keys);
         self.net_routes.insert(net_id, keys);
         true
@@ -595,25 +786,14 @@ impl ObstacleMap {
         };
 
         for key in keys {
-            let (x, y) = unpack_xy(key);
-            let removed = Self::decrement_ref(&mut self.dynamic_obstacles, key);
-            if removed && !self.dynamic_obstacles.contains_key(&key) {
-                self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
-            }
-            self.remove_owner_index_entry(key, net_id);
-            if self.dynamic_cell_owner.get(&key).copied() == Some(net_id) {
-                self.dynamic_cell_owner.remove(&key);
-                for (&other_net_id, route_cells) in &self.net_routes {
-                    if other_net_id != net_id && route_cells.contains(&key) {
-                        self.dynamic_cell_owner.insert(key, other_net_id);
-                        break;
-                    }
-                }
-            }
+            let idx = self.idx_of_key(key);
+            self.remove_dynamic_ref(idx);
+            self.remove_owner(idx, key, net_id);
         }
         if let Some(core_keys) = self.net_core_routes.remove(&net_id) {
             for key in core_keys {
-                Self::decrement_ref(&mut self.dynamic_core_obstacles, key);
+                let idx = self.idx_of_key(key);
+                self.remove_dynamic_core_ref(idx);
             }
         }
         true
@@ -621,14 +801,14 @@ impl ObstacleMap {
 
     /// Clear every dynamic route and routed-net owner entry.
     pub fn clear_dynamic(&mut self) {
-        self.dynamic_obstacles.clear();
-        self.dynamic_core_obstacles.clear();
-        self.dynamic_cell_owner.clear();
+        self.dynamic_refs.clear();
+        self.dynamic_core_refs.clear();
+        self.owner.clear();
+        self.co_owners.clear();
         self.net_routes.clear();
-        self.dynamic_owner_index.clear();
         self.net_core_routes.clear();
-        for cell in &mut self.occupancy {
-            *cell &= !DYNAMIC_BIT;
+        for cell in &mut self.flags {
+            *cell &= !(DYNAMIC_BIT | DYNAMIC_CORE_BIT);
         }
     }
 
@@ -637,16 +817,13 @@ impl ObstacleMap {
     /// clearance may overlap but core geometry must remain hard blockage.
     pub fn clear_dynamic_clearance_in_cells(&mut self, cells: &[(i32, i32)]) {
         for &(x, y) in cells {
-            if !self.in_bounds(x, y) {
+            let Some(idx) = self.dense_idx(x, y) else {
+                continue;
+            };
+            if self.flags[idx] & DYNAMIC_CORE_BIT != 0 {
                 continue;
             }
-            let key = pack_xy(x, y);
-            if self.dynamic_core_obstacles.contains_key(&key) {
-                continue;
-            }
-            if self.dynamic_obstacles.remove(&key).is_some() {
-                self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
-            }
+            self.drop_dynamic_refs(idx);
         }
     }
 
@@ -674,15 +851,18 @@ impl ObstacleMap {
             .map(|(&net_id, cells)| (net_id, cells.as_slice()))
     }
 
+    // ----------------------------------------------------------------------
+    // Dynamic owners
+    // ----------------------------------------------------------------------
+
     /// Return the committed dynamic-route owner of a cell, if any.
     pub fn dynamic_owner_at(&self, x: i32, y: i32) -> Option<NetId> {
-        if !self.in_bounds(x, y) {
-            return None;
+        let idx = self.dense_idx(x, y)?;
+        let owner = self.owner.get(idx, NO_OWNER);
+        if owner != NO_OWNER {
+            return Some(owner);
         }
         let key = pack_xy(x, y);
-        if let Some(owner) = self.dynamic_cell_owner.get(&key) {
-            return Some(*owner);
-        }
         self.net_routes
             .iter()
             .find_map(|(&net_id, cells)| cells.contains(&key).then_some(net_id))
@@ -714,10 +894,7 @@ impl ObstacleMap {
             if !self.in_bounds(x, y) {
                 continue;
             }
-            let key = pack_xy(x, y);
-            if let Some(net_ids) = self.dynamic_owner_index.get(&key) {
-                owners.extend(net_ids.iter().copied());
-            }
+            self.extend_with_owners(pack_xy(x, y), None, &mut owners);
         }
         owners
     }
@@ -728,43 +905,94 @@ impl ObstacleMap {
         exclude_net_id: Option<NetId>,
     ) -> FxHashSet<NetId> {
         let mut owners = FxHashSet::default();
-        if let Some(net_ids) = self.dynamic_owner_index.get(&key) {
-            for &net_id in net_ids {
-                if exclude_net_id.is_some_and(|excluded| excluded == net_id) {
-                    continue;
-                }
-                owners.insert(net_id);
-            }
-        }
+        self.extend_with_owners(key, exclude_net_id, &mut owners);
         owners
     }
 
-    /// Add `net_id` as an owner of each key, mirroring an insertion into
-    /// `net_routes`. Each key must not already carry `net_id` in the index
-    /// (mutation sites must ripup/remove the net's old keys first).
-    fn add_owner_index_entries(&mut self, net_id: NetId, keys: &[CellKey]) {
-        for &key in keys {
-            let owners = self.dynamic_owner_index.entry(key).or_default();
-            if !owners.contains(&net_id) {
-                owners.push(net_id);
+    /// Add every owner of the in-bounds `key` (primary slot plus co-owners)
+    /// except `exclude_net_id` to `owners`.
+    fn extend_with_owners(
+        &self,
+        key: CellKey,
+        exclude_net_id: Option<NetId>,
+        owners: &mut FxHashSet<NetId>,
+    ) {
+        let owner = self.owner.get(self.idx_of_key(key), NO_OWNER);
+        if owner == NO_OWNER {
+            return;
+        }
+        if exclude_net_id != Some(owner) {
+            owners.insert(owner);
+        }
+        if let Some(co_owners) = self.co_owners.get(&key) {
+            owners.extend(
+                co_owners
+                    .iter()
+                    .copied()
+                    .filter(|&net_id| exclude_net_id != Some(net_id)),
+            );
+        }
+    }
+
+    /// Register `net_id` as an owner of the cell: into the `owner` slot when
+    /// the cell has none, otherwise into `co_owners` (once).
+    fn add_owner(&mut self, idx: usize, key: CellKey, net_id: NetId) {
+        debug_assert_ne!(net_id, NO_OWNER, "NetId::MAX is the empty-owner sentinel");
+        let cell_count = self.flags.len();
+        let owner = self.owner.slot(idx, cell_count, NO_OWNER);
+        if *owner == NO_OWNER {
+            *owner = net_id;
+        } else if *owner != net_id {
+            let co_owners = self.co_owners.entry(key).or_default();
+            if !co_owners.contains(&net_id) {
+                co_owners.push(net_id);
             }
         }
     }
 
-    /// Remove `net_id` as an owner of `key`, mirroring a removal from
-    /// `net_routes`. No-op if `net_id` is not an owner of `key`.
-    fn remove_owner_index_entry(&mut self, key: CellKey, net_id: NetId) {
-        if let Some(owners) = self.dynamic_owner_index.get_mut(&key) {
-            if let Some(pos) = owners.iter().position(|&owner| owner == net_id) {
-                owners.swap_remove(pos);
+    /// Remove `net_id` as an owner of the cell. When it held the `owner`
+    /// slot, the slot passes to the first other covering net in `net_routes`
+    /// iteration order (`net_id`'s route has already been removed from it).
+    fn remove_owner(&mut self, idx: usize, key: CellKey, net_id: NetId) {
+        let cell_count = self.flags.len();
+        if self.owner.get(idx, NO_OWNER) != net_id {
+            if let Some(co_owners) = self.co_owners.get_mut(&key) {
+                if let Some(pos) = co_owners.iter().position(|&owner| owner == net_id) {
+                    co_owners.swap_remove(pos);
+                }
+                if co_owners.is_empty() {
+                    self.co_owners.remove(&key);
+                }
             }
-            if owners.is_empty() {
-                self.dynamic_owner_index.remove(&key);
-            }
+            return;
         }
+
+        let Some(co_owners) = self.co_owners.get_mut(&key) else {
+            *self.owner.slot(idx, cell_count, NO_OWNER) = NO_OWNER;
+            return;
+        };
+        let successor = if co_owners.len() == 1 {
+            co_owners[0]
+        } else {
+            self.net_routes
+                .keys()
+                .copied()
+                .find(|other| co_owners.contains(other))
+                .expect("every co-owner has a committed route")
+        };
+        let pos = co_owners
+            .iter()
+            .position(|&owner| owner == successor)
+            .expect("successor is a co-owner");
+        co_owners.swap_remove(pos);
+        if co_owners.is_empty() {
+            self.co_owners.remove(&key);
+        }
+        *self.owner.slot(idx, cell_count, NO_OWNER) = successor;
     }
 
-    /// Full O(n) check that `dynamic_owner_index` exactly mirrors `net_routes`.
+    /// Full O(n) check that the owner slot plus `co_owners` exactly mirror
+    /// `net_routes`.
     #[cfg(test)]
     fn owner_index_is_consistent(&self) -> bool {
         let mut expected: FxHashMap<CellKey, FxHashSet<NetId>> = FxHashMap::default();
@@ -774,22 +1002,33 @@ impl ObstacleMap {
             }
         }
 
-        if expected.len() != self.dynamic_owner_index.len() {
-            return false;
-        }
-
-        for (key, owners) in &expected {
-            let Some(index_owners) = self.dynamic_owner_index.get(key) else {
+        let mut owned_cells = 0usize;
+        for idx in 0..self.flags.len() {
+            let key = self.key_of_idx(idx);
+            let owner = self.owner.get(idx, NO_OWNER);
+            let co_owners = self.co_owners.get(&key);
+            if owner == NO_OWNER {
+                if co_owners.is_some() {
+                    return false;
+                }
+                continue;
+            }
+            owned_cells += 1;
+            let Some(expected_owners) = expected.get(&key) else {
                 return false;
             };
-            if index_owners.len() != owners.len() {
-                return false;
+            let mut actual: FxHashSet<NetId> = FxHashSet::default();
+            actual.insert(owner);
+            for &co_owner in co_owners.map(Vec::as_slice).unwrap_or(&[]) {
+                if !actual.insert(co_owner) {
+                    return false;
+                }
             }
-            if !index_owners.iter().all(|owner| owners.contains(owner)) {
+            if actual != *expected_owners {
                 return false;
             }
         }
-        true
+        owned_cells == expected.len()
     }
 
     /// Clear dynamic blocking for cells owned only by the selected nets.
@@ -813,10 +1052,9 @@ impl ObstacleMap {
             if owners.is_empty() || !owners.iter().all(|owner| net_ids.contains(owner)) {
                 continue;
             }
-            let (x, y) = unpack_xy(key);
-            self.dynamic_obstacles.remove(&key);
-            self.dynamic_core_obstacles.remove(&key);
-            self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
+            let idx = self.idx_of_key(key);
+            self.drop_dynamic_refs(idx);
+            self.drop_dynamic_core_refs(idx);
             cleared += 1;
         }
         cleared
@@ -833,16 +1071,15 @@ impl ObstacleMap {
         let mut cleared = 0usize;
         for &key in cells {
             let (x, y) = unpack_xy(key);
-            if !self.in_bounds(x, y) {
+            let Some(idx) = self.dense_idx(x, y) else {
                 continue;
-            }
+            };
             let owners = self.dynamic_owners_for_key(key, None);
             if owners.is_empty() || !owners.iter().all(|owner| net_ids.contains(owner)) {
                 continue;
             }
-            self.dynamic_obstacles.remove(&key);
-            self.dynamic_core_obstacles.remove(&key);
-            self.clear_occupancy_bit(x, y, DYNAMIC_BIT);
+            self.drop_dynamic_refs(idx);
+            self.drop_dynamic_core_refs(idx);
             cleared += 1;
         }
         cleared
@@ -862,40 +1099,37 @@ impl ObstacleMap {
         let mut expanded = Self {
             width: self.width,
             height: self.height,
-            occupancy: self.occupancy.clone(),
-            static_rects: self.static_rects.clone(),
-            static_rect_rows: self.static_rect_rows.clone(),
-            static_obstacles: self.static_obstacles.clone(),
-            dynamic_obstacles: self.dynamic_obstacles.clone(),
-            dynamic_core_obstacles: self.dynamic_core_obstacles.clone(),
+            flags: self.flags.clone(),
+            static_refs: self.static_refs.clone(),
+            dynamic_refs: self.dynamic_refs.clone(),
+            dynamic_core_refs: self.dynamic_core_refs.clone(),
             // Expanded search maps only need dynamic occupancy, not ownership
             // or per-net route records. Keeping these empty avoids copying and
             // updating large owner maps on every normal route.
-            dynamic_cell_owner: FxHashMap::default(),
-            net_routes: FxHashMap::default(),
-            dynamic_owner_index: FxHashMap::default(),
-            net_core_routes: FxHashMap::default(),
+            owner: Plane::empty(),
             history_cost: self.history_cost.clone(),
             congestion_cost: self.congestion_cost.clone(),
+            co_owners: FxHashMap::default(),
+            static_rects: self.static_rects.clone(),
+            net_routes: FxHashMap::default(),
+            net_core_routes: FxHashMap::default(),
         };
-        for key in self.dynamic_obstacles.keys().copied() {
+        for key in self.dynamic_obstacle_keys() {
             let (x, y) = unpack_xy(key);
             for dx in -radius_cells..=radius_cells {
                 for dy in -radius_cells..=radius_cells {
-                    let nx = x + dx;
-                    let ny = y + dy;
-                    if !expanded.in_bounds(nx, ny) {
-                        continue;
-                    }
-                    let expanded_key = pack_xy(nx, ny);
-                    if Self::increment_ref(&mut expanded.dynamic_obstacles, expanded_key) {
-                        expanded.set_occupancy_bit(nx, ny, DYNAMIC_BIT);
+                    if let Some(idx) = expanded.dense_idx(x + dx, y + dy) {
+                        expanded.add_dynamic_ref(idx);
                     }
                 }
             }
         }
         expanded
     }
+
+    // ----------------------------------------------------------------------
+    // Free-space queries
+    // ----------------------------------------------------------------------
 
     /// Return true when all cells in `rect` are free for routing.
     pub fn rect_free(&self, rect: GridRect, opened_cells: Option<&FxHashSet<CellKey>>) -> bool {
@@ -912,9 +1146,6 @@ impl ObstacleMap {
         if !self.in_bounds(rect.x_min, rect.y_min) || !self.in_bounds(rect.x_max, rect.y_max) {
             return true;
         }
-        if self.rect_blocked_by_static_rects(&rect, opened_cells) {
-            return true;
-        }
 
         for y in rect.y_min..=rect.y_max {
             for x in rect.x_min..=rect.x_max {
@@ -926,53 +1157,26 @@ impl ObstacleMap {
         false
     }
 
-    /// Return true when there is a compact-rect static blockage in `rect`.
-    fn rect_blocked_by_static_rects(
-        &self,
-        query: &GridRect,
-        opened_cells: Option<&FxHashSet<CellKey>>,
-    ) -> bool {
-        for static_rect in &self.static_rects {
-            let Some(overlap) = intersect_rects(query, static_rect) else {
-                continue;
-            };
-            let Some(opened_cells) = opened_cells else {
-                return true;
-            };
-            if grid_rect_area_cells(overlap) > opened_cells.len() {
-                return true;
-            }
-            for y in overlap.y_min..=overlap.y_max {
-                for x in overlap.x_min..=overlap.x_max {
-                    if !opened_cells.contains(&pack_xy(x, y)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
     /// Add a rip-up history penalty to an in-bounds cell.
     ///
     /// Returns false if the cell is out of bounds. Cost addition saturates at
     /// `u32::MAX`.
     pub fn add_history_cost(&mut self, x: i32, y: i32, amount: u32) -> bool {
-        if !self.in_bounds(x, y) {
+        let Some(idx) = self.dense_idx(x, y) else {
             return false;
-        }
-
-        let entry = self.history_cost.entry(pack_xy(x, y)).or_insert(0);
+        };
+        let cell_count = self.flags.len();
+        let entry = self.history_cost.slot(idx, cell_count, 0);
         *entry = entry.saturating_add(amount);
         true
     }
 
     /// Return the rip-up history cost for a cell, or zero if none exists.
     pub fn get_history_cost(&self, x: i32, y: i32) -> u32 {
-        if !self.in_bounds(x, y) {
-            return 0;
+        match self.dense_idx(x, y) {
+            Some(idx) => self.history_cost.get(idx, 0),
+            None => 0,
         }
-        self.history_cost.get(&pack_xy(x, y)).copied().unwrap_or(0)
     }
 
     /// Clear all rip-up history penalties.
@@ -985,24 +1189,21 @@ impl ObstacleMap {
     /// Returns false if the cell is out of bounds. Cost addition saturates at
     /// `u32::MAX`.
     pub fn add_congestion_cost(&mut self, x: i32, y: i32, amount: u32) -> bool {
-        if !self.in_bounds(x, y) {
+        let Some(idx) = self.dense_idx(x, y) else {
             return false;
-        }
-
-        let entry = self.congestion_cost.entry(pack_xy(x, y)).or_insert(0);
+        };
+        let cell_count = self.flags.len();
+        let entry = self.congestion_cost.slot(idx, cell_count, 0);
         *entry = entry.saturating_add(amount);
         true
     }
 
     /// Return the soft congestion cost for a cell, or zero if none exists.
     pub fn get_congestion_cost(&self, x: i32, y: i32) -> u32 {
-        if !self.in_bounds(x, y) {
-            return 0;
+        match self.dense_idx(x, y) {
+            Some(idx) => self.congestion_cost.get(idx, 0),
+            None => 0,
         }
-        self.congestion_cost
-            .get(&pack_xy(x, y))
-            .copied()
-            .unwrap_or(0)
     }
 
     /// Clear all soft congestion penalties.
@@ -1067,35 +1268,13 @@ impl ObstacleMap {
             clearance_radius >= 0,
             "clearance_radius must be non-negative"
         );
-
-        let mut inflated = FxHashSet::default();
-
-        for &(x, y) in cells {
-            if !self.in_bounds(x, y) {
-                continue;
-            }
-
-            for dx in -clearance_radius..=clearance_radius {
-                for dy in -clearance_radius..=clearance_radius {
-                    let inside_metric = match metric {
-                        ClearanceMetric::Manhattan => dx.abs() + dy.abs() <= clearance_radius,
-                        ClearanceMetric::Chebyshev => dx.abs().max(dy.abs()) <= clearance_radius,
-                    };
-
-                    if !inside_metric {
-                        continue;
-                    }
-
-                    let nx = x + dx;
-                    let ny = y + dy;
-                    if self.in_bounds(nx, ny) {
-                        inflated.insert(pack_xy(nx, ny));
-                    }
-                }
-            }
-        }
-
-        inflated
+        inflate_packed_cells(
+            cells.iter().map(|&(x, y)| pack_xy(x, y)),
+            self.width,
+            self.height,
+            clearance_radius,
+            metric,
+        )
     }
 
     /// Convert a discretized waveguide core path to core, clearance, and blocked cells.
@@ -1129,25 +1308,28 @@ impl ObstacleMap {
         }
     }
 
+    /// The one free-space rule: in bounds, no dynamic blockage, and either
+    /// opened or free of static blockage (cell or rectangle).
     #[inline]
     fn check_cell_free(&self, x: i32, y: i32, opened_cells: Option<&FxHashSet<CellKey>>) -> bool {
-        if !self.in_bounds(x, y) {
+        let Some(idx) = self.dense_idx(x, y) else {
+            return false;
+        };
+        let flags = self.flags[idx];
+        if flags & DYNAMIC_BIT != 0 {
             return false;
         }
-
-        let key = pack_xy(x, y);
-        if self.read_occupancy_bit(x, y, DYNAMIC_BIT) {
-            return false;
+        if opened_cells.is_some_and(|opened| opened.contains(&pack_xy(x, y))) {
+            return true;
         }
-        if let Some(opened) = opened_cells {
-            if opened.contains(&key) {
-                return true;
-            }
-        }
-
-        !self.is_static_blocked(x, y)
+        flags & (STATIC_BIT | STATIC_RECT_BIT) == 0
     }
 
+    // ----------------------------------------------------------------------
+    // Record access
+    // ----------------------------------------------------------------------
+
+    /// Record index of an in-bounds cell.
     #[inline]
     fn dense_idx(&self, x: i32, y: i32) -> Option<usize> {
         if !self.in_bounds(x, y) {
@@ -1159,93 +1341,106 @@ impl ObstacleMap {
         y.checked_mul(width)?.checked_add(x)
     }
 
+    /// Record index of a packed key that is known to be in bounds.
     #[inline]
-    fn set_occupancy_bit(&mut self, x: i32, y: i32, bit: u8) {
-        if let Some(idx) = self.dense_idx(x, y) {
-            self.occupancy[idx] |= bit;
-        }
-    }
-
-    #[inline]
-    fn clear_occupancy_bit(&mut self, x: i32, y: i32, bit: u8) {
-        if let Some(idx) = self.dense_idx(x, y) {
-            self.occupancy[idx] &= !bit;
-        }
-    }
-
-    fn is_static_rect_blocked(&self, x: i32, y: i32) -> bool {
-        self.static_rect_rows.get(&y).is_some_and(|intervals| {
-            intervals
-                .iter()
-                .any(|&(x_min, x_max)| x >= x_min && x <= x_max)
-        })
-    }
-
-    fn index_static_rect(&mut self, rect: GridRect) {
-        for y in rect.y_min..=rect.y_max {
-            self.static_rect_rows
-                .entry(y)
-                .or_default()
-                .push((rect.x_min, rect.x_max));
-        }
-    }
-
-    #[inline]
-    fn read_occupancy_bit(&self, x: i32, y: i32, bit: u8) -> bool {
+    fn idx_of_key(&self, key: CellKey) -> usize {
+        let (x, y) = unpack_xy(key);
         self.dense_idx(x, y)
-            .and_then(|idx| self.occupancy.get(idx).copied())
-            .map(|value| (value & bit) != 0)
-            .unwrap_or(false)
+            .expect("packed cell key of a committed or validated cell is in bounds")
     }
 
-    fn increment_ref(map: &mut FxHashMap<CellKey, u16>, key: CellKey) -> bool {
-        let count = map.entry(key).or_insert(0);
-        let was_zero = *count == 0;
-        *count = count
-            .checked_add(1)
-            .expect("cell reference count overflowed u16");
-        was_zero
+    /// Packed key of the cell at record index `idx`.
+    #[inline]
+    fn key_of_idx(&self, idx: usize) -> CellKey {
+        let width = usize::try_from(self.width).expect("width is non-negative");
+        let x = i32::try_from(idx % width).expect("x fits i32");
+        let y = i32::try_from(idx / width).expect("y fits i32");
+        pack_xy(x, y)
     }
 
-    fn decrement_ref(map: &mut FxHashMap<CellKey, u16>, key: CellKey) -> bool {
-        let Some(count) = map.get_mut(&key) else {
-            return false;
-        };
+    #[inline]
+    fn read_flag(&self, x: i32, y: i32, bit: u8) -> bool {
+        self.dense_idx(x, y)
+            .is_some_and(|idx| self.flags[idx] & bit != 0)
+    }
 
-        if *count > 1 {
-            *count -= 1;
-        } else {
-            map.remove(&key);
+    /// Reference count of the dynamic (core + clearance) footprints covering
+    /// an in-bounds packed key.
+    #[inline]
+    fn dynamic_refs_at_key(&self, key: CellKey) -> u16 {
+        self.dynamic_refs.get(self.idx_of_key(key), 0)
+    }
+
+    /// Set `STATIC_RECT_BIT` on the in-bounds cells of a normalized rectangle.
+    fn rasterize_static_rect(&mut self, rect: GridRect) {
+        let x_max = rect.x_max.min(self.width - 1);
+        let y_max = rect.y_max.min(self.height - 1);
+        for y in rect.y_min..=y_max {
+            for x in rect.x_min..=x_max {
+                if let Some(idx) = self.dense_idx(x, y) {
+                    self.flags[idx] |= STATIC_RECT_BIT;
+                }
+            }
         }
-
-        true
     }
-}
 
-#[inline]
-fn intersect_rects(a: &GridRect, b: &GridRect) -> Option<GridRect> {
-    let x_min = a.x_min.max(b.x_min);
-    let y_min = a.y_min.max(b.y_min);
-    let x_max = a.x_max.min(b.x_max);
-    let y_max = a.y_max.min(b.y_max);
-
-    if x_min > x_max || y_min > y_max {
-        None
-    } else {
-        Some(GridRect {
-            x_min,
-            y_min,
-            x_max,
-            y_max,
-        })
+    fn add_static_ref(&mut self, idx: usize) {
+        if self.static_refs.increment(idx, self.flags.len()) {
+            self.flags[idx] |= STATIC_BIT;
+        }
     }
-}
 
-#[inline]
-fn grid_rect_area_cells(rect: GridRect) -> usize {
-    let width = i64::from(rect.x_max - rect.x_min + 1);
-    let height = i64::from(rect.y_max - rect.y_min + 1);
-    usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX)
+    fn remove_static_ref(&mut self, idx: usize) -> bool {
+        match self.static_refs.decrement(idx, self.flags.len()) {
+            None => false,
+            Some(now_zero) => {
+                if now_zero {
+                    self.flags[idx] &= !STATIC_BIT;
+                }
+                true
+            }
+        }
+    }
+
+    fn add_dynamic_ref(&mut self, idx: usize) {
+        if self.dynamic_refs.increment(idx, self.flags.len()) {
+            self.flags[idx] |= DYNAMIC_BIT;
+        }
+    }
+
+    fn remove_dynamic_ref(&mut self, idx: usize) {
+        if self.dynamic_refs.decrement(idx, self.flags.len()) == Some(true) {
+            self.flags[idx] &= !DYNAMIC_BIT;
+        }
+    }
+
+    /// Forget every dynamic (core + clearance) reference of a cell.
+    fn drop_dynamic_refs(&mut self, idx: usize) {
+        if self.flags[idx] & DYNAMIC_BIT != 0 {
+            *self.dynamic_refs.slot(idx, self.flags.len(), 0) = 0;
+            self.flags[idx] &= !DYNAMIC_BIT;
+        }
+    }
+
+    fn add_dynamic_core_ref(&mut self, idx: usize) {
+        if self.dynamic_core_refs.increment(idx, self.flags.len()) {
+            self.flags[idx] |= DYNAMIC_CORE_BIT;
+        }
+    }
+
+    fn remove_dynamic_core_ref(&mut self, idx: usize) {
+        if self.dynamic_core_refs.decrement(idx, self.flags.len()) == Some(true) {
+            self.flags[idx] &= !DYNAMIC_CORE_BIT;
+        }
+    }
+
+    /// Forget every dynamic core reference of a cell.
+    fn drop_dynamic_core_refs(&mut self, idx: usize) {
+        if self.flags[idx] & DYNAMIC_CORE_BIT != 0 {
+            *self.dynamic_core_refs.slot(idx, self.flags.len(), 0) = 0;
+            self.flags[idx] &= !DYNAMIC_CORE_BIT;
+        }
+    }
 }
 
 fn normalize_rect(rect: GridRect) -> Option<GridRect> {
@@ -1255,13 +1450,20 @@ fn normalize_rect(rect: GridRect) -> Option<GridRect> {
     if rect.x_min < 0 || rect.y_min < 0 {
         return None;
     }
-    // The map-level bounds are validated by callers (`rect_blocked`,
-    // `check_cell_free`, and `check_cell` methods) before use.
+    // A rectangle may reach past the map's width/height (clearance halos of
+    // boundary geometry); `rasterize_static_rect` clips it and the list keeps
+    // it as given. Query rectangles are bounds-checked by `rect_blocked`.
     Some(rect)
 }
 
+/// `flags` bit: the cell has explicit static references.
 const STATIC_BIT: u8 = 1 << 0;
+/// `flags` bit: a committed route's blocked footprint covers the cell.
 const DYNAMIC_BIT: u8 = 1 << 1;
+/// `flags` bit: a compact static rectangle covers the cell.
+const STATIC_RECT_BIT: u8 = 1 << 2;
+/// `flags` bit: a committed route's core covers the cell.
+const DYNAMIC_CORE_BIT: u8 = 1 << 3;
 
 #[cfg(test)]
 mod tests {
@@ -1696,7 +1898,7 @@ mod tests {
 
         map.clear_dynamic();
         assert!(map.owner_index_is_consistent());
-        assert!(map.dynamic_owner_index.is_empty());
+        assert!(map.co_owners.is_empty());
     }
 
     #[test]
@@ -1721,5 +1923,182 @@ mod tests {
             },
             Some(&opened)
         ));
+    }
+
+    #[test]
+    fn static_rect_reaching_outside_the_map_blocks_its_in_and_out_of_bounds_cells() {
+        // Clearance halos of boundary geometry produce rectangles past the
+        // map edge; only in-bounds cells are rasterised, the rectangle list
+        // answers for the rest, exactly as the old per-row interval index did.
+        let mut map = ObstacleMap::new(8, 8);
+        map.add_static_rect(GridRect {
+            x_min: 6,
+            y_min: 6,
+            x_max: 10,
+            y_max: 10,
+        });
+        assert!(map.is_static_blocked(7, 7));
+        assert!(map.is_static_blocked(9, 9));
+        assert!(!map.is_static_blocked(9, 11));
+        assert!(!map.is_static_blocked(5, 5));
+        assert!(map.is_blocked(9, 9));
+        assert!(!map.check_cells_free(&[(9, 9)], None));
+        assert_eq!(map.static_rects().len(), 1);
+        // Rectangle cells are not explicit static references.
+        assert_eq!(map.static_obstacle_keys().count(), 0);
+        assert_eq!(map.ref_count(7, 7), 0);
+        map.clear_static_rects();
+        assert!(!map.is_static_blocked(7, 7));
+        assert!(!map.is_static_blocked(9, 9));
+    }
+
+    #[test]
+    fn set_static_rects_replaces_the_rasterised_bits() {
+        let mut map = ObstacleMap::new(8, 8);
+        map.add_static_cell(1, 1);
+        map.add_static_rect(GridRect {
+            x_min: 2,
+            y_min: 2,
+            x_max: 3,
+            y_max: 3,
+        });
+        map.set_static_rects(&[GridRect {
+            x_min: 5,
+            y_min: 5,
+            x_max: 5,
+            y_max: 5,
+        }]);
+        assert!(!map.is_static_blocked(2, 2));
+        assert!(map.is_static_blocked(5, 5));
+        assert!(map.is_static_blocked(1, 1), "explicit cells survive");
+        map.clear_static_cells();
+        assert!(!map.is_static_blocked(1, 1));
+        assert!(!map.is_static_blocked(5, 5));
+        assert!(map.static_rects().is_empty());
+    }
+
+    #[test]
+    fn per_cell_accessors_iterate_in_grid_order_with_reference_counts() {
+        let mut map = ObstacleMap::new(4, 3);
+        map.add_static_cells(&[(3, 2), (0, 0), (2, 1), (2, 1)]);
+        let statics: Vec<(i32, i32)> = map.static_obstacle_keys().map(unpack_xy).collect();
+        assert_eq!(statics, vec![(0, 0), (2, 1), (3, 2)]);
+
+        assert!(map.commit_route_with_clearance_overlap(1, &[(1, 1)], &[(1, 1), (1, 2)], &[]));
+        assert!(map.commit_route_with_clearance_overlap(
+            2,
+            &[(1, 0)],
+            &[(1, 0), (1, 1)],
+            &[(1, 1)]
+        ));
+        let dynamics: Vec<((i32, i32), u16)> = map
+            .dynamic_obstacle_entries()
+            .map(|(key, refs)| (unpack_xy(key), refs))
+            .collect();
+        assert_eq!(dynamics, vec![((1, 0), 1), ((1, 1), 2), ((1, 2), 1)]);
+        let cores: Vec<((i32, i32), u16)> = map
+            .dynamic_core_obstacle_entries()
+            .map(|(key, refs)| (unpack_xy(key), refs))
+            .collect();
+        assert_eq!(cores, vec![((1, 0), 1), ((1, 1), 1)]);
+        assert_eq!(map.ref_count(1, 1), 2);
+
+        assert!(map.add_history_cost(3, 0, 4));
+        assert!(map.add_congestion_cost(0, 2, 1));
+        let history: Vec<((i32, i32), u32)> = map
+            .history_entries()
+            .map(|(key, cost)| (unpack_xy(key), cost))
+            .collect();
+        assert_eq!(history, vec![((3, 0), 4)]);
+        let congestion: Vec<((i32, i32), u32)> = map
+            .congestion_entries()
+            .map(|(key, cost)| (unpack_xy(key), cost))
+            .collect();
+        assert_eq!(congestion, vec![((0, 2), 1)]);
+        map.clear_history();
+        assert_eq!(map.history_entries().count(), 0);
+        assert_eq!(map.congestion_entries().count(), 1);
+    }
+
+    #[test]
+    fn cloned_map_shares_cold_planes_until_either_side_writes() {
+        let mut map = ObstacleMap::new(6, 6);
+        assert!(map.commit_route(1, &[(2, 2), (3, 2)]));
+        assert!(map.add_static_cell(0, 0));
+        assert!(map.add_history_cost(4, 4, 3));
+
+        // The engine's static-only probe: clone, then clear the dynamic part.
+        let mut probe = map.clone();
+        probe.clear_dynamic();
+        assert!(!probe.is_dynamic_blocked(2, 2));
+        assert_eq!(probe.ref_count(2, 2), 0);
+        assert!(probe.is_static_blocked(0, 0));
+        assert_eq!(probe.get_history_cost(4, 4), 3);
+        assert!(map.is_dynamic_blocked(2, 2));
+        assert_eq!(map.dynamic_owner_at(2, 2), Some(1));
+
+        // Writes on either side stay on that side.
+        assert!(probe.add_static_cell(5, 5));
+        assert!(!map.is_static_blocked(5, 5));
+        assert!(map.remove_static_cell(0, 0));
+        assert!(probe.is_static_blocked(0, 0));
+        assert!(probe.add_history_cost(4, 4, 1));
+        assert_eq!(map.get_history_cost(4, 4), 3);
+        assert_eq!(probe.get_history_cost(4, 4), 4);
+    }
+
+    #[test]
+    fn clear_dynamic_clearance_keeps_core_and_forgets_all_halo_references() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route_with_clearance_overlap(1, &[(2, 2)], &[(2, 2), (2, 3)], &[]));
+        assert!(map.commit_route_with_clearance_overlap(
+            2,
+            &[(4, 4)],
+            &[(4, 4), (2, 3)],
+            &[(2, 3)]
+        ));
+        assert_eq!(map.ref_count(2, 3), 2);
+        map.clear_dynamic_clearance_in_cells(&[(2, 2), (2, 3), (9, 9)]);
+        assert!(map.is_dynamic_blocked(2, 2), "core cells stay blocked");
+        assert!(!map.is_dynamic_blocked(2, 3));
+        assert_eq!(map.ref_count(2, 3), 0);
+        // The owner index is untouched by the clearance opening.
+        assert_eq!(map.dynamic_owners_at(2, 3).len(), 2);
+        assert!(map.owner_index_is_consistent());
+    }
+
+    #[test]
+    fn ripup_of_the_first_owner_passes_the_cell_to_a_remaining_owner() {
+        let mut map = ObstacleMap::new(8, 8);
+        assert!(map.commit_route_with_clearance_overlap(1, &[(1, 1)], &[(1, 1), (2, 2)], &[]));
+        assert!(map.commit_route_with_clearance_overlap(
+            2,
+            &[(3, 3)],
+            &[(3, 3), (2, 2)],
+            &[(2, 2)]
+        ));
+        assert!(map.commit_route_with_clearance_overlap(
+            3,
+            &[(4, 4)],
+            &[(4, 4), (2, 2)],
+            &[(2, 2)]
+        ));
+        assert_eq!(map.dynamic_owner_at(2, 2), Some(1));
+        assert!(map.owner_index_is_consistent());
+        assert!(map.ripup_route(1));
+        let successor = map
+            .dynamic_owner_at(2, 2)
+            .expect("a remaining owner takes over");
+        assert!(successor == 2 || successor == 3);
+        assert_eq!(map.dynamic_owners_at(2, 2), [2, 3].into_iter().collect());
+        assert!(map.owner_index_is_consistent());
+        assert!(map.ripup_route(successor));
+        assert_eq!(map.dynamic_owner_at(2, 2), Some(5 - successor));
+        assert!(map.owner_index_is_consistent());
+        assert!(map.ripup_route(5 - successor));
+        assert_eq!(map.dynamic_owner_at(2, 2), None);
+        assert!(map.dynamic_owners_at(2, 2).is_empty());
+        assert!(map.co_owners.is_empty());
+        assert!(map.owner_index_is_consistent());
     }
 }
