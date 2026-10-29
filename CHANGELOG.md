@@ -60,6 +60,24 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
   rejected; the expanded query checks core cells plus a diagonal halo),
   kept as is until phase 5. No legality rule, candidate order or returned
   route changed; nine-cell gate identical.
+- One route-and-commit body driven by a `SearchCall` value (phase 3 slice
+  B). The two copy-pasted single-net bodies (`route_single_net_and_commit_native`,
+  12 parameters, and `..._repair_native`, 13) are one `route_and_commit(&SearchCall)`;
+  what used to tell them apart is now data on the call: the A* overrides
+  (`ignore_dynamic`, the probe's `enable_simple_routes`, the history weight),
+  the collision try order (`PlainFirst`/`CrossingFirst`), whether the simple
+  probe and the deferred lidar-pure crossing search run, and the keepout retry
+  (a plain call retries once as a repair call at history weight 0.0). The
+  four per-attempt fields the negotiated loop used to set and reset on the
+  router (`negotiated_search_budget`, `negotiated_crossing_free_search`,
+  `commit_history_weight`, `long_straight_weight_override`) are gone; the
+  budget, the crossing-free flag and the two weights arrive on each call, the
+  probe search takes the net's long-straight override as a parameter, and
+  `astar_config` takes the budget and the override as parameters. The
+  three-level collision-crossing wrapper chain is one function. The Python
+  `route_single_net_and_commit` builds a `NativeRouteJob` and makes a plain
+  call. No search, commit, error string or trace line changed; nine-cell gate
+  identical.
 
 ### Added
 

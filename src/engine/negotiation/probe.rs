@@ -87,17 +87,27 @@ impl PyPhotonicRouter {
         batch: &mut RepairBatchState,
         job: &NativeRouteJob,
         order_by_id: &FxHashMap<u64, usize>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        collect_native_timing: bool,
-        trace_native_repair: bool,
+        args: &SearchArgs,
     ) -> Result<ProbeState, ()> {
+        let SearchArgs {
+            radii:
+                SearchRadii {
+                    block_radius_cells,
+                    commit_radius_cells,
+                    ..
+                },
+            collect_native_timing,
+            trace: trace_native_repair,
+            long_straight_weight_override,
+            ..
+        } = *args;
         let probe_start = native_batch_timer(collect_native_timing);
         let probe_result = self.route_single_net_ignore_dynamic_native(
             job.source,
             job.target,
             Some(&job.opened_cells),
             Some(&job.opened_cell_keys),
+            long_straight_weight_override,
         );
         let probe_elapsed_us = native_batch_elapsed_us(probe_start);
         batch.timings.probe_route_wall_us += probe_elapsed_us;

@@ -56,10 +56,10 @@ pub struct AStarConfig {
     // find a route stops well short of retrying every window at the full
     // per-window cap. `None` (the default) leaves every window/fallback
     // attempt bounded only by `max_iterations`, as before this field
-    // existed. Only `route_many_with_negotiated_repair_and_commit` in
-    // `py_router.rs` ever sets this (via its own `negotiated_search_budget`
-    // field, read by `PyPhotonicRouter::astar_config`); every other caller,
-    // including the older repair chain, leaves it `None`. See
+    // existed. Only `route_many_with_negotiated_repair_and_commit` ever
+    // sets this (per search, via `SearchCall::budget`, applied by
+    // `PyPhotonicRouter::astar_config`); every other caller leaves it
+    // `None`. See
     // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
     // Milestone 5.
     pub total_expansion_budget: Option<u64>,

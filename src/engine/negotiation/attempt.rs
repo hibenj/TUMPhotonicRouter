@@ -13,14 +13,22 @@ use rustc_hash::FxHashMap;
 
 use crate::engine::*;
 
-/// The clearance radii and diagnostic flags every search of one batch
-/// shares -- built once in the loop's setup and passed to every attempt.
+/// What every search of one net's turn shares: the clearance radii and
+/// diagnostic flags of the batch (built once in the loop's setup) and the
+/// two weights the loop chooses per net (copied per turn, see
+/// `run_negotiated_batch`). Each attempt builds its `SearchCall` from these.
+#[derive(Clone, Copy)]
 pub(crate) struct SearchArgs {
-    pub(crate) block_radius_cells: i32,
-    pub(crate) commit_radius_cells: Option<i32>,
-    pub(crate) core_radius_cells: Option<i32>,
+    pub(crate) radii: SearchRadii,
     pub(crate) collect_native_timing: bool,
     pub(crate) trace: bool,
+    /// `SearchCall::history_weight` of this net's plain searches: the
+    /// batch's `history_weight` once the net has failed (or always, with
+    /// `history_on_first_attempt`), 0.0 before.
+    pub(crate) history_weight: f64,
+    /// `Some(0.0)` for the long-straight-exempt dense fan-out nets, `None`
+    /// for every other net.
+    pub(crate) long_straight_weight_override: Option<f64>,
 }
 
 /// What one attempt did, as the `native_negotiated_search` trace line
@@ -137,8 +145,7 @@ impl<'a> PlainAttempt<'a> {
 
 impl PyPhotonicRouter {
     /// Runs one plain search under its budget, crossing-free flag and
-    /// guidance, restores the router's per-attempt fields and reports the
-    /// attempt's trace line.
+    /// guidance and reports the attempt's trace line.
     pub(crate) fn run_plain_attempt(
         &mut self,
         batch: &mut RepairBatchState,
@@ -155,31 +162,13 @@ impl PyPhotonicRouter {
         } = attempt;
         let net_id = job.net_id;
         let started = Instant::now();
-        self.negotiated_search_budget = budget;
-        self.negotiated_crossing_free_search = crossing_free;
-        let outcome = if guided_partner_ids.is_empty() {
-            self.try_plain_normal_route(
-                batch,
-                job,
-                args.block_radius_cells,
-                args.commit_radius_cells,
-                args.core_radius_cells,
-                args.collect_native_timing,
-            )
-        } else {
-            self.with_probe_guided_guidance(net_id, guided_partner_ids, |router| {
-                router.try_plain_normal_route(
-                    batch,
-                    job,
-                    args.block_radius_cells,
-                    args.commit_radius_cells,
-                    args.core_radius_cells,
-                    args.collect_native_timing,
-                )
-            })
-        };
-        self.negotiated_search_budget = None;
-        self.negotiated_crossing_free_search = false;
+        let call = SearchCall::plain(job, args.radii)
+            .budget(budget)
+            .history_weight(args.history_weight)
+            .long_straight_weight_override(args.long_straight_weight_override)
+            .crossing_free(crossing_free)
+            .guided(guided_partner_ids);
+        let outcome = self.try_plain_normal_route(batch, &call, args.collect_native_timing);
         if args.trace {
             let (outcome_str, expanded) = match &outcome {
                 PlainRouteOutcome::Routed => ("routed", self.committed_expanded_str(batch, net_id)),
@@ -223,15 +212,7 @@ impl PyPhotonicRouter {
         args: &SearchArgs,
     ) -> Result<ProbeState, ()> {
         let started = Instant::now();
-        let probe_result = self.probe_net_for_repair(
-            batch,
-            job,
-            order_by_id,
-            args.block_radius_cells,
-            args.commit_radius_cells,
-            args.collect_native_timing,
-            args.trace,
-        );
+        let probe_result = self.probe_net_for_repair(batch, job, order_by_id, args);
         if args.trace {
             let (outcome_str, expanded_str) = match &probe_result {
                 Ok(probe) => (

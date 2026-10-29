@@ -25,6 +25,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod endpoint_correction;
 pub(crate) mod jobs;
 pub(crate) mod negotiation;
+pub(crate) mod search_call;
 pub(crate) mod search_calls;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -37,6 +38,7 @@ pub(crate) use diagnostics::*;
 pub(crate) use endpoint_correction::*;
 pub(crate) use jobs::*;
 pub(crate) use negotiation::*;
+pub(crate) use search_call::*;
 pub(crate) use search_calls::*;
 
 #[derive(Clone, Default)]
@@ -98,16 +100,6 @@ pub struct PyPhotonicRouter {
     // Milestone 4.
     pub(crate) commit_history_increment: u32,
     pub(crate) commit_history_block_radius_cells: i32,
-    // Set once at the top of `route_many_with_negotiated_repair_and_commit`
-    // from that call's own `history_weight` argument, reset to 0.0 (a no-op
-    // override, matching `AStarConfig`'s own baseline) everywhere else.
-    // Read by `route_single_net_and_commit_native` to weight its A* search
-    // by accumulated history cost -- closing Milestone 5's documented gap
-    // (history cost accumulated via Milestone 4 but never fed back into
-    // search cost, root-caused as why the negotiated loop did not converge
-    // on `benes_16x16` in practical time). See
-    // `.agent/execplans/2026-08-25-negotiated-repair-engine.md` Milestone 6.
-    pub(crate) commit_history_weight: f64,
     // Physical waveguide width used by the realized-crossing commit
     // validation's parallel-overlap check: two committed centerlines closer
     // than this overlap as polygons even when they never intersect (the
@@ -128,32 +120,6 @@ pub struct PyPhotonicRouter {
     // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
     // Milestone 5.
     pub(crate) negotiated_batch_start: Option<Instant>,
-    // Fail-fast expansion budget for the *next* search only: `None` outside
-    // `route_many_with_negotiated_repair_and_commit`. That loop sets this to
-    // `Some(<the configured first / retry budget>)`
-    // immediately before a plain/direct-crossing search call and back to
-    // `None` immediately after, so `astar_config` (the one place this field
-    // is read, applied to `AStarConfig::total_expansion_budget`) only ever
-    // sees it non-`None` for that one call -- never for the probe search
-    // (`route_single_net_ignore_dynamic_native`, also built through
-    // `astar_config`, must stay unbounded per Milestone 5's profile: it
-    // costs about a second regardless) and never for the older repair chain,
-    // which never touches this field and so always reads `None` here. See
-    // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
-    // Milestone 5.
-    pub(crate) negotiated_search_budget: Option<u64>,
-    // Contribution 1's crossing-free search for unplanned nets (owner
-    // decision 2026-09-16 00:10, see
-    // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
-    // Milestone 7): `true` only while
-    // `route_many_with_negotiated_repair_and_commit` searches a net whose
-    // topology plan has no crossing at all. `route_single_net_and_commit_native`
-    // then skips its deferred lidar-pure crossing search entirely, so the
-    // net's plain search is the ordinary crossing-free A* -- every committed
-    // net stays an obstacle. Never set by the older chain, never set for
-    // the probe search, and reset to `false` right after every search that
-    // set it.
-    pub(crate) negotiated_crossing_free_search: bool,
     // Nets searched with `long_straight_congestion_weight = 0` by the
     // negotiated loop (2026-09-17, multiportmmi_128x128): the fan-in /
     // fan-out bands of dense multi-port instances must pack their lanes
@@ -162,11 +128,8 @@ pub struct PyPhotonicRouter {
     // `set_long_straight_exempt_net_ids` (Python: the nets with a static
     // fan-out anchor, env PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT=1).
     pub(crate) long_straight_exempt_net_ids: FxHashSet<u64>,
-    // `Some(weight)` while the negotiated loop searches an exempt net:
-    // `astar_config` then uses it instead of the environment's weight.
-    pub(crate) long_straight_weight_override: Option<f64>,
-    // Expanded-states count of the most recent single-net search
-    // `route_single_net_and_commit_native` ran, success or failure. Set
+    // Expanded-states count of the most recent single-net search a plain
+    // `route_and_commit` call ran, success or failure. Set
     // right after that search returns (before its `Option<RouteResult>` is
     // turned into the function's `Result`, so a failed search's expansion
     // count survives past the `?` that discards its `RouteResult`) and read
@@ -254,13 +217,9 @@ impl PyPhotonicRouter {
             long_straight_congestion_records: Vec::new(),
             commit_history_increment: 0,
             commit_history_block_radius_cells: 0,
-            commit_history_weight: 0.0,
             route_width_um: 0.5,
             negotiated_batch_start: None,
-            negotiated_search_budget: None,
-            negotiated_crossing_free_search: false,
             long_straight_exempt_net_ids: FxHashSet::default(),
-            long_straight_weight_override: None,
             last_search_expanded_states: 0,
             search_engine,
         }

@@ -234,10 +234,14 @@ mod tests {
         // this milestone's actual new logic -- is verified and passes.
         let reroute_outcome = router.try_plain_normal_route(
             &mut batch,
-            &vertical,
-            FIXTURE_CLEARANCE_RADIUS_CELLS,
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            &SearchCall::plain(
+                &vertical,
+                SearchRadii::new(
+                    FIXTURE_CLEARANCE_RADIUS_CELLS,
+                    Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                    Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                ),
+            ),
             false,
         );
         if !matches!(reroute_outcome, PlainRouteOutcome::Routed) {

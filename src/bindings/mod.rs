@@ -770,7 +770,7 @@ impl PyPhotonicRouter {
             &self.port_open_cells
         };
         let cfg = self
-            .astar_config(None, None, None)
+            .astar_config(None, None, None, None, None)
             .map_err(PyValueError::new_err)?;
         let env = SearchEnvironment {
             obstacle_map: &self.obstacle_map,
@@ -805,21 +805,29 @@ impl PyPhotonicRouter {
         clearance_exempt_cells: Option<Vec<(i32, i32)>>,
         core_radius_cells: Option<i32>,
     ) -> PyResult<Py<PyRouteResult>> {
+        // The job the negotiated loop would build for this net: the opened
+        // cells default to the router's port openings, as this method
+        // always did; no static-cleanup cells and no port positions.
+        let opened_cells = opened_cells.unwrap_or_else(|| {
+            self.port_open_cells
+                .iter()
+                .copied()
+                .map(unpack_xy)
+                .collect()
+        });
+        let job = NativeRouteJob::new(
+            net_id,
+            source,
+            target,
+            opened_cells,
+            clearance_exempt_cells.unwrap_or_default(),
+            Vec::new(),
+            None,
+            None,
+        );
+        let radii = SearchRadii::new(block_radius_cells, commit_radius_cells, core_radius_cells);
         let result = self
-            .route_single_net_and_commit_native(
-                net_id,
-                source,
-                target,
-                block_radius_cells,
-                opened_cells.as_deref(),
-                None,
-                commit_radius_cells,
-                clearance_exempt_cells.as_deref(),
-                None,
-                core_radius_cells,
-                None,
-                None,
-            )
+            .route_and_commit(&SearchCall::plain(&job, radii))
             .map_err(PyRuntimeError::new_err)?;
         Py::new(py, convert_result(py, &self.primitives, &result)?)
     }
@@ -3024,7 +3032,7 @@ impl PyPhotonicRouter {
         };
 
         let cfg = self
-            .astar_config(None, None, None)
+            .astar_config(None, None, None, None, None)
             .map_err(PyValueError::new_err)?;
 
         let env = SearchEnvironment {

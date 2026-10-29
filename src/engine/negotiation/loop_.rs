@@ -948,11 +948,7 @@ impl PyPhotonicRouter {
             state.batch,
             job,
             &tables.job_by_id,
-            args.block_radius_cells,
-            args.commit_radius_cells,
-            args.core_radius_cells,
-            args.collect_native_timing,
-            args.trace,
+            args,
             state.braid_failed_pairs,
             &mut braid_ripped_victims,
         );
@@ -1077,12 +1073,12 @@ impl PyPhotonicRouter {
         );
     }
 
-    /// Both returns of the loop clear the per-batch fields it set. (Until
+    /// Both returns of the loop clear the per-batch field it set. (Until
     /// phase 3 slice A of the 2026-10 do-over the direct-crossing attempt
     /// had a `?` return that propagated without clearing; that attempt is
-    /// gone.)
+    /// gone. Until slice B the loop also reset the per-search knobs it had
+    /// set on `self`; they travel on each `SearchCall` now.)
     fn finish_negotiated_batch(&mut self) {
-        self.long_straight_weight_override = None;
         self.negotiated_batch_start = None;
     }
 
@@ -1161,12 +1157,13 @@ impl PyPhotonicRouter {
         // Timestamps this loop's `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG`
         // trace lines; cleared before every return below.
         self.negotiated_batch_start = Some(Instant::now());
-        let args = SearchArgs {
-            block_radius_cells,
-            commit_radius_cells,
-            core_radius_cells,
+        let batch_args = SearchArgs {
+            radii: SearchRadii::new(block_radius_cells, commit_radius_cells, core_radius_cells),
             collect_native_timing: self.astar_cfg.collect_detailed_timing,
             trace: self.router_config.diagnostics.native_repair_diag,
+            // Chosen per net at the top of its turn, see the round loop.
+            history_weight: 0.0,
+            long_straight_weight_override: None,
         };
         let mut batch = empty_batch_state();
         let tables = NetTables::from_jobs(jobs);
@@ -1225,11 +1222,16 @@ impl PyPhotonicRouter {
                 // only such a net: a net's first attempt each epoch runs
                 // without it.
                 let failed_before = failed_count != 0 || negotiation.history_on_first_attempt;
-                self.commit_history_weight = if failed_before { history_weight } else { 0.0 };
                 // 0 for the exempt dense fan-out nets, the configured
                 // weight for every other net.
                 let exempt = self.long_straight_exempt_net_ids.contains(&net_id);
-                self.long_straight_weight_override = if exempt { Some(0.0) } else { None };
+                // Every search of this net's turn -- the plain attempts, the
+                // probe and the braid passes -- runs with these two weights.
+                let args = SearchArgs {
+                    history_weight: if failed_before { history_weight } else { 0.0 },
+                    long_straight_weight_override: if exempt { Some(0.0) } else { None },
+                    ..batch_args
+                };
                 if args.trace {
                     self.trace_net_start(position, round, net_id, failed_count, crossing_free);
                 }
@@ -1336,7 +1338,7 @@ impl PyPhotonicRouter {
             }
 
             let failed = &round_failed_ids;
-            self.round_end_global_ripup(&mut state, failed, &mut counters, round, args.trace);
+            self.round_end_global_ripup(&mut state, failed, &mut counters, round, batch_args.trace);
 
             // Two rounds without a single committed route: the loop's own
             // epoch boundary, independent of the global rip-up's.
@@ -1365,7 +1367,7 @@ impl PyPhotonicRouter {
                     queue.len()
                 ));
             }
-            if args.trace {
+            if batch_args.trace {
                 self.trace_negotiated_done(&counters, round, queue.len());
             }
         }

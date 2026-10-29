@@ -8,7 +8,6 @@ use crate::config::RouterConfig;
 use crate::crossings::{CrossingConfig, CrossingGuidance};
 use crate::geometry_realization::GeometryGridSpec;
 use crate::obstacle_map::{pack_xy, unpack_xy, CellKey};
-use crate::primitives::PrimitiveLibrary;
 use crate::search::astar::config::{AStarConfig, HeapTieBreaker, HeuristicMode, PrimitiveOrdering};
 use crate::search::astar::crossing_rules::{CrossingSearchConfig, CrossingSearchPartner};
 use crate::search::astar::simple_route::{
@@ -152,9 +151,9 @@ pub(crate) fn astar_config_from_py(
         max_search_time_ms,
         // Never set from Python: only
         // `route_many_with_negotiated_repair_and_commit` ever wants a
-        // fail-fast budget, and it applies one via
-        // `PyPhotonicRouter::negotiated_search_budget`/`astar_config`, not
-        // through this conversion. See Milestone 5 of
+        // fail-fast budget, and it applies one per call via
+        // `SearchCall::budget`/`astar_config`, not through this conversion.
+        // See Milestone 5 of
         // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`.
         total_expansion_budget: None,
     })
@@ -163,11 +162,12 @@ pub(crate) fn astar_config_from_py(
 /// Milestone 2 of
 /// .agent/execplans/2026-08-19-restructure-crossing-partner-discovery.md:
 /// names the one real behavioral difference Milestone 0's divergence audit
-/// found between `route_single_net_and_commit_native` and
-/// `route_single_net_and_commit_repair_native` -- both confirmed
-/// intentional by the repository owner and required to stay different, but
-/// previously implicit in each function's own, independently written
-/// control flow rather than named or documented anywhere. See
+/// found between the then two route-and-commit bodies (native and repair,
+/// since phase 3 slice B of the 2026-10 do-over the `Plain` and `Repair`
+/// kinds of one `SearchCall`) -- both confirmed intentional by the
+/// repository owner and required to stay different, but previously implicit
+/// in each function's own, independently written control flow rather than
+/// named or documented anywhere. See
 /// `PyPhotonicRouter::upfront_collision_crossing_partner_ids`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CollisionCrossingTryOrder {
@@ -187,11 +187,21 @@ pub(crate) enum CollisionCrossingTryOrder {
 }
 
 impl PyPhotonicRouter {
+    /// The cached baseline `AStarConfig` with one call's overrides applied.
+    /// `None` keeps the baseline for the three `Option` overrides; the
+    /// fail-fast `total_expansion_budget` and the long-straight weight are
+    /// the call's own (`SearchCall::budget`,
+    /// `SearchCall::long_straight_weight_override`), `None` outside the
+    /// negotiated loop. Until phase 3 slice B of the 2026-10 do-over the
+    /// last two were read from fields on `self` that the loop set and reset
+    /// around each search.
     pub(crate) fn astar_config(
         &self,
         ignore_dynamic_obstacles: Option<bool>,
         enable_simple_routes: Option<bool>,
         history_weight: Option<f64>,
+        total_expansion_budget: Option<u64>,
+        long_straight_weight_override: Option<f64>,
     ) -> Result<AStarConfig, String> {
         let mut cfg = self
             .astar_cfg_cached
@@ -207,10 +217,10 @@ impl PyPhotonicRouter {
         if let Some(history_weight) = history_weight {
             cfg.history_weight = history_weight;
         }
-        if let Some(budget) = self.negotiated_search_budget {
+        if let Some(budget) = total_expansion_budget {
             cfg.total_expansion_budget = Some(budget);
         }
-        if let Some(weight) = self.long_straight_weight_override {
+        if let Some(weight) = long_straight_weight_override {
             cfg.long_straight_congestion_weight = weight;
         }
         Ok(cfg)
@@ -315,90 +325,13 @@ impl PyPhotonicRouter {
     }
 
     #[allow(clippy::too_many_arguments)]
-    /// Top of a 3-level default-argument chain
-    /// (`try_route_with_collision_crossings` ->
-    /// [`Self::try_route_with_collision_crossings_with_loss`] ->
-    /// [`Self::try_route_with_collision_crossings_using_primitives`]) --
-    /// a shared low-level lidar-pure collision-crossing search primitive,
-    /// not an independent repair strategy in its own right.
+    /// The lidar-pure collision-crossing search: one A* with the committed
+    /// partners' centerlines as crossing partners, validated at both
+    /// levels before it is handed back. A shared low-level search
+    /// primitive, not an independent repair strategy in its own right;
+    /// `crossing_loss_override` is `None` at every production call site.
     pub(crate) fn try_route_with_collision_crossings(
         &self,
-        net_id: u64,
-        source: State,
-        target: State,
-        opened_ref: &FxHashSet<CellKey>,
-        search_cfg: &AStarConfig,
-        block_radius_cells: i32,
-        dynamic_clearance_exempt_keys: Option<&FxHashSet<CellKey>>,
-        partner_ids: &FxHashSet<u64>,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-        opened_cell_keys: Option<&FxHashSet<CellKey>>,
-        accept_clean_zero_event: bool,
-    ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
-        self.try_route_with_collision_crossings_with_loss(
-            net_id,
-            source,
-            target,
-            opened_ref,
-            search_cfg,
-            block_radius_cells,
-            dynamic_clearance_exempt_keys,
-            partner_ids,
-            source_port_um,
-            target_port_um,
-            opened_cell_keys,
-            None,
-            accept_clean_zero_event,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    /// Middle of the 3-level collision-crossing search chain (see
-    /// [`Self::try_route_with_collision_crossings`]); adds loss/config
-    /// resolution before delegating to
-    /// [`Self::try_route_with_collision_crossings_using_primitives`].
-    pub(crate) fn try_route_with_collision_crossings_with_loss(
-        &self,
-        net_id: u64,
-        source: State,
-        target: State,
-        opened_ref: &FxHashSet<CellKey>,
-        search_cfg: &AStarConfig,
-        block_radius_cells: i32,
-        dynamic_clearance_exempt_keys: Option<&FxHashSet<CellKey>>,
-        partner_ids: &FxHashSet<u64>,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-        opened_cell_keys: Option<&FxHashSet<CellKey>>,
-        crossing_loss_override: Option<f64>,
-        accept_clean_zero_event: bool,
-    ) -> Result<Option<(RouteResult, Vec<CrossingEvent>)>, String> {
-        self.try_route_with_collision_crossings_using_primitives(
-            &self.primitives,
-            net_id,
-            source,
-            target,
-            opened_ref,
-            search_cfg,
-            block_radius_cells,
-            dynamic_clearance_exempt_keys,
-            partner_ids,
-            source_port_um,
-            target_port_um,
-            opened_cell_keys,
-            crossing_loss_override,
-            accept_clean_zero_event,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    /// Bottom of the 3-level collision-crossing search chain (see
-    /// [`Self::try_route_with_collision_crossings`]) -- the actual A* call
-    /// site for lidar-pure collision-crossing routing.
-    pub(crate) fn try_route_with_collision_crossings_using_primitives(
-        &self,
-        primitives: &PrimitiveLibrary,
         net_id: u64,
         source: State,
         target: State,
@@ -489,7 +422,7 @@ impl PyPhotonicRouter {
         }
         let env = SearchEnvironment {
             obstacle_map: &self.obstacle_map,
-            primitives,
+            primitives: &self.primitives,
         };
         let request = SearchRequest {
             source,
@@ -694,47 +627,65 @@ impl PyPhotonicRouter {
         Ok(None)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn route_single_net_and_commit_native(
+    /// Routes one net and commits the route, as `call` describes it: the
+    /// one body behind every plain search of the negotiated loop, the braid
+    /// passes, the Python `route_single_net_and_commit` method, and -- as a
+    /// `SearchKind::Repair` call -- the braid's victim fallback and the
+    /// keepout retry below. Installs the call's probe-guided guidance, if
+    /// any, around the whole search.
+    pub(crate) fn route_and_commit(
         &mut self,
-        net_id: u64,
-        source: PyState,
-        target: PyState,
-        block_radius_cells: i32,
-        opened_cells: Option<&[(i32, i32)]>,
-        opened_cell_keys: Option<&FxHashSet<CellKey>>,
-        commit_radius_cells: Option<i32>,
-        clearance_exempt_cells: Option<&[(i32, i32)]>,
-        clearance_exempt_cell_keys: Option<&FxHashSet<CellKey>>,
-        core_radius_cells: Option<i32>,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
+        call: &SearchCall<'_>,
     ) -> Result<RouteResult, String> {
+        match call.guidance {
+            Some(partner_ids) if !partner_ids.is_empty() => {
+                self.with_probe_guided_guidance(call.job.net_id, partner_ids, |router| {
+                    router.search_and_commit(call)
+                })
+            }
+            _ => self.search_and_commit(call),
+        }
+    }
+
+    /// `route_and_commit` without the guidance scope. The sequence: the
+    /// upfront collision-crossing attempt (`call.try_order`), the simple
+    /// probe (`call.simple_probe`), the deferred lidar-pure crossing search
+    /// (`PlainFirst` only), the ordinary A*, the commit, and the post-commit
+    /// bookkeeping. Where a repair call takes a different turn, the branch
+    /// says so (`SearchKind`'s doc comment lists them all).
+    fn search_and_commit(&mut self, call: &SearchCall<'_>) -> Result<RouteResult, String> {
+        let job = call.job;
+        let net_id = job.net_id;
+        let SearchRadii {
+            block_radius_cells,
+            commit_radius_cells,
+            core_radius_cells,
+        } = call.radii;
+        let source_port_um = job.source_port_um;
+        let target_port_um = job.target_port_um;
+        let clearance_exempt_cells: &[(i32, i32)] = &job.clearance_exempt_cells;
         if self.astar_cfg.target_tolerance_cells < 0 {
             return Err("target_tolerance_cells must be >= 0".to_string());
         }
-        let opened_owned;
-        let opened_default_owned;
-        let opened_ref: &FxHashSet<CellKey> = if let Some(keys) = opened_cell_keys {
-            keys
-        } else if let Some(cells) = opened_cells {
-            opened_owned = pack_cells(cells);
-            &opened_owned
-        } else {
-            opened_default_owned = self.port_open_cells.clone();
-            &opened_default_owned
-        };
+        let opened_ref: &FxHashSet<CellKey> = &job.opened_cell_keys;
         let validation_opened_cell_keys = opened_ref.clone();
-        // `commit_history_weight` is 0.0 (a no-op override, matching
-        // `AStarConfig`'s own baseline -- this codebase never constructs a
-        // router with a nonzero baseline `history_weight`) outside
-        // `route_many_with_negotiated_repair_and_commit`, so this is
-        // behaviorally neutral for every other caller of this function. See
+        // A repair call's config never ignores dynamic obstacles and has
+        // simple routes off (its probe does not run, and the probe is the
+        // only reader of `enable_simple_routes`); a plain call keeps the
+        // baseline for both. The history weight is the call's: 0.0 outside
+        // the negotiated loop, which matches `AStarConfig`'s own baseline
+        // (this codebase never constructs a router with a nonzero baseline
+        // `history_weight`). See
         // `.agent/execplans/2026-08-25-negotiated-repair-engine.md`
         // Milestone 6.
-        let mut cfg = self.astar_config(None, None, Some(self.commit_history_weight))?;
+        let mut cfg = self.astar_config(
+            call.ignore_dynamic,
+            (!call.simple_probe).then_some(false),
+            Some(call.history_weight),
+            call.budget,
+            call.long_straight_weight_override,
+        )?;
         cfg.require_terminal_straights = true;
-        let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or(&[]);
         let collect_timing = self.astar_cfg.collect_detailed_timing;
         let mut obstacle_map_prepare_time_us = 0u128;
         let mut simple_route_time_us = 0u128;
@@ -745,26 +696,17 @@ impl PyPhotonicRouter {
         } else {
             None
         };
-        let dynamic_clearance_exempt_keys_owned: Option<FxHashSet<CellKey>> = if block_radius_cells
-            > 0
-            && !dynamic_clearance_exempt_cell_vec.is_empty()
-            && clearance_exempt_cell_keys.is_none()
-        {
-            Some(pack_cells(dynamic_clearance_exempt_cell_vec))
-        } else {
-            None
-        };
-        let dynamic_clearance_exempt_keys =
-            if block_radius_cells > 0 && !dynamic_clearance_exempt_cell_vec.is_empty() {
-                clearance_exempt_cell_keys.or(dynamic_clearance_exempt_keys_owned.as_ref())
+        let dynamic_clearance_exempt_keys: Option<&FxHashSet<CellKey>> =
+            if block_radius_cells > 0 && !clearance_exempt_cells.is_empty() {
+                Some(&job.clearance_exempt_cell_keys)
             } else {
                 None
             };
         if let Some(prepare_start) = prepare_start.as_ref() {
             obstacle_map_prepare_time_us += prepare_start.elapsed().as_micros();
         }
-        let source_state = State::new(source.x, source.y, source.angle);
-        let target_state = State::new(target.x, target.y, target.angle);
+        let source_state = State::new(job.source.x, job.source.y, job.source.angle);
+        let target_state = State::new(job.target.x, job.target.y, job.target.angle);
         let opened_search_owned = self.opened_cells_without_dynamic_overlap(
             opened_ref,
             source_state,
@@ -772,23 +714,28 @@ impl PyPhotonicRouter {
             dynamic_clearance_exempt_keys,
         );
         let opened_search_ref = opened_search_owned.as_ref().unwrap_or(opened_ref);
-        // `negotiated_crossing_free_search`: contribution 1's crossing-free
-        // search for a net without any planned crossing -- the deferred
-        // lidar-pure crossing search below is skipped, so a failed simple
-        // probe falls through to the ordinary (crossing-free) search.
-        let lidar_pure_crossing =
-            self.lidar_pure_crossing_enabled() && !self.negotiated_crossing_free_search;
-        // Fresh/native routing: try the plain, non-crossing attempt first
-        // (see the simple-route block below); a lidar-pure collision-crossing
-        // search only happens later, deferred, if that plain attempt fails
-        // (the second, separate `lidar_pure_full_map_partner_set` call further
-        // down). PlainFirst is why this upfront call returns empty in
-        // lidar-pure mode. See `CollisionCrossingTryOrder`'s own doc comment.
+        // `call.crossing_free`: contribution 1's crossing-free search for a
+        // net without any planned crossing -- the deferred lidar-pure
+        // crossing search below is skipped, so a failed simple probe falls
+        // through to the ordinary (crossing-free) search. A repair call
+        // always carries `false` here.
+        let lidar_pure_crossing = self.lidar_pure_crossing_enabled() && !call.crossing_free;
+        // PlainFirst (fresh/native routing): try the plain, non-crossing
+        // attempt first (see the simple-route block below); a lidar-pure
+        // collision-crossing search only happens later, deferred, if that
+        // plain attempt fails (the second, separate
+        // `lidar_pure_owner_lookup_partner_set` call further down), which is
+        // why this upfront call returns empty in lidar-pure mode.
+        // CrossingFirst (repair): consult collision-crossing partners
+        // immediately -- repair only runs after this net already failed to
+        // route normally, so trying the collision-crossing path first is a
+        // reasonable prior specifically in this context. See
+        // `CollisionCrossingTryOrder`'s own doc comment.
         let collision_partner_ids = self.upfront_collision_crossing_partner_ids(
             net_id,
             source_state,
             target_state,
-            CollisionCrossingTryOrder::PlainFirst,
+            call.try_order,
         );
         let used_collision_crossing_attempt = !collision_partner_ids.is_empty();
         let crossing_attempt = if used_collision_crossing_attempt {
@@ -804,6 +751,7 @@ impl PyPhotonicRouter {
                 source_port_um,
                 target_port_um,
                 Some(&validation_opened_cell_keys),
+                None,
                 true,
             )?
         } else {
@@ -826,7 +774,7 @@ impl PyPhotonicRouter {
         // halo *is* the core, so this can never be set there and the
         // crossing benchmarks are unaffected.
         let mut probe_halo_only_conflict = false;
-        {
+        if call.simple_probe {
             let simple_start = collect_timing.then(Instant::now);
             let simple_result = if self.router_config.negotiation.disable_simple_route_probe {
                 None
@@ -871,7 +819,7 @@ impl PyPhotonicRouter {
                     &result,
                     block_radius_cells,
                     commit_radius_cells,
-                    clearance_exempt_cells,
+                    Some(clearance_exempt_cells),
                     core_radius_cells,
                     source_port_um,
                     target_port_um,
@@ -891,7 +839,7 @@ impl PyPhotonicRouter {
                         net_id,
                         &core_cells,
                         &route_cells,
-                        clearance_exempt_cells.unwrap_or(&[]),
+                        clearance_exempt_cells,
                         &allowed_partner_ids,
                     );
                 if let Some(commit_start) = commit_start.as_ref() {
@@ -905,7 +853,7 @@ impl PyPhotonicRouter {
                 if trace_plain {
                     let offending = core_cells.iter().copied().find(|&(x, y)| {
                         self.obstacle_map.is_dynamic_blocked(x, y)
-                            && !clearance_exempt_cells.is_some_and(|cells| cells.contains(&(x, y)))
+                            && !clearance_exempt_cells.contains(&(x, y))
                     });
                     eprintln!(
                         "trace_plain_route net={net_id} stage=simple_commit committed={committed} \
@@ -963,8 +911,14 @@ impl PyPhotonicRouter {
         // The deferred half of PlainFirst (see `upfront_collision_crossing_partner_ids`
         // above and `CollisionCrossingTryOrder`'s own doc comment): the plain
         // attempt above has now failed, so it is time to pay for the full,
-        // unwindowed lidar-pure collision-crossing search.
-        if lidar_pure_crossing && deferred_crossing_attempt.is_none() && !probe_halo_only_conflict {
+        // unwindowed lidar-pure collision-crossing search. A CrossingFirst
+        // (repair) call already ran that search upfront and has no deferred
+        // stage.
+        if call.try_order == CollisionCrossingTryOrder::PlainFirst
+            && lidar_pure_crossing
+            && deferred_crossing_attempt.is_none()
+            && !probe_halo_only_conflict
+        {
             let owner_lookup_partner_ids = self.lidar_pure_owner_lookup_partner_set(net_id);
             if !owner_lookup_partner_ids.is_empty() {
                 lidar_pure_crossing_attempted = true;
@@ -980,6 +934,7 @@ impl PyPhotonicRouter {
                     source_port_um,
                     target_port_um,
                     Some(&validation_opened_cell_keys),
+                    None,
                     true,
                 )?;
             }
@@ -1001,7 +956,7 @@ impl PyPhotonicRouter {
                     &crossing_result,
                     block_radius_cells,
                     commit_radius_cells,
-                    clearance_exempt_cells,
+                    Some(clearance_exempt_cells),
                     core_radius_cells,
                     source_port_um,
                     target_port_um,
@@ -1020,7 +975,7 @@ impl PyPhotonicRouter {
                         net_id,
                         &core_cells,
                         &route_cells,
-                        clearance_exempt_cells.unwrap_or(&[]),
+                        clearance_exempt_cells,
                         &crossed_partner_ids,
                         Some(&allowed_crossing_core_keys),
                     );
@@ -1067,11 +1022,13 @@ impl PyPhotonicRouter {
                     } else {
                         return Ok(crossing_result);
                     }
-                } else if lidar_pure_crossing {
+                } else if lidar_pure_crossing && !call.is_repair() {
+                    // A repair call falls through to its ordinary search
+                    // instead.
                     return Err(self.dynamic_commit_rejection_error(
                         net_id,
                         &core_cells,
-                        clearance_exempt_cells.unwrap_or(&[]),
+                        clearance_exempt_cells,
                     ));
                 }
             }
@@ -1079,13 +1036,24 @@ impl PyPhotonicRouter {
         if lidar_pure_crossing_attempted && !probe_halo_only_conflict {
             return Err("No legal LiDAR crossing route found".to_string());
         }
-        if self.router_config.diagnostics.trace_plain_route_net == Some(net_id) {
+        if !call.is_repair() && self.router_config.diagnostics.trace_plain_route_net == Some(net_id)
+        {
             eprintln!(
                 "trace_plain_route net={net_id} stage=ordinary_search lidar_pure_attempted={lidar_pure_crossing_attempted} halo_only_conflict={probe_halo_only_conflict}"
             );
         }
-        let search_cfg = if block_radius_cells > 0 {
-            let mut search_cfg = self.astar_config(None, Some(false), None)?;
+        // A plain call's ordinary search at a positive block radius runs
+        // the baseline config with simple routes off -- so at the baseline
+        // history weight, not the call's. A repair call, and a plain call
+        // at block radius 0, run `cfg` itself.
+        let search_cfg = if !call.is_repair() && block_radius_cells > 0 {
+            let mut search_cfg = self.astar_config(
+                None,
+                Some(false),
+                None,
+                call.budget,
+                call.long_straight_weight_override,
+            )?;
             search_cfg.require_terminal_straights = true;
             search_cfg
         } else {
@@ -1115,7 +1083,7 @@ impl PyPhotonicRouter {
             let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
                 opened_dynamic_obstacle_map = self.obstacle_map.clone();
                 opened_dynamic_obstacle_map
-                    .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
+                    .clear_dynamic_clearance_in_cells(clearance_exempt_cells);
                 &opened_dynamic_obstacle_map
             } else {
                 &self.obstacle_map
@@ -1136,21 +1104,25 @@ impl PyPhotonicRouter {
         };
         let fallback_search_stats = outcome.stats;
         let search_option = outcome.route;
-        // Recorded before `.ok_or_else` below turns a failed search into an
-        // `Err` that discards `fallback_search_stats` entirely -- see
-        // `last_search_expanded_states`'s doc comment.
-        self.last_search_expanded_states = fallback_search_stats.expanded_states as u64;
-        let mut result = search_option.ok_or_else(|| {
-            format!(
-                "No route found (expanded_states={}, generated_neighbors={}, window_attempts={}, used_full_grid_fallback={}, last_window_area_cells={}, max_window_area_cells={})",
-                fallback_search_stats.expanded_states,
-                fallback_search_stats.generated_neighbors,
-                fallback_search_stats.window_attempts,
-                fallback_search_stats.used_full_grid_fallback,
-                fallback_search_stats.last_window_area_cells,
-                fallback_search_stats.max_window_area_cells,
-            )
-        })?;
+        let mut result = if call.is_repair() {
+            search_option.ok_or_else(|| "No route found".to_string())?
+        } else {
+            // Recorded before `.ok_or_else` below turns a failed search into
+            // an `Err` that discards `fallback_search_stats` entirely -- see
+            // `last_search_expanded_states`'s doc comment.
+            self.last_search_expanded_states = fallback_search_stats.expanded_states as u64;
+            search_option.ok_or_else(|| {
+                format!(
+                    "No route found (expanded_states={}, generated_neighbors={}, window_attempts={}, used_full_grid_fallback={}, last_window_area_cells={}, max_window_area_cells={})",
+                    fallback_search_stats.expanded_states,
+                    fallback_search_stats.generated_neighbors,
+                    fallback_search_stats.window_attempts,
+                    fallback_search_stats.used_full_grid_fallback,
+                    fallback_search_stats.last_window_area_cells,
+                    fallback_search_stats.max_window_area_cells,
+                )
+            })?
+        };
         if let Some(fallback) = ordinary_collision_fallback {
             if fallback.total_cost + 1.0e-9 < result.total_cost {
                 result = fallback;
@@ -1164,7 +1136,8 @@ impl PyPhotonicRouter {
         if let Some(error) = self.invalid_grid_crossing_error_for_route(net_id, &result) {
             return Err(error);
         }
-        if used_collision_crossing_attempt
+        if !call.is_repair()
+            && used_collision_crossing_attempt
             && !self
                 .crossing_events_for_route(net_id, &result, &collision_partner_ids)
                 .is_empty()
@@ -1182,7 +1155,7 @@ impl PyPhotonicRouter {
             &result,
             block_radius_cells,
             commit_radius_cells,
-            clearance_exempt_cells,
+            Some(clearance_exempt_cells),
             core_radius_cells,
             source_port_um,
             target_port_um,
@@ -1202,44 +1175,26 @@ impl PyPhotonicRouter {
                 net_id,
                 &core_cells,
                 &route_cells,
-                clearance_exempt_cells.unwrap_or(&[]),
+                clearance_exempt_cells,
                 &allowed_partner_ids,
             );
         if let Some(commit_start) = commit_start.as_ref() {
             result.stats.commit_time_us += commit_start.elapsed().as_micros();
         }
         if !committed {
-            let error = self.dynamic_commit_rejection_error(
-                net_id,
-                &core_cells,
-                clearance_exempt_cells.unwrap_or(&[]),
-            );
-            let retry_keepout = self.dynamic_commit_error_repair_keepout_keys(&error);
-            if !retry_keepout.is_empty() {
-                self.obstacle_map.add_static_keys(&retry_keepout);
-                let retry_opened_cells: Vec<(i32, i32)> = validation_opened_cell_keys
-                    .iter()
-                    .copied()
-                    .map(unpack_xy)
-                    .collect();
-                let retry_result = self.route_single_net_and_commit_repair_native(
-                    net_id,
-                    source,
-                    target,
-                    block_radius_cells,
-                    Some(&retry_opened_cells),
-                    Some(&validation_opened_cell_keys),
-                    0.0,
-                    commit_radius_cells,
-                    clearance_exempt_cells,
-                    clearance_exempt_cell_keys,
-                    core_radius_cells,
-                    source_port_um,
-                    target_port_um,
-                );
-                self.obstacle_map.remove_static_keys(&retry_keepout);
-                if retry_result.is_ok() {
-                    return retry_result;
+            let error =
+                self.dynamic_commit_rejection_error(net_id, &core_cells, clearance_exempt_cells);
+            if !call.is_repair() {
+                // One retry with the rejected commit's keepout added as
+                // static cells, as a repair call at history weight 0.0.
+                let retry_keepout = self.dynamic_commit_error_repair_keepout_keys(&error);
+                if !retry_keepout.is_empty() {
+                    self.obstacle_map.add_static_keys(&retry_keepout);
+                    let retry_result = self.route_and_commit(&call.as_repair_retry());
+                    self.obstacle_map.remove_static_keys(&retry_keepout);
+                    if retry_result.is_ok() {
+                        return retry_result;
+                    }
                 }
             }
             return Err(error);
@@ -1277,305 +1232,17 @@ impl PyPhotonicRouter {
         Ok(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn route_single_net_and_commit_repair_native(
-        &mut self,
-        net_id: u64,
-        source: PyState,
-        target: PyState,
-        block_radius_cells: i32,
-        opened_cells: Option<&[(i32, i32)]>,
-        opened_cell_keys: Option<&FxHashSet<CellKey>>,
-        history_weight: f64,
-        commit_radius_cells: Option<i32>,
-        clearance_exempt_cells: Option<&[(i32, i32)]>,
-        clearance_exempt_cell_keys: Option<&FxHashSet<CellKey>>,
-        core_radius_cells: Option<i32>,
-        source_port_um: Option<(f64, f64)>,
-        target_port_um: Option<(f64, f64)>,
-    ) -> Result<RouteResult, String> {
-        if self.astar_cfg.target_tolerance_cells < 0 {
-            return Err("target_tolerance_cells must be >= 0".to_string());
-        }
-        let opened_owned;
-        let opened_ref: &FxHashSet<CellKey> = if let Some(keys) = opened_cell_keys {
-            keys
-        } else if let Some(cells) = opened_cells {
-            opened_owned = pack_cells(cells);
-            &opened_owned
-        } else {
-            &self.port_open_cells
-        };
-        let validation_opened_cell_keys = opened_ref.clone();
-        let mut cfg = self.astar_config(Some(false), Some(false), Some(history_weight))?;
-        cfg.require_terminal_straights = true;
-        let dynamic_clearance_exempt_cell_vec = clearance_exempt_cells.unwrap_or(&[]);
-        let collect_timing = self.astar_cfg.collect_detailed_timing;
-        let prepare_start = if collect_timing {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        let dynamic_clearance_exempt_keys_owned: Option<FxHashSet<CellKey>> = if block_radius_cells
-            > 0
-            && !dynamic_clearance_exempt_cell_vec.is_empty()
-            && clearance_exempt_cell_keys.is_none()
-        {
-            Some(pack_cells(dynamic_clearance_exempt_cell_vec))
-        } else {
-            None
-        };
-        let dynamic_clearance_exempt_keys =
-            if block_radius_cells > 0 && !dynamic_clearance_exempt_cell_vec.is_empty() {
-                clearance_exempt_cell_keys.or(dynamic_clearance_exempt_keys_owned.as_ref())
-            } else {
-                None
-            };
-        let obstacle_map_prepare_time_us = prepare_start
-            .as_ref()
-            .map_or(0, |start| start.elapsed().as_micros());
-        let source_state = State::new(source.x, source.y, source.angle);
-        let target_state = State::new(target.x, target.y, target.angle);
-        let opened_search_owned = self.opened_cells_without_dynamic_overlap(
-            opened_ref,
-            source_state,
-            target_state,
-            dynamic_clearance_exempt_keys,
-        );
-        let opened_search_ref = opened_search_owned.as_ref().unwrap_or(opened_ref);
-        // Repair: consult collision-crossing partners immediately (see
-        // `CollisionCrossingTryOrder::CrossingFirst`'s own doc comment) --
-        // repair only runs after this net already failed to route normally,
-        // so trying the collision-crossing path first is a reasonable prior
-        // specifically in this context, unlike fresh/native routing above.
-        let collision_partner_ids = self.upfront_collision_crossing_partner_ids(
-            net_id,
-            source_state,
-            target_state,
-            CollisionCrossingTryOrder::CrossingFirst,
-        );
-        let used_collision_crossing_attempt = !collision_partner_ids.is_empty();
-        let crossing_attempt = if used_collision_crossing_attempt {
-            self.try_route_with_collision_crossings(
-                net_id,
-                source_state,
-                target_state,
-                opened_search_ref,
-                &cfg,
-                block_radius_cells,
-                dynamic_clearance_exempt_keys,
-                &collision_partner_ids,
-                source_port_um,
-                target_port_um,
-                Some(&validation_opened_cell_keys),
-                true,
-            )?
-        } else {
-            None
-        };
-        if let Some((mut crossing_result, crossing_events)) = crossing_attempt {
-            let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
-            let allowed_crossing_core_keys =
-                Self::crossing_reservation_keys_for_events(&crossing_events);
-            let commit_prepare_start = if collect_timing {
-                Some(Instant::now())
-            } else {
-                None
-            };
-            let (route_cells, core_cells) = self.route_commit_and_core_cells(
-                &crossing_result,
-                block_radius_cells,
-                commit_radius_cells,
-                clearance_exempt_cells,
-                core_radius_cells,
-                source_port_um,
-                target_port_um,
-            );
-            if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
-                crossing_result.stats.commit_prepare_time_us +=
-                    commit_prepare_start.elapsed().as_micros();
-            }
-            let commit_start = if collect_timing {
-                Some(Instant::now())
-            } else {
-                None
-            };
-            let committed = self
-                .obstacle_map
-                .commit_route_with_clearance_and_allowed_core_overlap_cells(
-                    net_id,
-                    &core_cells,
-                    &route_cells,
-                    clearance_exempt_cells.unwrap_or(&[]),
-                    &crossed_partner_ids,
-                    Some(&allowed_crossing_core_keys),
-                );
-            if let Some(commit_start) = commit_start.as_ref() {
-                crossing_result.stats.commit_time_us += commit_start.elapsed().as_micros();
-            }
-            if committed {
-                self.remove_crossing_events_for_net(net_id);
-                self.add_crossing_events(crossing_events);
-                if collect_timing {
-                    crossing_result.stats.obstacle_map_prepare_time_us +=
-                        obstacle_map_prepare_time_us;
-                }
-                if let Err(error) = self.remember_committed_route_centerlines_with_ports(
-                    net_id,
-                    &crossing_result,
-                    source_port_um,
-                    target_port_um,
-                ) {
-                    self.rollback_committed_route(net_id);
-                    return Err(error);
-                }
-                self.remember_committed_route_opened_cells(
-                    net_id,
-                    Some(&validation_opened_cell_keys),
-                );
-                self.add_post_commit_guidance_for_route(net_id, &crossing_result);
-                self.invalidate_meander_base_prefix();
-                if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
-                    net_id,
-                    &crossing_result,
-                    source_port_um,
-                    target_port_um,
-                    Some(&validation_opened_cell_keys),
-                ) {
-                    self.rollback_committed_route(net_id);
-                    return Err(error);
-                }
-                return Ok(crossing_result);
-            }
-        }
-        let zero_radius_overlay =
-            block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some();
-        let mut opened_dynamic_obstacle_map;
-        let mut result = if block_radius_cells > 0 || zero_radius_overlay {
-            let env = SearchEnvironment {
-                obstacle_map: &self.obstacle_map,
-                primitives: &self.primitives,
-            };
-            let request = SearchRequest {
-                source: source_state,
-                target: target_state,
-                port_open_cells: Some(opened_search_ref),
-                dynamic_expansion: Some(DynamicExpansion {
-                    radius_cells: block_radius_cells.max(0),
-                    clearance_exempt_cells: dynamic_clearance_exempt_keys,
-                }),
-                crossing: None,
-                config: &cfg,
-            };
-            self.search_engine.search(&env, &request).route
-        } else {
-            let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
-                opened_dynamic_obstacle_map = self.obstacle_map.clone();
-                opened_dynamic_obstacle_map
-                    .clear_dynamic_clearance_in_cells(dynamic_clearance_exempt_cell_vec);
-                &opened_dynamic_obstacle_map
-            } else {
-                &self.obstacle_map
-            };
-            let env = SearchEnvironment {
-                obstacle_map: search_obstacle_map,
-                primitives: &self.primitives,
-            };
-            let request = SearchRequest {
-                source: source_state,
-                target: target_state,
-                port_open_cells: Some(opened_search_ref),
-                dynamic_expansion: None,
-                crossing: None,
-                config: &cfg,
-            };
-            self.search_engine.search(&env, &request).route
-        }
-        .ok_or_else(|| "No route found".to_string())?;
-
-        if collect_timing {
-            result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
-        }
-        if let Some(error) = self.invalid_grid_crossing_error_for_route(net_id, &result) {
-            return Err(error);
-        }
-        let commit_prepare_start = if collect_timing {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        let (route_cells, core_cells) = self.route_commit_and_core_cells(
-            &result,
-            block_radius_cells,
-            commit_radius_cells,
-            clearance_exempt_cells,
-            core_radius_cells,
-            source_port_um,
-            target_port_um,
-        );
-        if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
-            result.stats.commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
-        }
-        let commit_start = if collect_timing {
-            Some(Instant::now())
-        } else {
-            None
-        };
-        let committed = self.obstacle_map.commit_route_with_clearance_overlap(
-            net_id,
-            &core_cells,
-            &route_cells,
-            clearance_exempt_cells.unwrap_or(&[]),
-        );
-        if let Some(commit_start) = commit_start.as_ref() {
-            result.stats.commit_time_us += commit_start.elapsed().as_micros();
-        }
-        if !committed {
-            return Err(self.dynamic_commit_rejection_error(
-                net_id,
-                &core_cells,
-                clearance_exempt_cells.unwrap_or(&[]),
-            ));
-        }
-        self.remove_crossing_events_for_net(net_id);
-        self.register_geometric_crossing_events_for_route(
-            net_id,
-            &result,
-            source_port_um,
-            target_port_um,
-        );
-        if let Err(error) = self.remember_committed_route_centerlines_with_ports(
-            net_id,
-            &result,
-            source_port_um,
-            target_port_um,
-        ) {
-            self.rollback_committed_route(net_id);
-            return Err(error);
-        }
-        self.remember_committed_route_opened_cells(net_id, Some(&validation_opened_cell_keys));
-        self.add_post_commit_guidance_for_route(net_id, &result);
-        self.invalidate_meander_base_prefix();
-        if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
-            net_id,
-            &result,
-            source_port_um,
-            target_port_um,
-            Some(&validation_opened_cell_keys),
-        ) {
-            self.rollback_committed_route(net_id);
-            return Err(error);
-        }
-
-        Ok(result)
-    }
-
+    /// The diagnostic probe's search: static obstacles only, unbounded
+    /// (the probe never runs under a fail-fast budget, see Milestone 5 of
+    /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`),
+    /// at the net's own long-straight weight override.
     pub(crate) fn route_single_net_ignore_dynamic_native(
         &self,
         source: PyState,
         target: PyState,
         opened_cells: Option<&[(i32, i32)]>,
         opened_cell_keys: Option<&FxHashSet<CellKey>>,
+        long_straight_weight_override: Option<f64>,
     ) -> Result<RouteResult, String> {
         if self.astar_cfg.target_tolerance_cells < 0 {
             return Err("target_tolerance_cells must be >= 0".to_string());
@@ -1589,7 +1256,13 @@ impl PyPhotonicRouter {
         } else {
             &self.port_open_cells
         };
-        let mut cfg = self.astar_config(Some(true), Some(false), Some(0.0))?;
+        let mut cfg = self.astar_config(
+            Some(true),
+            Some(false),
+            Some(0.0),
+            None,
+            long_straight_weight_override,
+        )?;
         cfg.require_terminal_straights = true;
         let mut static_only_obstacle_map = self.obstacle_map.clone();
         static_only_obstacle_map.clear_dynamic();
@@ -1627,35 +1300,19 @@ impl PyPhotonicRouter {
             .ok_or_else(|| "No route found".to_string())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// The baseline attempt: routes the net directly via
-    /// `route_single_net_and_commit_native`, with no victims, no keepouts,
-    /// and no repair. Every other `try_*` method in this file exists
-    /// because this one failed.
+    /// The baseline attempt: routes the net directly via `route_and_commit`
+    /// (`call` is a plain call), with no victims, no keepouts, and no
+    /// repair, and records the outcome in `batch`. Every other `try_*`
+    /// method exists because this one failed.
     pub(crate) fn try_plain_normal_route(
         &mut self,
         batch: &mut RepairBatchState,
-        job: &NativeRouteJob,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
+        call: &SearchCall<'_>,
         collect_native_timing: bool,
     ) -> PlainRouteOutcome {
+        let job = call.job;
         let route_start = native_batch_timer(collect_native_timing);
-        let route_result = self.route_single_net_and_commit_native(
-            job.net_id,
-            job.source,
-            job.target,
-            block_radius_cells,
-            Some(&job.opened_cells),
-            Some(&job.opened_cell_keys),
-            commit_radius_cells,
-            Some(&job.clearance_exempt_cells),
-            Some(&job.clearance_exempt_cell_keys),
-            core_radius_cells,
-            job.source_port_um,
-            job.target_port_um,
-        );
+        let route_result = self.route_and_commit(call);
         let route_elapsed_us = native_batch_elapsed_us(route_start);
         batch.timings.normal_route_wall_us += route_elapsed_us;
         match route_result {
@@ -1761,13 +1418,11 @@ mod tests {
 
     /// Milestone 5 of
     /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`:
-    /// `negotiated_search_budget` (and therefore
-    /// `AStarConfig::total_expansion_budget`) must stay `None` on every path
+    /// `AStarConfig::total_expansion_budget` must stay `None` on every path
     /// the plain-routing entry points use to build a search config -- only
-    /// `route_many_with_negotiated_repair_and_commit` ever sets it, and only
-    /// for the duration of one search call. A fresh router has never run the
-    /// loop, so `astar_config` here stands in for what every other call
-    /// sees.
+    /// `route_many_with_negotiated_repair_and_commit` ever passes a budget
+    /// (`SearchCall::budget`), and only for that one search call. A call
+    /// without a budget here stands in for what every other call sees.
     #[test]
     fn astar_config_leaves_total_expansion_budget_none_by_default() {
         let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
@@ -1798,9 +1453,8 @@ mod tests {
             ),
             None,
         );
-        assert_eq!(router.negotiated_search_budget, None);
         let cfg = router
-            .astar_config(None, None, None)
+            .astar_config(None, None, None, None, None)
             .expect("cached config must be valid");
         assert_eq!(
             cfg.total_expansion_budget, None,
@@ -1812,29 +1466,26 @@ mod tests {
     /// (`.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`):
     /// before this fix, `try_braid_repair`'s two searches (the current
     /// net's reroute and the partner's reroute, both issued via
-    /// `try_ripup_single_victim_and_reroute` ->
-    /// `route_single_net_and_commit_native` -> `self.astar_config(None,
-    /// None, Some(self.commit_history_weight))`) ran with the router's
-    /// default config because `route_many_with_negotiated_repair_and_commit`
-    /// never set `negotiated_search_budget` around its `try_braid_repair`
-    /// calls, so one failing partner reroute could run the benchmark's full
-    /// `max_iterations` (20 M) unbounded -- ~13 minutes on the 64x64 mesh.
-    /// The fix sets `self.negotiated_search_budget =
-    /// Some(NEGOTIATED_BUDGET_BRAID)` around each of the negotiated loop's
-    /// three `try_braid_repair` calls (visible in the source at each call
-    /// site, just above the call) and clears it immediately after; since
-    /// both of `try_braid_repair`'s searches share the exact same
-    /// `astar_config` seam as every other native search, exercising that
-    /// seam directly with the field set is the narrowest correct test --
-    /// a full instrumented run through the negotiated loop would need a
-    /// real two-net braid (two committed nets crossing each other twice)
+    /// `try_ripup_single_victim_and_reroute_with` -> `route_and_commit` ->
+    /// `astar_config`) ran with the router's default config because
+    /// `route_many_with_negotiated_repair_and_commit` never set a budget
+    /// around its `try_braid_repair` calls, so one failing partner reroute
+    /// could run the benchmark's full `max_iterations` (20 M) unbounded --
+    /// ~13 minutes on the 64x64 mesh. The fix gives each braid pass
+    /// `Some(NEGOTIATED_BUDGET_BRAID)` (`run_braid_repair_passes`, carried
+    /// by every `SearchCall` the pass builds); since both of
+    /// `try_braid_repair`'s searches share the exact same `astar_config`
+    /// seam as every other native search, exercising that seam directly
+    /// with the budget passed is the narrowest correct test -- a full
+    /// instrumented run through the negotiated loop would need a real
+    /// two-net braid (two committed nets crossing each other twice)
     /// constructed end to end, which is impractical to add as a unit test
     /// here; see `astar_config_leaves_total_expansion_budget_none_by_default`
-    /// above for the same seam with the field unset.
+    /// above for the same seam without a budget.
     #[test]
     fn astar_config_applies_negotiated_search_budget_when_set() {
         let grid = PyGridSpec::new(20, 20, 0.5, 0.0, 0.0).unwrap();
-        let mut router = PyPhotonicRouter::new(
+        let router = PyPhotonicRouter::new(
             grid,
             PyPrimitiveLibraryConfig::new(0.5, 1, 4, 2, true),
             PyAStarConfig::new(
@@ -1861,16 +1512,15 @@ mod tests {
             ),
             None,
         );
-        router.negotiated_search_budget = Some(NEGOTIATED_BUDGET_BRAID);
         let cfg = router
-            .astar_config(None, None, None)
+            .astar_config(None, None, None, Some(NEGOTIATED_BUDGET_BRAID), None)
             .expect("cached config must be valid");
         assert_eq!(
             cfg.total_expansion_budget,
             Some(NEGOTIATED_BUDGET_BRAID),
-            "every search issued while negotiated_search_budget is set (including \
-             try_braid_repair's current-net and partner reroutes) must carry that \
-             budget, not run unbounded"
+            "every search issued with a budget (including try_braid_repair's \
+             current-net and partner reroutes) must carry that budget, not run \
+             unbounded"
         );
     }
 
@@ -2067,16 +1717,16 @@ mod tests {
         // *dispatch* is what this test pins).
         let (mut router, mut batch, vertical) = single_horizontal_crossing_fixture();
 
-        router.negotiated_crossing_free_search = true;
-        let crossing_free_outcome = router.try_plain_normal_route(
-            &mut batch,
-            &vertical,
+        let radii = SearchRadii::new(
             FIXTURE_CLEARANCE_RADIUS_CELLS,
             Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
             Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+        );
+        let crossing_free_outcome = router.try_plain_normal_route(
+            &mut batch,
+            &SearchCall::plain(&vertical, radii).crossing_free(true),
             false,
         );
-        router.negotiated_crossing_free_search = false;
         let crossing_free_error = batch
             .attempts
             .last()
@@ -2099,14 +1749,8 @@ mod tests {
             "a refused crossing-free search registers no crossing event"
         );
 
-        let priced_outcome = router.try_plain_normal_route(
-            &mut batch,
-            &vertical,
-            FIXTURE_CLEARANCE_RADIUS_CELLS,
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            false,
-        );
+        let priced_outcome =
+            router.try_plain_normal_route(&mut batch, &SearchCall::plain(&vertical, radii), false);
         let priced_error = batch
             .attempts
             .last()

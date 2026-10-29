@@ -76,7 +76,7 @@ impl NetQueue {
     /// order, so each ripped partner reroutes right behind the net that
     /// displaced it -- LiDAR's "ripped nets go back to the queue and route
     /// after it". The `failed_counts` bump is what turns history cost on
-    /// for that reroute (see the loop's `commit_history_weight` gate); it
+    /// for that reroute (see the loop's `SearchArgs::history_weight` gate); it
     /// must stay off for a net's first attempt each epoch, so that only
     /// contested nets pay the history cost. They are
     /// marked as ripped this epoch, which for the local rip-up's victims

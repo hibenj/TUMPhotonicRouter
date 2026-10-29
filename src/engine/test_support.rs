@@ -24,6 +24,29 @@ use crate::engine::*;
 /// into the diagonal.
 pub(crate) const FIXTURE_CLEARANCE_RADIUS_CELLS: i32 = 1;
 
+/// The fixture radii: `block_radius_cells` as given,
+/// `FIXTURE_CLEARANCE_RADIUS_CELLS` for commit and core.
+pub(crate) fn fixture_radii(block_radius_cells: i32) -> SearchRadii {
+    SearchRadii::new(
+        block_radius_cells,
+        Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+        Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+    )
+}
+
+/// `SearchArgs` for a fixture search: no timing, `trace` as given, and the
+/// weights a never-failed net gets outside the negotiated loop (history
+/// weight 0.0, no long-straight override).
+pub(crate) fn test_search_args(radii: SearchRadii, trace: bool) -> SearchArgs {
+    SearchArgs {
+        radii,
+        collect_native_timing: false,
+        trace,
+        history_weight: 0.0,
+        long_straight_weight_override: None,
+    }
+}
+
 /// `block_radius_cells` used only for net 3's (the diagonal's) own
 /// setup route, instead of `FIXTURE_CLEARANCE_RADIUS_CELLS`.
 ///
@@ -275,10 +298,14 @@ pub(crate) fn crossing_conflict_fixture() -> (PyPhotonicRouter, Vec<NativeRouteJ
         };
         let outcome = router.try_plain_normal_route(
             &mut setup_batch,
-            job,
-            block_radius_cells,
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            &SearchCall::plain(
+                job,
+                SearchRadii::new(
+                    block_radius_cells,
+                    Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                    Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                ),
+            ),
             false,
         );
         assert!(
@@ -404,10 +431,14 @@ pub(crate) fn crossing_conflict_probe_fixture() -> (
 
     let plain_outcome = router.try_plain_normal_route(
         &mut batch,
-        &vertical,
-        FIXTURE_CLEARANCE_RADIUS_CELLS,
-        Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-        Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+        &SearchCall::plain(
+            &vertical,
+            SearchRadii::new(
+                FIXTURE_CLEARANCE_RADIUS_CELLS,
+                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            ),
+        ),
         false,
     );
     assert!(
@@ -420,10 +451,7 @@ pub(crate) fn crossing_conflict_probe_fixture() -> (
             &mut batch,
             &vertical,
             &order_by_id,
-            FIXTURE_CLEARANCE_RADIUS_CELLS,
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            false,
-            false,
+            &test_search_args(fixture_radii(FIXTURE_CLEARANCE_RADIUS_CELLS), false),
         )
         .expect("probe search itself must succeed (ignoring dynamic obstacles)");
     assert_eq!(
@@ -463,10 +491,14 @@ pub(crate) fn single_horizontal_crossing_fixture(
     );
     let outcome = router.try_plain_normal_route(
         &mut batch,
-        &horizontal,
-        FIXTURE_CLEARANCE_RADIUS_CELLS,
-        Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-        Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+        &SearchCall::plain(
+            &horizontal,
+            SearchRadii::new(
+                FIXTURE_CLEARANCE_RADIUS_CELLS,
+                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            ),
+        ),
         false,
     );
     assert!(

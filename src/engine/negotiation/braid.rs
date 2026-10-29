@@ -7,6 +7,11 @@ impl PyPhotonicRouter {
     /// but the victim cannot be rerouted afterwards, keep the net's new
     /// route committed and leave the victim ripped (`NetOnly`) instead of
     /// rolling both back -- the braid escalation of the negotiated engine.
+    ///
+    /// `args` carries the radii and the net's two weights for both nets'
+    /// plain searches, `budget` the braid pass's fail-fast budget, and
+    /// `repair_history_weight` the history weight of the victim's repair
+    /// fallback.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn try_ripup_single_victim_and_reroute_with(
         &mut self,
@@ -14,13 +19,12 @@ impl PyPhotonicRouter {
         job: &NativeRouteJob,
         victim_job: &NativeRouteJob,
         bucket_name: &'static str,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        history_weight: f64,
-        collect_native_timing: bool,
+        args: &SearchArgs,
+        budget: Option<u64>,
+        repair_history_weight: f64,
         keep_net_on_victim_failure: bool,
     ) -> VictimRerouteOutcome {
+        let collect_native_timing = args.collect_native_timing;
         let victim_id = victim_job.net_id;
         let base_map = self.obstacle_map.clone();
         let base_center_routes = self.committed_center_routes.clone();
@@ -42,19 +46,11 @@ impl PyPhotonicRouter {
         batch.timings.ripup_us += native_batch_elapsed_us(ripup_start);
 
         let route_start = native_batch_timer(collect_native_timing);
-        let route_result = self.route_single_net_and_commit_native(
-            job.net_id,
-            job.source,
-            job.target,
-            block_radius_cells,
-            Some(&job.opened_cells),
-            Some(&job.opened_cell_keys),
-            commit_radius_cells,
-            Some(&job.clearance_exempt_cells),
-            Some(&job.clearance_exempt_cell_keys),
-            core_radius_cells,
-            job.source_port_um,
-            job.target_port_um,
+        let route_result = self.route_and_commit(
+            &SearchCall::plain(job, args.radii)
+                .budget(budget)
+                .history_weight(args.history_weight)
+                .long_straight_weight_override(args.long_straight_weight_override),
         );
         let route_elapsed_us = native_batch_elapsed_us(route_start);
         batch.timings.repair_failed_net_wall_us += route_elapsed_us;
@@ -91,19 +87,11 @@ impl PyPhotonicRouter {
         };
 
         let reroute_start = native_batch_timer(collect_native_timing);
-        let reroute_result = self.route_single_net_and_commit_native(
-            victim_job.net_id,
-            victim_job.source,
-            victim_job.target,
-            block_radius_cells,
-            Some(&victim_job.opened_cells),
-            Some(&victim_job.opened_cell_keys),
-            commit_radius_cells,
-            Some(&victim_job.clearance_exempt_cells),
-            Some(&victim_job.clearance_exempt_cell_keys),
-            core_radius_cells,
-            victim_job.source_port_um,
-            victim_job.target_port_um,
+        let reroute_result = self.route_and_commit(
+            &SearchCall::plain(victim_job, args.radii)
+                .budget(budget)
+                .history_weight(args.history_weight)
+                .long_straight_weight_override(args.long_straight_weight_override),
         );
         let reroute_elapsed_us = native_batch_elapsed_us(reroute_start);
         batch.timings.reroute_victims_wall_us += reroute_elapsed_us;
@@ -118,20 +106,10 @@ impl PyPhotonicRouter {
             Err(normal_error) => {
                 batch.timings.reroute_victims_failed_wall_us += reroute_elapsed_us;
                 let repair_start = native_batch_timer(collect_native_timing);
-                let repair_result = self.route_single_net_and_commit_repair_native(
-                    victim_job.net_id,
-                    victim_job.source,
-                    victim_job.target,
-                    block_radius_cells,
-                    Some(&victim_job.opened_cells),
-                    Some(&victim_job.opened_cell_keys),
-                    history_weight,
-                    commit_radius_cells,
-                    Some(&victim_job.clearance_exempt_cells),
-                    Some(&victim_job.clearance_exempt_cell_keys),
-                    core_radius_cells,
-                    victim_job.source_port_um,
-                    victim_job.target_port_um,
+                let repair_result = self.route_and_commit(
+                    &SearchCall::repair(victim_job, args.radii, repair_history_weight)
+                        .budget(budget)
+                        .long_straight_weight_override(args.long_straight_weight_override),
                 );
                 let repair_elapsed_us = native_batch_elapsed_us(repair_start);
                 batch.timings.reroute_victims_wall_us += repair_elapsed_us;
@@ -263,14 +241,12 @@ impl PyPhotonicRouter {
         batch: &mut RepairBatchState,
         job: &NativeRouteJob,
         job_by_id: &FxHashMap<u64, NativeRouteJob>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        collect_native_timing: bool,
-        trace_native_repair: bool,
+        args: &SearchArgs,
+        budget: Option<u64>,
         skip_pairs: Option<&FxHashSet<(u64, u64)>>,
         escalate_victim: bool,
     ) -> Option<BraidRepairOutcome> {
+        let trace_native_repair = args.trace;
         if self.router_config.negotiation.disable_braid_repair {
             return None;
         }
@@ -307,7 +283,7 @@ impl PyPhotonicRouter {
                 job.net_id,
                 victim_id,
                 before,
-                trace_budget_str(self.negotiated_search_budget)
+                trace_budget_str(budget)
             );
             // Braid geometry (2026-09-15 fan-out analysis): the crossing
             // points between the two nets and both routes' waypoints.
@@ -377,11 +353,9 @@ impl PyPhotonicRouter {
             job,
             victim_job,
             "braid_ripup",
-            block_radius_cells,
-            commit_radius_cells,
-            core_radius_cells,
+            args,
+            budget,
             0.0,
-            collect_native_timing,
             escalate_victim,
         );
         let swapped = reroute_outcome == VictimRerouteOutcome::Both;
@@ -439,33 +413,26 @@ impl PyPhotonicRouter {
     /// Bounded by `NEGOTIATED_BRAID_MAX_PASSES` regardless, so one commit
     /// can never turn into an unbounded chain of reroute searches. Returns
     /// the number of passes that ended `keep=true`.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_braid_repair_passes(
         &mut self,
         batch: &mut RepairBatchState,
         job: &NativeRouteJob,
         job_by_id: &FxHashMap<u64, NativeRouteJob>,
-        block_radius_cells: i32,
-        commit_radius_cells: Option<i32>,
-        core_radius_cells: Option<i32>,
-        collect_native_timing: bool,
-        trace_native_repair: bool,
+        args: &SearchArgs,
         braid_failed_pairs: &mut FxHashSet<(u64, u64)>,
         ripped_victims: &mut Vec<u64>,
     ) -> u32 {
         let mut kept_count = 0u32;
         let escalate = self.router_config.negotiation.braid_escalation;
-        self.negotiated_search_budget = Some(NEGOTIATED_BUDGET_BRAID);
+        // Every search of a braid pass runs under the braid budget.
+        let budget = Some(NEGOTIATED_BUDGET_BRAID);
         for _ in 0..NEGOTIATED_BRAID_MAX_PASSES {
             let braid_outcome = self.try_braid_repair(
                 batch,
                 job,
                 job_by_id,
-                block_radius_cells,
-                commit_radius_cells,
-                core_radius_cells,
-                collect_native_timing,
-                trace_native_repair,
+                args,
+                budget,
                 Some(braid_failed_pairs),
                 escalate,
             );
@@ -481,7 +448,6 @@ impl PyPhotonicRouter {
                 }
             }
         }
-        self.negotiated_search_budget = None;
         kept_count
     }
 }
@@ -568,11 +534,8 @@ mod tests {
             &mut batch,
             &vertical,
             &job_by_id,
-            FIXTURE_CLEARANCE_RADIUS_CELLS,
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            false,
-            true,
+            &test_search_args(fixture_radii(FIXTURE_CLEARANCE_RADIUS_CELLS), true),
+            None,
             Some(&skip_pairs),
             true,
         );
@@ -618,7 +581,7 @@ mod tests {
     /// On this fixture net 4's own reroute inside `try_braid_repair`'s
     /// swap always fails regardless of which partner is picked: `try_braid_repair`
     /// reroutes net 4 via a *plain* search (`try_ripup_single_victim_and_reroute`
-    /// -> `route_single_net_and_commit_native`), and a plain search on this
+    /// -> `route_and_commit`), and a plain search on this
     /// fixture cannot legally cross anything at all (confirmed directly:
     /// `try_plain_normal_route` for net 4 still fails with "No legal LiDAR
     /// crossing route found" even after net 3 is ripped up first, because a
@@ -743,11 +706,7 @@ mod tests {
             &mut batch,
             &vertical,
             &job_by_id,
-            DIAGONAL_SETUP_BLOCK_RADIUS_CELLS,
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            false,
-            true,
+            &test_search_args(fixture_radii(DIAGONAL_SETUP_BLOCK_RADIUS_CELLS), true),
             &mut braid_failed_pairs,
             &mut Vec::new(),
         );
@@ -838,8 +797,11 @@ mod tests {
             None,
             None,
         );
-        let outcome =
-            router.try_plain_normal_route(&mut setup_batch, &victim, 1, Some(1), Some(1), false);
+        let outcome = router.try_plain_normal_route(
+            &mut setup_batch,
+            &SearchCall::plain(&victim, SearchRadii::new(1, Some(1), Some(1))),
+            false,
+        );
         assert!(
             matches!(outcome, PlainRouteOutcome::Routed),
             "fixture setup: victim net must route/commit cleanly: {:?}",
@@ -901,11 +863,7 @@ mod tests {
             &mut batch,
             &job,
             &job_by_id,
-            1,
-            Some(1),
-            Some(1),
-            false,
-            true,
+            &test_search_args(SearchRadii::new(1, Some(1), Some(1)), true),
             &mut braid_failed_pairs,
             &mut Vec::new(),
         );

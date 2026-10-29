@@ -474,8 +474,8 @@ impl PyPhotonicRouter {
     /// returns an empty set: the caller is expected to try its own plain
     /// attempt first and only consult `lidar_pure_full_map_partner_set`
     /// directly, a second time, if that plain attempt fails (matching
-    /// `route_single_net_and_commit_native`'s existing two-stage
-    /// structure, which this function does not otherwise change). For
+    /// `route_and_commit`'s two-stage structure for a plain call, which
+    /// this function does not otherwise change). For
     /// `CrossingFirst` callers the full partner set is returned
     /// immediately, since that case has no deferred second stage. With
     /// crossings disabled the set is empty either way.
@@ -1636,10 +1636,14 @@ mod tests {
 
         let plain_outcome = router.try_plain_normal_route(
             &mut batch,
-            &vertical,
-            FIXTURE_CLEARANCE_RADIUS_CELLS,
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            &SearchCall::plain(
+                &vertical,
+                SearchRadii::new(
+                    FIXTURE_CLEARANCE_RADIUS_CELLS,
+                    Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                    Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                ),
+            ),
             false,
         );
         assert!(
@@ -1653,10 +1657,7 @@ mod tests {
                 &mut batch,
                 &vertical,
                 &order_by_id,
-                FIXTURE_CLEARANCE_RADIUS_CELLS,
-                Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-                false,
-                true,
+                &test_search_args(fixture_radii(FIXTURE_CLEARANCE_RADIUS_CELLS), true),
             )
             .expect("probe search itself must succeed (ignoring dynamic obstacles)");
 
@@ -1818,10 +1819,14 @@ mod tests {
 
         let plain_outcome = router.try_plain_normal_route(
             &mut batch,
-            &second_vertical,
-            FIXTURE_CLEARANCE_RADIUS_CELLS,
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
-            Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+            &SearchCall::plain(
+                &second_vertical,
+                SearchRadii::new(
+                    FIXTURE_CLEARANCE_RADIUS_CELLS,
+                    Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                    Some(FIXTURE_CLEARANCE_RADIUS_CELLS),
+                ),
+            ),
             false,
         );
         assert!(
@@ -2467,10 +2472,11 @@ mod tests {
                 State::new(0, 0, 0),
                 State::new(12, 0, 0),
                 &opened,
-                &router.astar_config(None, None, None).unwrap(),
+                &router.astar_config(None, None, None, None, None).unwrap(),
                 0,
                 None,
                 &partner_ids,
+                None,
                 None,
                 None,
                 None,
@@ -2490,10 +2496,11 @@ mod tests {
                 State::new(0, 0, 0),
                 State::new(12, 0, 0),
                 &opened,
-                &router.astar_config(None, None, None).unwrap(),
+                &router.astar_config(None, None, None, None, None).unwrap(),
                 0,
                 None,
                 &partner_ids,
+                None,
                 None,
                 None,
                 None,

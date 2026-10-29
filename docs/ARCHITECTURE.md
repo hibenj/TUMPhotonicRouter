@@ -127,9 +127,17 @@ arithmetic: footprint inflation, port footprint cells, clearance-exempt cells,
 commit and core cells. `commit.rs` (805 lines) owns committing a route to the
 obstacle map and everything that accumulates on a successful commit (history,
 long-straight congestion, crossing spacing, post-commit guidance).
-`search_calls.rs` (3,132 lines) owns the bridge from a job to a
-`SearchRequest`: it builds `AStarConfig` and the crossing search configuration
-and calls `self.search_engine.search(...)`. `crossing_reservation.rs` (3,218
+`search_call.rs` owns `SearchCall`, the value that describes one
+search-and-commit of one net: the job, the three radii, the kind (`Plain` or
+`Repair`), the fail-fast budget, the history weight, the long-straight
+override, the crossing-free flag and the probe-guided partners. `search_calls.rs`
+(about 2,100 lines) owns the bridge from such a call to a `SearchRequest`: the
+one `route_and_commit` body (phase 3 slice B of the 2026-10 do-over merged the
+former native and repair copies; the four ways a repair call differs are fields
+of the call or branches on its kind), `astar_config`, the collision-crossing
+search, and the crossing search configuration, and it calls
+`self.search_engine.search(...)`. Nothing per attempt lives on the router
+struct any more: every knob a search needs arrives in its `SearchCall`. `crossing_reservation.rs` (3,218
 lines) owns crossing reservations, partner sets and the realized-crossing
 validation. `crossing_geometry.rs` (579 lines) owns the pure geometry used
 there (segment intersection, point-segment distance, parallel overlap,
@@ -734,14 +742,19 @@ The rules are values, one module each, chosen before the first round:
 
 | policy | trait and implementations | what it decides |
 | --- | --- | --- |
-| Budget | `BudgetSchedule`, `LadderBudgets` (`negotiation/budget.rs`) | the expansion budget of one attempt, given its `AttemptKind` (`First`, `FirstRetry`, `PostRipUp`), the net's failure count and the round; `None` means unbounded. The braid passes set their constant budget at their own call sites |
+| Budget | `BudgetSchedule`, `LadderBudgets` (`negotiation/budget.rs`) | the expansion budget of one attempt, given its `AttemptKind` (`First`, `FirstRetry`, `PostRipUp`), the net's failure count and the round; `None` means unbounded. The braid passes put their constant budget (`NEGOTIATED_BUDGET_BRAID`) on every `SearchCall` they build |
 | Crossing-free | `CrossingFreePolicy`, `PlannedPairsOnly`, `Never` (`negotiation/crossing_free.rs`) | whether this net's searches this round run crossing-free (contribution 1's rule for nets the plan gives no crossing; `Never` without guidance) |
 | Rip-up | `RipUpPolicy`, `LidarStyleRipUp`, `NoRipUp` (`negotiation/ripup.rs`) | which committed nets a blocked net displaces -- and it does the ripping, because rip-up mutates the obstacle map and `batch.final_routes`; it returns the ids it ripped, in the order it found them. `NoRipUp` rips nothing: the binding's `no_ripup=True` with `max_rounds = 1` is the no-repair mode (`RipupRerouteConfig(enabled=False)`) |
 | Queue | `NetQueue` (`negotiation/queue.rs`) | the work order plus the three tables the other rules read: failure counts, the nets already ripped this epoch, and each net's most recent probe blockers |
 
-`negotiation/attempt.rs` turns one attempt into its `native_negotiated_search`
+`negotiation/attempt.rs` builds each attempt's `SearchCall` from the batch's
+`SearchArgs` (radii and flags, plus the two weights the loop chooses per net:
+the history weight once a net has failed, the long-straight override for the
+exempt fan-out nets) and turns the attempt into its `native_negotiated_search`
 trace line; `negotiation/probe.rs` answers "who blocks this net";
-`negotiation/braid.rs` swaps two crossing routes locally.
+`negotiation/braid.rs` swaps two crossing routes locally, its two plain
+searches and the victim's repair fallback being `SearchCall`s under the braid
+budget.
 
 The loop accepts any legal path, however long, and never revisits a routed
 net unless a later net rips it up as a blocker; a net that had to go around
