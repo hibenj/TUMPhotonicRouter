@@ -1476,465 +1476,266 @@ def _finalize_committed_route(
 def dispatch_native_routing(
     settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
 ) -> None:
-    if state.repair_config.enabled:
-        if not hasattr(state.router, "route_many_with_negotiated_repair_and_commit"):
-            raise RuntimeError(
-                "The loaded photonic_router._rust extension does not expose "
-                "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. Rebuild it "
-                "with `maturin develop --release`; Python repair fallback has been removed."
-            )
-        batch_jobs: list[
-            tuple[
-                int,
-                Any,
-                Any,
-                list[tuple[int, int]],
-                list[tuple[int, int]],
-                list[tuple[int, int]],
-                tuple[float, float] | None,
-                tuple[float, float] | None,
-            ]
-        ] = []
-        batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
-        batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-        t_batch_job_pack_start = timing.pipeline_timer_start(settings, state)
-        for job in route_jobs:
-            source_state, target_state, _, _, opened_cells = _state_openings_for_job(
-                settings, state, job
-            )
-            clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
-            route_selected_for_debug = (
-                settings.debug_route_indices is None
-                or job.route_index in settings.debug_route_indices
-            )
-            should_print_route = settings.verbose_route_diagnostics and route_selected_for_debug
-            if settings.debug_route_indices is not None and route_selected_for_debug:
-                should_print_route = True
-            if should_print_route:
-                print(
-                    f"  Routing [{job.route_index}/{len(route_jobs)}] "
-                    f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
-                    end=" ",
-                )
-            route_dir = state.debug_path / "routes" if state.debug_path is not None else None
-            diag_txt: Path | None = None
-            if (
-                state.debug_path is not None
-                and (route_selected_for_debug or settings.collect_attempt_diagnostics)
-                and route_dir is not None
-            ):
-                _ensure_dir(route_dir)
-                diag_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
-            batch_jobs.append(
-                (
-                    int(job.net_id),
-                    source_state,
-                    target_state,
-                    opened_cells,
-                    clearance_exempt_cells,
-                    _foreign_keepout_cleanup_cells_for_job(settings, state, job),
-                    _routing_endpoint_center_um(settings, state, job, source=True),
-                    _routing_endpoint_center_um(settings, state, job, source=False),
-                )
-            )
-            batch_opened_cells_by_id[int(job.net_id)] = opened_cells
-            batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
-        timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
-
-        batch_start = _timing_start(settings, state)
-        # The LiDAR-style negotiated rip-up loop of
-        # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
-        # (the only engine that routes the 64x64 mesh), the default since
-        # 2026-09-16 (owner decision, baseline freeze) and the only repair
-        # engine since Milestone 8 of
-        # .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-        # deleted the older 17-strategy chain and its engine switch.
-        raw_batch_result = state.router.route_many_with_negotiated_repair_and_commit(
-            batch_jobs,
-            state.block_radius_cells,
-            state.commit_radius_cells,
-            state.core_commit_radius_cells,
-            NEGOTIATED_MAX_ROUNDS,
-            float(state.repair_config.history_weight),
-            int(state.repair_config.history_increment),
+    # Repair on (the default, every benchmark needs it): the negotiated
+    # rip-up loop over NEGOTIATED_MAX_ROUNDS rounds. Repair off (a
+    # diagnostic/test baseline): the same loop with one round and the
+    # `NoRipUp` policy, which is plain in-order routing with no rip-up and no
+    # requeue; with one round every net has `failed_count == 0`, so the
+    # loop's history weight stays 0.0 and its searches are unbounded.
+    repair_enabled = bool(state.repair_config.enabled)
+    max_rounds = NEGOTIATED_MAX_ROUNDS if repair_enabled else 1
+    no_ripup = not repair_enabled
+    if not hasattr(state.router, "route_many_with_negotiated_repair_and_commit"):
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. Rebuild it "
+            "with `maturin develop --release`; the Python routing fallbacks have been removed."
         )
-        batch_elapsed_s = time.perf_counter() - batch_start if state.collect_timing else 0.0
-        timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
-        t_batch_result_processing_start = timing.pipeline_timer_start(settings, state)
-        batch_result = dict(raw_batch_result)
-        state.native_repair_trace_records = [
-            dict(record)
-            for record in cast(
-                Iterable[Mapping[str, object]],
-                batch_result.get("repair_trace", []),
-            )
+    batch_jobs: list[
+        tuple[
+            int,
+            Any,
+            Any,
+            list[tuple[int, int]],
+            list[tuple[int, int]],
+            list[tuple[int, int]],
+            tuple[float, float] | None,
+            tuple[float, float] | None,
         ]
-        _record_native_batch_timings(settings, state, batch_result)
-        _report_long_straight_congestion(settings, state, batch_result)
-        raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
-        per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
-        for raw_attempt in raw_attempts:
-            attempt = dict(raw_attempt)
-            net_id = int(attempt["net_id"])
-            job = state.route_jobs_by_id[net_id]
-            route_obj = attempt.get("route")
-            if route_obj is None:
-                route_obj = None
-            failed = bool(attempt.get("failed", False))
-            bucket_name = str(attempt.get("bucket_name", "normal_route"))
-            error_text = str(attempt.get("error")) if attempt.get("error") is not None else None
-            repair_round_raw = attempt.get("repair_round")
-            repair_round = int(repair_round_raw) if repair_round_raw is not None else None
-            attempt_index = len(state.route_attempt_records) + 1
-            candidate_blockers = [
-                int(value) for value in cast(list[object], attempt.get("candidate_blockers", []))
-            ]
-            ripup_ids = [int(value) for value in cast(list[object], attempt.get("ripup_ids", []))]
-            if (
-                route_obj is not None
-                and not failed
-                and bucket_name != "normal_route"
-                and state.debug_path is not None
-                and (
-                    settings.debug_route_indices is None
-                    or job.route_index in settings.debug_route_indices
-                )
-            ):
-                _export_route_svg(
-                    settings,
-                    state,
-                    job,
-                    route_obj,
-                    suffix=f"_attempt{attempt_index}_{bucket_name}",
-                )
-            if state.collect_timing:
-                bucket = state.route_timing_buckets.setdefault(
-                    bucket_name,
-                    RouteTimingBucket(),
-                )
-                if route_obj is not None and not failed:
-                    bucket.record_route(
-                        per_attempt_elapsed_s,
-                        route_obj,
-                    )
-                else:
-                    bucket.record_elapsed(
-                        per_attempt_elapsed_s,
-                        failed=failed,
-                    )
-                state.route_attempt_records.append(
-                    route_attempt_record_from_route(
-                        attempt_index=attempt_index,
-                        bucket_name=bucket_name,
-                        net_id=job.net_id,
-                        route_index=job.route_index,
-                        net_name=job.net_name,
-                        source=f"{job.inst1},{job.port1}",
-                        target=f"{job.inst2},{job.port2}",
-                        elapsed_s=per_attempt_elapsed_s,
-                        route_obj=route_obj if route_obj is not None and not failed else None,
-                        failed=failed,
-                        repair_round=repair_round,
-                        error=error_text,
-                        diagnostics=_route_attempt_diagnostics(
-                            settings,
-                            state,
-                            job,
-                            route_obj if route_obj is not None and not failed else None,
-                            candidate_blockers=candidate_blockers,
-                            ripup_ids=ripup_ids,
-                        )
-                        if settings.collect_attempt_diagnostics
-                        else None,
-                    )
-                )
-
-        state.repair_count += int(batch_result.get("repair_count", 0) or 0)
-        raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
-        for raw_entry in raw_routes:
-            entry = dict(raw_entry)
-            net_id = int(entry["net_id"])
-            route_obj = entry["route"]
-            job = state.route_jobs_by_id[net_id]
-            opened_cells = batch_opened_cells_by_id[net_id]
-            _record_route(settings, state, job, route_obj, opened_cells)
-            should_print_route, diag_txt = batch_debug_by_id[net_id]
-            _finalize_committed_route(
-                settings,
-                state,
-                job,
-                route_obj,
-                opened_cells,
-                should_print_route=should_print_route,
-                diag_txt=diag_txt,
-            )
-        timing.record_pipeline_timing(
-            settings,
-            state,
-            "batch_result_processing",
-            t_batch_result_processing_start,
+    ] = []
+    batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
+    batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
+    t_batch_job_pack_start = timing.pipeline_timer_start(settings, state)
+    for job in route_jobs:
+        source_state, target_state, _, _, opened_cells = _state_openings_for_job(
+            settings, state, job
         )
-
-        if str(batch_result.get("status", "")) != "routed":
-            failed_net_id = int(batch_result.get("failed_net_id", -1))
-            failed_job = state.route_jobs_by_id.get(failed_net_id)
-            error_text = str(batch_result.get("error", "No route found"))
-            if failed_job is None:
-                raise RuntimeError(error_text)
+        clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
+        route_selected_for_debug = (
+            settings.debug_route_indices is None or job.route_index in settings.debug_route_indices
+        )
+        should_print_route = settings.verbose_route_diagnostics and route_selected_for_debug
+        if settings.debug_route_indices is not None and route_selected_for_debug:
+            should_print_route = True
+        if should_print_route:
+            print(
+                f"  Routing [{job.route_index}/{len(route_jobs)}] "
+                f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
+                end=" ",
+            )
+        route_dir = state.debug_path / "routes" if state.debug_path is not None else None
+        diag_txt: Path | None = None
+        if (
+            state.debug_path is not None
+            and (route_selected_for_debug or settings.collect_attempt_diagnostics)
+            and route_dir is not None
+        ):
+            _ensure_dir(route_dir)
+            diag_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
+        batch_jobs.append(
             (
+                int(job.net_id),
                 source_state,
                 target_state,
-                opened_candidate_cells,
-                opened_cells_set,
                 opened_cells,
-            ) = _state_openings_for_job(settings, state, failed_job)
-            should_print_route, diag_txt = batch_debug_by_id.get(
-                failed_net_id,
-                (False, None),
+                clearance_exempt_cells,
+                _foreign_keepout_cleanup_cells_for_job(settings, state, job),
+                _routing_endpoint_center_um(settings, state, job, source=True),
+                _routing_endpoint_center_um(settings, state, job, source=False),
             )
-            if not should_print_route:
-                print(
-                    f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
-                    f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
-                    f"{failed_job.inst2},{failed_job.port2}... failed"
-                )
-            _write_route_diagnostics(
-                settings,
-                state,
-                job=failed_job,
-                source_state=source_state,
-                target_state=target_state,
-                opened_candidate_cells=opened_candidate_cells,
-                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(
-                    settings, state, failed_job
-                ),
-                opened_cells_set=opened_cells_set,
-                diag_txt=diag_txt,
-                status="failed",
-                error_text=error_text,
-            )
-            _write_failed_log(
-                settings,
-                state,
-                failed_job,
-                source_state,
-                target_state,
-                opened_candidate_cells,
-                opened_cells,
-                error_text,
-            )
-            raise RuntimeError(
-                f"No route found for {failed_job.net_name}: "
-                f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
-                f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
-                f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                f"allow_45_degree_turns={settings.allow_45_degree_turns}. "
-                f"error={error_text}"
-            )
+        )
+        batch_opened_cells_by_id[int(job.net_id)] = opened_cells
+        batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
+    timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
 
-    else:
-        if not hasattr(state.router, "route_many_with_negotiated_repair_and_commit"):
-            raise RuntimeError(
-                "The loaded photonic_router._rust extension does not expose "
-                "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. Rebuild it with "
-                "`maturin develop --release`; Python sequential routing fallback has been removed."
-            )
-        batch_jobs: list[
-            tuple[
-                int,
-                Any,
-                Any,
-                list[tuple[int, int]],
-                list[tuple[int, int]],
-                list[tuple[int, int]],
-                tuple[float, float] | None,
-                tuple[float, float] | None,
-            ]
-        ] = []
-        batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
-        batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-        t_batch_job_pack_start = timing.pipeline_timer_start(settings, state)
-        for job in route_jobs:
-            source_state, target_state, _, _, opened_cells = _state_openings_for_job(
-                settings, state, job
-            )
-            clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
-            route_selected_for_debug = (
+    batch_start = _timing_start(settings, state)
+    # The LiDAR-style negotiated rip-up loop of
+    # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
+    # (the only engine that routes the 64x64 mesh), the default since
+    # 2026-09-16 (owner decision, baseline freeze) and the only repair
+    # engine since Milestone 8 of
+    # .agent/execplans/2026-09-22-modular-readable-router-restructure.md
+    # deleted the older 17-strategy chain and its engine switch.
+    raw_batch_result = state.router.route_many_with_negotiated_repair_and_commit(
+        batch_jobs,
+        state.block_radius_cells,
+        state.commit_radius_cells,
+        state.core_commit_radius_cells,
+        max_rounds,
+        float(state.repair_config.history_weight),
+        int(state.repair_config.history_increment),
+        no_ripup=no_ripup,
+    )
+    batch_elapsed_s = time.perf_counter() - batch_start if state.collect_timing else 0.0
+    timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
+    t_batch_result_processing_start = timing.pipeline_timer_start(settings, state)
+    batch_result = dict(raw_batch_result)
+    state.native_repair_trace_records = [
+        dict(record)
+        for record in cast(
+            Iterable[Mapping[str, object]],
+            batch_result.get("repair_trace", []),
+        )
+    ]
+    _record_native_batch_timings(settings, state, batch_result)
+    _report_long_straight_congestion(settings, state, batch_result)
+    raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
+    per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
+    for raw_attempt in raw_attempts:
+        attempt = dict(raw_attempt)
+        net_id = int(attempt["net_id"])
+        job = state.route_jobs_by_id[net_id]
+        route_obj = attempt.get("route")
+        if route_obj is None:
+            route_obj = None
+        failed = bool(attempt.get("failed", False))
+        bucket_name = str(attempt.get("bucket_name", "normal_route"))
+        error_text = str(attempt.get("error")) if attempt.get("error") is not None else None
+        repair_round_raw = attempt.get("repair_round")
+        repair_round = int(repair_round_raw) if repair_round_raw is not None else None
+        attempt_index = len(state.route_attempt_records) + 1
+        candidate_blockers = [
+            int(value) for value in cast(list[object], attempt.get("candidate_blockers", []))
+        ]
+        ripup_ids = [int(value) for value in cast(list[object], attempt.get("ripup_ids", []))]
+        if (
+            route_obj is not None
+            and not failed
+            and bucket_name != "normal_route"
+            and state.debug_path is not None
+            and (
                 settings.debug_route_indices is None
                 or job.route_index in settings.debug_route_indices
             )
-            should_print_route = settings.verbose_route_diagnostics and route_selected_for_debug
-            if settings.debug_route_indices is not None and route_selected_for_debug:
-                should_print_route = True
-            if should_print_route:
-                print(
-                    f"  Routing [{job.route_index}/{len(route_jobs)}] "
-                    f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
-                    end=" ",
-                )
-            route_dir = state.debug_path / "routes" if state.debug_path is not None else None
-            diag_txt: Path | None = None
-            if (
-                state.debug_path is not None
-                and (route_selected_for_debug or settings.collect_attempt_diagnostics)
-                and route_dir is not None
-            ):
-                _ensure_dir(route_dir)
-                diag_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
-            batch_jobs.append(
-                (
-                    int(job.net_id),
-                    source_state,
-                    target_state,
-                    opened_cells,
-                    clearance_exempt_cells,
-                    _foreign_keepout_cleanup_cells_for_job(settings, state, job),
-                    _routing_endpoint_center_um(settings, state, job, source=True),
-                    _routing_endpoint_center_um(settings, state, job, source=False),
-                )
-            )
-            batch_opened_cells_by_id[int(job.net_id)] = opened_cells
-            batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
-        timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
-
-        batch_start = _timing_start(settings, state)
-        # Repair disabled: the negotiated loop with a single round and the
-        # `NoRipUp` policy, which is plain in-order routing with no rip-up
-        # and no requeue. This replaced the separate
-        # separate non-repair batch binding in Milestone 8 of
-        # .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-        # (owner decision 2026-09-24). With one round every net has
-        # `failed_count == 0`, so the loop's history weight stays 0.0 and
-        # its searches are unbounded, exactly as the deleted loop's were.
-        raw_batch_result = state.router.route_many_with_negotiated_repair_and_commit(
-            batch_jobs,
-            state.block_radius_cells,
-            state.commit_radius_cells,
-            state.core_commit_radius_cells,
-            1,
-            float(state.repair_config.history_weight),
-            int(state.repair_config.history_increment),
-            no_ripup=True,
-        )
-        batch_elapsed_s = time.perf_counter() - batch_start if state.collect_timing else 0.0
-        timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
-        t_batch_result_processing_start = timing.pipeline_timer_start(settings, state)
-        batch_result = dict(raw_batch_result)
-        _record_native_batch_timings(settings, state, batch_result)
-        _report_long_straight_congestion(settings, state, batch_result)
-        raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
-        per_route_elapsed_s = batch_elapsed_s / max(1, len(raw_routes))
-        for raw_entry in raw_routes:
-            entry = dict(raw_entry)
-            net_id = int(entry["net_id"])
-            route_obj = entry["route"]
-            job = state.route_jobs_by_id[net_id]
-            opened_cells = batch_opened_cells_by_id[net_id]
-            if state.collect_timing:
-                state.route_timing_buckets["normal_route"].record_route(
-                    per_route_elapsed_s,
-                    route_obj,
-                )
-                state.route_attempt_records.append(
-                    route_attempt_record_from_route(
-                        attempt_index=len(state.route_attempt_records) + 1,
-                        bucket_name="normal_route",
-                        net_id=job.net_id,
-                        route_index=job.route_index,
-                        net_name=job.net_name,
-                        source=f"{job.inst1},{job.port1}",
-                        target=f"{job.inst2},{job.port2}",
-                        elapsed_s=per_route_elapsed_s,
-                        route_obj=route_obj,
-                    )
-                )
-            _record_route(settings, state, job, route_obj, opened_cells)
-            should_print_route, diag_txt = batch_debug_by_id[net_id]
-            _finalize_committed_route(
+        ):
+            _export_route_svg(
                 settings,
                 state,
                 job,
                 route_obj,
-                opened_cells,
-                should_print_route=should_print_route,
-                diag_txt=diag_txt,
+                suffix=f"_attempt{attempt_index}_{bucket_name}",
             )
-        timing.record_pipeline_timing(
+        if state.collect_timing:
+            bucket = state.route_timing_buckets.setdefault(
+                bucket_name,
+                RouteTimingBucket(),
+            )
+            if route_obj is not None and not failed:
+                bucket.record_route(
+                    per_attempt_elapsed_s,
+                    route_obj,
+                )
+            else:
+                bucket.record_elapsed(
+                    per_attempt_elapsed_s,
+                    failed=failed,
+                )
+            state.route_attempt_records.append(
+                route_attempt_record_from_route(
+                    attempt_index=attempt_index,
+                    bucket_name=bucket_name,
+                    net_id=job.net_id,
+                    route_index=job.route_index,
+                    net_name=job.net_name,
+                    source=f"{job.inst1},{job.port1}",
+                    target=f"{job.inst2},{job.port2}",
+                    elapsed_s=per_attempt_elapsed_s,
+                    route_obj=route_obj if route_obj is not None and not failed else None,
+                    failed=failed,
+                    repair_round=repair_round,
+                    error=error_text,
+                    diagnostics=_route_attempt_diagnostics(
+                        settings,
+                        state,
+                        job,
+                        route_obj if route_obj is not None and not failed else None,
+                        candidate_blockers=candidate_blockers,
+                        ripup_ids=ripup_ids,
+                    )
+                    if settings.collect_attempt_diagnostics
+                    else None,
+                )
+            )
+
+    state.repair_count += int(batch_result.get("repair_count", 0) or 0)
+    raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
+    for raw_entry in raw_routes:
+        entry = dict(raw_entry)
+        net_id = int(entry["net_id"])
+        route_obj = entry["route"]
+        job = state.route_jobs_by_id[net_id]
+        opened_cells = batch_opened_cells_by_id[net_id]
+        _record_route(settings, state, job, route_obj, opened_cells)
+        should_print_route, diag_txt = batch_debug_by_id[net_id]
+        _finalize_committed_route(
             settings,
             state,
-            "batch_result_processing",
-            t_batch_result_processing_start,
+            job,
+            route_obj,
+            opened_cells,
+            should_print_route=should_print_route,
+            diag_txt=diag_txt,
         )
+    timing.record_pipeline_timing(
+        settings,
+        state,
+        "batch_result_processing",
+        t_batch_result_processing_start,
+    )
 
-        if str(batch_result.get("status", "")) != "routed":
-            failed_net_id = int(batch_result.get("failed_net_id", -1))
-            failed_job = state.route_jobs_by_id.get(failed_net_id)
-            error_text = str(batch_result.get("error", "No route found"))
-            if failed_job is None:
-                raise RuntimeError(error_text)
-            (
-                source_state,
-                target_state,
-                opened_candidate_cells,
-                opened_cells_set,
-                opened_cells,
-            ) = _state_openings_for_job(settings, state, failed_job)
-            should_print_route, diag_txt = batch_debug_by_id.get(
-                failed_net_id,
-                (False, None),
+    if str(batch_result.get("status", "")) != "routed":
+        failed_net_id = int(batch_result.get("failed_net_id", -1))
+        failed_job = state.route_jobs_by_id.get(failed_net_id)
+        error_text = str(batch_result.get("error", "No route found"))
+        if failed_job is None:
+            raise RuntimeError(error_text)
+        (
+            source_state,
+            target_state,
+            opened_candidate_cells,
+            opened_cells_set,
+            opened_cells,
+        ) = _state_openings_for_job(settings, state, failed_job)
+        should_print_route, diag_txt = batch_debug_by_id.get(
+            failed_net_id,
+            (False, None),
+        )
+        if not should_print_route:
+            print(
+                f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
+                f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
+                f"{failed_job.inst2},{failed_job.port2}... failed"
             )
-            if state.collect_timing:
-                state.route_timing_buckets["normal_route"].record_elapsed(0.0, failed=True)
-                state.route_attempt_records.append(
-                    route_attempt_record_from_route(
-                        attempt_index=len(state.route_attempt_records) + 1,
-                        bucket_name="normal_route",
-                        net_id=failed_job.net_id,
-                        route_index=failed_job.route_index,
-                        net_name=failed_job.net_name,
-                        source=f"{failed_job.inst1},{failed_job.port1}",
-                        target=f"{failed_job.inst2},{failed_job.port2}",
-                        elapsed_s=0.0,
-                        route_obj=None,
-                        failed=True,
-                        error=error_text,
-                    )
-                )
-            if not should_print_route:
-                print(
-                    f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
-                    f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
-                    f"{failed_job.inst2},{failed_job.port2}... failed"
-                )
-            _write_route_diagnostics(
-                settings,
-                state,
-                job=failed_job,
-                source_state=source_state,
-                target_state=target_state,
-                opened_candidate_cells=opened_candidate_cells,
-                dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(
-                    settings, state, failed_job
-                ),
-                opened_cells_set=opened_cells_set,
-                diag_txt=diag_txt,
-                status="failed",
-                error_text=error_text,
-            )
-            _write_failed_log(
-                settings,
-                state,
-                failed_job,
-                source_state,
-                target_state,
-                opened_candidate_cells,
-                opened_cells,
-                error_text,
-            )
-            raise RuntimeError(
-                f"No route found for {failed_job.net_name}: "
-                f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
-                f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
-                f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-                f"allow_45_degree_turns={settings.allow_45_degree_turns}"
-            )
+        _write_route_diagnostics(
+            settings,
+            state,
+            job=failed_job,
+            source_state=source_state,
+            target_state=target_state,
+            opened_candidate_cells=opened_candidate_cells,
+            dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(
+                settings, state, failed_job
+            ),
+            opened_cells_set=opened_cells_set,
+            diag_txt=diag_txt,
+            status="failed",
+            error_text=error_text,
+        )
+        _write_failed_log(
+            settings,
+            state,
+            failed_job,
+            source_state,
+            target_state,
+            opened_candidate_cells,
+            opened_cells,
+            error_text,
+        )
+        raise RuntimeError(
+            f"No route found for {failed_job.net_name}: "
+            f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
+            f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
+            f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
+            f"allow_45_degree_turns={settings.allow_45_degree_turns}. "
+            f"error={error_text}"
+        )

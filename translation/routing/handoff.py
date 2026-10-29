@@ -741,17 +741,7 @@ def finalize_route_jobs_and_static_handoff(
     state.native_repair_trace_records: list[dict[str, object]] = []
     state.route_timing_buckets: dict[str, RouteTimingBucket] = {
         name: RouteTimingBucket()
-        for name in (
-            "normal_route",
-            "probe_route",
-            "preemptive_crossing_ripup",
-            "guided_collision_crossing",
-            "localized_crossing_keepout",
-            "repair_failed_net",
-            "reroute_victims",
-            "lidar_pure_probe_commit",
-            "endpoint_correction",
-        )
+        for name in ("normal_route", "probe_route", "braid_ripup", "endpoint_correction")
     }
 
     if not hasattr(state.router, "build_dynamic_clearance_exempt_cells_for_routes"):

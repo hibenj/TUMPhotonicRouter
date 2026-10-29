@@ -1106,15 +1106,12 @@ def finalize_routing_results(
             f"repairs={state.repair_count}"
         )
         print("      - A* timing breakdown by operation:")
+        # The buckets the kernel produces today (`NativeRouteAttempt.bucket_name`
+        # in src/engine/) plus the Python-side endpoint correction.
         for bucket_name in (
             "normal_route",
             "probe_route",
-            "preemptive_crossing_ripup",
-            "guided_collision_crossing",
-            "localized_crossing_keepout",
-            "repair_failed_net",
-            "reroute_victims",
-            "lidar_pure_probe_commit",
+            "braid_ripup",
             "endpoint_correction",
         ):
             bucket = state.route_timing_buckets[bucket_name]
