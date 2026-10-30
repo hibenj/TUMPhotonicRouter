@@ -1,0 +1,1600 @@
+//! Rust implementation of static obstacle-map construction.
+//!
+//! Python/gdsfactory remains responsible for extracting polygons and ports from
+//! layout objects. This module owns the performance-sensitive grid work:
+//! bounding-box/grid creation, polygon rasterization, clearance inflation, port
+//! openings, and static [`ObstacleMap`] population.
+
+use std::time::Instant;
+
+use rustc_hash::FxHashSet;
+
+use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, ClearanceMetric, GridRect, ObstacleMap};
+
+const EPS: f64 = 1.0e-9;
+
+/// Physical point in micrometers.
+pub type Point = (f64, f64);
+
+/// Physical polygon in micrometers.
+pub type Polygon = Vec<Point>;
+
+/// Physical bounding box `(xmin, ymin, xmax, ymax)` in micrometers.
+pub type BBox = (f64, f64, f64, f64);
+
+/// Grid cell `(x, y)`.
+pub type GridCell = (i32, i32);
+
+/// Router-facing port data extracted by Python.
+#[derive(Clone, Debug)]
+pub struct PortInput {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub orientation: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum StaticObstacleBuildMode {
+    RasterizedPolygons,
+    #[default]
+    BoundingBoxes,
+}
+
+impl PortInput {
+    pub fn new(name: String, x: f64, y: f64, orientation: Option<f64>) -> Self {
+        Self {
+            name,
+            x,
+            y,
+            orientation,
+        }
+    }
+}
+
+/// Configuration for static obstacle-map construction.
+#[derive(Clone, Debug)]
+pub struct StaticObstacleBuildConfig {
+    pub grid_size_um: f64,
+    pub security_margin_um: f64,
+    pub clearance_um: f64,
+    pub clearance_metric: ClearanceMetric,
+    pub port_open_radius_um: f64,
+    pub obstacle_mode: StaticObstacleBuildMode,
+    pub clear_port_open_cells_from_static: bool,
+    pub materialize_bbox_cells: bool,
+    pub populate_obstacle_map: bool,
+    pub die_bbox: Option<BBox>,
+}
+
+impl Default for StaticObstacleBuildConfig {
+    fn default() -> Self {
+        Self {
+            grid_size_um: 0.4,
+            security_margin_um: 20.0,
+            clearance_um: 0.5,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.5,
+            obstacle_mode: StaticObstacleBuildMode::default(),
+            clear_port_open_cells_from_static: false,
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            die_bbox: None,
+        }
+    }
+}
+
+/// Rectangular grid definition used by the Rust router.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StaticGridSpec {
+    pub width: i32,
+    pub height: i32,
+    pub grid_size_um: f64,
+    pub origin: Point,
+    pub die_bbox: BBox,
+}
+
+/// Timing and size data for one static obstacle build.
+#[derive(Clone, Debug, Default)]
+pub struct StaticObstacleBuildStats {
+    pub bbox_time_s: f64,
+    pub rasterization_time_s: f64,
+    pub clearance_time_s: f64,
+    pub port_opening_time_s: f64,
+    pub obstacle_map_time_s: f64,
+    pub total_time_s: f64,
+    pub polygon_count: usize,
+    pub port_count: usize,
+    pub raw_blocked_cell_count: usize,
+    pub blocked_cell_count: usize,
+    pub port_open_cell_count: usize,
+    pub static_box_count: usize,
+    pub raw_box_area_cells: usize,
+    pub blocked_cells_after_port_opening: usize,
+    pub clear_port_open_cells_from_static: bool,
+}
+
+/// Static obstacle build result.
+#[derive(Clone, Debug)]
+pub struct StaticObstacleBuildResult {
+    pub grid: StaticGridSpec,
+    pub raw_static_rects: Vec<GridRect>,
+    pub blocked_static_rects: Vec<GridRect>,
+    pub raw_blocked_cells: Vec<GridCell>,
+    pub blocked_cells: Vec<GridCell>,
+    pub port_open_cells: Vec<GridCell>,
+    pub obstacle_map: ObstacleMap,
+    pub stats: StaticObstacleBuildStats,
+}
+
+/// A set of packed static cells: what the Python `PyStaticCellSet` handle
+/// carries so that a static-cell set can travel back into Rust without
+/// rematerializing a Python list of `(x, y)` tuples.
+#[derive(Clone, Debug, Default)]
+pub struct StaticCellSet {
+    keys: FxHashSet<CellKey>,
+}
+
+impl StaticCellSet {
+    pub fn from_cells(cells: &[GridCell]) -> Self {
+        Self {
+            keys: cells.iter().map(|&(x, y)| pack_xy(x, y)).collect(),
+        }
+    }
+
+    pub fn keys(&self) -> &FxHashSet<CellKey> {
+        &self.keys
+    }
+
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// The cells, sorted.
+    pub fn cells(&self) -> Vec<GridCell> {
+        let mut cells: Vec<GridCell> = self.keys.iter().copied().map(unpack_xy).collect();
+        cells.sort_unstable();
+        cells
+    }
+
+    pub fn merged_with(&self, other: &StaticCellSet) -> Self {
+        let mut keys = self.keys.clone();
+        keys.extend(other.keys.iter().copied());
+        Self { keys }
+    }
+
+    pub fn merged_with_cells(&self, cells: Vec<GridCell>) -> Self {
+        let mut keys = self.keys.clone();
+        keys.extend(cells.into_iter().map(|(x, y)| pack_xy(x, y)));
+        Self { keys }
+    }
+
+    /// The set plus every cell of the rectangles, each clipped to the grid.
+    pub fn merged_with_rects(
+        &self,
+        rects: Vec<(i32, i32, i32, i32)>,
+        width: i32,
+        height: i32,
+    ) -> Self {
+        let mut keys = self.keys.clone();
+        for (x_min, y_min, x_max, y_max) in rects {
+            let x0 = x_min.min(x_max).max(0);
+            let y0 = y_min.min(y_max).max(0);
+            let x1 = x_min.max(x_max).min(width.saturating_sub(1));
+            let y1 = y_min.max(y_max).min(height.saturating_sub(1));
+            if x0 > x1 || y0 > y1 {
+                continue;
+            }
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    keys.insert(pack_xy(x, y));
+                }
+            }
+        }
+        Self { keys }
+    }
+}
+
+/// Build the static obstacle map from extracted physical polygons and ports.
+pub fn build_static_obstacle_map_from_geometry(
+    polygons: &[Polygon],
+    ports: &[PortInput],
+    config: &StaticObstacleBuildConfig,
+) -> Result<StaticObstacleBuildResult, String> {
+    validate_config(config)?;
+
+    let total_start = Instant::now();
+    let mut stats = StaticObstacleBuildStats {
+        polygon_count: polygons.len(),
+        port_count: ports.len(),
+        clear_port_open_cells_from_static: config.clear_port_open_cells_from_static,
+        ..Default::default()
+    };
+
+    let bbox_start = Instant::now();
+    let layout_bbox = compute_bbox(polygons, ports);
+    let die_bbox = config
+        .die_bbox
+        .unwrap_or_else(|| expand_bbox(layout_bbox, config.security_margin_um));
+    let grid = make_grid_spec(die_bbox, config.grid_size_um)?;
+    stats.bbox_time_s = elapsed_s(bbox_start);
+
+    let raster_start = Instant::now();
+    let raw_blocked_cells;
+    let blocked_cells;
+    let mut port_open_keys: FxHashSet<CellKey> = FxHashSet::default();
+    let mut raw_static_rects: Vec<GridRect> = Vec::new();
+    let mut blocked_static_rects: Vec<GridRect> = Vec::new();
+    let mut obstacle_map = ObstacleMap::new(grid.width, grid.height);
+
+    let clearance_radius = ceil_to_i32(config.clearance_um / config.grid_size_um)?;
+    let port_radius = ceil_to_i32(config.port_open_radius_um / config.grid_size_um)?;
+    let clear_port_open_cells = config.clear_port_open_cells_from_static;
+
+    if let Some(base_port_cells) = port_open_cells_or_empty(ports, &grid, port_radius) {
+        port_open_keys = base_port_cells;
+    }
+
+    match config.obstacle_mode {
+        StaticObstacleBuildMode::RasterizedPolygons => {
+            let mut raw_blocked_keys = FxHashSet::default();
+            for polygon in polygons {
+                rasterize_polygon_into(polygon, &grid, &mut raw_blocked_keys);
+            }
+            stats.rasterization_time_s = elapsed_s(raster_start);
+            stats.raw_blocked_cell_count = raw_blocked_keys.len();
+
+            let clearance_start = Instant::now();
+            let mut blocked_keys = inflate_keys(
+                raw_blocked_keys.iter().copied(),
+                grid.width,
+                grid.height,
+                clearance_radius,
+                config.clearance_metric,
+            );
+            stats.clearance_time_s = elapsed_s(clearance_start);
+
+            let port_start = Instant::now();
+            if clear_port_open_cells {
+                for key in &port_open_keys {
+                    blocked_keys.remove(key);
+                }
+            }
+            stats.port_opening_time_s = elapsed_s(port_start);
+            stats.port_open_cell_count = port_open_keys.len();
+            stats.blocked_cell_count = blocked_keys.len();
+
+            blocked_cells = sorted_cells_from_keys(&blocked_keys);
+            raw_blocked_cells = sorted_cells_from_keys(&raw_blocked_keys);
+
+            let map_start = Instant::now();
+            if config.populate_obstacle_map {
+                obstacle_map.add_static_cells(&blocked_cells);
+            }
+            stats.obstacle_map_time_s = elapsed_s(map_start);
+
+            stats.static_box_count = 0;
+            stats.raw_box_area_cells = 0;
+            stats.blocked_cells_after_port_opening = blocked_cells.len();
+            stats.raw_box_area_cells = raw_blocked_cells.len();
+        }
+        StaticObstacleBuildMode::BoundingBoxes => {
+            let mut raw_boxes = Vec::new();
+            for polygon in polygons {
+                if let Some(bounds) = polygon_to_grid_bbox(polygon, &grid) {
+                    stats.static_box_count += 1;
+                    stats.raw_box_area_cells = stats
+                        .raw_box_area_cells
+                        .saturating_add(grid_rect_area_cells(bounds));
+                    raw_boxes.push(bounds);
+                    raw_static_rects.push(bounds);
+                }
+            }
+            stats.rasterization_time_s = elapsed_s(raster_start);
+
+            let clearance_start = Instant::now();
+            for rect in raw_boxes {
+                let expanded =
+                    expanded_boxes_for_clearance(rect, clearance_radius, config.clearance_metric);
+                blocked_static_rects.extend_from_slice(&expanded);
+            }
+            stats.clearance_time_s = elapsed_s(clearance_start);
+            let map_start = Instant::now();
+            if config.populate_obstacle_map {
+                obstacle_map.set_static_rects(&blocked_static_rects);
+            }
+            stats.obstacle_map_time_s = elapsed_s(map_start);
+            let blocked_cell_count = blocked_static_rects
+                .iter()
+                .map(|rect| grid_rect_area_cells(*rect))
+                .sum();
+            stats.blocked_cells_after_port_opening = blocked_cell_count;
+            stats.port_opening_time_s = 0.0;
+            stats.port_open_cell_count = port_open_keys.len();
+            let blocked_cells_after_port_opening = if clear_port_open_cells {
+                let blocked_cells_with_openings: Vec<GridCell> =
+                    materialize_rects(&blocked_static_rects)
+                        .into_iter()
+                        .filter(|cell| !port_open_keys.contains(&pack_xy(cell.0, cell.1)))
+                        .collect();
+                blocked_cells_with_openings.len()
+            } else {
+                blocked_cell_count
+            };
+            stats.blocked_cells_after_port_opening = blocked_cells_after_port_opening;
+            stats.raw_blocked_cell_count = raw_static_rects
+                .iter()
+                .map(|rect| grid_rect_area_cells(*rect))
+                .sum();
+
+            if config.materialize_bbox_cells {
+                let mut blocked_cells_cells = materialize_rects(&blocked_static_rects);
+                if clear_port_open_cells {
+                    blocked_cells_cells.retain(|(x, y)| !port_open_keys.contains(&pack_xy(*x, *y)));
+                }
+                blocked_cells = blocked_cells_cells;
+
+                let mut raw_blocked_cells_rect = materialize_rects(&raw_static_rects);
+                if clear_port_open_cells {
+                    raw_blocked_cells_rect
+                        .retain(|(x, y)| !port_open_keys.contains(&pack_xy(*x, *y)));
+                }
+                raw_blocked_cells = raw_blocked_cells_rect;
+            } else {
+                blocked_cells = Vec::new();
+                raw_blocked_cells = Vec::new();
+            }
+
+            // Keep raw rectangle stats for debugging and non-routing compatibility.
+            stats.static_box_count = raw_static_rects.len();
+            if config.materialize_bbox_cells {
+                stats.blocked_cell_count = blocked_cells.len();
+            } else {
+                stats.blocked_cell_count = blocked_cell_count;
+            }
+        }
+    }
+
+    let raw_blocked_cells = sorted_cells(raw_blocked_cells);
+    let blocked_cells = sorted_cells(blocked_cells);
+    let port_open_cells = sorted_cells_from_keys(&port_open_keys);
+    stats.total_time_s = elapsed_s(total_start);
+    if config.obstacle_mode == StaticObstacleBuildMode::RasterizedPolygons {
+        stats.raw_blocked_cell_count = raw_blocked_cells.len();
+        stats.blocked_cell_count = blocked_cells.len();
+    }
+
+    Ok(StaticObstacleBuildResult {
+        grid,
+        raw_static_rects,
+        blocked_static_rects,
+        raw_blocked_cells,
+        blocked_cells,
+        port_open_cells,
+        obstacle_map,
+        stats,
+    })
+}
+
+/// Compute bbox across all polygon vertices and ports.
+pub fn compute_bbox(polygons: &[Polygon], ports: &[PortInput]) -> BBox {
+    let mut xmin = f64::INFINITY;
+    let mut ymin = f64::INFINITY;
+    let mut xmax = f64::NEG_INFINITY;
+    let mut ymax = f64::NEG_INFINITY;
+
+    for polygon in polygons {
+        for &(x, y) in polygon {
+            xmin = xmin.min(x);
+            ymin = ymin.min(y);
+            xmax = xmax.max(x);
+            ymax = ymax.max(y);
+        }
+    }
+
+    for port in ports {
+        xmin = xmin.min(port.x);
+        ymin = ymin.min(port.y);
+        xmax = xmax.max(port.x);
+        ymax = ymax.max(port.y);
+    }
+
+    if xmin.is_infinite() {
+        (0.0, 0.0, 0.0, 0.0)
+    } else {
+        (xmin, ymin, xmax, ymax)
+    }
+}
+
+/// Expand a physical bbox by `margin_um` on all sides.
+pub fn expand_bbox(bbox: BBox, margin_um: f64) -> BBox {
+    let (xmin, ymin, xmax, ymax) = bbox;
+    (
+        xmin - margin_um,
+        ymin - margin_um,
+        xmax + margin_um,
+        ymax + margin_um,
+    )
+}
+
+/// Create the grid spec for a die bbox.
+pub fn make_grid_spec(die_bbox: BBox, grid_size_um: f64) -> Result<StaticGridSpec, String> {
+    let (xmin, ymin, xmax, ymax) = die_bbox;
+    if grid_size_um <= 0.0 {
+        return Err("grid_size_um must be positive".to_string());
+    }
+    if xmax < xmin || ymax < ymin {
+        return Err(format!("invalid die bbox: {die_bbox:?}"));
+    }
+
+    let width = ceil_to_i32((xmax - xmin) / grid_size_um)?;
+    let height = ceil_to_i32((ymax - ymin) / grid_size_um)?;
+
+    Ok(StaticGridSpec {
+        width,
+        height,
+        grid_size_um,
+        origin: (xmin, ymin),
+        die_bbox,
+    })
+}
+
+/// Convert physical micrometer coordinates to integer grid coordinates.
+pub fn physical_to_grid(x: f64, y: f64, grid: &StaticGridSpec) -> GridCell {
+    let gx = floor_snap_to_grid(x, grid.origin.0, grid.grid_size_um);
+    let gy = floor_snap_to_grid(y, grid.origin.1, grid.grid_size_um);
+    (gx, gy)
+}
+
+/// Floor-snap one physical micrometer coordinate to a grid-cell index.
+pub fn floor_snap_to_grid(coord: f64, origin: f64, grid_size_um: f64) -> i32 {
+    ((coord - origin) / grid_size_um).floor() as i32
+}
+
+/// Return the physical center of a grid cell.
+pub fn grid_cell_center(gx: i32, gy: i32, grid: &StaticGridSpec) -> Point {
+    (
+        cell_center_coordinate(gx, grid.origin.0, grid.grid_size_um),
+        cell_center_coordinate(gy, grid.origin.1, grid.grid_size_um),
+    )
+}
+
+/// Return the physical coordinate of one grid-cell center on one axis.
+pub fn cell_center_coordinate(cell: i32, origin: f64, grid_size_um: f64) -> f64 {
+    origin + (cell as f64 + 0.5) * grid_size_um
+}
+
+/// Rasterize one polygon into packed cell keys using cell-center tests.
+pub fn rasterize_polygon(polygon: &Polygon, grid: &StaticGridSpec) -> FxHashSet<CellKey> {
+    let mut cells = FxHashSet::default();
+    rasterize_polygon_into(polygon, grid, &mut cells);
+    cells
+}
+
+fn rasterize_polygon_into(
+    polygon: &Polygon,
+    grid: &StaticGridSpec,
+    cells: &mut FxHashSet<CellKey>,
+) {
+    if polygon.len() < 3 || grid.width <= 0 || grid.height <= 0 {
+        return;
+    }
+    if let Some(bounds) = axis_aligned_rectangle_bounds(polygon) {
+        rasterize_axis_aligned_rectangle_into(bounds, grid, cells);
+        return;
+    }
+
+    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in polygon {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+
+    let (mut gx_min, mut gy_min) = physical_to_grid(min_x, min_y, grid);
+    let (mut gx_max, mut gy_max) = physical_to_grid(max_x, max_y, grid);
+    gx_min = gx_min.max(0);
+    gy_min = gy_min.max(0);
+    gx_max = gx_max.min(grid.width - 1);
+    gy_max = gy_max.min(grid.height - 1);
+
+    if gx_min > gx_max || gy_min > gy_max {
+        return;
+    }
+
+    // Performance pass 2026-09-03: testing every bbox cell with
+    // `point_in_polygon` (O(vertices) each) made a 500x900 um route polygon
+    // cost ~80M operations per endpoint-correction candidate (8 % of a
+    // multiportmmi_16x16 run). A scanline over the polygon edges yields, per
+    // cell-centre row, the even-odd x-intervals; only cells inside those
+    // intervals (widened by one cell for rounding and boundary cases) are
+    // handed to `point_in_polygon`, which stays the single oracle -- so the
+    // result is identical to the exhaustive scan (a cell whose centre is
+    // inside or on the boundary always lies within a widened interval: the
+    // edges adjacent to a boundary point cross that row at the point).
+    let count = polygon.len();
+    let mut crossings: Vec<f64> = Vec::with_capacity(8);
+    // candidate x-spans on the current row: even-odd fill intervals plus the
+    // boundary cases the strict crossing rule cannot see (a vertex exactly on
+    // the row at a local extremum, a horizontal edge exactly on the row)
+    let mut spans: Vec<(f64, f64)> = Vec::with_capacity(8);
+    for gy in gy_min..=gy_max {
+        let (_, cy) = grid_cell_center(gx_min, gy, grid);
+        crossings.clear();
+        spans.clear();
+        for i in 0..count {
+            let (x1, y1) = polygon[i];
+            let (x2, y2) = polygon[(i + 1) % count];
+            if (y1 > cy) != (y2 > cy) {
+                crossings.push((x2 - x1) * (cy - y1) / (y2 - y1) + x1);
+            }
+            if y1 == cy && y2 == cy {
+                spans.push((x1.min(x2), x1.max(x2)));
+            } else if y1 == cy {
+                spans.push((x1, x1));
+            }
+        }
+        crossings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        for pair in crossings.chunks(2) {
+            spans.push((pair[0], *pair.last().unwrap_or(&pair[0])));
+        }
+        for &(x_lo, x_hi) in &spans {
+            let (cx_lo, _) = physical_to_grid(x_lo, cy, grid);
+            let (cx_hi, _) = physical_to_grid(x_hi, cy, grid);
+            let start = (cx_lo - 1).max(gx_min);
+            let end = (cx_hi + 1).min(gx_max);
+            for gx in start..=end {
+                if point_in_polygon(grid_cell_center(gx, gy, grid), polygon) {
+                    cells.insert(pack_xy(gx, gy));
+                }
+            }
+        }
+    }
+}
+
+/// Exhaustive reference for [`rasterize_polygon_into`] (every bbox cell through
+/// `point_in_polygon`); kept for the equivalence test.
+#[cfg(test)]
+fn rasterize_polygon_into_exhaustive(
+    polygon: &Polygon,
+    grid: &StaticGridSpec,
+    cells: &mut FxHashSet<CellKey>,
+) {
+    if polygon.len() < 3 || grid.width <= 0 || grid.height <= 0 {
+        return;
+    }
+    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in polygon {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    let (gx_min, gy_min) = physical_to_grid(min_x, min_y, grid);
+    let (gx_max, gy_max) = physical_to_grid(max_x, max_y, grid);
+    for gx in gx_min.max(0)..=gx_max.min(grid.width - 1) {
+        for gy in gy_min.max(0)..=gy_max.min(grid.height - 1) {
+            if point_in_polygon(grid_cell_center(gx, gy, grid), polygon) {
+                cells.insert(pack_xy(gx, gy));
+            }
+        }
+    }
+}
+
+/// Cells touched by a polyline, found by sampling every segment at most
+/// `grid.grid_size_um / 4` apart (vertices included).
+///
+/// `rasterize_polygon` decides coverage by cell *centers*, which is the right
+/// contract for the static obstacle map (thin static geometry is expanded by
+/// clearance before it is rasterized there) but blind to a thin waveguide
+/// that runs between two cell centers: a 0.5 um guide realized 0.5 um off its
+/// cell center contains no center at all and rasterizes to nothing. Callers
+/// that need to know which cells a *realized route* passes through union the
+/// centerline's sampled cells with the polygon rasterization -- see
+/// `centerline_core_cells` in `py_router.rs`.
+pub fn sample_polyline_cells(points: &[Point], grid: &StaticGridSpec) -> FxHashSet<CellKey> {
+    let mut cells = FxHashSet::default();
+    if grid.width <= 0 || grid.height <= 0 || grid.grid_size_um <= 0.0 {
+        return cells;
+    }
+    let step = grid.grid_size_um / 4.0;
+    let mut insert = |x: f64, y: f64| {
+        if !x.is_finite() || !y.is_finite() {
+            return;
+        }
+        let (gx, gy) = physical_to_grid(x, y, grid);
+        if gx >= 0 && gy >= 0 && gx < grid.width && gy < grid.height {
+            cells.insert(pack_xy(gx, gy));
+        }
+    };
+    for (index, &(x0, y0)) in points.iter().enumerate() {
+        insert(x0, y0);
+        let Some(&(x1, y1)) = points.get(index + 1) else {
+            continue;
+        };
+        let length = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+        if !length.is_finite() || length <= EPS {
+            continue;
+        }
+        let samples = (length / step).ceil().max(1.0) as usize;
+        for sample in 1..samples {
+            let t = sample as f64 / samples as f64;
+            insert(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+        }
+    }
+    cells
+}
+
+fn axis_aligned_rectangle_bounds(polygon: &Polygon) -> Option<BBox> {
+    if polygon.len() < 4 {
+        return None;
+    }
+
+    let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+    let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in polygon {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    if min_x + EPS >= max_x || min_y + EPS >= max_y {
+        return None;
+    }
+
+    let mut has_min_min = false;
+    let mut has_min_max = false;
+    let mut has_max_min = false;
+    let mut has_max_max = false;
+    for &(x, y) in polygon {
+        let on_min_x = approx_eq(x, min_x);
+        let on_max_x = approx_eq(x, max_x);
+        let on_min_y = approx_eq(y, min_y);
+        let on_max_y = approx_eq(y, max_y);
+        if !(on_min_x || on_max_x || on_min_y || on_max_y) {
+            return None;
+        }
+        has_min_min |= on_min_x && on_min_y;
+        has_min_max |= on_min_x && on_max_y;
+        has_max_min |= on_max_x && on_min_y;
+        has_max_max |= on_max_x && on_max_y;
+    }
+    if !(has_min_min && has_min_max && has_max_min && has_max_max) {
+        return None;
+    }
+
+    for index in 0..polygon.len() {
+        let (x0, y0) = polygon[index];
+        let (x1, y1) = polygon[(index + 1) % polygon.len()];
+        if approx_eq(x0, x1) || approx_eq(y0, y1) {
+            continue;
+        }
+        return None;
+    }
+
+    Some((min_x, min_y, max_x, max_y))
+}
+
+fn rasterize_axis_aligned_rectangle_into(
+    bounds: BBox,
+    grid: &StaticGridSpec,
+    cells: &mut FxHashSet<CellKey>,
+) {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let gx_min = first_cell_center_at_or_after(min_x, grid.origin.0, grid.grid_size_um).max(0);
+    let gy_min = first_cell_center_at_or_after(min_y, grid.origin.1, grid.grid_size_um).max(0);
+    let gx_max =
+        last_cell_center_at_or_before(max_x, grid.origin.0, grid.grid_size_um).min(grid.width - 1);
+    let gy_max =
+        last_cell_center_at_or_before(max_y, grid.origin.1, grid.grid_size_um).min(grid.height - 1);
+
+    if gx_min > gx_max || gy_min > gy_max {
+        return;
+    }
+    for gx in gx_min..=gx_max {
+        for gy in gy_min..=gy_max {
+            cells.insert(pack_xy(gx, gy));
+        }
+    }
+}
+
+fn first_cell_center_at_or_after(coord: f64, origin: f64, grid_size_um: f64) -> i32 {
+    ((coord - origin) / grid_size_um - 0.5 - EPS).ceil() as i32
+}
+
+fn last_cell_center_at_or_before(coord: f64, origin: f64, grid_size_um: f64) -> i32 {
+    ((coord - origin) / grid_size_um - 0.5 + EPS).floor() as i32
+}
+
+fn approx_eq(a: f64, b: f64) -> bool {
+    (a - b).abs() <= EPS
+}
+
+fn polygon_to_grid_bbox(polygon: &Polygon, grid: &StaticGridSpec) -> Option<GridRect> {
+    if polygon.len() < 3 || grid.width <= 0 || grid.height <= 0 {
+        return None;
+    }
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for &(x, y) in polygon {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+
+    if min_x.is_infinite() || max_x.is_infinite() || min_y.is_infinite() || max_y.is_infinite() {
+        return None;
+    }
+
+    let (mut gx_min, mut gy_min) = physical_to_grid(min_x, min_y, grid);
+    let mut gx_max = ((max_x - grid.origin.0) / grid.grid_size_um).ceil() as i32 - 1;
+    let mut gy_max = ((max_y - grid.origin.1) / grid.grid_size_um).ceil() as i32 - 1;
+
+    gx_min = gx_min.max(0);
+    gy_min = gy_min.max(0);
+    gx_max = gx_max.min(grid.width - 1);
+    gy_max = gy_max.min(grid.height - 1);
+
+    if gx_min > gx_max || gy_min > gy_max {
+        return None;
+    }
+
+    Some(GridRect {
+        x_min: gx_min,
+        y_min: gy_min,
+        x_max: gx_max,
+        y_max: gy_max,
+    })
+}
+
+fn port_open_cells_or_empty(
+    ports: &[PortInput],
+    grid: &StaticGridSpec,
+    radius: i32,
+) -> Option<FxHashSet<CellKey>> {
+    if ports.is_empty() || grid.width <= 0 || grid.height <= 0 || radius < 0 {
+        return None;
+    }
+
+    let mut open_cells = FxHashSet::default();
+    let radius = radius.max(0);
+    for port in ports {
+        let (gx, gy) = physical_to_grid(port.x, port.y, grid);
+        if !in_bounds(gx, gy, grid.width, grid.height) {
+            continue;
+        }
+
+        for dx in -radius..=radius {
+            for dy in -radius..=radius {
+                if dx.abs().max(dy.abs()) > radius {
+                    continue;
+                }
+
+                let nx = gx + dx;
+                let ny = gy + dy;
+                if in_bounds(nx, ny, grid.width, grid.height) {
+                    open_cells.insert(pack_xy(nx, ny));
+                }
+            }
+        }
+    }
+
+    if open_cells.is_empty() {
+        None
+    } else {
+        Some(open_cells)
+    }
+}
+
+fn materialize_rects(rects: &[GridRect]) -> Vec<GridCell> {
+    let mut cells = Vec::new();
+    for rect in rects {
+        for y in rect.y_min..=rect.y_max {
+            for x in rect.x_min..=rect.x_max {
+                cells.push((x, y));
+            }
+        }
+    }
+    cells
+}
+
+fn grid_rect_area_cells(rect: GridRect) -> usize {
+    let width = (rect.x_max - rect.x_min + 1) as i64;
+    let height = (rect.y_max - rect.y_min + 1) as i64;
+    usize::try_from(width.saturating_mul(height)).unwrap_or(usize::MAX)
+}
+
+fn expanded_boxes_for_clearance(
+    rect: GridRect,
+    clearance_radius: i32,
+    metric: ClearanceMetric,
+) -> Vec<GridRect> {
+    if clearance_radius <= 0 {
+        return vec![rect];
+    }
+
+    let y_min = rect.y_min.saturating_sub(clearance_radius);
+    let y_max = rect.y_max.saturating_add(clearance_radius);
+
+    match metric {
+        ClearanceMetric::Chebyshev => {
+            vec![GridRect {
+                x_min: rect.x_min.saturating_sub(clearance_radius),
+                y_min,
+                x_max: rect.x_max.saturating_add(clearance_radius),
+                y_max,
+            }]
+        }
+        ClearanceMetric::Manhattan => {
+            let mut rects = Vec::new();
+            for y in y_min..=y_max {
+                let clearance_x =
+                    clearance_radius - (rect.y_min - y).abs().min(rect.y_max - y).abs();
+                let clearance_x = clearance_radius - clearance_x.max(0);
+                let x_min = rect.x_min.saturating_sub(clearance_x);
+                let x_max = rect.x_max.saturating_add(clearance_x);
+                rects.push(GridRect {
+                    x_min,
+                    y_min: y,
+                    x_max,
+                    y_max: y,
+                });
+            }
+            rects
+        }
+    }
+}
+
+/// Return true when `point` is inside or on the boundary of `polygon`.
+pub fn point_in_polygon(point: Point, polygon: &[Point]) -> bool {
+    let (x, y) = point;
+    let mut inside = false;
+    let count = polygon.len();
+
+    for i in 0..count {
+        let (x1, y1) = polygon[i];
+        let (x2, y2) = polygon[(i + 1) % count];
+
+        if point_on_segment(x, y, x1, y1, x2, y2) {
+            return true;
+        }
+
+        let crosses = (y1 > y) != (y2 > y);
+        if crosses {
+            let x_intersection = (x2 - x1) * (y - y1) / (y2 - y1) + x1;
+            if x <= x_intersection {
+                inside = !inside;
+            }
+        }
+    }
+
+    inside
+}
+
+/// Expand packed cells by the requested metric, clipped to bounds.
+pub fn inflate_keys<I>(
+    cells: I,
+    width: i32,
+    height: i32,
+    radius: i32,
+    metric: ClearanceMetric,
+) -> FxHashSet<CellKey>
+where
+    I: IntoIterator<Item = CellKey>,
+{
+    assert!(radius >= 0, "radius must be non-negative");
+    crate::obstacle_map::inflate_packed_cells(cells, width, height, radius, metric)
+}
+
+/// `"manhattan"` or `"chebyshev"`, any case.
+pub fn parse_clearance_metric(metric: &str) -> Result<ClearanceMetric, String> {
+    match metric.to_ascii_lowercase().as_str() {
+        "manhattan" => Ok(ClearanceMetric::Manhattan),
+        "chebyshev" => Ok(ClearanceMetric::Chebyshev),
+        _ => Err("clearance_metric must be 'manhattan' or 'chebyshev'".to_string()),
+    }
+}
+
+/// `"rasterized_polygons"` or `"bounding_boxes"`, any case.
+pub fn parse_obstacle_mode(mode: &str) -> Result<StaticObstacleBuildMode, String> {
+    match mode.to_ascii_lowercase().as_str() {
+        "rasterized_polygons" => Ok(StaticObstacleBuildMode::RasterizedPolygons),
+        "bounding_boxes" => Ok(StaticObstacleBuildMode::BoundingBoxes),
+        _ => Err("obstacle_mode must be 'rasterized_polygons' or 'bounding_boxes'".to_string()),
+    }
+}
+
+fn validate_config(config: &StaticObstacleBuildConfig) -> Result<(), String> {
+    if config.grid_size_um <= 0.0 {
+        return Err("grid_size_um must be positive".to_string());
+    }
+    if config.clearance_um < 0.0 {
+        return Err("clearance_um must be non-negative".to_string());
+    }
+    if config.port_open_radius_um < 0.0 {
+        return Err("port_open_radius_um must be non-negative".to_string());
+    }
+    Ok(())
+}
+
+fn ceil_to_i32(value: f64) -> Result<i32, String> {
+    if !value.is_finite() {
+        return Err("non-finite grid dimension or radius".to_string());
+    }
+    if value > i32::MAX as f64 {
+        return Err("grid dimension or radius exceeds i32::MAX".to_string());
+    }
+    Ok(value.ceil().max(0.0) as i32)
+}
+
+fn sorted_cells_from_keys(keys: &FxHashSet<CellKey>) -> Vec<GridCell> {
+    let mut cells = keys.iter().copied().map(unpack_xy).collect::<Vec<_>>();
+    cells.sort_unstable();
+    cells
+}
+
+fn sorted_cells(mut cells: Vec<GridCell>) -> Vec<GridCell> {
+    cells.sort_unstable();
+    cells.dedup();
+    cells
+}
+
+#[inline]
+fn in_bounds(gx: i32, gy: i32, width: i32, height: i32) -> bool {
+    gx >= 0 && gy >= 0 && gx < width && gy < height
+}
+
+fn point_on_segment(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> bool {
+    const EPS: f64 = 1e-9;
+    let cross = (px - x1) * (y2 - y1) - (py - y1) * (x2 - x1);
+    if cross.abs() > EPS {
+        return false;
+    }
+
+    px >= x1.min(x2) - EPS
+        && px <= x1.max(x2) + EPS
+        && py >= y1.min(y2) - EPS
+        && py <= y1.max(y2) + EPS
+}
+
+fn elapsed_s(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The scanline rasterizer must produce exactly the cells of the
+    /// exhaustive bbox scan (same `point_in_polygon` oracle): rectangles,
+    /// thin route-like polygons (diagonal, with bends), a concave shape and
+    /// a polygon with vertices on cell centres.
+    #[test]
+    fn scanline_rasterizer_matches_exhaustive_scan() {
+        let grid = make_grid_spec((0.0, 0.0, 120.0, 120.0), 2.0).expect("grid");
+        let waveguide = |centerline: &[(f64, f64)], half: f64| -> Polygon {
+            // a crude thick polyline: offset both sides, no fillets
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            for pair in centerline.windows(2) {
+                let (x0, y0) = pair[0];
+                let (x1, y1) = pair[1];
+                let len = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+                let (nx, ny) = (-(y1 - y0) / len * half, (x1 - x0) / len * half);
+                left.push((x0 + nx, y0 + ny));
+                left.push((x1 + nx, y1 + ny));
+                right.push((x0 - nx, y0 - ny));
+                right.push((x1 - nx, y1 - ny));
+            }
+            right.reverse();
+            left.extend(right);
+            left
+        };
+        let polygons: Vec<Polygon> = vec![
+            vec![(10.0, 10.0), (50.0, 10.0), (50.0, 30.0), (10.0, 30.0)],
+            vec![(11.0, 11.0), (51.0, 11.0), (51.0, 31.0), (11.0, 31.0)],
+            waveguide(&[(5.0, 5.0), (60.0, 60.0)], 0.25),
+            waveguide(
+                &[(5.0, 40.0), (40.0, 40.0), (70.0, 70.0), (70.0, 110.0)],
+                0.25,
+            ),
+            waveguide(&[(3.3, 100.7), (90.1, 12.4)], 0.6),
+            vec![
+                (20.0, 20.0),
+                (80.0, 20.0),
+                (80.0, 80.0),
+                (50.0, 50.0),
+                (20.0, 80.0),
+            ],
+            vec![
+                (21.0, 21.0),
+                (81.0, 21.0),
+                (81.0, 81.0),
+                (51.0, 51.0),
+                (21.0, 81.0),
+            ],
+        ];
+        for (idx, polygon) in polygons.iter().enumerate() {
+            let mut fast = FxHashSet::default();
+            let mut slow = FxHashSet::default();
+            rasterize_polygon_into(polygon, &grid, &mut fast);
+            rasterize_polygon_into_exhaustive(polygon, &grid, &mut slow);
+            assert_eq!(
+                fast, slow,
+                "polygon {idx}: scanline and exhaustive rasterization differ"
+            );
+            assert!(
+                !slow.is_empty(),
+                "polygon {idx}: test polygon must cover cells"
+            );
+        }
+        // deterministic pseudo-random thick polylines, vertices snapped to a
+        // quarter-cell lattice so that cell-centre coincidences happen often
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for case in 0..300 {
+            let points = 2 + (next() % 5) as usize;
+            let centerline: Vec<(f64, f64)> = (0..points)
+                .map(|_| {
+                    (
+                        ((next() % 220) as f64) * 0.5 + 5.0,
+                        ((next() % 220) as f64) * 0.5 + 5.0,
+                    )
+                })
+                .collect();
+            if centerline.windows(2).any(|w| w[0] == w[1]) {
+                continue;
+            }
+            let half = [0.25, 0.5, 1.0, 3.0][(next() % 4) as usize];
+            let polygon = waveguide(&centerline, half);
+            let mut fast = FxHashSet::default();
+            let mut slow = FxHashSet::default();
+            rasterize_polygon_into(&polygon, &grid, &mut fast);
+            rasterize_polygon_into_exhaustive(&polygon, &grid, &mut slow);
+            assert_eq!(fast, slow, "random case {case}: scanline and exhaustive rasterization differ for {centerline:?} half={half}");
+        }
+    }
+
+    fn test_grid() -> StaticGridSpec {
+        StaticGridSpec {
+            width: 5,
+            height: 5,
+            grid_size_um: 1.0,
+            origin: (0.0, 0.0),
+            die_bbox: (0.0, 0.0, 5.0, 5.0),
+        }
+    }
+
+    #[test]
+    fn computes_bbox_from_polygons_and_ports() {
+        let polygons = vec![vec![(1.0, 2.0), (3.0, 2.0), (3.0, 4.0)]];
+        let ports = vec![PortInput::new("o1".to_string(), -1.0, 5.0, Some(0.0))];
+
+        assert_eq!(compute_bbox(&polygons, &ports), (-1.0, 2.0, 3.0, 5.0));
+    }
+
+    #[test]
+    fn converts_physical_coordinates_to_grid() {
+        let grid = StaticGridSpec {
+            width: 10,
+            height: 10,
+            grid_size_um: 0.5,
+            origin: (-1.0, 2.0),
+            die_bbox: (-1.0, 2.0, 4.0, 7.0),
+        };
+
+        assert_eq!(physical_to_grid(-1.0, 2.0, &grid), (0, 0));
+        assert_eq!(physical_to_grid(-0.51, 2.49, &grid), (0, 0));
+        assert_eq!(physical_to_grid(0.0, 3.0, &grid), (2, 2));
+    }
+
+    #[test]
+    fn floor_snap_to_grid_handles_boundaries_mid_cell_and_negative_origin() {
+        let origin = -2.0;
+        let grid_size_um = 0.5;
+
+        assert_eq!(floor_snap_to_grid(-2.0, origin, grid_size_um), 0);
+        assert_eq!(floor_snap_to_grid(-1.75, origin, grid_size_um), 0);
+        assert_eq!(floor_snap_to_grid(-2.25, origin, grid_size_um), -1);
+    }
+
+    #[test]
+    fn cell_center_coordinate_handles_positive_and_negative_cells() {
+        let origin = -2.0;
+        let grid_size_um = 0.5;
+
+        assert_eq!(cell_center_coordinate(0, origin, grid_size_um), -1.75);
+        assert_eq!(cell_center_coordinate(1, origin, grid_size_um), -1.25);
+        assert_eq!(cell_center_coordinate(-1, origin, grid_size_um), -2.25);
+    }
+
+    #[test]
+    fn snapped_cell_center_lands_inside_snapped_cell() {
+        let origin = -2.0;
+        let grid_size_um = 0.5;
+
+        for coord in [-2.0, -1.75, -2.25, 0.125] {
+            let cell = floor_snap_to_grid(coord, origin, grid_size_um);
+            let center = cell_center_coordinate(cell, origin, grid_size_um);
+            let lower = origin + cell as f64 * grid_size_um;
+            let upper = origin + (cell as f64 + 1.0) * grid_size_um;
+
+            assert!(center >= lower);
+            assert!(center < upper);
+            assert!((center - coord).abs() <= grid_size_um * 0.5);
+        }
+    }
+
+    #[test]
+    fn grid_coordinate_wrappers_match_existing_formula_outputs() {
+        let cases = [
+            (
+                StaticGridSpec {
+                    width: 10,
+                    height: 10,
+                    grid_size_um: 0.5,
+                    origin: (-1.0, 2.0),
+                    die_bbox: (-1.0, 2.0, 4.0, 7.0),
+                },
+                (-1.0, 2.0),
+                (0, 0),
+                (-0.75, 2.25),
+            ),
+            (
+                StaticGridSpec {
+                    width: 10,
+                    height: 10,
+                    grid_size_um: 0.5,
+                    origin: (-1.0, 2.0),
+                    die_bbox: (-1.0, 2.0, 4.0, 7.0),
+                },
+                (0.0, 3.0),
+                (2, 2),
+                (0.25, 3.25),
+            ),
+            (
+                StaticGridSpec {
+                    width: 20,
+                    height: 12,
+                    grid_size_um: 0.25,
+                    origin: (-2.0, -1.0),
+                    die_bbox: (-2.0, -1.0, 3.0, 2.0),
+                },
+                (-2.125, -0.875),
+                (-1, 0),
+                (-2.125, -0.875),
+            ),
+        ];
+
+        for (grid, point, expected_cell, expected_center) in cases {
+            assert_eq!(physical_to_grid(point.0, point.1, &grid), expected_cell);
+            assert_eq!(
+                grid_cell_center(expected_cell.0, expected_cell.1, &grid),
+                expected_center
+            );
+        }
+    }
+
+    #[test]
+    fn rasterizes_polygon_by_cell_centers() {
+        let grid = StaticGridSpec {
+            width: 2,
+            height: 2,
+            grid_size_um: 1.0,
+            origin: (0.0, 0.0),
+            die_bbox: (0.0, 0.0, 2.0, 2.0),
+        };
+        let polygon = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)];
+        let cells = sorted_cells_from_keys(&rasterize_polygon(&polygon, &grid));
+
+        assert_eq!(cells, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
+    }
+
+    #[test]
+    fn thin_off_center_strip_is_invisible_to_center_rasterization_but_sampled() {
+        // A 0.5 um wide vertical guide between two cell centers (x = 1.0 and
+        // 3.0 on a 2 um grid): no cell center lies inside it.
+        let grid = StaticGridSpec {
+            width: 4,
+            height: 4,
+            grid_size_um: 2.0,
+            origin: (0.0, 0.0),
+            die_bbox: (0.0, 0.0, 8.0, 8.0),
+        };
+        let polygon = vec![(2.25, 0.5), (2.75, 0.5), (2.75, 7.5), (2.25, 7.5)];
+        assert!(rasterize_polygon(&polygon, &grid).is_empty());
+
+        let centerline = vec![(2.5, 0.5), (2.5, 7.5)];
+        let cells = sorted_cells_from_keys(&sample_polyline_cells(&centerline, &grid));
+        assert_eq!(cells, vec![(1, 0), (1, 1), (1, 2), (1, 3)]);
+    }
+
+    #[test]
+    fn rasterizes_offset_axis_aligned_rectangle_by_cell_centers() {
+        let grid = StaticGridSpec {
+            width: 12,
+            height: 8,
+            grid_size_um: 1.0,
+            origin: (0.0, 0.0),
+            die_bbox: (0.0, 0.0, 12.0, 8.0),
+        };
+        let polygon = vec![(0.2, 1.2), (10.2, 1.2), (10.2, 3.2), (0.2, 3.2)];
+        let cells = sorted_cells_from_keys(&rasterize_polygon(&polygon, &grid));
+
+        assert!(!cells.contains(&(10, 1)));
+        assert_eq!(cells.len(), 20);
+        assert_eq!(cells.first(), Some(&(0, 1)));
+        assert_eq!(cells.last(), Some(&(9, 2)));
+    }
+
+    #[test]
+    fn chamfered_polygon_does_not_match_rectangle_fast_path() {
+        let polygon = vec![(0.0, 0.5), (0.5, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)];
+
+        assert!(axis_aligned_rectangle_bounds(&polygon).is_none());
+    }
+
+    #[test]
+    fn inflates_with_manhattan_metric() {
+        let inflated = inflate_keys([pack_xy(2, 2)], 5, 5, 1, ClearanceMetric::Manhattan);
+        let cells = sorted_cells_from_keys(&inflated);
+
+        assert_eq!(cells, vec![(1, 2), (2, 1), (2, 2), (2, 3), (3, 2)]);
+    }
+
+    #[test]
+    fn inflates_with_chebyshev_metric() {
+        let inflated = inflate_keys([pack_xy(2, 2)], 5, 5, 1, ClearanceMetric::Chebyshev);
+        let cells = sorted_cells_from_keys(&inflated);
+
+        assert_eq!(
+            cells,
+            vec![
+                (1, 1),
+                (1, 2),
+                (1, 3),
+                (2, 1),
+                (2, 2),
+                (2, 3),
+                (3, 1),
+                (3, 2),
+                (3, 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn generates_port_openings() {
+        let polygons = Vec::new();
+        let ports = vec![PortInput::new("o1".to_string(), 1.0, 1.0, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 1.0,
+            obstacle_mode: StaticObstacleBuildMode::RasterizedPolygons,
+            die_bbox: Some((0.0, 0.0, 3.0, 3.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert_eq!(
+            result.port_open_cells,
+            vec![
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (1, 0),
+                (1, 1),
+                (1, 2),
+                (2, 0),
+                (2, 1),
+                (2, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn removes_port_openings_from_permanent_blocked_cells() {
+        let polygons = vec![vec![(0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)]];
+        let ports = vec![PortInput::new("o1".to_string(), 1.0, 1.0, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::RasterizedPolygons,
+            die_bbox: Some((0.0, 0.0, 3.0, 3.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.raw_blocked_cells.contains(&(1, 1)));
+        assert!(result.port_open_cells.contains(&(1, 1)));
+        assert!(!result.blocked_cells.contains(&(1, 1)));
+    }
+
+    #[test]
+    fn keeps_port_openings_in_static_blocked_when_disabled() {
+        let polygons = vec![vec![(0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0)]];
+        let ports = vec![PortInput::new("o1".to_string(), 1.0, 1.0, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::RasterizedPolygons,
+            clear_port_open_cells_from_static: false,
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            die_bbox: Some((0.0, 0.0, 3.0, 3.0)),
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.raw_blocked_cells.contains(&(1, 1)));
+        assert!(result.port_open_cells.contains(&(1, 1)));
+        assert!(result.blocked_cells.contains(&(1, 1)));
+    }
+
+    #[test]
+    fn builds_obstacle_map_from_result() {
+        let polygons = vec![vec![(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]];
+        let ports = Vec::new();
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::RasterizedPolygons,
+            die_bbox: Some((0.0, 0.0, 2.0, 2.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.obstacle_map.is_static_blocked(0, 0));
+        assert!(result.obstacle_map.is_static_blocked(1, 1));
+        assert_eq!(result.blocked_cells.len(), 4);
+    }
+
+    #[test]
+    fn has_test_grid_helper() {
+        assert_eq!(test_grid().width, 5);
+    }
+
+    #[test]
+    fn parse_obstacle_mode_strings() {
+        assert!(matches!(
+            parse_obstacle_mode("rasterized_polygons"),
+            Ok(StaticObstacleBuildMode::RasterizedPolygons)
+        ));
+        assert!(matches!(
+            parse_obstacle_mode("bounding_boxes"),
+            Ok(StaticObstacleBuildMode::BoundingBoxes)
+        ));
+        assert!(parse_obstacle_mode("invalid").is_err());
+    }
+
+    #[test]
+    fn builds_bounding_boxes_for_polygons() {
+        let polygons = vec![vec![(0.2, 0.2), (2.7, 0.4), (2.7, 2.7), (0.2, 2.7)]];
+        let ports = Vec::new();
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert_eq!(
+            result.raw_blocked_cells,
+            vec![
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (1, 0),
+                (1, 1),
+                (1, 2),
+                (2, 0),
+                (2, 1),
+                (2, 2)
+            ]
+        );
+    }
+
+    #[test]
+    fn clears_overlapping_bounding_box_cells_from_static_map() {
+        let polygons = vec![
+            vec![(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)],
+            vec![(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)],
+        ];
+        let ports = vec![PortInput::new("p1".to_string(), 2.5, 2.5, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 6.0, 6.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(!result.raw_blocked_cells.contains(&(2, 2)));
+        assert!(!result.blocked_cells.contains(&(2, 2)));
+        assert!(result.obstacle_map.is_static_blocked(2, 2));
+    }
+
+    #[test]
+    fn bounding_box_mode_populates_static_map_and_clears_port_openings() {
+        let polygons = vec![vec![(1.1, 1.1), (2.8, 1.1), (2.8, 2.8), (1.1, 2.8)]];
+        let ports = vec![PortInput::new("o1".to_string(), 1.5, 1.5, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.obstacle_map.is_static_blocked(1, 2));
+        assert!(result.obstacle_map.is_static_blocked(2, 1));
+        assert!(result.obstacle_map.is_static_blocked(1, 1));
+        assert!(!result.raw_blocked_cells.contains(&(1, 1)));
+        assert!(!result.blocked_cells.contains(&(1, 1)));
+    }
+
+    #[test]
+    fn bounding_box_mode_keeps_port_openings_in_static_blocked_when_disabled() {
+        let polygons = vec![vec![(1.1, 1.1), (2.8, 1.1), (2.8, 2.8), (1.1, 2.8)]];
+        let ports = vec![PortInput::new("o1".to_string(), 1.5, 1.5, Some(0.0))];
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            clear_port_open_cells_from_static: false,
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.raw_blocked_cells.contains(&(1, 1)));
+        assert!(result.port_open_cells.contains(&(1, 1)));
+        assert!(result.blocked_cells.contains(&(1, 1)));
+        assert!(result.obstacle_map.is_static_blocked(1, 1));
+    }
+
+    #[test]
+    fn bounding_box_mode_can_skip_cell_payload_materialization() {
+        let polygons = vec![vec![(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)]];
+        let ports = Vec::new();
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            clear_port_open_cells_from_static: false,
+            materialize_bbox_cells: false,
+            populate_obstacle_map: true,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(!result.raw_static_rects.is_empty());
+        assert!(!result.blocked_static_rects.is_empty());
+        assert!(result.raw_blocked_cells.is_empty());
+        assert!(result.blocked_cells.is_empty());
+        assert!(result.obstacle_map.is_static_blocked(1, 1));
+    }
+
+    #[test]
+    fn bounding_boxes_are_conservative_for_non_rectangular_polygons() {
+        let polygons = vec![vec![(0.0, 0.0), (3.0, 0.0), (0.0, 3.0)]];
+        let ports = Vec::new();
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 0.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 5.0, 5.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.raw_blocked_cells.contains(&(0, 0)));
+        assert!(result.raw_blocked_cells.contains(&(2, 2)));
+        assert!(result.raw_blocked_cells.contains(&(2, 0)));
+        assert!(result.raw_blocked_cells.contains(&(0, 2)));
+    }
+
+    #[test]
+    fn applies_clearance_to_bounding_box_obstacles() {
+        let polygons = vec![vec![(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)]];
+        let ports = Vec::new();
+        let config = StaticObstacleBuildConfig {
+            grid_size_um: 1.0,
+            security_margin_um: 0.0,
+            clearance_um: 1.0,
+            clearance_metric: ClearanceMetric::Chebyshev,
+            port_open_radius_um: 0.0,
+            obstacle_mode: StaticObstacleBuildMode::BoundingBoxes,
+            die_bbox: Some((0.0, 0.0, 4.0, 4.0)),
+            materialize_bbox_cells: true,
+            populate_obstacle_map: true,
+            clear_port_open_cells_from_static: true,
+        };
+
+        let result = build_static_obstacle_map_from_geometry(&polygons, &ports, &config).unwrap();
+
+        assert!(result.blocked_cells.contains(&(0, 0)));
+        assert!(result.blocked_cells.contains(&(0, 1)));
+        assert!(result.blocked_cells.contains(&(0, 2)));
+        assert!(result.blocked_cells.contains(&(1, 0)));
+        assert!(result.blocked_cells.contains(&(2, 2)));
+        assert!(result.blocked_cells.contains(&(2, 0)));
+    }
+}

@@ -20,6 +20,9 @@ dependencies = [
 dev = ["ruff>=0.16,<0.17", "mypy>=2.3,<2.4"]
 
 [tool.maturin]
+# The extension is the `router-py` crate of the Cargo workspace (phase 8
+# slice B); `router-core` is the pure-Rust engine it wraps.
+manifest-path = "crates/router-py/Cargo.toml"
 module-name = "photonic_router._rust"
 python-source = "python"
 features = ["pyo3/extension-module"]

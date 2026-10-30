@@ -47,11 +47,25 @@ Contents:
 
 ## 1. The Rust crate, module by module
 
-`src/lib.rs` (80 lines) is the crate root: it declares the modules and
-re-exports the public names other crates and the tests use. It contains no
-logic. Below it are three module trees -- `search/` (one net), `engine/` (many
-nets) and `bindings/` (the PyO3 surface) -- plus the grid and geometry modules
-the first two are built on.
+The Rust side is a Cargo workspace (phase 8 slice B of the 2026-10 do-over;
+`Cargo.toml` at the root holds the members, the shared dependency versions and
+the clippy allows). `crates/router-core` is the engine: pure Rust, no `pyo3`
+dependency, so `cargo test -p router-core` runs without a Python interpreter.
+`crates/router-py` is the PyO3 surface only: it wraps the core's `Router` in
+the `PyPhotonicRouter` class, converts every argument and result at that edge,
+and builds the extension module `photonic_router._rust` (maturin reads it
+through `pyproject.toml`'s `manifest-path`). Errors the core raised as Python
+exceptions before are `router_core::RouterError` values now
+(`RouterError::Config` becomes a `ValueError` in `router-py`'s `py_err`);
+the core's other fallible calls return `Result<_, String>` and the binding
+picks the exception per call site, as it always did.
+
+`crates/router-core/src/lib.rs` is the core's crate root: it declares the
+modules and re-exports the public names `router-py` and the tests use. It
+contains no logic. Below it are two module trees -- `search/` (one net) and
+`engine/` (many nets) -- plus the grid and geometry modules both are built on.
+The Rust paths in this document (`src/...`) are relative to
+`crates/router-core/` unless they name `crates/router-py/`.
 
 ### `src/search/` -- one net, one path
 
@@ -114,7 +128,8 @@ map: a search reads the map, the engine writes it.
 
 ### `src/engine/` -- many nets, commitment, repair
 
-`src/engine/mod.rs` (294 lines) owns the `PyPhotonicRouter` struct -- the
+`src/engine/mod.rs` owns the `Router` struct (until phase 8 slice B the
+`PyPhotonicRouter` pyclass itself) -- the
 router's per-run state: the obstacle map, the primitive library, the crossing
 context, the committed routes and opened cells, the history/congestion
 bookkeeping, the typed `RouterConfig`, and `search_engine: Box<dyn NetSearch +
@@ -209,13 +224,14 @@ code and 546 tests) owns the loop itself in three functions:
 (100 lines) is one net's turn, and `global_ripup_round(.., &mut NetQueue, ..)`
 (98 lines) is LiDAR's `ripupfailedNets` at round end; the setup, the per-net
 `SearchArgs`, the braid requeue and the post-rip-up guidance are small helpers
-beside them, and `route_many_with_negotiated_repair_and_commit_impl` is the thin
-converter above it (phase 3 slice D of the 2026-10 do-over). The batch arrives
+beside them, and the binding's `route_many_with_negotiated_repair_and_commit`
+(`crates/router-py/src/lib.rs`) is the thin converter above it (phase 3 slice D
+of the 2026-10 do-over). The batch arrives
 from Python as a list of `RouteJob` objects (the `#[pyclass]` in
-`bindings/types.rs`: net id, source and target `State`, the opened,
+`crates/router-py/src/types.rs`: net id, source and target `State`, the opened,
 clearance-exempt and foreign-keep-out cell lists, the two port centers in
 micrometers, keyword-only constructor, read-only fields); `native_jobs_from_py`
-turns them into the engine's `NativeRouteJob`s once, at the boundary, and
+(`crates/router-py/src/convert.rs`) turns them into the engine's `NativeRouteJob`s once, at the boundary, and
 nothing below it sees Python (phase 3 slice E replaced the eight-field tuples
 the binding took before). The result stays a dictionary. Each *rule* the
 loop applies lives in its own module and can be replaced without touching the
@@ -230,17 +246,28 @@ two crossing routes), `trace.rs` (108 lines, every
 `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG` line of the loop but the per-attempt
 one). Section 5 reads the loop in full.
 
-### `src/bindings/` -- the PyO3 surface
+### `crates/router-py/` -- the PyO3 surface
 
-`mod.rs` (1,221 lines) owns the `#[pymethods]` block of
-`PyPhotonicRouter` (42 methods): every method Python can call on the
-router, and nothing else; the five helpers the block and the engine share
-(`invalidate_meander_base_prefix`, `clear_static_cells`, `add_history_cells`,
-the long-straight record conversion, `effective_bend_radius_um`) sit in a
-plain `impl` block below it, out of Python's sight.
-`types.rs` (859 lines) owns the `#[pyclass]` configuration, job and result types
+`lib.rs` owns the `PyPhotonicRouter` class (`inner: Router`) and its
+`#[pymethods]` block (42 methods): every method Python can call on the
+router, and nothing else. The plain-data methods (static cells and
+rectangles, port openings, net cells, the raw obstacle views, rip-up) forward
+to the core methods of the same name (`crates/router-core/src/engine/api.rs`);
+the others convert the Python arguments, call the core and build the Python
+result. The engine helpers the block shares (`invalidate_meander_base_prefix`,
+`clear_static_cells`, `add_history_cells`, `effective_bend_radius_um`) are
+`Router` methods in the core; the long-straight record conversion stays in a
+plain `impl` block here. `lib.rs` also registers the `#[pymodule] _rust` and
+maps `RouterError` to Python (`py_err`). `static_obstacle.rs` owns
+`build_static_obstacle_map_rs` and the `PyStaticCellSet` handle over the
+core's `build_static_obstacle_map_from_geometry` and `StaticCellSet`.
+`tests.rs` holds the binding tests that read a Python result
+(`cargo test -p router-py`, with `PYO3_PYTHON`).
+`types.rs` owns the `#[pyclass]` configuration, job and result types
 (including `PyRouterConfig`, which validates the search engine name at
-construction). `convert.rs` (578 lines) owns the conversions in both directions
+construction) and their conversions into the core's plain structs
+(`GridSpec`, `PrimitiveLibraryConfig`, `AStarParams`, `RouterConfig`,
+`State`). `convert.rs` (578 lines) owns the conversions in both directions
 (route results, batch timing dictionaries, primitive descriptions).
 `meander_py.rs` (1,447 lines) owns the meander bindings: the `#[pyclass]
 MeanderPlanner` (phase 6 slice C of the 2026-10 do-over) that holds one
@@ -430,7 +457,7 @@ do-over): `path_length_requirements.py` computes how much extra length each
 edge needs and where it may go (the edge itself, or upstream where every
 group stays matched); `route_rust_meanders.py` (1,849 lines, from 3,010)
 turns that into request vectors for one `MeanderPlanner(router)`
-(`src/bindings/meander_py.rs`, phase 6 slice C: `register` and
+(`crates/router-py/src/meander_py.rs`, phase 6 slice C: `register` and
 `register_geometries` once per pass, `plan_requests` per requirement,
 `plan_final` once, `reserve_rect` per committed plan) and Rust decides every
 plan. The selection pass sends one Rust call per requirement (the candidate bundles in order,
@@ -896,7 +923,7 @@ implementing `NetSearch`; reuse the kernel's building blocks
 not support and report it in the stats instead of failing silently
 (`unsupported_request`). (3) Add a name constant in `src/config.rs` and a branch
 in `search_engine_for` (`src/engine/mod.rs`). (4) Accept the name in
-`PyRouterConfig::new` (`src/bindings/types.rs`), which is what rejects unknown
+`PyRouterConfig::new` (`crates/router-py/src/types.rs`), which is what rejects unknown
 values, and in `SearchOverrides.engine` (`python/photonic_router/config.py`),
 whose overlay name is `PHOTONIC_ROUTER_SEARCH_ENGINE`
 (`python/photonic_router/env_overlay.py`). (5) Test it against the interface,
@@ -1040,18 +1067,20 @@ contribution 1 with the crossing mode overridden
 ## 8. Build and test commands
 
 From the repository root, with `.venv` present. `rust-toolchain.toml` pins
-the host's stable toolchain; `cargo test` additionally needs `PYO3_PYTHON`
-because the crate links the Python it is built for:
+the host's stable toolchain; `cargo test -p router-py` additionally needs
+`PYO3_PYTHON` because that crate links the Python it is built for
+(`router-core` does not):
 
 ```bash
 # Build the kernel into python/photonic_router/_rust.abi3.so
 PYO3_PYTHON="$PWD/.venv/bin/python3" \
   .venv/bin/maturin develop --release
 
-# Rust unit tests
+# Rust unit tests: the engine without Python, the bindings with it
+cargo test --release -p router-core
 PYO3_PYTHON="$PWD/.venv/bin/python" \
-  cargo test --release --lib
-cargo fmt            # before testing; cargo fmt --check in review
+  cargo test --release -p router-py
+cargo fmt --all      # before testing; cargo fmt --all -- --check in review
 
 # Python tests: the whole suite, and the fast part (markers in pyproject.toml)
 .venv/bin/python -m pytest -q tests

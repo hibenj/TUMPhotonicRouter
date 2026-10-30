@@ -43,18 +43,18 @@ echo "== mypy =="
 
 echo "== cargo fmt =="
 if [[ "$FIX" == 1 ]]; then
-    cargo fmt
+    cargo fmt --all
 else
-    cargo fmt -- --check
+    cargo fmt --all -- --check
 fi
 
 echo "== cargo clippy =="
 if [[ "$FIX" == 1 ]]; then
     PYO3_PYTHON="$PWD/.venv/bin/python" \
-        cargo clippy --fix --lib -p photonic-router --allow-dirty
+        cargo clippy --fix --workspace --all-targets --allow-dirty
 else
     PYO3_PYTHON="$PWD/.venv/bin/python" \
-        cargo clippy --lib -- -D warnings
+        cargo clippy --workspace --all-targets -- -D warnings
 fi
 
 echo "All checks passed."

@@ -1,0 +1,15 @@
+[package]
+name = "router-core"
+version.workspace = true
+edition.workspace = true
+description = "Rust core of the photonic grid router (no Python dependency)"
+
+[lib]
+name = "router_core"
+path = "src/lib.rs"
+
+[dependencies]
+rustc-hash.workspace = true
+
+[lints]
+workspace = true

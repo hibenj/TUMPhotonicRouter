@@ -25,10 +25,12 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --release --lib --tests -- -D warnings
+      - run: cargo clippy --release --workspace --all-targets -- -D warnings
         env:
           PYO3_PYTHON: ${{ env.pythonLocation }}/bin/python
-      - run: cargo test --release --lib
+      # The engine crate has no Python dependency: no PYO3_PYTHON here.
+      - run: cargo test --release -p router-core
+      - run: cargo test --release -p router-py
         env:
           PYO3_PYTHON: ${{ env.pythonLocation }}/bin/python
 

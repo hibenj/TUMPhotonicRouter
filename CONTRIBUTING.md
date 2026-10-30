@@ -12,7 +12,10 @@ python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]" pytest     # builds the Rust extension through maturin
 ```
 
-Rebuild the extension after a change under `src/`:
+The Rust side is a Cargo workspace: `crates/router-core` is the engine (no
+Python dependency), `crates/router-py` the PyO3 bindings that maturin builds
+into `photonic_router._rust` (`pyproject.toml`'s `manifest-path`). Rebuild
+the extension after a change under `crates/`:
 
 ```bash
 .venv/bin/maturin develop --release
@@ -29,12 +32,13 @@ Run the narrowest check first, then the gates. All of these run in CI.
 # style and generated files
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 cargo fmt --all -- --check
-PYO3_PYTHON="$PWD/.venv/bin/python" cargo clippy --release --lib --tests -- -D warnings
+PYO3_PYTHON="$PWD/.venv/bin/python" cargo clippy --release --workspace --all-targets -- -D warnings
 .venv/bin/python scripts/generate_config_reference.py --check
 .venv/bin/python scripts/generate_rust_stubs.py --check
 
 # tests
-PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --release --lib
+cargo test --release -p router-core                  # no Python needed
+PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --release -p router-py
 .venv/bin/python -m pytest -q -m "not e2e" tests     # under 60 s
 .venv/bin/python -m pytest -q tests                  # with the end-to-end tests
 
@@ -57,7 +61,7 @@ electrical router runs
 - Comments explain why, not what. Parameters that travel together become a
   dataclass or struct. One implementation per concern: before adding a
   helper, search for the one that exists.
-- A configuration field is added on both sides (`src/config.rs`,
+- A configuration field is added on both sides (`crates/router-core/src/config.rs`,
   `python/photonic_router/config.py`) and `docs/CONFIGURATION.md` is
   regenerated; a binding change regenerates `_rust.pyi`.
 

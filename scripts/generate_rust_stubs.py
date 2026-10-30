@@ -5,7 +5,7 @@ mypy and the whole Python side above it loses type checking. PyO3 records the
 signature of every class, method and function it exports
 (``__text_signature__``) and the docstrings; this script reads them off the
 built module and writes a stub with those signatures, ``Any``-typed where the
-extension says nothing more. Regenerate after any change to ``src/bindings/``:
+extension says nothing more. Regenerate after any change to ``crates/router-py/``:
 
     .venv/bin/python scripts/generate_rust_stubs.py            # rewrite
     .venv/bin/python scripts/generate_rust_stubs.py --check    # verify

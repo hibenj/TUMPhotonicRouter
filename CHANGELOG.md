@@ -65,6 +65,26 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- A Cargo workspace with the engine and the bindings as two crates (phase 8
+  slice B; no behaviour change: nine-cell and PLM gates exact, the extension
+  stub unchanged). `crates/router-core` is the former `src/` without
+  `bindings/` (moved by `git mv`) and has no `pyo3` dependency:
+  `cargo test -p router-core` runs without a Python interpreter.
+  `crates/router-py` holds the PyO3 surface and builds the same
+  `photonic_router._rust` module (`pyproject.toml`: `manifest-path`). The
+  engine struct is `router_core::Router` (constructor
+  `Router::new(GridSpec, PrimitiveLibraryConfig, AStarParams, RouterConfig)`,
+  all plain structs); the `PyPhotonicRouter` class wraps one (`inner`) and
+  converts at the edge. The A* settings resolve through
+  `AStarConfig::from_parts(&AStarParams, &AStarOverrides, &RouterConfig)`
+  (formerly `astar_config_from_py`); the core's former `PyValueError`s are
+  `RouterError::Config`, raised as `ValueError` by `router-py`'s `py_err`. The
+  static obstacle builder's pyfunction and `PyStaticCellSet` moved to
+  `router-py` over the core's `build_static_obstacle_map_from_geometry` and
+  `StaticCellSet`; the plain-data `PyPhotonicRouter` methods forward to
+  `Router` methods of the same name (`engine/api.rs`). CI runs
+  `cargo clippy --workspace --all-targets`, `cargo test -p router-core` without
+  `PYO3_PYTHON` and `cargo test -p router-py` with it.
 - One Python package (phase 8 slice A): `translation/` and the nine root
   `routing_flow*.py` modules moved by `git mv` into `python/photonic_router/`
   (`routing/`, `electrical/`, `crossings/`, `plm/`, `verify/`, `gds/`,

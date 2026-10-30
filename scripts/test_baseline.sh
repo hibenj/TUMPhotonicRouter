@@ -11,10 +11,12 @@ R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$R" || exit 1
 export PYO3_PYTHON="${PYO3_PYTHON:-$R/.venv/bin/python}"
 pin="$R/tests/baselines/test_baseline.txt"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/test_baseline_XXXX")"
-cargo test --release --lib > "$tmp/cargo.log" 2>&1
-rust_line=$(grep -E "^test result:" "$tmp/cargo.log" | tail -1)
-rust_passed=$(echo "$rust_line" | grep -o "[0-9]* passed" | grep -o "[0-9]*")
-rust_failed=$(echo "$rust_line" | grep -o "[0-9]* failed" | grep -o "[0-9]*")
+# Both workspace crates' library tests (router-core without Python, router-py
+# with it); the counts are summed over their two "test result:" lines.
+cargo test --release --workspace --lib > "$tmp/cargo.log" 2>&1
+rust_line=$(grep -E "^test result:" "$tmp/cargo.log" | tr '\n' ' ')
+rust_passed=$(grep -E "^test result:" "$tmp/cargo.log" | grep -o "[0-9]* passed" | grep -o "[0-9]*" | awk '{s += $1} END {print s + 0}')
+rust_failed=$(grep -E "^test result:" "$tmp/cargo.log" | grep -o "[0-9]* failed" | grep -o "[0-9]*" | awk '{s += $1} END {print s + 0}')
 .venv/bin/python -m pytest -q tests > "$tmp/pytest.log" 2>&1
 py_summary=$(grep -E "^[0-9]+ (passed|failed)|^=+ .*(passed|failed).* =+$" "$tmp/pytest.log" | tail -1 | sed 's/=//g; s/^ *//; s/ *$//')
 py_passed=$(echo "$py_summary" | grep -o "[0-9]* passed" | grep -o "[0-9]*")

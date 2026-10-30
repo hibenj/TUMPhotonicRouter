@@ -1,0 +1,18 @@
+[package]
+name = "router-py"
+version.workspace = true
+edition.workspace = true
+description = "PyO3 bindings of the photonic grid router (the photonic_router._rust extension)"
+
+[lib]
+name = "router_py"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3.workspace = true
+router-core.workspace = true
+rustc-hash.workspace = true
+
+[lints]
+workspace = true

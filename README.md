@@ -97,15 +97,15 @@ field is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 | `python/photonic_router/static_obstacle_builder.py` | Static obstacle extraction, Rust fallback handling, compact bbox payloads |
 | `python/photonic_router/crossings/crossing_demand.py` | The crossings a placement forces: bands between component columns, invariant pairs, the lower bound |
 | `python/photonic_router/crossings/crossing_plan.py` | Converts the two wall orders of a band into ordered crossing events |
-| `src/search/` | One net: the `NetSearch` interface, the A* engine (`astar/`), the Dijkstra oracle |
-| `src/engine/` | Many nets: jobs, commitment, crossing reservations, endpoint correction |
-| `src/engine/negotiation/` | The rip-up-and-repair loop and its budget / crossing-free / rip-up / queue policies |
-| `src/bindings/` | The PyO3 surface: the `#[pymethods]` block, the config/result types, the converters |
-| `src/obstacle_map.rs` | Static/dynamic route database, packed cells, rip-up, history costs |
-| `src/crossings.rs` | Crossing constraints and expected-pair context |
-| `src/search/astar/simple_route.rs` | The simple route: straight/L/Z/turnaround candidates tried before the kernel |
-| `src/primitives.rs` | Photonic movement primitives and footprint metadata |
-| `src/geometry_realization.rs` | Route polygons, port access, and meander geometry |
+| `crates/router-core/src/search/` | One net: the `NetSearch` interface, the A* engine (`astar/`), the Dijkstra oracle |
+| `crates/router-core/src/engine/` | Many nets: jobs, commitment, crossing reservations, endpoint correction |
+| `crates/router-core/src/engine/negotiation/` | The rip-up-and-repair loop and its budget / crossing-free / rip-up / queue policies |
+| `crates/router-py/src/` | The PyO3 surface (its own crate): the `#[pymethods]` block, the config/result types, the converters |
+| `crates/router-core/src/obstacle_map.rs` | Static/dynamic route database, packed cells, rip-up, history costs |
+| `crates/router-core/src/crossings.rs` | Crossing constraints and expected-pair context |
+| `crates/router-core/src/search/astar/simple_route.rs` | The simple route: straight/L/Z/turnaround candidates tried before the kernel |
+| `crates/router-core/src/primitives.rs` | Photonic movement primitives and footprint metadata |
+| `crates/router-core/src/geometry_realization.rs` | Route polygons, port access, and meander geometry |
 | `python/photonic_router/electrical/` | Heater electrical routing stack |
 | `scripts/benchmark_photonic.py` | End-to-end photonic benchmark runner |
 | `scripts/profile_astar.py` | Isolated Rust A* profiler |
@@ -220,10 +220,10 @@ Current checked-in baseline: `docs/photonic_baseline.md`.
 ```bash
 .venv/bin/python -m pytest -q tests                 # everything
 .venv/bin/python -m pytest -q -m "not e2e" tests    # without the benchmark-loading tests
-cargo test --release --lib
+cargo test --release -p router-core                 # the engine, no Python needed
 ```
 
-The `PYO3_PYTHON` setting `cargo test` needs, the pinned baseline script and
+The `PYO3_PYTHON` setting `cargo test -p router-py` needs, the pinned baseline script and
 the reproduction gate are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 section 8; Windows hosts without Visual Studio see
 [`docs/WINDOWS_RUST_TOOLCHAIN.md`](docs/WINDOWS_RUST_TOOLCHAIN.md).
@@ -236,7 +236,7 @@ Useful targeted checks:
 .venv/bin/python -m pytest tests/test_route_rust_records.py -v
 .venv/bin/python -m pytest tests/test_electrical_routing.py -v
 .venv/bin/python -m pytest tests/e2e/test_routing_flow_stats.py -v
-cargo test crossing
+cargo test -p router-core crossing
 ```
 
 ## Related Notes
