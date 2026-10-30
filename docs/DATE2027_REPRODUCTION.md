@@ -14,7 +14,7 @@ is final; this branch exists so the numbers can be regenerated.
   `git diff 8ddde83 -- src/py_router.rs` shows nothing else.
 - Contribution 2 configuration: `--preplaced-crossing-grids true`.
   `routing_flow.py` then sets `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT=1`
-  (unless the shell sets it to `0`), and `translation/route_rust.py` hands the
+  (unless the shell sets it to `0`), and `python/photonic_router/routing/route_rust.py` hands the
   nets with a static fan-out anchor on a dense multi-port instance to the
   kernel, which searches them with `long_straight_congestion_weight = 0`.
   Benes benchmarks have no dense instances, so the exemption is a no-op there.

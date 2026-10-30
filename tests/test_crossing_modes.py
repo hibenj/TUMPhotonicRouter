@@ -1,10 +1,9 @@
-"""The crossing-mode vocabulary (`translation/crossing_modes.py`)."""
+"""The crossing-mode vocabulary (`python/photonic_router/crossings/crossing_modes.py`)."""
 
 from __future__ import annotations
 
 import pytest
-
-from translation.crossing_modes import (
+from photonic_router.crossings.crossing_modes import (
     CROSSING_MODES,
     is_guided_mode,
     normalize_crossing_mode,

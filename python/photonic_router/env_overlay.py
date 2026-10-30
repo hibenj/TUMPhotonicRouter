@@ -528,7 +528,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         optional_int,
     ),
     # --- Milestone 1 Slice 2: Python-side RoutingConfig fields ------------
-    # Crossing plan (translation/route_rust_crossing_plan.py)
+    # Crossing plan (python/photonic_router/crossings/route_rust_crossing_plan.py)
     EnvVar(
         _PREFIX + "COLLISION_CROSSING_SEARCH_LOSS_UM",
         ("crossing_plan", "collision_crossing_search_loss_um"),
@@ -544,7 +544,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("crossing_plan", "planned_crossing_budget"),
         zero_one_crossing_budget(_PREFIX + "PLANNED_CROSSING_BUDGET"),
     ),
-    # Crossing grid (translation/preplaced_crossing_grids.py, crossing_structures.py)
+    # Crossing grid (python/photonic_router/crossings/preplaced_crossing_grids.py, crossing_structures.py)
     EnvVar(
         _PREFIX + "CROSSING_GRID_BAND_MARGIN_UM",
         ("crossing_grid", "band_margin_um"),
@@ -577,7 +577,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         comma_digit_ints_frozenset,
     ),
     EnvVar(_PREFIX + "TRACE_COLUMN_GRID", ("crossing_grid", "trace_column_grid"), truthy),
-    # Fan-out access (translation/route_rust.py)
+    # Fan-out access (python/photonic_router/routing/route_rust.py)
     EnvVar(
         _PREFIX + "DENSE_FANOUT_INSTANCES",
         ("fanout", "dense_fanout_instances"),
@@ -627,7 +627,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("fanout", "stub_port_lane_length_cells"),
         nonnegative_int(_PREFIX + "STUB_PORT_LANE_LENGTH_CELLS"),
     ),
-    # Search tuning (translation/route_rust.py)
+    # Search tuning (python/photonic_router/routing/route_rust.py)
     EnvVar(_PREFIX + "MIN_BEND_WEIGHT", ("search", "min_bend_weight"), plain_float),
     EnvVar(_PREFIX + "HEAP_TIE_BREAKER", ("search", "heap_tie_breaker"), heap_tie_breaker_override),
     EnvVar(
@@ -635,7 +635,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("search", "long_straight_exempt_dense_fanout"),
         exact_one,
     ),
-    # Flow diagnostics (translation/route_rust.py, route_rust_endpoint_correction.py)
+    # Flow diagnostics (python/photonic_router/routing/route_rust.py, route_rust_endpoint_correction.py)
     EnvVar(
         _PREFIX + "DEBUG_EXECUTION_LIMIT",
         ("diagnostics", "debug_execution_limit"),
@@ -668,7 +668,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("diagnostics", "trace_terminal_bump_distance_checks"),
         comma_token_frozenset,
     ),
-    # Debug artifact (routing_flow_verification.py)
+    # Debug artifact (python/photonic_router/flow_verification.py)
     EnvVar(
         _PREFIX + "WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE",
         ("write_gds_on_photonic_verification_failure",),

@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from photonic_router.path_length_graph import (
+from photonic_router.plm.path_length_graph import (
     PathLengthAnalysisResult,
     PathLengthGraphAnnotations,
     PhotonicRoutingGraph,

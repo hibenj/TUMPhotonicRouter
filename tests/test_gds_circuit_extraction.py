@@ -13,13 +13,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
-from translation.gds_circuit_components import (
+from photonic_router.gds.gds_circuit_components import (
     directional_coupler,
     directional_coupler_path_length_um,
     register_generic_components,
 )
-from translation.gds_circuit_extraction import (
+from photonic_router.gds.gds_circuit_extraction import (
     ArmPairRule,
     ClassificationRule,
     CompositeRule,
@@ -27,14 +26,14 @@ from translation.gds_circuit_extraction import (
     ExtractionConfig,
     extract_circuit,
 )
-from translation.gds_circuit_rebuild import (
+from photonic_router.gds.gds_circuit_rebuild import (
     benchmark_metadata,
     default_generic_mappings,
     generic_schematic,
     overlapping_instances,
     write_benchmark_module,
 )
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 pytestmark = pytest.mark.integration
 

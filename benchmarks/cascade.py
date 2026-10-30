@@ -84,7 +84,7 @@ TOMOGRAPHY_SECOND_MMI_OFFSET_UM = 980.0
 TOMOGRAPHY_OUTPUT_GC_OFFSET_UM = 1400.0
 
 # The pad pitch the electrical router's pad row uses
-# (`translation.electrical.types.DEFAULT_PAD_PITCH_UM`); not imported here
+# (`photonic_router.electrical.types.DEFAULT_PAD_PITCH_UM`); not imported here
 # to keep this benchmark module free of a dependency on the electrical
 # router, mirroring every other geometry constant in this file (read off
 # `heater_s_mod` / the router's own defaults, not imported).
@@ -419,7 +419,7 @@ if __name__ == "__main__":
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-    from translation.layout_from_schematic import layout_from_schematic
+    from photonic_router.records.layout_from_schematic import layout_from_schematic
 
     schematic = build_cascade_schematic(8, "folded")
     print("Schematic instances:", list(schematic.netlist.instances.keys()))

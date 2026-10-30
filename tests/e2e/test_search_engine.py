@@ -10,8 +10,7 @@ import dataclasses
 
 import pytest
 from photonic_router.config import RouterConfig, RoutingConfig, SearchOverrides
-
-from routing_flow import run_routing_flow
+from photonic_router.flow import run_routing_flow
 
 
 def _config_with_engine(engine: str) -> RoutingConfig:

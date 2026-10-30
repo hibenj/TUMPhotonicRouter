@@ -8,11 +8,10 @@ import importlib
 
 import pytest
 from gdsfactory.gpdk import get_generic_pdk
+from photonic_router.crossings import crossing_structures as cs
+from photonic_router.crossings import preplaced_crossing_grids as pcg
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-
-from translation import crossing_structures as cs
-from translation import preplaced_crossing_grids as pcg
-from translation.layout_from_schematic import layout_from_schematic
 
 get_generic_pdk().activate()
 

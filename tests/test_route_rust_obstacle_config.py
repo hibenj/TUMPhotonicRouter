@@ -5,10 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
+from photonic_router.routing.route_rust import _resolve_obstacle_config
 from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-
-from translation.route_rust import _resolve_obstacle_config
 
 
 def test_resolve_obstacle_config_defaults_to_route_layer_when_missing():
@@ -104,7 +103,10 @@ def test_dense_obstacle_cell_cap_covers_the_whole_map_and_keeps_the_default_for_
     """The lidar-mode crossing hook rasterizes the full routing bounds; the
     kernel cap must cover the map (benes_64x64: 8380 x 3439 cells = 28.8M >
     the 10M default, which panicked on 2026-09-13)."""
-    from translation.route_rust import DENSE_OBSTACLE_CELL_CAP_MARGIN, dense_obstacle_cell_cap
+    from photonic_router.routing.route_rust import (
+        DENSE_OBSTACLE_CELL_CAP_MARGIN,
+        dense_obstacle_cell_cap,
+    )
 
     assert dense_obstacle_cell_cap(1000, 500, 10_000_000) == 10_000_000
     assert (

@@ -60,7 +60,7 @@ ignore = [
     # specific runtime error messages built from local context (net name,
     # coordinates, blocker sets, ...) rather than a small fixed set of
     # exception classes -- that is the established, correct style here
-    # (see any routing-failure RuntimeError in translation/route_rust.py),
+    # (see any routing-failure RuntimeError in python/photonic_router/routing/route_rust.py),
     # not something to fight. 162 of this rule set's 994-finding baseline
     # (2026-08-25) were this one rule before it was added here.
     "TRY003",
@@ -73,7 +73,7 @@ ignore = [
 # Scripts and the two shims insert the repository root into sys.path before
 # importing from it, so their imports cannot be at the top of the file.
 "scripts/**" = ["E402"]
-"translation/route_rust.py" = ["E402"]
+"python/photonic_router/routing/route_rust.py" = ["E402"]
 "python/photonic_router/__init__.py" = ["E402"]
 # The 2026-09 path-investigation harness is exploratory code kept as the
 # record of that investigation (.agent/PATH_INVESTIGATION_HARNESS.md); it is
@@ -87,12 +87,22 @@ required-imports = ["from __future__ import annotations"]
 
 [tool.mypy]
 # Deliberately not `strict = true` yet: a baseline scoping pass (2026-08-25)
-# found 246 errors in just translation/ and routing_flow.py, most from the
+# found 246 errors in just the former top-level package and routing_flow.py, most from the
 # untyped PyO3 boundary (photonic_router._rust ships no type stub, so mypy
 # sees every value it returns as `object`/`Any`). Tightening this is tracked
 # as a Milestone 4 candidate in the ExecPlan referenced above, not silently
 # deferred with no record.
-files = ["translation", "routing_flow.py", "routing_flow_config.py"]
+files = [
+    "python/photonic_router/routing",
+    "python/photonic_router/electrical",
+    "python/photonic_router/crossings",
+    "python/photonic_router/plm",
+    "python/photonic_router/verify",
+    "python/photonic_router/gds",
+    "python/photonic_router/records",
+    "routing_flow.py",
+    "python/photonic_router/flow_config.py",
+]
 warn_unused_configs = true
 warn_unreachable = true
 disallow_untyped_defs = false

@@ -6,8 +6,7 @@ import contextlib
 
 import pytest
 from photonic_router import flow as routing_flow
-
-from routing_flow_stats import RoutingFlowStats, format_flow_summary_line
+from photonic_router.flow_stats import RoutingFlowStats, format_flow_summary_line
 
 
 def test_summary_line_lists_every_field_and_marks_skipped_stages():
@@ -43,7 +42,7 @@ def test_route_failures_print_a_dash_without_per_route_collection():
 
     from types import SimpleNamespace
 
-    from routing_flow_stats import populate_route_stats
+    from photonic_router.flow_stats import populate_route_stats
 
     def summary(attempts: int, failures: int) -> SimpleNamespace:
         return SimpleNamespace(

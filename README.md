@@ -93,10 +93,10 @@ field is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 | `python/photonic_router/flow.py` | The flow: `route_benchmark(config, options)` and `route_schematic` |
 | `python/photonic_router/cli.py` | The command line, including `--configuration` (`routing_flow.py` is a shim over it) |
 | `python/photonic_router/config.py` | `RoutingConfig` / `RouterConfig`, the typed configuration trees |
-| `translation/routing/` | The routing session as nine phases (`session.py::run`) behind the Protocols of `stages.py` |
+| `python/photonic_router/routing/` | The routing session as nine phases (`session.py::run`) behind the Protocols of `stages.py` |
 | `python/photonic_router/static_obstacle_builder.py` | Static obstacle extraction, Rust fallback handling, compact bbox payloads |
-| `python/photonic_router/crossing_demand.py` | The crossings a placement forces: bands between component columns, invariant pairs, the lower bound |
-| `python/photonic_router/crossing_plan.py` | Converts the two wall orders of a band into ordered crossing events |
+| `python/photonic_router/crossings/crossing_demand.py` | The crossings a placement forces: bands between component columns, invariant pairs, the lower bound |
+| `python/photonic_router/crossings/crossing_plan.py` | Converts the two wall orders of a band into ordered crossing events |
 | `src/search/` | One net: the `NetSearch` interface, the A* engine (`astar/`), the Dijkstra oracle |
 | `src/engine/` | Many nets: jobs, commitment, crossing reservations, endpoint correction |
 | `src/engine/negotiation/` | The rip-up-and-repair loop and its budget / crossing-free / rip-up / queue policies |
@@ -106,7 +106,7 @@ field is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 | `src/search/astar/simple_route.rs` | The simple route: straight/L/Z/turnaround candidates tried before the kernel |
 | `src/primitives.rs` | Photonic movement primitives and footprint metadata |
 | `src/geometry_realization.rs` | Route polygons, port access, and meander geometry |
-| `translation/electrical/` | Heater electrical routing stack |
+| `python/photonic_router/electrical/` | Heater electrical routing stack |
 | `scripts/benchmark_photonic.py` | End-to-end photonic benchmark runner |
 | `scripts/profile_astar.py` | Isolated Rust A* profiler |
 

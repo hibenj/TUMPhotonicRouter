@@ -4,7 +4,7 @@ ExecPlan Milestone 6, Slice 2. `settings_for_test` moved here unchanged from
 `tests/test_route_rust_opened_cells.py`; `state_for_test` is its `SessionState`
 counterpart, for the same "session assembled with `object.__new__`" idiom;
 `Pipeline`/`pipeline_for_test` is `tests/test_routing_stages.py`'s `_Pipeline`,
-moved unchanged, running the nine `translation.routing` stages over the
+moved unchanged, running the nine `photonic_router.routing` stages over the
 three-net synthetic scenario in `tests.fixtures.synthetic_layouts`.
 """
 
@@ -16,26 +16,25 @@ from uuid import uuid4
 
 import pytest
 from gdsfactory.component import Component
-from photonic_router.flow import load_benchmark
-from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, _load_rust_backend
-
-from translation.electrical import (
+from photonic_router.electrical import (
     ElectricalRoutingConfig,
     ElectricalRoutingResult,
     route_electrical_heaters,
 )
-from translation.layout_from_schematic import layout_from_schematic
-from translation.routing import crossing_plan_stage as crossing_plan_stage_module
-from translation.routing import dispatch as dispatch_module
-from translation.routing import finalize as finalize_module
-from translation.routing import handoff as handoff_module
-from translation.routing import obstacle_context as obstacle_context_module
-from translation.routing import realize as realize_module
-from translation.routing import route_jobs as route_jobs_module
-from translation.routing import router_setup as router_setup_module
-from translation.routing import verify_repair as verify_repair_module
-from translation.routing.settings import SessionSettings
-from translation.routing.state import SessionState
+from photonic_router.flow import load_benchmark
+from photonic_router.records.layout_from_schematic import layout_from_schematic
+from photonic_router.routing import crossing_plan_stage as crossing_plan_stage_module
+from photonic_router.routing import dispatch as dispatch_module
+from photonic_router.routing import finalize as finalize_module
+from photonic_router.routing import handoff as handoff_module
+from photonic_router.routing import obstacle_context as obstacle_context_module
+from photonic_router.routing import realize as realize_module
+from photonic_router.routing import route_jobs as route_jobs_module
+from photonic_router.routing import router_setup as router_setup_module
+from photonic_router.routing import verify_repair as verify_repair_module
+from photonic_router.routing.settings import SessionSettings
+from photonic_router.routing.state import SessionState
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, _load_rust_backend
 
 from .synthetic_layouts import (
     GRID_HEIGHT,

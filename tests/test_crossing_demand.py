@@ -1,4 +1,4 @@
-"""`photonic_router.crossing_demand`: the crossing plan from the placement.
+"""`photonic_router.crossings.crossing_demand`: the crossing plan from the placement.
 
 The depth/rank analysis (`topology_analysis.py`, the plan's producer until
 phase 4 slice C of the 2026-10 do-over) is the oracle here: on the Benes
@@ -16,7 +16,8 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
-from photonic_router.crossing_demand import (
+from photonic_router.benchmark_metadata import load_benchmark_metadata
+from photonic_router.crossings.crossing_demand import (
     CHIP_BOUNDARY,
     NON_ADJACENT_WALLS,
     SAME_WALL,
@@ -28,12 +29,10 @@ from photonic_router.crossing_demand import (
     cluster_columns,
     demand_from_geometry,
 )
-from photonic_router.crossing_plan import build_crossing_plan
-from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
-from photonic_router.topology_analysis import analyze_schematic_topology
-
-from benchmark_metadata import load_benchmark_metadata
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.crossings.crossing_plan import build_crossing_plan
+from photonic_router.crossings.topology_analysis import analyze_schematic_topology
+from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

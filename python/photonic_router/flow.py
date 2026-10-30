@@ -30,21 +30,9 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 from photonic_router.config import RoutingConfig
-from photonic_router.flow_options import (
-    DebugArtifactOptions,
-    ElectricalOptions,
-    FlowOptions,
-    LayoutOptions,
-    LoadingOptions,
-    ObstacleOptions,
-    OpticalStageOptions,
-    OutputOptions,
-    PathLengthMatchingOptions,
-    PreplacedCrossingGridOptions,
-    StatsOptions,
-)
-from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-from routing_flow_config import (
+from photonic_router.crossings.crossing_modes import is_guided_mode
+from photonic_router.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
+from photonic_router.flow_config import (
     SCRIPT_ALLOW_45_DEGREE_TURNS,
     SCRIPT_BEND_RADIUS_UM,
     SCRIPT_CHIP_ADD_X_UM,
@@ -62,31 +50,43 @@ from routing_flow_config import (
     parse_debug_svg_selector,
     resolve_legacy_display_options,
 )
-from routing_flow_electrical import run_electrical_routing_step
-from routing_flow_optical import run_photonic_routing_stage
-from routing_flow_plm import attach_and_report_path_length_matching
-from routing_flow_reporting import (
+from photonic_router.flow_electrical import run_electrical_routing_step
+from photonic_router.flow_optical import run_photonic_routing_stage
+from photonic_router.flow_options import (
+    DebugArtifactOptions,
+    ElectricalOptions,
+    FlowOptions,
+    LayoutOptions,
+    LoadingOptions,
+    ObstacleOptions,
+    OpticalStageOptions,
+    OutputOptions,
+    PathLengthMatchingOptions,
+    PreplacedCrossingGridOptions,
+    StatsOptions,
+)
+from photonic_router.flow_plm import attach_and_report_path_length_matching
+from photonic_router.flow_reporting import (
     cleanup_debug_artifacts,
     report_and_open_debug_svgs,
     write_or_show_routed_layout,
 )
-from routing_flow_stats import (
+from photonic_router.flow_stats import (
     RoutingFlowStats,
     format_flow_summary_line,
     populate_route_stats,
     record_initial_route_stats,
 )
-from routing_flow_verification import verify_and_attach_photonic_reports
-from translation.crossing_modes import is_guided_mode
-from translation.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
-from translation.layout_from_schematic import layout_from_schematic
-from translation.route_order import default_net_order
-from translation.route_overview_svg import (
+from photonic_router.flow_verification import verify_and_attach_photonic_reports
+from photonic_router.gds.route_overview_svg import (
     layout_overview_shapes,
     realized_extra_um_by_net,
     write_routes_overview_svg,
 )
-from translation.route_rust import RipupRerouteConfig
+from photonic_router.records.layout_from_schematic import layout_from_schematic
+from photonic_router.records.route_order import default_net_order
+from photonic_router.routing.route_rust import RipupRerouteConfig
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 
 def _depth_by_node_from_schematic(schematic: Schematic) -> dict[str, int]:
@@ -94,7 +94,7 @@ def _depth_by_node_from_schematic(schematic: Schematic) -> dict[str, int]:
     netlist, before any contribution 2 splitting."""
     from types import SimpleNamespace
 
-    from translation.route_order import depth_by_node_from_jobs
+    from photonic_router.records.route_order import depth_by_node_from_jobs
 
     jobs = []
     for bundle in schematic.netlist.routes.values():
@@ -241,8 +241,8 @@ def _preplaced_crossing_grids_stage(
     nets and reasons, before anything is placed; those designs route with
     `--crossing-mode lidar-pure` or `lidar-guided`.
     """
-    from photonic_router.crossing_demand import build_crossing_demand
-    from translation.preplaced_crossing_grids import (
+    from photonic_router.crossings.crossing_demand import build_crossing_demand
+    from photonic_router.crossings.preplaced_crossing_grids import (
         derive_preplaced_crossing_layout,
         preplaced_crossing_grid_metrics,
     )
@@ -722,9 +722,9 @@ def run_routing_flow(
                       routing, split each interstage net into two crossing-free
                       stubs to/from the grid, and route with crossings disabled.
                       Mutually exclusive with enable_crossings. See
-                      translation/preplaced_crossing_grids.py.
+                      python/photonic_router/crossings/preplaced_crossing_grids.py.
         net_order: Net routing order within the topological layers (see
-                      translation/route_order.py). None selects the
+                      python/photonic_router/records/route_order.py). None selects the
                       configuration's default: "topological-span" with
                       preplaced_crossing_grids (planar stubs), "topological"
                       otherwise.
@@ -781,7 +781,7 @@ def run_routing_flow(
             obstacle-density, and ripup diagnostics for slow/failed attempts.
         config: Milestone 1's typed Python-side configuration tree
             (`photonic_router.config.RoutingConfig`), replacing every
-            `PHOTONIC_ROUTER_*` variable `translation/` and this module used
+            `PHOTONIC_ROUTER_*` variable the routing modules and this module used
             to read directly. When omitted, `RoutingConfig.from_environment()`
             is used, so every caller that passes nothing keeps today's
             behavior.

@@ -155,12 +155,12 @@ overlaps early.
 
 Relevant TUMPhotonicRouter files:
 
-- `python/photonic_router/topology_analysis.py`
-- `python/photonic_router/crossing_plan.py`
+- `python/photonic_router/crossings/topology_analysis.py`
+- `python/photonic_router/crossings/crossing_plan.py`
 - `src/crossings.rs`
 - `src/astar.rs`
 - `src/py_router.rs`
-- `translation/route_rust.py`
+- `python/photonic_router/routing/route_rust.py`
 - `benchmarks/benes.py`
 
 ## Electrical Routing: vs LiDAR 3.0
@@ -184,7 +184,7 @@ escape, not a full LiDAR 3.0-class electrical router.
 | Optical awareness | Uses extracted layout obstacles and heater/metal obstacle layers in one local flow | Paper-level framing targets waveguide-aware electrical routing around photonic constraints | LiDAR 3.0 is likely stronger |
 | Congestion/DRC | Grid obstacles, clearances, pad spacing, verification, debug SVGs | Public descriptions emphasize congestion/DRC-aware planning and guidance-driven detailed routing | LiDAR 3.0 is likely stronger |
 | Multi-net electrical strategy | Common-bus plus one-sided individual terminal routing | Large-scale metal-wire routing for active PICs | LiDAR 3.0 is likely stronger |
-| Implementation maturity | Prototype-quality but inspectable code in `translation/electrical/` | Published ISPD 2026 paper result | LiDAR 3.0 is more mature |
+| Implementation maturity | Prototype-quality but inspectable code in `python/photonic_router/electrical/` | Published ISPD 2026 paper result | LiDAR 3.0 is more mature |
 | Debuggability | Strong local SVG snapshots and verification objects | Paper-level comparison only here; source not inspected in this repo pass | Unclear without source |
 | Integration with this repo | Already callable from `routing_flow.py` and shares local benchmark/debug infrastructure | External LiDAR 3.0 flow | TUMPhotonicRouter is easier to evolve inside this codebase |
 
@@ -196,7 +196,7 @@ LiDAR 3.0's stated scope.
 
 | Capability | Status here |
 | --- | --- |
-| Schematic-to-layout orchestration | Implemented in `routing_flow.py` and translation modules |
+| Schematic-to-layout orchestration | Implemented in `routing_flow.py` and the `records/` modules |
 | Optical primitive routing | Rust A* and simple-route candidates |
 | Path-length matching | Graph analysis, output matching, analytic meander insertion |
 | Meander planning | Rust-backed candidate/sequence/split/final planners |
@@ -259,15 +259,15 @@ LiDAR 3.0 paper/source note:
 TUMPhotonicRouter source areas inspected:
 
 - `routing_flow.py`
-- `translation/route_rust.py`
+- `python/photonic_router/routing/route_rust.py`
 - `python/photonic_router/static_obstacle_builder.py`
-- `python/photonic_router/topology_analysis.py`
-- `python/photonic_router/crossing_plan.py`
+- `python/photonic_router/crossings/topology_analysis.py`
+- `python/photonic_router/crossings/crossing_plan.py`
 - `src/astar.rs`
 - `src/search/astar/simple_route.rs`
 - `src/obstacle_map.rs`
 - `src/static_obstacle_builder.rs`
 - `src/crossings.rs`
 - `src/py_router.rs`
-- `translation/route_rust_meanders.py`
-- `translation/electrical/`
+- `python/photonic_router/plm/route_rust_meanders.py`
+- `python/photonic_router/electrical/`

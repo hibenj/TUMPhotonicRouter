@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from translation.electrical.types import ElectricalRoutingConfig
+from photonic_router.electrical.types import ElectricalRoutingConfig
 
 
 def _load_benchmark_electrical_module():

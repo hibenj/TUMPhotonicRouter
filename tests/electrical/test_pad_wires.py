@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/bundle_detail_router.py, river_routing.py
+"""Tests for python/photonic_router/electrical/bundle_detail_router.py, river_routing.py
 and pad_wire_search.py.
 
 Stage 9 (``PadWireRouter``): routing every individual pad wire as an L, or a
@@ -11,14 +11,14 @@ independent of any escape bundle or obstacle map.
 from __future__ import annotations
 
 import pytest
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from photonic_router.electrical.pad_wire_search import _pad_stub_step_cost
+from photonic_router.electrical.river_routing import ChannelWire, assign_tracks
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from tests.fixtures.synthetic_layouts import (
     multi_heater_schematic as build_multi_heater_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.electrical.pad_wire_search import _pad_stub_step_cost
-from translation.electrical.river_routing import ChannelWire, assign_tracks
-from translation.layout_from_schematic import layout_from_schematic
 
 
 def test_detailed_bundle_router_nests_l_and_z_pad_wires_from_topology():

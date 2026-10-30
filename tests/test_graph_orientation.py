@@ -13,22 +13,21 @@ import types
 from types import SimpleNamespace
 
 import pytest
-from photonic_router.path_length_graph import (
+from photonic_router.benchmark_metadata import load_benchmark_metadata
+from photonic_router.plm.path_length_graph import (
     PathLengthGraphAnnotations,
     PortRef,
     RoutedEdgeKey,
     build_graph_from_schematic,
 )
-from photonic_router.port_roles import component_port_role, generic_port_roles, no_port_roles
-
-from benchmark_metadata import load_benchmark_metadata
-from translation.path_length_requirements import (
+from photonic_router.plm.path_length_requirements import (
     analyze_path_length_matching,
     build_requirement_delay_candidates,
     compute_output_matching_requirements,
     node_depths,
 )
-from translation.route_rust_types import RoutedNetRecord
+from photonic_router.port_roles import component_port_role, generic_port_roles, no_port_roles
+from photonic_router.records.route_rust_types import RoutedNetRecord
 
 COMPONENTS = {
     "gc_in": "grating_coupler_te",

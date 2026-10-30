@@ -1,4 +1,4 @@
-"""Tests for translation/route_overview_svg.py (route-overview plan, 2026-10-05)."""
+"""Tests for python/photonic_router/gds/route_overview_svg.py (route-overview plan, 2026-10-05)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-
-from translation.route_overview_svg import (
+from photonic_router.gds.route_overview_svg import (
     MEANDER_ROUTE_COLOR,
     ROUTE_COLOR,
     InstanceBox,

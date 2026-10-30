@@ -109,7 +109,7 @@ class KernelDiagnostics:
 
 @dataclass(frozen=True)
 class CrossingPlanConfig:
-    """Mirrors the env reads of `translation/route_rust_crossing_plan.py`.
+    """Mirrors the env reads of `python/photonic_router/crossings/route_rust_crossing_plan.py`.
     Every field is `None` when unset, in which case the site keeps its own
     literal default (named below)."""
 
@@ -129,9 +129,9 @@ class CrossingPlanConfig:
 
 @dataclass(frozen=True)
 class CrossingGridConfig:
-    """Mirrors the env reads of `translation/preplaced_crossing_grids.py`'s
+    """Mirrors the env reads of `python/photonic_router/crossings/preplaced_crossing_grids.py`'s
     `crossing_grid_geometry_from_config`/`_column_grid_stage` and
-    `translation/crossing_structures.py`'s `select_layer_structure`. Every
+    `python/photonic_router/crossings/crossing_structures.py`'s `select_layer_structure`. Every
     float/string field is `None` when unset, in which case the site's own
     (`CrossingGridGeometry` or literal) default applies."""
 
@@ -157,13 +157,13 @@ class CrossingGridConfig:
 
 @dataclass(frozen=True)
 class FanoutAccessConfig:
-    """Mirrors the fan-out-related env reads of `translation/route_rust.py`."""
+    """Mirrors the fan-out-related env reads of `python/photonic_router/routing/route_rust.py`."""
 
     #: `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES`: comma-separated instance
     #: names. Unset (`None`) means no override. Also SELF-SET: the
     #: pre-placed crossing-grid stage computes this set and
     #: `run_routing_flow` folds it into the routing-stage config (see
-    #: `translation/preplaced_crossing_grids.py`'s `_derive_crossing_tiles`).
+    #: `python/photonic_router/crossings/preplaced_crossing_grids.py`'s `_derive_crossing_tiles`).
     dense_fanout_instances: frozenset[str] | None = None
     #: `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS`: int >= 2, else raises.
     #: `None` = unset (site default 3).
@@ -203,7 +203,7 @@ class FanoutAccessConfig:
 
 @dataclass(frozen=True)
 class SearchTuning:
-    """Mirrors the search-tuning env reads of `translation/route_rust.py`."""
+    """Mirrors the search-tuning env reads of `python/photonic_router/routing/route_rust.py`."""
 
     #: `PHOTONIC_ROUTER_MIN_BEND_WEIGHT`: float, default 12.0.
     min_bend_weight: float = 12.0
@@ -221,7 +221,7 @@ class SearchTuning:
 @dataclass(frozen=True)
 class FlowDiagnostics:
     """Mirrors the Python-side diagnostic env reads of
-    `translation/route_rust.py` and `translation/route_rust_endpoint_correction.py`."""
+    `python/photonic_router/routing/route_rust.py` and `python/photonic_router/verify/route_rust_endpoint_correction.py`."""
 
     #: `PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT`: int >= 1, else raises.
     #: `None` = unset.
@@ -341,8 +341,8 @@ class RouterConfig:
 @dataclass(frozen=True)
 class RoutingConfig:
     """Milestone 1, Slice 2: the top-level Python-side configuration tree.
-    Every `PHOTONIC_ROUTER_*` variable read by `translation/` and
-    `routing_flow*.py` (outside `env_overlay.py` itself) is a typed field
+    Every `PHOTONIC_ROUTER_*` variable read by the Python
+    modules of this package (outside `env_overlay.py` itself) is a typed field
     somewhere under this tree, threaded explicitly from `run_routing_flow`
     down to `_RouteNetsRustSession` (whose `.router` field is `RouterConfig`,
     the Rust-boundary configuration Milestone 1 Slice 1 introduced)."""
@@ -354,7 +354,7 @@ class RoutingConfig:
     search: SearchTuning = field(default_factory=SearchTuning)
     diagnostics: FlowDiagnostics = field(default_factory=FlowDiagnostics)
     #: `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE`
-    #: (`routing_flow_verification.py`): `.strip().lower() in
+    #: (`python/photonic_router/flow_verification.py`): `.strip().lower() in
     #: {"1", "true", "yes", "on"}`, default False.
     write_gds_on_photonic_verification_failure: bool = False
 

@@ -9,10 +9,21 @@ bundle needs the same delay can take it on its inputs)."""
 from __future__ import annotations
 
 import pytest
-from photonic_router.path_length_graph import (
+from photonic_router.plm.path_length_graph import (
     MissingLengthRequirement,
     PortRef,
     RoutedEdgeKey,
+)
+from photonic_router.plm.path_length_requirements import (
+    build_requirement_delay_candidates,
+    compute_group_lifted_requirements,
+    compute_output_matching_requirements,
+    merge_missing_length_requirements,
+    minimum_four_bend_extra_length_um,
+)
+from photonic_router.routing.route_rust import (
+    RoutedNetRecord,
+    analyze_path_length_matching,
 )
 
 from tests.fixtures.path_length import (
@@ -25,17 +36,6 @@ from tests.fixtures.synthetic_layouts import (
     PATH_LENGTH_INTERNAL_DELAYS_UM,
     PATH_LENGTH_NODE_TYPES,
     path_length_schematic,
-)
-from translation.path_length_requirements import (
-    build_requirement_delay_candidates,
-    compute_group_lifted_requirements,
-    compute_output_matching_requirements,
-    merge_missing_length_requirements,
-    minimum_four_bend_extra_length_um,
-)
-from translation.route_rust import (
-    RoutedNetRecord,
-    analyze_path_length_matching,
 )
 
 

@@ -4,13 +4,12 @@ from types import SimpleNamespace
 from typing import cast
 
 from gdsfactory.typings import Port
-from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
-
-from translation.route_rust_records import (
+from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
+from photonic_router.records.route_rust_records import (
     RouteBookkeeping,
     routed_edge_lengths_from_records,
 )
-from translation.route_rust_types import RoutedNetRecord, RouteJob
+from photonic_router.records.route_rust_types import RoutedNetRecord, RouteJob
 
 
 def _job(net_id: int, net_name: str) -> RouteJob:

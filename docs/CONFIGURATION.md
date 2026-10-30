@@ -18,7 +18,7 @@ else does:
   choices: which benchmark, which stages run, which artifacts are written.
   It is the second argument of `photonic_router.flow.route_benchmark`. Its
   `electrical.electrical_config` field is a third dataclass,
-  `ElectricalRoutingConfig` (`translation/electrical/types.py`), 37 fields deep
+  `ElectricalRoutingConfig` (`python/photonic_router/electrical/types.py`), 37 fields deep
   and given its own section below rather than appearing inline.
 
 Precedence, lowest to highest (`python/photonic_router/config_loading.py`,
@@ -40,11 +40,11 @@ Totals: 78 `RoutingConfig` fields (78 with an overlay variable), 49 `FlowOptions
 
 ### `RoutingConfig` -- `RoutingConfig`
 
-Milestone 1, Slice 2: the top-level Python-side configuration tree. Every `PHOTONIC_ROUTER_*` variable read by `translation/` and `routing_flow*.py` (outside `env_overlay.py` itself) is a typed field somewhere under this tree, threaded explicitly from `run_routing_flow` down to `_RouteNetsRustSession` (whose `.router` field is `RouterConfig`, the Rust-boundary configuration Milestone 1 Slice 1 introduced).
+Milestone 1, Slice 2: the top-level Python-side configuration tree. Every `PHOTONIC_ROUTER_*` variable read by the Python modules of this package (outside `env_overlay.py` itself) is a typed field somewhere under this tree, threaded explicitly from `run_routing_flow` down to `_RouteNetsRustSession` (whose `.router` field is `RouterConfig`, the Rust-boundary configuration Milestone 1 Slice 1 introduced).
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
-| `write_gds_on_photonic_verification_failure` | `bool` | `False` | `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE` | `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE` (`routing_flow_verification.py`): `.strip().lower() in {"1", "true", "yes", "on"}`, default False. |
+| `write_gds_on_photonic_verification_failure` | `bool` | `False` | `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE` | `PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE` (`python/photonic_router/flow_verification.py`): `.strip().lower() in {"1", "true", "yes", "on"}`, default False. |
 
 ### `router` -- `RouterConfig`
 
@@ -126,7 +126,7 @@ Mirrors Rust `KernelDiagnostics`. Every field is off/unset by default, except `t
 
 ### `crossing_plan` -- `CrossingPlanConfig`
 
-Mirrors the env reads of `translation/route_rust_crossing_plan.py`. Every field is `None` when unset, in which case the site keeps its own literal default (named below).
+Mirrors the env reads of `python/photonic_router/crossings/route_rust_crossing_plan.py`. Every field is `None` when unset, in which case the site keeps its own literal default (named below).
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
@@ -136,7 +136,7 @@ Mirrors the env reads of `translation/route_rust_crossing_plan.py`. Every field 
 
 ### `crossing_grid` -- `CrossingGridConfig`
 
-Mirrors the env reads of `translation/preplaced_crossing_grids.py`'s `crossing_grid_geometry_from_config`/`_column_grid_stage` and `translation/crossing_structures.py`'s `select_layer_structure`. Every float/string field is `None` when unset, in which case the site's own (`CrossingGridGeometry` or literal) default applies.
+Mirrors the env reads of `python/photonic_router/crossings/preplaced_crossing_grids.py`'s `crossing_grid_geometry_from_config`/`_column_grid_stage` and `python/photonic_router/crossings/crossing_structures.py`'s `select_layer_structure`. Every float/string field is `None` when unset, in which case the site's own (`CrossingGridGeometry` or literal) default applies.
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
@@ -151,11 +151,11 @@ Mirrors the env reads of `translation/preplaced_crossing_grids.py`'s `crossing_g
 
 ### `fanout` -- `FanoutAccessConfig`
 
-Mirrors the fan-out-related env reads of `translation/route_rust.py`.
+Mirrors the fan-out-related env reads of `python/photonic_router/routing/route_rust.py`.
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
-| `dense_fanout_instances` | `frozenset[str] \| None` | `None` | `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES` | `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES`: comma-separated instance names. Unset (`None`) means no override. Also SELF-SET: the pre-placed crossing-grid stage computes this set and `run_routing_flow` folds it into the routing-stage config (see `translation/preplaced_crossing_grids.py`'s `_derive_crossing_tiles`). |
+| `dense_fanout_instances` | `frozenset[str] \| None` | `None` | `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES` | `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES`: comma-separated instance names. Unset (`None`) means no override. Also SELF-SET: the pre-placed crossing-grid stage computes this set and `run_routing_flow` folds it into the routing-stage config (see `python/photonic_router/crossings/preplaced_crossing_grids.py`'s `_derive_crossing_tiles`). |
 | `dense_fanout_min_ports` | `int \| None` | `None` | `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS` | `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS`: int >= 2, else raises. `None` = unset (site default 3). |
 | `fanout_access_mode` | `str \| None` | `None` | `PHOTONIC_ROUTER_FANOUT_ACCESS_MODE` | `PHOTONIC_ROUTER_FANOUT_ACCESS_MODE`: today this OVERRIDES the constructor argument (`os.environ.get(NAME, default_or_ctor_arg)`, then alias-normalized). `None` = unset -> the constructor argument/default is used. |
 | `fanout_lane_spacing_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS` | `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS`: non-negative int, else raises. `None` = unset (site defaults: 11 at `_build_static_fanout_anchors`, 3 at the three other sites). |
@@ -169,7 +169,7 @@ Mirrors the fan-out-related env reads of `translation/route_rust.py`.
 
 ### `search` -- `SearchTuning`
 
-Mirrors the search-tuning env reads of `translation/route_rust.py`.
+Mirrors the search-tuning env reads of `python/photonic_router/routing/route_rust.py`.
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
@@ -179,7 +179,7 @@ Mirrors the search-tuning env reads of `translation/route_rust.py`.
 
 ### `diagnostics` -- `FlowDiagnostics`
 
-Mirrors the Python-side diagnostic env reads of `translation/route_rust.py` and `translation/route_rust_endpoint_correction.py`.
+Mirrors the Python-side diagnostic env reads of `python/photonic_router/routing/route_rust.py` and `python/photonic_router/verify/route_rust_endpoint_correction.py`.
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
@@ -327,7 +327,7 @@ The optional legacy stats collector filled in place by the stages.
 
 ## `ElectricalRoutingConfig` -- the heater-metal routing stage's parameters
 
-Reached through `FlowOptions.electrical.electrical_config` (`translation/electrical/types.py`), and from there passed to every stage of the electrical pipeline by `route_electrical_heaters` (`docs/ARCHITECTURE.md`, "the heater-metal pipeline as stages"). `cli.py::_flow_options` builds one `ElectricalRoutingConfig(...)` from seven `--electrical-*` flags; every other field is set programmatically only (no flag, no `PHOTONIC_ROUTER_*` overlay variable, since `ElectricalRoutingConfig` is not part of the `RoutingConfig` tree `ENV_OVERLAY` covers).
+Reached through `FlowOptions.electrical.electrical_config` (`python/photonic_router/electrical/types.py`), and from there passed to every stage of the electrical pipeline by `route_electrical_heaters` (`docs/ARCHITECTURE.md`, "the heater-metal pipeline as stages"). `cli.py::_flow_options` builds one `ElectricalRoutingConfig(...)` from seven `--electrical-*` flags; every other field is set programmatically only (no flag, no `PHOTONIC_ROUTER_*` overlay variable, since `ElectricalRoutingConfig` is not part of the `RoutingConfig` tree `ENV_OVERLAY` covers).
 
 ### `ElectricalRoutingConfig` -- `ElectricalRoutingConfig`
 

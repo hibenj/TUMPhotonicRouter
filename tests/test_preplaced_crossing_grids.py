@@ -16,10 +16,9 @@ from dataclasses import replace
 import klayout.db as kdb
 import pytest
 from gdsfactory.gpdk import get_generic_pdk
-from photonic_router.crossing_plan import CrossingStagePlan
-
-from translation import preplaced_crossing_grids as pcg
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.crossings import preplaced_crossing_grids as pcg
+from photonic_router.crossings.crossing_plan import CrossingStagePlan
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 get_generic_pdk().activate()
 
@@ -128,15 +127,14 @@ def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge
     import importlib
     import math
 
-    from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-
-    from translation.layout_from_schematic import layout_from_schematic
-    from translation.preplaced_crossing_grids import (
+    from photonic_router.crossings.preplaced_crossing_grids import (
         CROSSING_TILE_PREFIX,
         _port_cells_stay_inside_footprint,
         build_stage_schedule_for_benchmark,
         derive_preplaced_crossing_layout,
     )
+    from photonic_router.records.layout_from_schematic import layout_from_schematic
+    from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
     probe = {
         "fanout_access_mode": "static-stubs",
@@ -174,7 +172,7 @@ def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge
 
 def _lane_port_band(schematic, layout, stage_plan) -> tuple[float, float]:
     """The free band the tiles builder measures: max source port x to min target port x."""
-    from translation.route_gds import get_port_from_instance
+    from photonic_router.gds.route_gds import get_port_from_instance
 
     source_xs, target_xs = [], []
     for edge in stage_plan.initial_edge_order:

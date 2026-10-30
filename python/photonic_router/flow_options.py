@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-from routing_flow_config import (
+from photonic_router.electrical import ElectricalRoutingConfig
+from photonic_router.flow_config import (
     SCRIPT_ALLOW_45_DEGREE_TURNS,
     SCRIPT_BENCHMARK,
     SCRIPT_BEND_RADIUS_UM,
@@ -36,9 +36,9 @@ from routing_flow_config import (
     SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
     DebugSvgSelector,
 )
-from routing_flow_stats import RoutingFlowStats
-from translation.electrical import ElectricalRoutingConfig
-from translation.route_rust import RipupRerouteConfig
+from photonic_router.flow_stats import RoutingFlowStats
+from photonic_router.routing.route_rust import RipupRerouteConfig
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 
 @dataclass(frozen=True)

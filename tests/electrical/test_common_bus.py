@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/common_bus_router.py, column_trunks.py and
+"""Tests for python/photonic_router/electrical/common_bus_router.py, column_trunks.py and
 pad_side_reconciliation.py.
 
 Stages 3 (``CommonBusRouter``), 4 (``CommonBusTrimmer``) and 7
@@ -11,6 +11,17 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from photonic_router.electrical.bus_search import terminal_open_cells as _terminal_open_cells
+from photonic_router.electrical.common_bus_router import route_common_bus
+from photonic_router.electrical.net_geometry import _common_bus_tagged_rects
+from photonic_router.electrical.types import (
+    CommonBusEscapeResult,
+    CommonBusRoutingResult,
+    TerminalBusRoute,
+)
+from photonic_router.electrical.verification import verify_electrical_routing
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from tests.electrical.support import (
     _column_trunk_vertical_cells,
@@ -27,17 +38,6 @@ from tests.fixtures.synthetic_layouts import (
 from tests.fixtures.synthetic_layouts import (
     single_heater_schematic as build_single_heater_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.electrical.bus_search import terminal_open_cells as _terminal_open_cells
-from translation.electrical.common_bus_router import route_common_bus
-from translation.electrical.net_geometry import _common_bus_tagged_rects
-from translation.electrical.types import (
-    CommonBusEscapeResult,
-    CommonBusRoutingResult,
-    TerminalBusRoute,
-)
-from translation.electrical.verification import verify_electrical_routing
-from translation.layout_from_schematic import layout_from_schematic
 
 
 def test_common_bus_router_selects_exactly_one_terminal_per_heater(tmp_path):
@@ -368,7 +368,7 @@ def test_swap_skips_a_heater_whose_branch_carries_others(electrical_benchmark_re
 
     from dataclasses import replace
 
-    from translation.electrical.pad_side_reconciliation import (
+    from photonic_router.electrical.pad_side_reconciliation import (
         _apply_pad_side_consistency_swap,
     )
 
@@ -453,7 +453,7 @@ def test_trim_keeps_the_stripe_under_the_bus_pad(electrical_benchmark_result):
     assert escape.success
     # the escape's realized band ends flush with the stripe's end: no step
     # in the outer corner (bus pad on the right by default)
-    from translation.electrical.metal_realization import common_bus_escape_rects
+    from photonic_router.electrical.metal_realization import common_bus_escape_rects
 
     config = ElectricalRoutingConfig()
     escape_rects = common_bus_escape_rects(result.common_bus, escape, result.obstacle_map, config)
@@ -468,8 +468,8 @@ def test_trim_reaches_the_escape_band_on_the_left_when_the_bus_pad_is_on_the_lef
     from the stripe's start (merge review 2026-10-05: the left branch had no test).
     """
 
-    from translation.electrical.metal_realization import common_bus_escape_rects
-    from translation.electrical.pad_slots import common_bus_stripe_reach_x_um
+    from photonic_router.electrical.metal_realization import common_bus_escape_rects
+    from photonic_router.electrical.pad_slots import common_bus_stripe_reach_x_um
 
     schematic = build_single_heater_schematic()
     component = layout_from_schematic(schematic)

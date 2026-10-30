@@ -55,7 +55,7 @@ _E2E_NODE_IDS = {
 # loads a benchmark, so these are integration, not end-to-end; the one test
 # that spawns KLayout stays in `_E2E_NODE_IDS`. Milestone 4 Slice 5 split
 # that one file into `tests/electrical/`, one module per
-# `translation/electrical/stages.py` stage; each module still holds pure
+# `python/photonic_router/electrical/stages.py` stage; each module still holds pure
 # unit tests alongside these, so the classification stays per test (by node
 # id, now under its new path). Two node ids from the pre-split list matched
 # no test at HEAD (a stale rename each: the old
@@ -164,7 +164,7 @@ def settings_for_test():
 
 @pytest.fixture
 def pipeline(monkeypatch: pytest.MonkeyPatch) -> Pipeline:
-    """The nine `translation.routing` stages over the three-net synthetic
+    """The nine `photonic_router.routing` stages over the three-net synthetic
     scenario, each run at most once; see `tests.fixtures.sessions.Pipeline`."""
     return pipeline_for_test(monkeypatch)
 

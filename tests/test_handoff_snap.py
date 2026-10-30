@@ -13,9 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 from photonic_router import _rust
+from photonic_router.routing.handoff import _snap_nearly_collinear_states
 from photonic_router.static_obstacle_builder import GridSpec
-
-from translation.routing.handoff import _snap_nearly_collinear_states
 
 pytestmark = pytest.mark.integration
 

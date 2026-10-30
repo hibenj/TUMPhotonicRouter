@@ -14,9 +14,8 @@ import itertools
 import sys
 
 import gdsfactory as gf
-from photonic_router.crossing_demand import build_crossing_demand
-
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.crossings.crossing_demand import build_crossing_demand
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 gf.gpdk.PDK.activate()
 EPS = 1e-6

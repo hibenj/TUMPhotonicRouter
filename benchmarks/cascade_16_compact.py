@@ -27,7 +27,7 @@ def build_schematic() -> Schematic:
 
 
 if __name__ == "__main__":
-    from translation.layout_from_schematic import layout_from_schematic
+    from photonic_router.records.layout_from_schematic import layout_from_schematic
 
     schematic = build_schematic()
     print("Schematic instances:", list(schematic.netlist.instances.keys()))

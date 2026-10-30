@@ -8,11 +8,26 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
-from photonic_router.path_length_graph import (
+from photonic_router.plm.path_length_graph import (
     DelayInsertionCandidate,
     MissingLengthRequirement,
     PortRef,
     RoutedEdgeKey,
+)
+from photonic_router.plm.route_rust_meanders import (
+    _axis_aligned_centerline_run_lengths_um,
+    _build_planner_context,
+    _CandidateWorkItem,
+    _ContextProfile,
+    _meander_search_config,
+    _MeanderPlannerContext,
+    _normalize_minimum_insertable_request,
+)
+from photonic_router.routing import api as routing_api
+from photonic_router.routing.route_rust import (
+    MeanderInsertionConfig,
+    RoutedNetRecord,
+    analyze_meander_insertion_for_requirements,
 )
 from photonic_router.static_obstacle_builder import _load_rust_backend
 
@@ -24,21 +39,6 @@ from tests.fixtures.path_length import (
     real_route_obj,
     search_config,
 )
-from translation.route_rust import (
-    MeanderInsertionConfig,
-    RoutedNetRecord,
-    analyze_meander_insertion_for_requirements,
-)
-from translation.route_rust_meanders import (
-    _axis_aligned_centerline_run_lengths_um,
-    _build_planner_context,
-    _CandidateWorkItem,
-    _ContextProfile,
-    _meander_search_config,
-    _MeanderPlannerContext,
-    _normalize_minimum_insertable_request,
-)
-from translation.routing import api as routing_api
 
 
 def test_planner_context_uses_static_handle_when_registration_fast_path_is_unavailable():

@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/route_electrical.py and stages.py.
+"""Tests for python/photonic_router/electrical/route_electrical.py and stages.py.
 
 The twelve-stage orchestration itself: the no-op guard when a layout has no
 heater terminals, and that every stage implementation still matches its
@@ -8,27 +8,27 @@ heater terminals, and that every stage implementation still matches its
 from __future__ import annotations
 
 import pytest
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters, stages
+from photonic_router.electrical.bundle_detail_router import route_detailed_bundles
+from photonic_router.electrical.common_bus_router import (
+    route_common_bus,
+    trim_common_bus_to_connections,
+)
+from photonic_router.electrical.debug import write_debug_artifacts
+from photonic_router.electrical.escape_router import route_common_bus_escape
+from photonic_router.electrical.individual_topology import compute_individual_escape_topology
+from photonic_router.electrical.metal_realization import realize_electrical_metal
+from photonic_router.electrical.obstacle_extraction import build_electrical_obstacle_map
+from photonic_router.electrical.pad_side_reconciliation import reconcile_pad_sides
+from photonic_router.electrical.pad_slots import plan_pad_slots
+from photonic_router.electrical.terminal_extraction import extract_heater_terminal_pairs
+from photonic_router.electrical.verification import verify_electrical_routing
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from tests.electrical.support import _polygon_bboxes_by_layer
 from tests.fixtures.synthetic_layouts import (
     path_length_schematic as build_heaterless_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters, stages
-from translation.electrical.bundle_detail_router import route_detailed_bundles
-from translation.electrical.common_bus_router import (
-    route_common_bus,
-    trim_common_bus_to_connections,
-)
-from translation.electrical.debug import write_debug_artifacts
-from translation.electrical.escape_router import route_common_bus_escape
-from translation.electrical.individual_topology import compute_individual_escape_topology
-from translation.electrical.metal_realization import realize_electrical_metal
-from translation.electrical.obstacle_extraction import build_electrical_obstacle_map
-from translation.electrical.pad_side_reconciliation import reconcile_pad_sides
-from translation.electrical.pad_slots import plan_pad_slots
-from translation.electrical.terminal_extraction import extract_heater_terminal_pairs
-from translation.electrical.verification import verify_electrical_routing
-from translation.layout_from_schematic import layout_from_schematic
 
 
 def test_electrical_routing_is_noop_without_heater_terminals(tmp_path):

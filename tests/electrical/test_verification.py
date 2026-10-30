@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/verification.py.
+"""Tests for python/photonic_router/electrical/verification.py.
 
 Stage 11 (``ElectricalVerifier``): verifying the realized electrical
 geometry's contracts -- terminal contacts, cross-net and raw-obstacle
@@ -7,9 +7,8 @@ overlap, and common-bus connectivity.
 
 from __future__ import annotations
 
-from tests.electrical.support import _terminal, _verification_obstacle_map
-from translation.electrical import ElectricalRoutingConfig
-from translation.electrical.types import (
+from photonic_router.electrical import ElectricalRoutingConfig
+from photonic_router.electrical.types import (
     BusStripe,
     CommonBusEscapeResult,
     CommonBusRoutingResult,
@@ -21,7 +20,9 @@ from translation.electrical.types import (
     PadSlot,
     TerminalBusRoute,
 )
-from translation.electrical.verification import verify_electrical_routing
+from photonic_router.electrical.verification import verify_electrical_routing
+
+from tests.electrical.support import _terminal, _verification_obstacle_map
 
 
 def test_verifier_models_terminal_landing_contact():
@@ -316,7 +317,7 @@ def test_common_bus_verification_reports_a_branch_that_reaches_nothing():
     nothing; the verifier must say so, transitively accepting branches that
     reach the stripe through other branches."""
 
-    from translation.electrical.verification import _verify_common_bus_connectivity
+    from photonic_router.electrical.verification import _verify_common_bus_connectivity
 
     def terminal(identifier: str, heater_id: str, x: float) -> ElectricalTerminal:
         return ElectricalTerminal(
@@ -370,8 +371,8 @@ def test_cross_net_spacing_accepts_metal_exactly_at_the_required_clearance():
     column pitch, 2026-10-05); a gap one nanometre too small is an issue.
     """
 
-    from translation.electrical.net_geometry import NetGeometry
-    from translation.electrical.verification import _verify_cross_net_spacing
+    from photonic_router.electrical.net_geometry import NetGeometry
+    from photonic_router.electrical.verification import _verify_cross_net_spacing
 
     config = ElectricalRoutingConfig(obstacle_clearance_um=10.0)
 

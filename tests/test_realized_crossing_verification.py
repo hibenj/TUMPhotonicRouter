@@ -4,16 +4,17 @@ from types import SimpleNamespace
 
 import pytest
 from gdsfactory.component import Component
-from photonic_router.path_length_graph import PortRef
-
-from translation.crossing_verification_report import build_crossing_verification_report
-from translation.route_rust import (
+from photonic_router.crossings.crossing_verification_report import (
+    build_crossing_verification_report,
+)
+from photonic_router.plm.path_length_graph import PortRef
+from photonic_router.records.route_rust_types import RoutedNetRecord
+from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
+from photonic_router.routing.route_rust import (
     _augment_insertion_loss_report_from_realized_intersections,
     _place_realized_crossing_components,
     _verify_realized_route_intersections,
 )
-from translation.route_rust_types import RoutedNetRecord
-from translation.routing.crossing_plan_info import CrossingPlanInfo
 
 
 def _record(
@@ -827,7 +828,7 @@ def test_unified_verifier_calls_an_intersection_without_a_rust_verdict_missing_e
 
 
 def test_unified_native_events_path_reports_the_verdict_and_unmatched_verdicts():
-    from translation.route_rust_crossing_verification import (
+    from photonic_router.crossings.route_rust_crossing_verification import (
         _populate_realized_intersections_from_native_crossing_events,
     )
 

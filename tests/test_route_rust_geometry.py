@@ -3,18 +3,18 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, Protocol, cast
 
+from photonic_router.flow import load_benchmark, run_routing_flow
+from photonic_router.records.layout_from_schematic import layout_from_schematic
+from photonic_router.records.route_rust_geometry import _physical_point_to_grid_cell
+from photonic_router.records.route_rust_records import _grid_cell_center_um
+from photonic_router.routing.route_rust import route_match_and_realize
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
-from routing_flow import load_benchmark, run_routing_flow
 from tests.fixtures.synthetic_layouts import (
     TIGHT_S_BEND_BEND_RADIUS_UM,
     TIGHT_S_BEND_OFFSET_UM,
     two_instance_s_bend_schematic,
 )
-from translation.layout_from_schematic import layout_from_schematic
-from translation.route_rust import route_match_and_realize
-from translation.route_rust_geometry import _physical_point_to_grid_cell
-from translation.route_rust_records import _grid_cell_center_um
 
 
 class _RouteWithCompressedWaypoints(Protocol):

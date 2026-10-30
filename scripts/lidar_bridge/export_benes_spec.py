@@ -19,8 +19,7 @@ import sys
 from pathlib import Path
 
 import gdsfactory as gf
-
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 MARGIN_UM = 100.0  # die margin around the layout bounding box
 PLACEMENT_HALO = [10, 10, 10, 10]  # LiDAR's per-instance keep-out, as in its own benchmarks

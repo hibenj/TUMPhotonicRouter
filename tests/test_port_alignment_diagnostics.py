@@ -7,17 +7,16 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from photonic_router.path_length_graph import PortRef
-from photonic_router.static_obstacle_builder import _load_rust_backend
-
-from translation.route_rust import (
-    _apply_crossing_aware_endpoint_correction_to_record,
-)
-from translation.route_rust_records import (
+from photonic_router.plm.path_length_graph import PortRef
+from photonic_router.records.route_rust_records import (
     apply_port_endpoint_corrections,
     build_port_alignment_diagnostics,
 )
-from translation.route_rust_types import RoutedNetRecord
+from photonic_router.records.route_rust_types import RoutedNetRecord
+from photonic_router.routing.route_rust import (
+    _apply_crossing_aware_endpoint_correction_to_record,
+)
+from photonic_router.static_obstacle_builder import _load_rust_backend
 
 
 def _centerline_length_um(centerline: tuple[tuple[float, float], ...]) -> float:
@@ -167,11 +166,10 @@ def test_heater_s_mod_pass0_characterizes_current_port_alignment():
     if _load_rust_backend() is None:
         pytest.skip("Rust backend unavailable for heater_s_mod alignment diagnostics.")
 
+    from photonic_router.flow import load_benchmark
+    from photonic_router.records.layout_from_schematic import layout_from_schematic
+    from photonic_router.routing.route_rust import route_nets_rust
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-
-    from routing_flow import load_benchmark
-    from translation.layout_from_schematic import layout_from_schematic
-    from translation.route_rust import route_nets_rust
 
     schematic = load_benchmark("heater_s_mod")
     layout = layout_from_schematic(schematic)
@@ -226,13 +224,13 @@ def test_heater_s_mod_route_match_uses_corrected_records_for_realization():
     if _load_rust_backend() is None:
         pytest.skip("Rust backend unavailable for heater_s_mod endpoint correction.")
 
+    from photonic_router.benchmark_metadata import resolve_internal_delays_for_instances
+    from photonic_router.flow import load_benchmark
+    from photonic_router.records.layout_from_schematic import layout_from_schematic
+    from photonic_router.routing.route_rust import route_match_and_realize
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
-    from benchmark_metadata import resolve_internal_delays_for_instances
     from benchmarks.heater_s_mod import INTERNAL_DELAYS_UM, NODE_TYPES
-    from routing_flow import load_benchmark
-    from translation.layout_from_schematic import layout_from_schematic
-    from translation.route_rust import route_match_and_realize
 
     schematic = load_benchmark("heater_s_mod")
     layout = layout_from_schematic(schematic)

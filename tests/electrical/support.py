@@ -12,8 +12,7 @@ from types import SimpleNamespace
 
 import klayout.db as kdb
 from gdsfactory.component import Component
-
-from translation.electrical.types import (
+from photonic_router.electrical.types import (
     BusStripe,
     ElectricalObstacleMap,
     ElectricalPortRef,

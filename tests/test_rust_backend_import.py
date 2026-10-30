@@ -117,14 +117,13 @@ def test_unified_legality_verdicts_match_the_events_and_the_python_verifier():
     classification is that verdict, not a re-decision."""
     from types import SimpleNamespace
 
-    from photonic_router.path_length_graph import PortRef
-
-    from translation.route_rust_crossing_verification import (
+    from photonic_router.crossings.route_rust_crossing_verification import (
         _populate_realized_intersections_from_native_crossing_events,
         _verify_realized_route_intersections,
     )
-    from translation.route_rust_types import RoutedNetRecord
-    from translation.routing.crossing_plan_info import CrossingPlanInfo
+    from photonic_router.plm.path_length_graph import PortRef
+    from photonic_router.records.route_rust_types import RoutedNetRecord
+    from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 
     backend, router = _collision_crossing_router(crossing_half_size_cells=1, unified_legality=True)
     assert router.crossing_verdicts() == []

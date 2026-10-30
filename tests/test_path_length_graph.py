@@ -6,10 +6,17 @@ from __future__ import annotations
 from typing import cast
 
 import pytest
-from photonic_router.path_length_graph import (
+from photonic_router.plm.path_length_diagnostics import (
+    analysis_to_info_dict,
+)
+from photonic_router.plm.path_length_graph import (
     PortRef,
     RoutedEdgeKey,
     build_graph_from_schematic,
+)
+from photonic_router.routing.route_rust import (
+    RoutedNetRecord,
+    analyze_path_length_matching,
 )
 
 from tests.fixtures.path_length import (
@@ -20,13 +27,6 @@ from tests.fixtures.synthetic_layouts import (
     PATH_LENGTH_INTERNAL_DELAYS_UM,
     PATH_LENGTH_NODE_TYPES,
     path_length_schematic,
-)
-from translation.path_length_diagnostics import (
-    analysis_to_info_dict,
-)
-from translation.route_rust import (
-    RoutedNetRecord,
-    analyze_path_length_matching,
 )
 
 

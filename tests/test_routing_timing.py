@@ -1,4 +1,4 @@
-"""Unit tests for `translation/routing/timing.py`.
+"""Unit tests for `python/photonic_router/routing/timing.py`.
 
 The two functions are the routing session's only timers: both feed the
 per-phase pipeline breakdown the flow reports (`route_nets_timings_s`). Each is
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from translation.routing.timing import pipeline_timer_start, record_pipeline_timing
+from photonic_router.routing.timing import pipeline_timer_start, record_pipeline_timing
 
 
 def _pipeline_state() -> SimpleNamespace:

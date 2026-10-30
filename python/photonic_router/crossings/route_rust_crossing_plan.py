@@ -1,0 +1,531 @@
+"""Crossing plan construction and insertion-loss reporting for the Rust-backed photonic router."""
+
+from __future__ import annotations
+
+import json
+import math
+from collections import Counter
+from collections.abc import Iterable, Mapping
+from collections.abc import Iterable as IterableABC
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
+
+from gdsfactory.component import Component
+from gdsfactory.schematic import Schematic
+
+from photonic_router.config import CrossingPlanConfig
+from photonic_router.crossings.crossing_demand import CrossingDemand, build_crossing_demand
+from photonic_router.crossings.crossing_modes import is_guided_mode
+from photonic_router.crossings.route_rust_crossing_components import (
+    _crossing_component_bbox_size_um,
+)
+from photonic_router.records.route_rust_records import route_edge_key
+from photonic_router.records.route_rust_types import RoutedNetRecord, RouteJob
+
+if TYPE_CHECKING:
+    from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
+
+
+def _ensure_dir(path: Path) -> None:
+    from photonic_router.routing.route_rust import _ensure_dir as route_rust_ensure_dir
+
+    route_rust_ensure_dir(path)
+
+
+DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM = 200.0
+COLLISION_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_LOSS_UM"
+# Contribution 1 (lidar-guided): search price of a crossing with a PLANNED
+# partner (topology plan). 0 = planned crossings are free in the search;
+# unplanned ones keep `COLLISION_CROSSING_SEARCH_LOSS`.
+DEFAULT_PLANNED_CROSSING_SEARCH_LOSS_UM = 0.0
+PLANNED_CROSSING_SEARCH_LOSS_ENV = "PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM"
+# S2: how many crossings of one planned pair are discounted: 0 = unlimited
+# (default, owner decision 2026-09-04: the budget changed no route on any
+# benchmark and cost +7.5 % search on benes_32x32) or 1 = exactly one per
+# pair (the plan's semantics; a second one is a braid and pays the full price).
+PLANNED_CROSSING_BUDGET_ENV = "PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET"
+DEFAULT_SINGLE_DISCOUNTED_CROSSING_PER_PAIR = False
+
+
+def _routed_records_by_net_id(
+    records: Iterable[RoutedNetRecord],
+) -> dict[int, RoutedNetRecord]:
+    records_by_id: dict[int, RoutedNetRecord] = {}
+    for record in records:
+        if record.net_id is None:
+            continue
+        try:
+            records_by_id[int(record.net_id)] = record
+        except (TypeError, ValueError):
+            continue
+    return records_by_id
+
+
+def _resolve_crossing_half_size_cells(
+    *,
+    requested_half_size_cells: int,
+    enable_crossings: bool,
+    grid_size_um: float,
+    clearance_um: float,
+) -> tuple[int, dict[str, object]]:
+    info: dict[str, object] = {
+        "requested_half_size_cells": int(requested_half_size_cells),
+        "derived_from_component": False,
+    }
+    if requested_half_size_cells > 0 or not enable_crossings:
+        info["half_size_cells"] = int(requested_half_size_cells)
+        return int(requested_half_size_cells), info
+
+    component_size = _crossing_component_bbox_size_um()
+    if component_size is None:
+        info["reason"] = "crossing_component_unavailable"
+        info["half_size_cells"] = 0
+        return 0, info
+
+    component_name, width_um, height_um = component_size
+    half_extent_um = max(width_um, height_um) / 2.0 + max(0.0, float(clearance_um))
+    half_size_cells = math.ceil(half_extent_um / float(grid_size_um))
+    info.update(
+        {
+            "component_name": component_name,
+            "component_bbox_um": [width_um, height_um],
+            "clearance_um": float(clearance_um),
+            "grid_size_um": float(grid_size_um),
+            "half_size_cells": half_size_cells,
+            "derived_from_component": True,
+        }
+    )
+    return half_size_cells, info
+
+
+def _port_center_um(port: object) -> tuple[float, float] | None:
+    center = getattr(port, "center", None)
+    if center is None:
+        center = getattr(port, "dcenter", None)
+    if center is None:
+        return None
+    try:
+        center_seq = cast(Iterable[Any], center)
+        x_um, y_um = tuple(center_seq)[:2]
+        return (float(x_um), float(y_um))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _edge_key_to_info(edge_key: object) -> dict[str, object]:
+    source = getattr(edge_key, "source", None)
+    target = getattr(edge_key, "target", None)
+    return {
+        "net_name": str(getattr(edge_key, "net_name", "")),
+        "source_instance": str(getattr(source, "instance", "")),
+        "source_port": str(getattr(source, "port", "")),
+        "target_instance": str(getattr(target, "instance", "")),
+        "target_port": str(getattr(target, "port", "")),
+    }
+
+
+def _effective_crossing_search_loss(
+    *,
+    enable_crossings: bool,
+    crossing_loss: float,
+    config: CrossingPlanConfig | None = None,
+) -> float:
+    """Return the search-only crossing penalty passed to Rust A*.
+
+    ``crossing_loss`` is the physical insertion-loss term reported to users.
+    The crossings are discovered by collision during the search, so they also
+    need a non-physical search cost, so that A* tries a clean same-net route
+    before probing route-route collisions. The price does not depend on the
+    crossing mode -- both remaining modes discover crossings by collision --
+    so the mode is not a parameter (the unused keyword was dropped in
+    Milestone 8 Slice C of
+    `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`).
+    """
+    config = config if config is not None else CrossingPlanConfig()
+    physical_loss = float(crossing_loss)
+    if not enable_crossings:
+        return physical_loss
+    if physical_loss > 0.0:
+        return physical_loss
+    if config.collision_crossing_search_loss_um is not None:
+        return config.collision_crossing_search_loss_um
+    return DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM
+
+
+def _effective_planned_crossing_search_loss(config: CrossingPlanConfig | None = None) -> float:
+    """Search price of a planned crossing in lidar-guided mode (config override)."""
+
+    config = config if config is not None else CrossingPlanConfig()
+    if config.planned_crossing_search_loss_um is None:
+        return DEFAULT_PLANNED_CROSSING_SEARCH_LOSS_UM
+    return config.planned_crossing_search_loss_um
+
+
+def _effective_single_discounted_crossing_per_pair(
+    config: CrossingPlanConfig | None = None,
+) -> bool:
+    """S2 switch: True = one discounted crossing per planned pair (default: off)."""
+
+    config = config if config is not None else CrossingPlanConfig()
+    if config.planned_crossing_budget is None:
+        return DEFAULT_SINGLE_DISCOUNTED_CROSSING_PER_PAIR
+    return config.planned_crossing_budget
+
+
+def _build_crossing_plan_info(
+    *,
+    rust_backend: object,
+    router: object,
+    schematic: Schematic,
+    unrouted_layout: Component,
+    route_jobs: list[RouteJob],
+    enable_crossings: bool,
+    crossing_mode: str,
+    crossing_loss: float,
+    crossing_search_loss: float,
+    crossing_half_size_cells: int,
+    guidance_net_names: frozenset[str] | None = None,
+    config: CrossingPlanConfig | None = None,
+) -> dict[str, object]:
+    """Build the crossing plan info and hand contribution 1's guidance to the router.
+
+    The plan is the `CrossingDemand` of the placed layout (bands between the
+    component columns, `photonic_router.crossings.crossing_demand`); its events are
+    the invariant crossing pairs in the bubble-sort order of each band.
+    ``guidance_net_names``: when given, only plan events between two of
+    these nets are loaded (counts, guidance pairs); the others are dropped
+    silently. Contribution 2's router fallback uses it so that the guided
+    search only sees the layers it routes, not the tiled ones."""
+    config = config if config is not None else CrossingPlanConfig()
+    info: dict[str, object] = {
+        "enabled": bool(enable_crossings),
+        "event_count": 0,
+        "missing_event_count": 0,
+        "missing_events": [],
+        "events": [],
+        "expected_crossings_by_net_id": {},
+        "expected_crossings_by_net_name": {},
+        "crossing_loss": float(crossing_loss),
+        "crossing_search_loss": float(crossing_search_loss),
+        "crossing_half_size_cells": int(crossing_half_size_cells),
+    }
+    if not enable_crossings:
+        return info
+
+    required_backend = ("CrossingConfig",)
+    missing_backend = [name for name in required_backend if not hasattr(rust_backend, name)]
+    required_router = ("set_crossing_config",)
+    missing_router = [name for name in required_router if not hasattr(router, name)]
+    if missing_backend or missing_router:
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose crossing "
+            "configuration APIs. Rebuild it with `maturin develop`. "
+            f"Missing backend attrs: {missing_backend}; missing router attrs: {missing_router}."
+        )
+
+    router.set_crossing_config(
+        rust_backend.CrossingConfig(
+            enabled=True,
+            crossing_loss=float(crossing_search_loss),
+            crossing_half_size_cells=int(crossing_half_size_cells),
+        )
+    )
+
+    if not is_guided_mode(crossing_mode):
+        # "lidar-pure" is the router-discovered crossing path: A* explores
+        # and decides, live, whether a collision it finds can legally
+        # become a crossing -- it must not be informed by a precomputed
+        # topology plan at all, not even for reporting purposes that later
+        # code might accidentally start relying on. See
+        # .agent/ORCHESTRATOR.md's own standing rule ("Protect the current
+        # lidar-pure / router-discovered crossing path from topology-
+        # precomputed crossing hints") and the 2026-08-25 investigation
+        # that found this plan's constraints reaching the router
+        # unconditionally, biasing the post-commit search cost through the
+        # (since removed) crossing spacing history.
+        info["reason"] = "lidar_pure_mode_ignores_topology_plan"
+        return info
+
+    try:
+        demand: CrossingDemand = build_crossing_demand(schematic, unrouted_layout)
+    except (KeyError, ValueError) as exc:
+        info["reason"] = "invalid_crossing_demand"
+        info["error"] = str(exc)
+        return info
+    crossing_plan = demand.plan
+    info["event_count"] = len(crossing_plan.events)
+    info["stage_count"] = len(crossing_plan.stages)
+    info["plan_text"] = demand.to_text()
+
+    jobs_by_edge = {route_edge_key(job): job for job in route_jobs}
+    missing_events: list[dict[str, object]] = []
+    event_records: list[dict[str, object]] = []
+    crossing_counts_by_net_id: Counter[int] = Counter()
+    crossing_counts_by_net_name: Counter[str] = Counter()
+
+    for event in crossing_plan.events:
+        job_a = jobs_by_edge.get(event.edge_a)
+        job_b = jobs_by_edge.get(event.edge_b)
+        if guidance_net_names is not None and (
+            job_a is None
+            or job_b is None
+            or str(job_a.net_name) not in guidance_net_names
+            or str(job_b.net_name) not in guidance_net_names
+        ):
+            continue
+        event_record: dict[str, object] = {
+            "edge_a": _edge_key_to_info(event.edge_a),
+            "edge_b": _edge_key_to_info(event.edge_b),
+            "source_depth": int(event.source_depth),
+            "target_depth": int(event.target_depth),
+            "level": int(event.level),
+            "order_index": int(event.order_index),
+            "edge_a_source_rank": int(event.edge_a_source_rank),
+            "edge_a_target_rank": int(event.edge_a_target_rank),
+            "edge_b_source_rank": int(event.edge_b_source_rank),
+            "edge_b_target_rank": int(event.edge_b_target_rank),
+        }
+        if job_a is None or job_b is None:
+            missing_record = {
+                **event_record,
+                "edge_a_found": job_a is not None,
+                "edge_b_found": job_b is not None,
+            }
+            missing_events.append(missing_record)
+            event_records.append({**event_record, "loaded": False})
+            continue
+
+        event_record.update(
+            {
+                "loaded": True,
+                "net_id_a": int(job_a.net_id),
+                "net_id_b": int(job_b.net_id),
+                "net_name_a": str(job_a.net_name),
+                "net_name_b": str(job_b.net_name),
+            }
+        )
+        event_records.append(event_record)
+        crossing_counts_by_net_id[int(job_a.net_id)] += 1
+        crossing_counts_by_net_id[int(job_b.net_id)] += 1
+        crossing_counts_by_net_name[str(job_a.net_name)] += 1
+        crossing_counts_by_net_name[str(job_b.net_name)] += 1
+
+    # Contribution 1 (the only path that reaches here): the plan reaches the
+    # router ONLY as soft guidance (planned pairs + planned search price). The
+    # router has no hard crossing constraints (the API went with phase 4
+    # slice A of the 2026-10 do-over; the modes that loaded them went on
+    # 2026-09-24), so the search keeps the lidar-pure mechanics and may still
+    # add unplanned crossings at the full price.
+    if not hasattr(router, "set_crossing_guidance"):
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.set_crossing_guidance. Rebuild it with "
+            "`maturin develop --release`."
+        )
+    planned_pairs = [
+        (int(cast(int, record["net_id_a"])), int(cast(int, record["net_id_b"])))
+        for record in event_records
+        if record.get("loaded")
+    ]
+    planned_loss = _effective_planned_crossing_search_loss(config)
+    single_per_pair = _effective_single_discounted_crossing_per_pair(config)
+    router.set_crossing_guidance(planned_pairs, planned_loss, single_per_pair)
+    info["guidance"] = {
+        "planned_pair_count": len(planned_pairs),
+        "planned_crossing_loss": float(planned_loss),
+        "single_discounted_crossing_per_pair": bool(single_per_pair),
+    }
+
+    info["missing_event_count"] = len(missing_events)
+    info["missing_events"] = missing_events
+    info["events"] = event_records
+    info["expected_crossings_by_net_id"] = dict(sorted(crossing_counts_by_net_id.items()))
+    info["expected_crossings_by_net_name"] = dict(sorted(crossing_counts_by_net_name.items()))
+    return info
+
+
+def _segment_bend_units(route_obj: object) -> float:
+    bend_units = 0.0
+    for raw_segment in getattr(route_obj, "segments", []) or []:
+        try:
+            kind = str(raw_segment.get("kind", ""))
+        except AttributeError:
+            continue
+        if kind == "turn45":
+            bend_units += 0.5
+        elif kind == "turn90" or (kind and kind != "straight"):
+            bend_units += 1.0
+    return bend_units
+
+
+def _write_insertion_loss_report(
+    *,
+    crossing_plan_info: CrossingPlanInfo,
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord],
+    crossing_counts_by_net_id: Mapping[int, int],
+    propagation_loss_per_um: float,
+    bend_loss_per_90deg: float,
+    crossing_count_source: str,
+) -> None:
+    crossing_loss = float(crossing_plan_info.crossing_loss or 0.0)
+    per_net: list[dict[str, object]] = []
+    total_length_um = 0.0
+    total_bend_units = 0.0
+    total_crossing_count = 0
+    total_insertion_loss = 0.0
+    for net_id, record in sorted(routed_records_by_net_id.items()):
+        length_um = float(record.total_length_um)
+        bend_units = _segment_bend_units(record.route_obj)
+        crossing_count = int(crossing_counts_by_net_id.get(int(net_id), 0))
+        insertion_loss = (
+            length_um * propagation_loss_per_um
+            + bend_units * bend_loss_per_90deg
+            + crossing_count * crossing_loss
+        )
+        total_length_um += length_um
+        total_bend_units += bend_units
+        total_crossing_count += crossing_count
+        total_insertion_loss += insertion_loss
+        per_net.append(
+            {
+                "net_id": int(net_id),
+                "net_name": record.net_name,
+                "length_um": length_um,
+                "bend_90deg_units": bend_units,
+                "crossing_count": crossing_count,
+                "propagation_loss": length_um * propagation_loss_per_um,
+                "bend_loss": bend_units * bend_loss_per_90deg,
+                "crossing_loss": crossing_count * crossing_loss,
+                "insertion_loss": insertion_loss,
+            }
+        )
+
+    crossing_plan_info.insertion_loss_model = {
+        "propagation_loss_per_um": propagation_loss_per_um,
+        "bend_loss_per_90deg": bend_loss_per_90deg,
+        "crossing_loss": crossing_loss,
+        "crossing_count_source": crossing_count_source,
+        "device_loss_included": False,
+        "formula": (
+            "length_um * propagation_loss_per_um + "
+            "bend_90deg_units * bend_loss_per_90deg + "
+            "crossing_count * crossing_loss"
+        ),
+    }
+    crossing_plan_info.insertion_loss_summary = {
+        "net_count": len(per_net),
+        "total_length_um": total_length_um,
+        "total_bend_90deg_units": total_bend_units,
+        "total_crossing_count": total_crossing_count,
+        "total_insertion_loss": total_insertion_loss,
+    }
+    crossing_plan_info.insertion_loss_by_net = per_net
+
+
+def _augment_insertion_loss_report(
+    *,
+    crossing_plan_info: CrossingPlanInfo,
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord],
+    native_crossing_events: Iterable[object],
+    propagation_loss_per_um: float = 0.0,
+    bend_loss_per_90deg: float = 0.0,
+) -> None:
+    if not crossing_plan_info.enabled:
+        return
+    crossing_counts_by_net_id: Counter[int] = Counter()
+    for raw_event in native_crossing_events:
+        try:
+            net_id = int(raw_event["net_id"])
+            partner_net_id = int(raw_event["partner_net_id"])
+        except (TypeError, KeyError, ValueError):
+            continue
+        crossing_counts_by_net_id[net_id] += 1
+        crossing_counts_by_net_id[partner_net_id] += 1
+
+    _write_insertion_loss_report(
+        crossing_plan_info=crossing_plan_info,
+        routed_records_by_net_id=routed_records_by_net_id,
+        crossing_counts_by_net_id=crossing_counts_by_net_id,
+        propagation_loss_per_um=propagation_loss_per_um,
+        bend_loss_per_90deg=bend_loss_per_90deg,
+        crossing_count_source="native_crossing_events",
+    )
+
+
+def _augment_insertion_loss_report_from_realized_intersections(
+    *,
+    crossing_plan_info: CrossingPlanInfo,
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord],
+    propagation_loss_per_um: float = 0.0,
+    bend_loss_per_90deg: float = 0.0,
+) -> None:
+    if not crossing_plan_info.enabled:
+        return
+    crossing_counts_by_net_id: Counter[int] = Counter()
+    raw_intersections: object = crossing_plan_info.realized_intersections or ()
+    if not isinstance(raw_intersections, IterableABC) or isinstance(
+        raw_intersections,
+        (str, bytes, bytearray),
+    ):
+        raw_intersections = ()
+    for raw_intersection in raw_intersections:
+        if not isinstance(raw_intersection, Mapping):
+            continue
+        classification = str(raw_intersection.get("classification", "") or "")
+        if not classification.startswith("legal_"):
+            continue
+        try:
+            net_id_a = int(raw_intersection["net_id_a"])
+            net_id_b = int(raw_intersection["net_id_b"])
+        except (TypeError, KeyError, ValueError):
+            continue
+        crossing_counts_by_net_id[net_id_a] += 1
+        crossing_counts_by_net_id[net_id_b] += 1
+
+    _write_insertion_loss_report(
+        crossing_plan_info=crossing_plan_info,
+        routed_records_by_net_id=routed_records_by_net_id,
+        crossing_counts_by_net_id=crossing_counts_by_net_id,
+        propagation_loss_per_um=propagation_loss_per_um,
+        bend_loss_per_90deg=bend_loss_per_90deg,
+        crossing_count_source="realized_intersections",
+    )
+
+
+def _write_crossing_debug_artifacts(
+    *,
+    debug_path: Path | None,
+    debug_prefix: str,
+    crossing_plan_info: CrossingPlanInfo,
+) -> None:
+    if debug_path is None or not crossing_plan_info.enabled:
+        return
+    crossing_dir = debug_path / "crossings"
+    _ensure_dir(crossing_dir)
+    json_path = crossing_dir / f"{debug_prefix}_crossings.json"
+    txt_path = crossing_dir / f"{debug_prefix}_crossings.txt"
+    json_path.write_text(
+        json.dumps(crossing_plan_info.to_dict(), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    plan_text = crossing_plan_info.plan_text
+    lines = [str(plan_text if plan_text is not None else "CrossingPlan: unavailable")]
+    lines.append("")
+    lines.append(f"planned_events={int(crossing_plan_info.event_count)}")
+    lines.append(
+        f"native_crossing_events={int(crossing_plan_info.native_crossing_event_count or 0)}"
+    )
+    if crossing_plan_info.illegal_realized_crossing_count:
+        lines.append("illegal_realized_crossings:")
+        for crossing in crossing_plan_info.illegal_realized_crossings or []:
+            lines.append(
+                "  - "
+                f"{crossing.get('net_name_a')} x {crossing.get('net_name_b')} "
+                f"point={crossing.get('point_um')} "
+                f"reason={crossing.get('reason')} "
+                f"margin_a={crossing.get('segment_a_margin_um')} "
+                f"margin_b={crossing.get('segment_b_margin_um')} "
+                f"required={crossing.get('required_margin_um')}"
+            )
+    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/terminal_extraction.py.
+"""Tests for python/photonic_router/electrical/terminal_extraction.py.
 
 Stage 1 (``TerminalExtractor``): extracting each heater's two interchangeable
 electrical terminals from a routed layout.
@@ -6,12 +6,13 @@ electrical terminals from a routed layout.
 
 from __future__ import annotations
 
+from photonic_router.electrical import ElectricalRoutingConfig
+from photonic_router.electrical.terminal_extraction import extract_heater_terminal_pairs
+from photonic_router.records.layout_from_schematic import layout_from_schematic
+
 from tests.fixtures.synthetic_layouts import (
     single_heater_schematic as build_single_heater_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig
-from translation.electrical.terminal_extraction import extract_heater_terminal_pairs
-from translation.layout_from_schematic import layout_from_schematic
 
 
 def test_extracts_two_logical_terminals_from_multi_port_heater():

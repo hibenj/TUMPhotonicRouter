@@ -15,9 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from routing_flow import load_benchmark
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from photonic_router.flow import load_benchmark
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 DEFAULT_BENCHMARK = "heater_lanes_ripup"
 DEFAULT_BENCHMARKS = (
@@ -642,7 +642,7 @@ def _check_cross_net_spacing(
     actual = _number(metrics.get("cross_net_min_spacing_um"))
     required = _number(metrics.get("required_cross_net_clearance_um"))
     # the same floating-point slack the verifier's spacing check applies
-    # (translation/electrical/verification.py::SPACING_TOLERANCE_UM)
+    # (python/photonic_router/electrical/verification.py::SPACING_TOLERANCE_UM)
     if actual < required - 1e-6:
         violations.append(
             {

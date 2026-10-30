@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/obstacle_extraction.py.
+"""Tests for python/photonic_router/electrical/obstacle_extraction.py.
 
 Stage 2 (``ObstacleMapBuilder``): building the layer-filtered electrical
 obstacle grid, its role-specific terminal openings and the common-bus rail.
@@ -7,6 +7,13 @@ obstacle grid, its role-specific terminal openings and the common-bus rail.
 from __future__ import annotations
 
 import pytest
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from photonic_router.electrical.net_geometry import _common_bus_tagged_rects
+from photonic_router.electrical.obstacle_extraction import build_electrical_obstacle_map
+from photonic_router.electrical.pitch_grid import disk_cells
+from photonic_router.electrical.terminal_contacts import terminal_contact_seed_points
+from photonic_router.electrical.terminal_extraction import extract_heater_terminal_pairs
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from tests.fixtures.synthetic_layouts import (
     multi_heater_schematic as build_multi_heater_schematic,
@@ -14,13 +21,6 @@ from tests.fixtures.synthetic_layouts import (
 from tests.fixtures.synthetic_layouts import (
     single_heater_schematic as build_single_heater_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.electrical.net_geometry import _common_bus_tagged_rects
-from translation.electrical.obstacle_extraction import build_electrical_obstacle_map
-from translation.electrical.pitch_grid import disk_cells
-from translation.electrical.terminal_contacts import terminal_contact_seed_points
-from translation.electrical.terminal_extraction import extract_heater_terminal_pairs
-from translation.layout_from_schematic import layout_from_schematic
 
 
 def test_obstacle_map_uses_role_specific_terminal_openings():

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from translation import route_rust
+from photonic_router.routing import route_rust
 
 
 def test_failed_route_log_extracts_illegal_crossing_root_causes() -> None:

@@ -20,15 +20,14 @@ from types import SimpleNamespace
 from typing import Any, Protocol
 
 import pytest
-from photonic_router.path_length_graph import PortRef, RoutedEdgeKey
-from photonic_router.static_obstacle_builder import _load_rust_backend
-
-from translation.route_rust_meanders import _MeanderSearchConfig
-from translation.route_rust_types import (
+from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
+from photonic_router.plm.route_rust_meanders import _MeanderSearchConfig
+from photonic_router.records.route_rust_types import (
     MeanderEdgeReport,
     MeanderInsertionReport,
     RoutedNetRecord,
 )
+from photonic_router.static_obstacle_builder import _load_rust_backend
 
 GridCell = tuple[int, int]
 Centerline = list[tuple[float, float]]

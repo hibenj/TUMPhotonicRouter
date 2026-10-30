@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 
-from translation.crossing_verification_report import (
+from photonic_router.crossings.crossing_verification_report import (
     RouteCostTerms,
     build_crossing_verification_report,
     route_cost_terms_from_mapping,

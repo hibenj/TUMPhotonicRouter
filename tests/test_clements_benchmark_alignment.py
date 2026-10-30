@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from benchmarks.clements_8x8 import SOURCE_YAML, build_schematic
-from translation.layout_from_schematic import layout_from_schematic
 
 
 def test_clements_8x8_layout_matches_lidar_macro_placements() -> None:

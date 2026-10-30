@@ -13,11 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from routing_flow import (
-    RoutingFlowStats,
-    load_benchmark,
-    run_routing_flow,
-)
+from photonic_router.flow import load_benchmark, run_routing_flow
+from photonic_router.flow_stats import RoutingFlowStats
 
 DEFAULT_BENCHMARKS = ("benes_4x4", "benes_8x8", "benes_16x16", "benes_32x32")
 

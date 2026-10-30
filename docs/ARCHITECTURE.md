@@ -18,7 +18,7 @@ This document is the map. The knobs themselves are in
 provenance are in [`docs/DATE2027_REPRODUCTION.md`](DATE2027_REPRODUCTION.md);
 the restructuring that produced this layout is
 `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`; the
-electrical heater-metal pipeline (section 2's `translation/electrical/`
+electrical heater-metal pipeline (section 2's `python/photonic_router/electrical/`
 subsection) was named as stages by
 `.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`'s
 Milestone 4.
@@ -27,7 +27,7 @@ Milestone 4.
 Line counts are `wc -l` on the branch `restructure/modular-engine` at
 2026-09-24 (Milestone 6 complete, commit `18530b8`) for sections 1 and 3-10,
 and at 2026-09-28 (Electrical Milestone 4 slice 4 complete, commit `c71c6a5`)
-for the `translation/electrical/` subsection of section 2; they are orders of
+for the `python/photonic_router/electrical/` subsection of section 2; they are orders of
 magnitude, not contracts. Historical file names appear only where a paragraph
 says explicitly that they are historical.
 
@@ -347,10 +347,10 @@ as an end cap, which output matching leaves alone); whichever way the net
 was written, while the edge key keeps the net as routed and the analysis
 carries the oriented ends for its consumers), `graph_analysis.py` (85),
 `benchmark_extractor.py` (177) and `routing_layers.py` (133) own their named
-analyses. Nothing in this package may import `translation.routing`'s stage
-internals; it goes through the routing API (`translation/routing/api.py`).
+analyses. Nothing in this package may import `photonic_router.routing`'s stage
+internals; it goes through the routing API (`python/photonic_router/routing/api.py`).
 
-### `translation/routing/` -- the routing session as stages
+### `python/photonic_router/routing/` -- the routing session as stages
 
 `session.py` (372 lines) owns the session shell and nothing else: it validates
 the keywords into `SessionSettings`, builds `SessionState`, and calls the nine
@@ -381,12 +381,14 @@ stage must not know the command line, must not read the environment, and must
 not reach back into the session object -- since Milestone 5 there is no
 session object to reach into. `api.py` (516 lines) owns the module-level
 routing API (`route_match_and_realize` and the fan-out anchor query): the
-boundary the flow's optical stage helper (`routing_flow_optical.py`) calls,
-reaching it through the `translation.route_rust` re-export.
+boundary the flow's optical stage helper (`python/photonic_router/flow_optical.py`) calls,
+reaching it through the `photonic_router.routing.route_rust` re-export.
 
-### The remaining `translation/*.py`
+### The modules that were `translation/*.py`
 
-`route_rust.py` (428 lines) is a re-export shim over `translation.routing`,
+Since phase 8 slice A these live in the one package, grouped as `records/` (`route_rust_types`, `_records`, `_geometry`, `_realization`, `_obstacle_config`, `route_order`, `layout_from_schematic`), `crossings/` (the `route_rust_crossing_*` modules, `crossing_*`, `preplaced_crossing_grids`, `topology_analysis`), `plm/` (`route_rust_meanders`, `path_length_*`), `verify/` (`photonic_verification`, `route_rust_endpoint_correction`) and `gds/` (`gds_circuit_*`, `gds_write_options`, `route_gds`, `route_overview_svg`, `route_rust_debug_artifacts`).
+
+`routing/route_rust.py` (428 lines) is a re-export shim over `photonic_router.routing`,
 kept because the reproduction scripts, the benchmark stable blocks and many
 tests import names from that path; no behaviour lives in it. The modules with
 real content are `route_rust_types.py` (1,363, the shared record and job
@@ -443,7 +445,7 @@ cells of `docs/plm_baseline.json` reproduce). The report is a dataclass per
 requirement (`MeanderEdgeReport` in `route_rust_types.py`: edge, requested,
 credited and physical inserted length, planned edges, status, reason) inside
 a `MeanderInsertionReport` that `path_length_diagnostics.py` and the flow's
-`routing_flow_plm.py` (227 lines, from 336) read; its `to_info_dict()` is
+`python/photonic_router/flow_plm.py` (227 lines, from 336) read; its `to_info_dict()` is
 the GDS meta info `meander_insertion_report`. The timers, counters and
 per-candidate attempts (`MeanderPlanningProfile`) are built only under
 `--debug-meanders`; the SUMMARY tokens and the acceptance decision never
@@ -492,9 +494,9 @@ the generated modules live in the git-ignored package `benchmarks/private/`,
 which `python -m photonic_router route private.<name>` imports as
 `benchmarks.private.<name>`. Nothing in the repository names a foundry cell.
 
-### `translation/electrical/` -- the heater-metal pipeline as stages
+### `python/photonic_router/electrical/` -- the heater-metal pipeline as stages
 
-`translation/electrical/` (28 modules, 9,440 lines) owns the heater-metal
+`python/photonic_router/electrical/` (28 modules, 9,440 lines) owns the heater-metal
 routing stack: terminal extraction, the common bus, pad planning, detailed
 pad-wire routing, metal realization and its own verification and debug SVGs.
 It shares the grid vocabulary with the optical side but has its own router;
@@ -504,14 +506,14 @@ in the pipeline order of `route_electrical.py::route_electrical_heaters`:
 
 `route_electrical.py` (214 lines) owns `route_electrical_heaters`, the
 literal twelve-stage sequence, after the pattern of
-`translation/routing/session.py::run` -- one call per stage, each returning
+`python/photonic_router/routing/session.py::run` -- one call per stage, each returning
 the frozen product its `stages.py` Protocol names. It decides nothing itself
 beyond the guard that skips a stage when its inputs are not ready (the next
 subsection).
 
 `stages.py` (234 lines) owns the twelve `typing.Protocol` declarations
 (`TerminalExtractor` through `DebugArtifactWriter`), one per stage, after the
-pattern of `translation/routing/stages.py`; its module docstring records
+pattern of `python/photonic_router/routing/stages.py`; its module docstring records
 every place an implementation's real parameter names or defaults differ from
 the stage table below, so the Protocol and the function it types never
 silently drift apart.
@@ -703,24 +705,24 @@ routed layout.
 `svg_support.py` (20 lines) owns `_all_port_accesses`, the one helper both
 SVG exporters share.
 
-### The `routing_flow*.py` modules
+### The `flow_*.py` modules
 
-`routing_flow.py` (130 lines) is a shim over `photonic_router.cli`, so
+`routing_flow.py` (5 lines, repository root) is a shim over `photonic_router.cli`, so
 `python routing_flow.py <benchmark> [flags]` keeps working for the reproduction
 scripts and the benchmark stable blocks. The siblings are the flow's stage
-helpers, still at the repository root and imported by `photonic_router.flow`:
-`routing_flow_config.py` (269, the `SCRIPT_*` defaults and option resolution),
-`routing_flow_optical.py` (176, the call into `route_match_and_realize`),
-`routing_flow_verification.py` (391), `routing_flow_plm.py` (227),
-`routing_flow_electrical.py` (200), `routing_flow_reporting.py` (551, console
-output and timing formatting), `routing_flow_stats.py` (227, the legacy stats
-collector) and `routing_flow_component_info.py` (24).
+helpers, now in the package and imported by `photonic_router.flow`:
+`python/photonic_router/flow_config.py` (269, the `SCRIPT_*` defaults and option resolution),
+`python/photonic_router/flow_optical.py` (176, the call into `route_match_and_realize`),
+`python/photonic_router/flow_verification.py` (391), `python/photonic_router/flow_plm.py` (227),
+`python/photonic_router/flow_electrical.py` (200), `python/photonic_router/flow_reporting.py` (551, console
+output and timing formatting), `python/photonic_router/flow_stats.py` (227, the legacy stats
+collector) and `python/photonic_router/flow_component_info.py` (24).
 
 ### The electrical flow: the twelve stage calls
 
-`route_electrical_heaters` (`translation/electrical/route_electrical.py`) is
+`route_electrical_heaters` (`python/photonic_router/electrical/route_electrical.py`) is
 the literal sequence; the types are the Protocols of
-`translation/electrical/stages.py`:
+`python/photonic_router/electrical/stages.py`:
 
 | # | call in `route_electrical.py::route_electrical_heaters` | input | product |
 | --- | --- | --- | --- |
@@ -754,7 +756,7 @@ bus itself succeeded, independent of the escape or the pad wires. Stage 11
 a skipped stage never produced.
 
 The entry point is `run_electrical_routing_step`
-(`routing_flow_electrical.py` at the repository root), called from `photonic_router.flow.route_schematic` after path-length
+(`python/photonic_router/flow_electrical.py` at the repository root), called from `photonic_router.flow.route_schematic` after path-length
 matching, guarded by `options.electrical.enable_electrical_routing`. That
 flag, and the `ElectricalRoutingConfig` it passes down, are set by
 `--electrical-routing true` on the command line or
@@ -769,7 +771,7 @@ enables it.
 `scripts/benchmark_electrical.py --suite --check --compare-baseline` runs
 the four deterministic electrical cases --
 `heater_single`, `heater_lanes_20`, `heater_lanes_ripup`, `heater_s_mod` --
-and checks each one's `quality_metrics` (`translation/electrical/metrics.py`)
+and checks each one's `quality_metrics` (`python/photonic_router/electrical/metrics.py`)
 against `BENCHMARK_GUARDRAILS`. The guardrail idea (`--check`'s module
 docstring, Decision Log of
 `.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`):
@@ -802,14 +804,14 @@ session below), `verify_and_attach_photonic_reports`,
 The pre-placed crossing grid stage (`_preplaced_crossing_grids_stage`,
 contribution 2) builds the placement's `CrossingDemand` and, since phase 4
 slice D of the 2026-10 do-over, works from its `StageSchedule`
-(`CrossingDemand.stage_schedule()`, `python/photonic_router/crossing_demand.py`):
+(`CrossingDemand.stage_schedule()`, `python/photonic_router/crossings/crossing_demand.py`):
 the bands with crossing events, left to right, each a `Band` with its
 x-extent (the right face of the left wall column to the left face of the
 right one), its two wall orders, the nets confined to it and its
 `CrossingStagePlan` (the events in bubble-sort order, keyed by the two
 column indices, which the stage plan still calls `source_depth` /
 `target_depth` because the tile names are built from them). The tiles
-builder of `translation/preplaced_crossing_grids.py`
+builder of `python/photonic_router/crossings/preplaced_crossing_grids.py`
 (`derive_preplaced_crossing_layout(schematic, unrouted_layout, schedule)`)
 iterates over that schedule instead of the plan's stage dictionary; it keeps
 measuring each stage's free band between the lanes' own port faces, which
@@ -826,9 +828,9 @@ route with --crossing-mode lidar-pure or lidar-guided" -- instead of
 crashing in the tile placement or silently leaving those crossings
 unplaced. The 17 paper benchmarks have no such net.
 
-The routing session itself is `translation/routing/session.py::run`. The
+The routing session itself is `python/photonic_router/routing/session.py::run`. The
 calls below are that function (nine phases, and the optional detour pass 7b);
-the types are the Protocols of `translation/routing/stages.py`:
+the types are the Protocols of `python/photonic_router/routing/stages.py`:
 
 | # | call in `session.py::run` | input | product |
 | --- | --- | --- | --- |
@@ -950,10 +952,10 @@ a route which a later round moved away keeps its detour (the 457 um spiral
 of a 54.7 um feed in one of the owner's Clements meshes, ExecPlan
 2026-10-06-detour-aware-routing). Two opt-in measures sit outside the loop
 and leave the defaults byte-identical. `--net-order span`
-(`translation/route_order.py`) routes the nets with the nearest ports first
+(`python/photonic_router/records/route_order.py`) routes the nets with the nearest ports first
 across all depth layers, so the short interior nets of a cell are committed
 before the long wires that would otherwise run through it. The detour pass
-(phase 7b, `translation/routing/detour_pass.py`) measures every recorded
+(phase 7b, `python/photonic_router/routing/detour_pass.py`) measures every recorded
 route against its free lower bound and re-runs the same negotiated batch on
 the nets above the factor. Neither smooths or edits geometry: the pass only
 chooses which nets to search again, and the search is the same A*. The
@@ -986,7 +988,7 @@ Five objects, each with one job:
 | `RouterConfig` (Python) | `python/photonic_router/config.py` | the frozen mirror of the above, field for field and default for default; `to_rust` builds the flat-keyword `rust_backend.RouterConfig` |
 | `RoutingConfig` | `python/photonic_router/config.py` | the whole Python-side tree: `router` plus `crossing_plan`, `crossing_grid`, `fanout`, `engine`, `search`, `diagnostics` and `write_gds_on_photonic_verification_failure` |
 | `FlowOptions` | `python/photonic_router/flow_options.py` | the flow-level choices in eleven groups, one per consuming stage (`loading`, `layout`, `obstacles`, `preplaced_grids`, `optical`, `verification`, `path_length`, `electrical`, `debug`, `output`, `stats`) |
-| `SessionSettings` / `SessionState` | `translation/routing/settings.py`, `state.py` | one routing session's frozen inputs, and everything it computes |
+| `SessionSettings` / `SessionState` | `python/photonic_router/routing/settings.py`, `state.py` | one routing session's frozen inputs, and everything it computes |
 
 Precedence, lowest to highest, as `photonic_router/config_loading.py::build_config`
 and `photonic_router/cli.py::main` apply it:
@@ -1099,7 +1101,7 @@ reports; the reports carry no timing, so identical bytes mean identical
 verdicts and issue lists (the acceptance of the 2026-09-24 verifier plan, which
 took the verifier's share of the full run from 5,207 s to 140 s).
 `tests/electrical/` holds the electrical pipeline's own tests, one module per
-stage of `translation/electrical/stages.py` (Milestone 4 slice 5 of
+stage of `python/photonic_router/electrical/stages.py` (Milestone 4 slice 5 of
 `.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`),
 with fixtures in `tests/fixtures/` after the pattern the optical side already
 follows; it replaces the single `tests/test_electrical_routing.py`.
@@ -1115,7 +1117,7 @@ Every `route` run ends with one fixed line, `SUMMARY benchmark=... nets=...
 route_failures=... detours=... verifier_errors=... verifier_warnings=... plm_groups=...
 plm_over_tolerance=... meander_inserted_um=... electrical_heaters=...
 electrical_pads=... electrical_failed_wires=... electrical_ok=... total_s=...`
-(`routing_flow_stats.format_flow_summary_line`; a stage that did not run
+(`photonic_router.flow_stats.format_flow_summary_line`; a stage that did not run
 prints `-`). The stages fill the `RoutingFlowStats` record the flow creates
 for every run; per-route search counters are collected only with
 `collect_route_stats`, which the legacy `run_routing_flow` turns on when a
@@ -1131,7 +1133,7 @@ The repository owner decided every candidate on 2026-09-24 (all removals as
 recommended, under the constraint that the working benchmarks stay exact), and
 Milestone 8 carries them out one slice at a time. The label was the string
 `candidate for removal, see Milestone 8`; after Slice C
-`grep -rn "candidate for removal" src/ translation/ python/` is empty, so what
+`grep -rn "candidate for removal" src/ python/` is empty, so what
 is left below is the one item still named in the ExecPlan's Milestone 8 section.
 
 Already removed, Slice A, the legacy engine (2026-09-24): the legacy repair
@@ -1143,7 +1145,7 @@ non-repair batch binding (the negotiated loop with `max_rounds = 1` and
 the negotiated-displacement trio and `ripup_repair_set_victims`, the
 engine-selection fields and their two environment variables, and every helper
 those left unreachable. Two decisions came with the slice: the two
-mid-pipeline repair passes of `translation/routing/verify_repair.py` now call
+mid-pipeline repair passes of `python/photonic_router/routing/verify_repair.py` now call
 the negotiated loop (D8), and the probe-guided and direct-crossing budgets
 follow `NegotiationConfig` instead of the constants, whose values are those
 fields' defaults (D9; both attempts were removed in phase 3 slice A of the
@@ -1180,17 +1182,17 @@ from `crossing_plan.build_crossing_plan` are the one copy), the third
 `realized_intersections` producer
 (`_augment_crossing_plan_with_realized_overlaps` with the `actual_crossings`
 fields of `CrossingPlanInfo`), the unreachable pre-placed grid builders of
-`translation/preplaced_crossing_grids.py` (fan modes `router`, `in_grid`,
+`python/photonic_router/crossings/preplaced_crossing_grids.py` (fan modes `router`, `in_grid`,
 `stretched`; tile placement `lines`; only the `tiles` builder every paper cell
 ran remains) and `is_lidar_mode` (constant true since the collision mode went).
 
 Already removed, Slice C, the small leftovers (2026-09-24): the five Python
-helpers no stage reached (`record_elapsed` in `translation/routing/timing.py`
+helpers no stage reached (`record_elapsed` in `python/photonic_router/routing/timing.py`
 and `_append_grid_step`, `_fanout_stub_centerline_um`,
-`_append_circular_stub_bend`, `_cross2` in `translation/routing/route_jobs.py`),
+`_append_circular_stub_bend`, `_cross2` in `python/photonic_router/routing/route_jobs.py`),
 the 22-line demo wrapper module of `python/photonic_router/`, the two
 `RipupRerouteConfig` budgets the deleted repair chain owned with their two
-command-line flags and the two unused `routing_flow_config.py` constants
+command-line flags and the two unused `python/photonic_router/flow_config.py` constants
 behind them, the dead negotiated-engine environment field `run.txt` recorded
 (`scripts/results/run_and_archive.sh`), and the unused crossing-mode keyword
 of `_effective_crossing_search_loss`. Two things came
@@ -1199,7 +1201,7 @@ once per batch, when the global rip-up counter reaches 2 -- the behaviour the
 paper's runs used -- pinned by a new
 `third_global_ripup_does_not_clear_history_again` test), and the Weighted-A*
 iteration cap Slice B removed with the window mode is back in
-`translation/routing/router_setup.py`, its condition folded to
+`python/photonic_router/routing/router_setup.py`, its condition folded to
 `not settings.enable_crossings`.
 
 Still open:
@@ -1211,7 +1213,7 @@ benchmark modules (`TOY`, `mmi_heater`, `mmi_heater_8x4`,
 heater-only benchmarks `heater_single`, `heater_lanes_20` and
 `heater_lanes_ripup`, built from the synthetic fixtures of Milestone 6. The
 electrical guardrail finding those cases exposed (seven guardrails red on every
-case since the 2026-06 changes to `translation/electrical`, owner decision
+case since the 2026-06 changes to `python/photonic_router/electrical`, owner decision
 pending) is item 3 of `.agent/REPOSITORY_STATE.md`'s Current Findings.
 
 Each removal is one slice and one commit with the short gate after it, so any
@@ -1220,7 +1222,7 @@ single one can be reverted; the full 27-cell reproduction runs at the end.
 
 ## 10. Shared state between stages
 
-`SessionState` (`translation/routing/state.py`) is one mutable record the nine
+`SessionState` (`python/photonic_router/routing/state.py`) is one mutable record the nine
 phases share, grouped by the phase that *first* writes each field, with the
 writing (`w:`), mutating (`m:`) and reading (`r:`) phases named per field.
 Nineteen fields are written by more than one phase and carry a `# shared

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from translation.routing.detour_pass import free_lower_bound_um, select_detoured_net_ids
+from photonic_router.routing.detour_pass import free_lower_bound_um, select_detoured_net_ids
 
 
 def test_free_lower_bound_is_manhattan_distance_plus_two_bends():

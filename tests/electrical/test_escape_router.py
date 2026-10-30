@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/escape_router.py.
+"""Tests for python/photonic_router/electrical/escape_router.py.
 
 Stage 8 (``BusEscapeRouter``): routing the common bus tree to its assigned
 abstract pad slot.
@@ -7,13 +7,13 @@ abstract pad slot.
 from __future__ import annotations
 
 import pytest
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from photonic_router.electrical.net_geometry import _common_bus_tagged_rects
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from tests.fixtures.synthetic_layouts import (
     single_heater_schematic as build_single_heater_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.electrical.net_geometry import _common_bus_tagged_rects
-from translation.layout_from_schematic import layout_from_schematic
 
 
 def test_common_bus_escape_reaches_assigned_common_bus_pad_slot():

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from routing_flow import run_routing_flow
+from photonic_router.flow import run_routing_flow
 
 
 def test_mixed_run_routes_a_forced_fallback_layer_with_the_guided_search(monkeypatch):

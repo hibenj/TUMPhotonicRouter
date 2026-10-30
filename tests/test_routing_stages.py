@@ -1,4 +1,4 @@
-"""One test per routing stage Protocol (`translation/routing/stages.py`).
+"""One test per routing stage Protocol (`python/photonic_router/routing/stages.py`).
 
 Milestone 5 Slice 2c. Slice 2b declared the nine phases of `session.run()` as
 `typing.Protocol`s; these tests exercise each phase on its own, on the smallest
@@ -30,19 +30,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
+from photonic_router.routing import crossing_plan_stage as crossing_plan_stage_module
+from photonic_router.routing import dispatch as dispatch_module
+from photonic_router.routing import finalize as finalize_module
+from photonic_router.routing import handoff as handoff_module
+from photonic_router.routing import obstacle_context as obstacle_context_module
+from photonic_router.routing import realize as realize_module
+from photonic_router.routing import route_jobs as route_jobs_module
+from photonic_router.routing import router_setup as router_setup_module
+from photonic_router.routing import stages
+from photonic_router.routing import verify_repair as verify_repair_module
+from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
+
 from tests.fixtures.sessions import Pipeline
 from tests.fixtures.synthetic_layouts import GRID_HEIGHT, GRID_WIDTH, LINKS, ObstacleMapStandIn
-from translation.routing import crossing_plan_stage as crossing_plan_stage_module
-from translation.routing import dispatch as dispatch_module
-from translation.routing import finalize as finalize_module
-from translation.routing import handoff as handoff_module
-from translation.routing import obstacle_context as obstacle_context_module
-from translation.routing import realize as realize_module
-from translation.routing import route_jobs as route_jobs_module
-from translation.routing import router_setup as router_setup_module
-from translation.routing import stages
-from translation.routing import verify_repair as verify_repair_module
-from translation.routing.crossing_plan_info import CrossingPlanInfo
 
 
 def test_phase1_obstacle_context_builder_returns_the_map_and_the_grid(pipeline: Pipeline) -> None:
@@ -191,7 +192,7 @@ def test_phase9_realizer_assembles_the_debug_artifacts_with_the_plan_as_a_mappin
     ]
     assert artifacts.route_search_summary.route_count == 3
     # Slice 2c: the artifacts carry the plan as the plain mapping its consumers
-    # (routing_flow_verification, the crossing report) still read.
+    # (photonic_router.flow_verification, the crossing report) still read.
     assert isinstance(artifacts.crossing_plan_info, dict)
     assert artifacts.crossing_plan_info == pipeline.state.crossing_plan_info.to_dict()
     # Realization happened on the session's layout, not on the unrouted one.

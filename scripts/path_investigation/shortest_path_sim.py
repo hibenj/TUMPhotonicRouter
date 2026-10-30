@@ -17,9 +17,8 @@ import sys
 import time
 
 import gdsfactory as gf
-from photonic_router.crossing_demand import build_crossing_demand
-
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.crossings.crossing_demand import build_crossing_demand
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 PORT_STRAIGHT = 6.0  # straight at each port before the first bend (um)
 LANE_CLEAR = 5.0  # min centerline distance between lanes away from their crossing

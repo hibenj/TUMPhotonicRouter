@@ -678,7 +678,7 @@ if __name__ == "__main__":
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-    from translation.layout_from_schematic import layout_from_schematic
+    from photonic_router.records.layout_from_schematic import layout_from_schematic
 
     schematic = build_schematic()
     print("Schematic instances:", list(schematic.netlist.instances.keys()))

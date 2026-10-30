@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/metal_realization.py and rect_geometry.py.
+"""Tests for python/photonic_router/electrical/metal_realization.py and rect_geometry.py.
 
 Stage 10 (``MetalRealizer``): realizing every routed path as metal polygons
 on the layout, and the rectangle-union primitives it builds on.
@@ -11,14 +11,18 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from photonic_router.electrical.rect_geometry import (
+    clean_rects,
+    union_rect_area,
+    wire_rects_for_points,
+)
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from tests.electrical.support import _bbox_contains, _polygon_region_by_layer, _region_covers_bbox
 from tests.fixtures.synthetic_layouts import (
     multi_heater_schematic as build_multi_heater_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.electrical.rect_geometry import clean_rects, union_rect_area, wire_rects_for_points
-from translation.layout_from_schematic import layout_from_schematic
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

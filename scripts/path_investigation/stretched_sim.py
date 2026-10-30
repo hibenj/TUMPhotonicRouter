@@ -9,10 +9,9 @@ import math
 import sys
 
 import gdsfactory as gf
-from photonic_router.crossing_demand import build_crossing_demand
-
-from translation import preplaced_crossing_grids as pcg
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.crossings import preplaced_crossing_grids as pcg
+from photonic_router.crossings.crossing_demand import build_crossing_demand
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 gf.gpdk.PDK.activate()
 from benchmarks.benes import register_benes_cells

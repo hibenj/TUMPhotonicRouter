@@ -5,7 +5,7 @@ Usage:
     crossing_lower_bound.py --all-paper-cells
 
 No routing runs: the benchmark's placed layout is built as the flow builds
-it and `photonic_router.crossing_demand.build_crossing_demand` counts the
+it and `photonic_router.crossings.crossing_demand.build_crossing_demand` counts the
 invariant crossing pairs of its bands (experiment 5e, 2026-10-29). The
 number is what a "realised minus unavoidable" column of
 `compare_date2027.py` or `summarize_run.py` subtracts; this module is the
@@ -45,9 +45,8 @@ class LowerBound:
 def lower_bound_for_benchmark(benchmark: str) -> LowerBound:
     """Build the benchmark's placed layout and return its crossing lower bound."""
     from gdsfactory.gpdk import get_generic_pdk
-    from photonic_router.crossing_demand import build_crossing_demand
-
-    from translation.layout_from_schematic import layout_from_schematic
+    from photonic_router.crossings.crossing_demand import build_crossing_demand
+    from photonic_router.records.layout_from_schematic import layout_from_schematic
 
     get_generic_pdk().activate()
     module = importlib.import_module(f"benchmarks.{benchmark}")

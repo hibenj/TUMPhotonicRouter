@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/individual_topology.py.
+"""Tests for python/photonic_router/electrical/individual_topology.py.
 
 Stage 5 (``EscapeTopologyPlanner``): inferring coarse individual escape
 corridors, grouped into bundles, before pad assignment.
@@ -6,14 +6,15 @@ corridors, grouped into bundles, before pad assignment.
 
 from __future__ import annotations
 
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from photonic_router.electrical.individual_topology import bundle_route_side
+from photonic_router.electrical.types import terminal_exit_dx
+from photonic_router.records.layout_from_schematic import layout_from_schematic
+
 from tests.fixtures.sessions import route_electrical_benchmark_result
 from tests.fixtures.synthetic_layouts import (
     multi_heater_schematic as build_multi_heater_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.electrical.individual_topology import bundle_route_side
-from translation.electrical.types import terminal_exit_dx
-from translation.layout_from_schematic import layout_from_schematic
 
 
 def test_individual_topology_groups_escape_corridors_before_pad_assignment():

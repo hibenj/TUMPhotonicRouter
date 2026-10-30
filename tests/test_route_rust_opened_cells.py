@@ -12,6 +12,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
 import gdsfactory as gf
 from gdsfactory.gpdk import get_generic_pdk
+from photonic_router.routing import crossing_plan_stage as routing_crossing_plan_stage
+from photonic_router.routing import diagnostics as routing_diagnostics
+from photonic_router.routing import finalize as routing_finalize
+from photonic_router.routing import obstacle_context as routing_obstacle_context
+from photonic_router.routing import route_jobs as routing_route_jobs
+from photonic_router.routing import route_rust
+from photonic_router.routing import session as routing_session
+from photonic_router.routing.state import SessionState
 from photonic_router.routing_layers import ComponentPortAccessRule
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
 
@@ -28,14 +36,6 @@ from tests.fixtures.synthetic_layouts import (
 from tests.fixtures.synthetic_layouts import (
     make_dummy_layout as _make_dummy_layout,
 )
-from translation import route_rust
-from translation.routing import crossing_plan_stage as routing_crossing_plan_stage
-from translation.routing import diagnostics as routing_diagnostics
-from translation.routing import finalize as routing_finalize
-from translation.routing import obstacle_context as routing_obstacle_context
-from translation.routing import route_jobs as routing_route_jobs
-from translation.routing import session as routing_session
-from translation.routing.state import SessionState
 
 get_generic_pdk().activate()
 

@@ -7,8 +7,8 @@ add a rule here only after a mistake repeated.
 ## Read first
 
 - `docs/ARCHITECTURE.md`: the module map (Rust and Python), the stage
-  sequences of the optical router (`translation/routing/session.py`) and of
-  the electrical router (`translation/electrical/route_electrical.py`), the
+  sequences of the optical router (`python/photonic_router/routing/session.py`) and of
+  the electrical router (`python/photonic_router/electrical/route_electrical.py`), the
   search and negotiation interfaces, configuration precedence, build and test
   commands.
 - `docs/CONFIGURATION.md`: every configuration field with default, overlay
@@ -34,16 +34,16 @@ add a rule here only after a mistake repeated.
 ## What the project is
 
 A hybrid Rust and Python photonic routing system: a schematic becomes an
-unrouted layout (`translation/layout_from_schematic.py`), waveguides are routed
+unrouted layout (`python/photonic_router/records/layout_from_schematic.py`), waveguides are routed
 by a grid A* over straight and bend primitives in Rust (`src/`, bound through
 PyO3 as `photonic_router._rust`), path lengths are matched, and heater metal is
-routed electrically (`translation/electrical/`). Benchmarks are Python modules
+routed electrically (`python/photonic_router/electrical/`). Benchmarks are Python modules
 in `benchmarks/` with a `build_schematic()` and optional
 `STABLE_ROUTING_FLAGS`; `heater_s_mod` is the 8-mode cascade, `cascade_*` the
 generated 8, 12 and 16-mode cascades, folded, diagonal, compact (the
 diagonal at the smallest column pitch that routes clean) and folded_compact
 (the fold likewise). The owner's tape-out circuits are rebuilt from their GDS
-with generic components (`translation/gds_circuit_extraction.py`,
+with generic components (`python/photonic_router/gds/gds_circuit_extraction.py`,
 `gds_circuit_rebuild.py`) into the git-ignored package `benchmarks/private/`
 (`private.<name>`); the GDS files and the configurations that name their
 foundry cells never enter the repository.
@@ -89,7 +89,7 @@ Rust tests sit next to their modules.
 
 - The Python and Rust configuration mirrors (`python/photonic_router/config.py`,
   `src/config.rs`) carry the same fields and defaults; nothing under `src/` or
-  `translation/electrical/` reads the environment.
+  `python/photonic_router/electrical/` reads the environment.
 - A render or a metric without a verifier contract behind it proves nothing:
   check connectivity and per-branch metrics before quoting numbers.
 - Never write a repository-owner decision that the owner did not make; leave
@@ -107,7 +107,7 @@ Rust tests sit next to their modules.
   regenerate `docs/CONFIGURATION.md`.
 - A search engine or a negotiation policy: the recipes in
   `docs/ARCHITECTURE.md` sections 4 and 5.
-- An electrical stage: `translation/electrical/stages.py` declares one
+- An electrical stage: `python/photonic_router/electrical/stages.py` declares one
   `Protocol` per stage; `route_electrical.py` is the sequence.
 
 Last updated: 2026-09-29 (map form, per the owner's workflow update).

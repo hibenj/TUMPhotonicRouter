@@ -2,7 +2,7 @@
 
 The generated schematic intentionally leaves all inter-stage waveguides unrouted.
 Topology metadata records stage depth and lane ranks (node and edge ranks), from
-which `photonic_router.crossing_plan` derives the unavoidable crossings, so
+which `photonic_router.crossings.crossing_plan` derives the unavoidable crossings, so
 crossing-aware routing can use the benchmark as a deterministic oracle.
 """
 

@@ -217,7 +217,7 @@ def test_explicit_column_pitch_overrides_the_layout_default():
 
 
 def test_layout_from_schematic_builds():
-    from translation.layout_from_schematic import layout_from_schematic
+    from photonic_router.records.layout_from_schematic import layout_from_schematic
 
     module = importlib.import_module("benchmarks.cascade_16_diagonal")
     schematic = module.build_schematic()

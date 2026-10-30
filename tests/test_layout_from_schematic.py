@@ -3,8 +3,7 @@ from __future__ import annotations
 import pytest
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Placement
-
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 get_generic_pdk().activate()
 

@@ -65,6 +65,13 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- One Python package (phase 8 slice A): `translation/` and the nine root
+  `routing_flow*.py` modules moved by `git mv` into `python/photonic_router/`
+  (`routing/`, `electrical/`, `crossings/`, `plm/`, `verify/`, `gds/`,
+  `records/`, `flow_*.py`, `benchmark_metadata.py`); imports rewritten, no
+  logic change. A five-line `routing_flow.py` stays at the root as the entry
+  point the reproduction archives use. `tests/test_no_legacy_imports.py`
+  fails on any import of the old paths.
 - The unified crossing-legality predicate enforces crossing-to-crossing spacing
   (phase 4 slice B-2; switch off byte-identical, nine-cell gate reproduces). Two
   crossing elements never share a grid cell: `crossing_legality` now tests the

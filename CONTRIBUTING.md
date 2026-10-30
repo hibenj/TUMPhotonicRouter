@@ -76,5 +76,5 @@ electrical router runs
 | --- | --- |
 | A benchmark | `benchmarks/<name>.py` with `build_schematic()` (see `benchmarks/cascade.py`) |
 | A search engine or negotiation policy | `docs/ARCHITECTURE.md` sections 4 and 5 |
-| An electrical stage | `translation/electrical/` after `stages.py` |
+| An electrical stage | `python/photonic_router/electrical/` after `stages.py` |
 | Tests | `tests/` (unit), `tests/e2e/` (full runs), `tests/electrical/`; synthetic layouts in `tests/fixtures/` only; Rust tests next to their module |

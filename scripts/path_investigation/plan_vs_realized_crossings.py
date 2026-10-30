@@ -10,10 +10,9 @@ import sys
 from collections import Counter
 
 sys.path.insert(0, ".")
-from photonic_router.crossing_demand import build_crossing_demand
-
-from routing_flow import load_benchmark
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.crossings.crossing_demand import build_crossing_demand
+from photonic_router.flow import load_benchmark
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 b = sys.argv[1]
 sch = load_benchmark(b)

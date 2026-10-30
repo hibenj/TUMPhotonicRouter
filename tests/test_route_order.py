@@ -5,15 +5,14 @@ from __future__ import annotations
 from typing import cast
 
 import pytest
-
-from translation.route_order import (
+from photonic_router.records.route_order import (
     NET_ORDERS,
     default_net_order,
     depth_by_node_from_jobs,
     normalize_net_order,
     order_route_jobs,
 )
-from translation.route_rust_types import RouteJob
+from photonic_router.records.route_rust_types import RouteJob
 
 
 def _job(net_id: int, inst1: str, inst2: str) -> RouteJob:
@@ -170,7 +169,7 @@ def test_default_net_order_is_span_only_for_preplaced_crossing_grids() -> None:
 def test_hybrid_order_is_desc_in_small_layers_and_declaration_in_large_ones() -> None:
     """plan-crossings-hybrid: desc where the layer has at most
     HYBRID_DESC_MAX_LAYER_NETS nets, declaration order otherwise."""
-    from translation.route_order import HYBRID_DESC_MAX_LAYER_NETS
+    from photonic_router.records.route_order import HYBRID_DESC_MAX_LAYER_NETS
 
     big = [_job(100 + i, f"a{i}", f"b{i}") for i in range(HYBRID_DESC_MAX_LAYER_NETS + 1)]
     small = [_job(200 + i, f"c{i}", f"d{i}") for i in range(3)]

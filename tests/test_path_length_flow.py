@@ -8,17 +8,24 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import cast
 
+import photonic_router.routing.route_rust as route_rust
 import pytest
 from gdsfactory.component import Component
 from photonic_router import flow as routing_flow
-from photonic_router.path_length_graph import (
+from photonic_router import flow_optical
+from photonic_router.plm.path_length_graph import (
     MissingLengthRequirement,
     PortRef,
     RoutedEdgeKey,
 )
+from photonic_router.records.route_rust_types import MeanderEdgeReport, MeanderInsertionReport
+from photonic_router.routing import api as routing_api
+from photonic_router.routing.route_rust import (
+    RoutedNetRecord,
+    RouteRustPipelineResult,
+    RustRouteDebugArtifacts,
+)
 
-import routing_flow_optical
-import translation.route_rust as route_rust
 from tests.fixtures.path_length import (
     FakeLayout,
     meander_report,
@@ -27,13 +34,6 @@ from tests.fixtures.path_length import (
 from tests.fixtures.synthetic_layouts import (
     path_length_schematic,
 )
-from translation.route_rust import (
-    RoutedNetRecord,
-    RouteRustPipelineResult,
-    RustRouteDebugArtifacts,
-)
-from translation.route_rust_types import MeanderEdgeReport, MeanderInsertionReport
-from translation.routing import api as routing_api
 
 
 def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
@@ -375,7 +375,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
 
     monkeypatch.setattr(routing_flow, "load_benchmark", lambda _: schematic)
     monkeypatch.setattr(
-        routing_flow_optical,
+        flow_optical,
         "load_benchmark_metadata",
         lambda *args, **kwargs: {
             "node_types": {"src0": "input", "src1": "input", "gate0": "gate"},
@@ -409,7 +409,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
                     ),
                 ],
                 # None (not a real grid spec) deliberately opts this test out of
-                # routing_flow_verification.py's verify_and_attach_photonic_reports
+                # python/photonic_router/flow_verification.py's verify_and_attach_photonic_reports
                 # gate (`if not routed_records or realization_grid_spec is None:
                 # return`) -- that gate is unconditional final-geometry
                 # verification unrelated to path-length matching, and this
@@ -424,7 +424,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
         )
 
     monkeypatch.setattr(
-        routing_flow_optical,
+        flow_optical,
         "route_match_and_realize",
         _fake_route_match_and_realize,
     )
@@ -449,7 +449,7 @@ def test_main_flow_matching_uses_record_lengths(monkeypatch):
 
     monkeypatch.setattr(routing_flow, "load_benchmark", lambda _: schematic)
     monkeypatch.setattr(
-        routing_flow_optical,
+        flow_optical,
         "load_benchmark_metadata",
         lambda *args, **kwargs: {
             "node_types": {"src0": "input", "src1": "input", "gate0": "gate"},
@@ -458,7 +458,7 @@ def test_main_flow_matching_uses_record_lengths(monkeypatch):
     )
     monkeypatch.setattr(routing_flow, "layout_from_schematic", lambda _: FakeLayout("dummy"))
     monkeypatch.setattr(
-        routing_flow_optical,
+        flow_optical,
         "route_match_and_realize",
         lambda *args, **kwargs: RouteRustPipelineResult(
             routed_layout=Component(name="dummy"),

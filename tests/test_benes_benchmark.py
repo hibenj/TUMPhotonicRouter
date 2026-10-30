@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from photonic_router.crossing_plan import CrossingEvent, CrossingPlan, build_crossing_plan
-from photonic_router.path_length_graph import build_graph_from_schematic
-from photonic_router.topology_analysis import analyze_schematic_topology
+from photonic_router.benchmark_metadata import load_benchmark_metadata
+from photonic_router.crossings.crossing_plan import CrossingEvent, CrossingPlan, build_crossing_plan
+from photonic_router.crossings.topology_analysis import analyze_schematic_topology
+from photonic_router.plm.path_length_graph import build_graph_from_schematic
+from photonic_router.records.layout_from_schematic import layout_from_schematic
+from photonic_router.routing.route_rust import _resolve_crossing_half_size_cells
 
-from benchmark_metadata import load_benchmark_metadata
 from benchmarks import benes_4x4, benes_8x8, benes_16x16, benes_32x32
 from benchmarks.benes import (
     SWITCH_COMPONENT,
@@ -34,8 +36,6 @@ from benchmarks.benes_8x8 import (
 )
 from benchmarks.benes_16x16 import build_schematic as build_schematic_16x16
 from benchmarks.benes_32x32 import build_schematic as build_schematic_32x32
-from translation.layout_from_schematic import layout_from_schematic
-from translation.route_rust import _resolve_crossing_half_size_cells
 
 
 def _plan_for(schematic, module) -> CrossingPlan:

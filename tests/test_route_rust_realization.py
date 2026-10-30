@@ -3,8 +3,7 @@ from __future__ import annotations
 import klayout.db as kdb
 from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
-
-from translation.route_rust_realization import (
+from photonic_router.records.route_rust_realization import (
     _add_route_polygon,
     _crossing_clip_regions_by_net_id,
 )

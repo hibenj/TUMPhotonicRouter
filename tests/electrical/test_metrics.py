@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/metrics.py.
+"""Tests for python/photonic_router/electrical/metrics.py.
 
 The pad-wire quality numbers (length, Manhattan distance, detour, bend
 count) reported into ``ElectricalVerificationResult.metrics``.
@@ -7,17 +7,12 @@ count) reported into ``ElectricalVerificationResult.metrics``.
 from __future__ import annotations
 
 import pytest
-
-from tests.electrical.support import _terminal, _verification_obstacle_map
-from tests.fixtures.synthetic_layouts import (
-    single_heater_schematic as build_single_heater_schematic,
-)
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.electrical.metrics import _bend_count, _polyline_length
-from translation.electrical.net_geometry import (
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from photonic_router.electrical.metrics import _bend_count, _polyline_length
+from photonic_router.electrical.net_geometry import (
     detailed_route_centerline_points as _detailed_route_centerline_points,
 )
-from translation.electrical.types import (
+from photonic_router.electrical.types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
     DetailedBundleRoute,
@@ -26,8 +21,13 @@ from translation.electrical.types import (
     PadPlan,
     PadSlot,
 )
-from translation.electrical.verification import verify_electrical_routing
-from translation.layout_from_schematic import layout_from_schematic
+from photonic_router.electrical.verification import verify_electrical_routing
+from photonic_router.records.layout_from_schematic import layout_from_schematic
+
+from tests.electrical.support import _terminal, _verification_obstacle_map
+from tests.fixtures.synthetic_layouts import (
+    single_heater_schematic as build_single_heater_schematic,
+)
 
 
 def test_pad_wire_metrics_report_consistent_length_manhattan_and_bends():

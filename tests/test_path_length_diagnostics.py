@@ -5,9 +5,20 @@ bookkeeping by physical edge."""
 from __future__ import annotations
 
 import pytest
-from photonic_router.path_length_graph import (
+from photonic_router.plm.path_length_diagnostics import (
+    format_path_length_acceptance_failure,
+    matching_group_diagnostics_to_info,
+    output_matching_diagnostics_to_info,
+    path_length_acceptance_summary,
+)
+from photonic_router.plm.path_length_graph import (
     PortRef,
     RoutedEdgeKey,
+)
+from photonic_router.records.route_rust_types import MeanderEdgeReport
+from photonic_router.routing.route_rust import (
+    RoutedNetRecord,
+    analyze_path_length_matching,
 )
 
 from tests.fixtures.path_length import (
@@ -18,17 +29,6 @@ from tests.fixtures.synthetic_layouts import (
     PATH_LENGTH_NODE_TYPES,
     path_length_schematic,
 )
-from translation.path_length_diagnostics import (
-    format_path_length_acceptance_failure,
-    matching_group_diagnostics_to_info,
-    output_matching_diagnostics_to_info,
-    path_length_acceptance_summary,
-)
-from translation.route_rust import (
-    RoutedNetRecord,
-    analyze_path_length_matching,
-)
-from translation.route_rust_types import MeanderEdgeReport
 
 
 def test_matching_group_diagnostics_reports_post_meander_residuals():

@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/terminal_contacts.py and port_access.py.
+"""Tests for python/photonic_router/electrical/terminal_contacts.py and port_access.py.
 
 Terminal contact selection, terminal access-path trimming, and the
 role-specific port access anchors built off them.
@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from translation.electrical.port_access import build_terminal_port_access
-from translation.electrical.terminal_contacts import select_terminal_contact, terminal_access_path
-from translation.electrical.types import ElectricalPortRef, ElectricalTerminal
+from photonic_router.electrical.port_access import build_terminal_port_access
+from photonic_router.electrical.terminal_contacts import (
+    select_terminal_contact,
+    terminal_access_path,
+)
+from photonic_router.electrical.types import ElectricalPortRef, ElectricalTerminal
 
 
 def test_terminal_contact_selects_physical_port_not_logical_center():

@@ -337,19 +337,18 @@ RUST_SIDE_NAMES: frozenset[str] = frozenset(
 
 
 # Python-side names (Milestone 1 Slice 2 of the same ExecPlan): every
-# PHOTONIC_ROUTER_* variable `translation/`, `routing_flow*.py` and
-# `python/photonic_router/` read outside `env_overlay.py` itself, one entry
+# PHOTONIC_ROUTER_* variable `python/photonic_router/` reads outside `env_overlay.py` itself, one entry
 # per distinct name. `PHOTONIC_ROUTER_SYNTH` (benchmarks/permutation_synthetic.py,
 # a benchmark generator parameter, not a routing knob) and the dead
 # `LAYER_ORDER` comment mention are deliberately excluded -- out of scope
 # for both slices.
 PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
     {
-        # Crossing plan (translation/route_rust_crossing_plan.py)
+        # Crossing plan (python/photonic_router/crossings/route_rust_crossing_plan.py)
         "PHOTONIC_ROUTER_COLLISION_CROSSING_SEARCH_LOSS_UM",
         "PHOTONIC_ROUTER_PLANNED_CROSSING_SEARCH_LOSS_UM",
         "PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET",
-        # Crossing grid (translation/preplaced_crossing_grids.py, crossing_structures.py)
+        # Crossing grid (python/photonic_router/crossings/preplaced_crossing_grids.py, crossing_structures.py)
         "PHOTONIC_ROUTER_CROSSING_GRID_BAND_MARGIN_UM",
         "PHOTONIC_ROUTER_CROSSING_GRID_BEND_RADIUS_UM",
         "PHOTONIC_ROUTER_CROSSING_GRID_COLUMN_LEAD_UM",
@@ -358,7 +357,7 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_CROSSING_GRID_CORNERS",
         "PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS",
         "PHOTONIC_ROUTER_TRACE_COLUMN_GRID",
-        # Fan-out access (translation/route_rust.py)
+        # Fan-out access (python/photonic_router/routing/route_rust.py)
         "PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES",
         "PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS",
         "PHOTONIC_ROUTER_FANOUT_ACCESS_MODE",
@@ -370,11 +369,11 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS",
         "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
         "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
-        # Search tuning (translation/route_rust.py)
+        # Search tuning (python/photonic_router/routing/route_rust.py)
         "PHOTONIC_ROUTER_MIN_BEND_WEIGHT",
         "PHOTONIC_ROUTER_HEAP_TIE_BREAKER",
         "PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT",
-        # Flow diagnostics (translation/route_rust.py, route_rust_endpoint_correction.py)
+        # Flow diagnostics (python/photonic_router/routing/route_rust.py, route_rust_endpoint_correction.py)
         "PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT",
         "PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE",
         "PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_NETS",
@@ -383,7 +382,7 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_TRACE_GRID",
         "PHOTONIC_ROUTER_TRACE_RUNWAY_INSTANCE",
         "PHOTONIC_ROUTER_TRACE_TERMINAL_BUMP_DISTANCE_CHECKS",
-        # Debug artifact (routing_flow_verification.py)
+        # Debug artifact (python/photonic_router/flow_verification.py)
         "PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE",
     }
 )
@@ -660,9 +659,8 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
 
     from gdsfactory.component import Component
     from gdsfactory.gpdk import get_generic_pdk
-
-    from translation import route_rust
-    from translation.routing import session as routing_session
+    from photonic_router.routing import route_rust
+    from photonic_router.routing import session as routing_session
 
     get_generic_pdk().activate()
 

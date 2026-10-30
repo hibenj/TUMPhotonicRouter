@@ -19,9 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-
-from routing_flow import (
+from photonic_router.flow import load_benchmark, run_routing_flow
+from photonic_router.flow_config import (
     SCRIPT_BEND_RADIUS_UM,
     SCRIPT_CHIP_ADD_X_UM,
     SCRIPT_CHIP_ADD_Y_UM,
@@ -29,11 +28,10 @@ from routing_flow import (
     SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     SCRIPT_RIPUP_HISTORY_INCREMENT,
     SCRIPT_RIPUP_HISTORY_WEIGHT,
-    RipupRerouteConfig,
-    RoutingFlowStats,
-    load_benchmark,
-    run_routing_flow,
 )
+from photonic_router.flow_stats import RoutingFlowStats
+from photonic_router.routing.route_rust import RipupRerouteConfig
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 DEFAULT_BENCHMARKS = ("heater_s_mod", "benes_4x4", "benes_8x8")
 PERF_SMOKE_BENCHMARKS = ("heater_s_mod", "clements_8x8", "benes_4x4", "benes_8x8")

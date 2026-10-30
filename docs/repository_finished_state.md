@@ -314,14 +314,14 @@ visible.
 
 | Priority | Task | Main files likely involved |
 | --- | --- | --- |
-| 1 | Stabilize final-geometry verification for crossing correctness | `translation/photonic_verification.py`, `translation/route_rust_realization.py`, `translation/route_rust_records.py`, crossing verification tests |
-| 2 | Stabilize router-discovered crossing search without topology expected pairs | `src/astar.rs`, `src/crossings.rs`, `src/py_router.rs`, `translation/route_rust.py` |
-| 3 | Preserve crossing decisions through port snapping and geometry realization | `translation/route_rust_realization.py`, `src/geometry_realization.rs`, route record types, primitive/crossing component helpers |
-| 4 | Prove `benes_4x4`, `benes_8x8`, and `multiportmmi_8x8` with exact commands, artifacts, and verification status | `benchmarks/`, `benchmark_metadata.py`, `scripts/benchmark_photonic.py`, `routing_flow.py` |
-| 5 | Preserve existing PLM regression behavior while crossing work changes route records | `src/meander.rs`, `translation/route_rust_meanders.py`, `translation/path_length_candidates.py`, PLM tests |
-| 6 | Define a route-induced insertion-loss model shared by A* route selection and reports | `src/astar.rs`, `src/primitives.rs`, `translation/route_rust.py`, benchmark scripts |
-| 7 | Add parallel-foldback PLM candidate planning | `src/meander.rs`, `translation/route_rust_meanders.py`, `translation/path_length_candidates.py` |
-| 8 | Optionally keep topology-precomputed crossing mode as a separately selectable later comparison mode | `python/photonic_router/topology_analysis.py`, `python/photonic_router/crossing_plan.py`, `translation/route_rust.py`, `src/crossings.rs` |
+| 1 | Stabilize final-geometry verification for crossing correctness | `python/photonic_router/verify/photonic_verification.py`, `python/photonic_router/records/route_rust_realization.py`, `python/photonic_router/records/route_rust_records.py`, crossing verification tests |
+| 2 | Stabilize router-discovered crossing search without topology expected pairs | `src/astar.rs`, `src/crossings.rs`, `src/py_router.rs`, `python/photonic_router/routing/route_rust.py` |
+| 3 | Preserve crossing decisions through port snapping and geometry realization | `python/photonic_router/records/route_rust_realization.py`, `src/geometry_realization.rs`, route record types, primitive/crossing component helpers |
+| 4 | Prove `benes_4x4`, `benes_8x8`, and `multiportmmi_8x8` with exact commands, artifacts, and verification status | `benchmarks/`, `python/photonic_router/benchmark_metadata.py`, `scripts/benchmark_photonic.py`, `routing_flow.py` |
+| 5 | Preserve existing PLM regression behavior while crossing work changes route records | `src/meander.rs`, `python/photonic_router/plm/route_rust_meanders.py`, the removed `path_length_candidates.py`, PLM tests |
+| 6 | Define a route-induced insertion-loss model shared by A* route selection and reports | `src/astar.rs`, `src/primitives.rs`, `python/photonic_router/routing/route_rust.py`, benchmark scripts |
+| 7 | Add parallel-foldback PLM candidate planning | `src/meander.rs`, `python/photonic_router/plm/route_rust_meanders.py`, the removed `path_length_candidates.py` |
+| 8 | Optionally keep topology-precomputed crossing mode as a separately selectable later comparison mode | `python/photonic_router/crossings/topology_analysis.py`, `python/photonic_router/crossings/crossing_plan.py`, `python/photonic_router/routing/route_rust.py`, `src/crossings.rs` |
 
 ## Success Criterion
 

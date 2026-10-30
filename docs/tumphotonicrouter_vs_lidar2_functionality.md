@@ -61,14 +61,14 @@ loss optimization.
 
 | Capability area | Main local files |
 | --- | --- |
-| End-to-end flow | `routing_flow.py`, `translation/layout_from_schematic.py`, `translation/route_rust.py` |
+| End-to-end flow | `routing_flow.py`, `python/photonic_router/records/layout_from_schematic.py`, `python/photonic_router/routing/route_rust.py` |
 | Rust A* and primitives | `src/astar.rs`, `src/primitives.rs`, `src/search/astar/simple_route.rs` |
 | Obstacle and dynamic routing database | `src/obstacle_map.rs`, `src/static_obstacle_builder.rs`, `python/photonic_router/static_obstacle_builder.py` |
-| Crossing constraints and topology planning | `src/crossings.rs`, `src/py_router.rs`, `python/photonic_router/topology_analysis.py`, `python/photonic_router/crossing_plan.py` |
-| Geometry realization and endpoint handling | `src/geometry_realization.rs`, `translation/route_rust.py` |
+| Crossing constraints and topology planning | `src/crossings.rs`, `src/py_router.rs`, `python/photonic_router/crossings/topology_analysis.py`, `python/photonic_router/crossings/crossing_plan.py` |
+| Geometry realization and endpoint handling | `src/geometry_realization.rs`, `python/photonic_router/routing/route_rust.py` |
 | Rip-up, repair, and history | `src/py_router.rs`, `src/obstacle_map.rs` |
-| Path-length matching and meanders | `python/photonic_router/path_length_graph.py`, `translation/path_length_requirements.py`, `translation/route_rust_meanders.py`, `src/meander.rs` |
-| Verification and diagnostics | `translation/photonic_verification.py`, `scripts/benchmark_photonic.py`, debug outputs under `build/` |
+| Path-length matching and meanders | `python/photonic_router/plm/path_length_graph.py`, `python/photonic_router/plm/path_length_requirements.py`, `python/photonic_router/plm/route_rust_meanders.py`, `src/meander.rs` |
+| Verification and diagnostics | `python/photonic_router/verify/photonic_verification.py`, `scripts/benchmark_photonic.py`, debug outputs under `build/` |
 
 ## Practical Interpretation
 

@@ -7,13 +7,18 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import klayout.db as kdb
+import photonic_router.verify.photonic_verification as photonic_verification_module
 from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
-from photonic_router.path_length_graph import PortRef
+from photonic_router.plm.path_length_graph import PortRef
+from photonic_router.records.route_rust_realization import (
+    build_realization_router,
+    realize_routed_net_records,
+    realized_record_polygons,
+)
+from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.static_obstacle_builder import _load_rust_backend
-
-import translation.photonic_verification as photonic_verification_module
-from translation.photonic_verification import (
+from photonic_router.verify.photonic_verification import (
     PhotonicVerificationIssue,
     _BoxBucketIndex,
     _combined_region,
@@ -33,12 +38,6 @@ from translation.photonic_verification import (
     _verify_self_intersecting_routes,
     verify_photonic_routing,
 )
-from translation.route_rust_realization import (
-    build_realization_router,
-    realize_routed_net_records,
-    realized_record_polygons,
-)
-from translation.route_rust_types import RoutedNetRecord
 
 get_generic_pdk().activate()
 
@@ -1264,7 +1263,7 @@ def _component_path_region(
     """Oracle for `test_realized_record_region_equals_component_path`.
 
     A verbatim copy of `_realized_record_region`
-    (`translation/photonic_verification.py`) as it read before Milestone 4
+    (`python/photonic_router/verify/photonic_verification.py`) as it read before Milestone 4
     step 2 of `.agent/execplans/2026-09-24-verifier-speed-on-large-layouts.md`:
     realize the record into a scratch `Component` and read the layer back as
     a region. `realize_routed_net_records`'s outward behaviour for a given
@@ -1426,12 +1425,11 @@ def test_realized_record_region_equals_component_path():
     # `benchmarks/heater_s_mod.py`'s `STABLE_ROUTING_FLAGS`, the way
     # `tests/e2e/test_routing_flow_stats.py::test_heater_s_mod_90_degree_plm_regression`
     # loads and routes it), every routed record.
+    from photonic_router import benchmark_metadata
+    from photonic_router.flow import load_benchmark
+    from photonic_router.records.layout_from_schematic import layout_from_schematic
+    from photonic_router.routing.api import route_match_and_realize
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-
-    import benchmark_metadata
-    from routing_flow import load_benchmark
-    from translation.layout_from_schematic import layout_from_schematic
-    from translation.routing.api import route_match_and_realize
 
     schematic = load_benchmark("heater_s_mod")
     unrouted_layout = layout_from_schematic(schematic)

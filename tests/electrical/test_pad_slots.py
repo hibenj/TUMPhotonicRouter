@@ -1,4 +1,4 @@
-"""Tests for translation/electrical/pad_slots.py.
+"""Tests for python/photonic_router/electrical/pad_slots.py.
 
 Stage 6 (``PadPlanner``): assigning used electrical nets to legal pad-pitch
 slots, both forced and automatic pad-row placement.
@@ -9,6 +9,9 @@ from __future__ import annotations
 from itertools import pairwise
 
 import pytest
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
+from photonic_router.electrical.pad_slots import pad_access_bbox
+from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from tests.fixtures.synthetic_layouts import (
     multi_heater_schematic as build_multi_heater_schematic,
@@ -19,9 +22,6 @@ from tests.fixtures.synthetic_layouts import (
 from tests.fixtures.synthetic_layouts import (
     single_heater_schematic as build_single_heater_schematic,
 )
-from translation.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from translation.electrical.pad_slots import pad_access_bbox
-from translation.layout_from_schematic import layout_from_schematic
 
 
 def test_pad_plan_assigns_slots_without_realizing_geometry():
@@ -302,7 +302,7 @@ def test_auto_pad_channel_height_uses_the_channel_routers_track_count(monkeypatc
     the global count can exceed, cascade_12_folded) and not the global
     route count (which would leave most of the channel empty)."""
 
-    import translation.electrical.river_routing as rr
+    import photonic_router.electrical.river_routing as rr
 
     track_counts: list[int] = []
     original_assign_tracks = rr.assign_tracks
@@ -328,7 +328,7 @@ def test_auto_pad_channel_height_uses_the_channel_routers_track_count(monkeypatc
     assert result.detailed_bundle_routes.bundle_fallback_reasons == {}
     assert track_counts, "expected the channel router to assign tracks"
 
-    from translation.electrical.wire_geometry import wire_reservation_radius_cells
+    from photonic_router.electrical.wire_geometry import wire_reservation_radius_cells
 
     individual_route_count = len(result.detailed_bundle_routes.routes)
     router_track_count = track_counts[-1]
@@ -359,7 +359,7 @@ def test_auto_pad_assignment_is_monotone_in_the_lanes_and_centered_on_each_bundl
     on its exit side.
     """
 
-    import translation.electrical.river_routing as rr
+    import photonic_router.electrical.river_routing as rr
 
     captured: list = []
     original = rr.assign_tracks
@@ -425,7 +425,7 @@ def test_every_cascade_wire_channel_routes_with_short_runs(electrical_benchmark_
     and the channel holds four tracks (measured; the blocks needed ten).
     """
 
-    import translation.electrical.river_routing as rr
+    import photonic_router.electrical.river_routing as rr
 
     captured: list = []
     original = rr.assign_tracks
@@ -459,9 +459,9 @@ def test_bus_pad_keeps_escape_clear_of_individual_pads(electrical_benchmark_resu
     escape's realized band (``metal_realization.common_bus_escape_rects``).
     """
 
-    from translation.electrical.metal_realization import common_bus_escape_rects
-    from translation.electrical.pad_slots import common_bus_pad_slot_gap
-    from translation.electrical.pitch_grid import bbox_to_grid_cells
+    from photonic_router.electrical.metal_realization import common_bus_escape_rects
+    from photonic_router.electrical.pad_slots import common_bus_pad_slot_gap
+    from photonic_router.electrical.pitch_grid import bbox_to_grid_cells
 
     result = electrical_benchmark_result("heater_lanes_20")
     config = ElectricalRoutingConfig()
@@ -509,7 +509,7 @@ def test_assign_pad_slots_centers_an_eight_row_bundle_on_its_lane_band():
     run longer than 400 um (40 cells); the old one-sided block had 810 um.
     """
 
-    from translation.electrical.pad_slots import assign_pad_slots
+    from photonic_router.electrical.pad_slots import assign_pad_slots
 
     lanes = [652 + 3 * i for i in range(8)]
     slots = [500 + 13 * k for k in range(40)]
@@ -532,7 +532,7 @@ def test_assign_pad_slots_keeps_two_facing_bundles_in_lane_order():
     of the first's.
     """
 
-    from translation.electrical.pad_slots import assign_pad_slots
+    from photonic_router.electrical.pad_slots import assign_pad_slots
 
     lanes = [100, 103, 106, 200, 203, 206]
     slots = [0 + 13 * k for k in range(30)]
@@ -545,7 +545,7 @@ def test_assign_pad_slots_keeps_two_facing_bundles_in_lane_order():
 
 
 def test_assign_pad_slots_honours_the_empty_slot_gap_and_refuses_too_few_slots():
-    from translation.electrical.pad_slots import assign_pad_slots
+    from photonic_router.electrical.pad_slots import assign_pad_slots
 
     lanes = [10, 11, 12]
     slots = [13 * k for k in range(10)]
@@ -563,7 +563,7 @@ def test_assign_pad_slots_with_origin_finds_the_offset_that_lands_pads_on_lanes(
     assigned index is the configured left margin.
     """
 
-    from translation.electrical.pad_slots import assign_pad_slots_with_origin
+    from photonic_router.electrical.pad_slots import assign_pad_slots_with_origin
 
     schematic = build_single_heater_schematic()
     component = layout_from_schematic(schematic)
@@ -579,8 +579,8 @@ def test_assign_pad_slots_with_origin_finds_the_offset_that_lands_pads_on_lanes(
     assert indices == [2, 3, 4, 5, 6]
     # the pad column as the channel router reads it: the slot's access cells'
     # center column (the same chain ``assign_pad_slots_with_origin`` uses)
-    from translation.electrical.pad_slots import _make_slot, pad_access_cells
-    from translation.electrical.river_routing import pad_column_cell
+    from photonic_router.electrical.pad_slots import _make_slot, pad_access_cells
+    from photonic_router.electrical.river_routing import pad_column_cell
 
     for lane, index in zip(lanes, indices, strict=True):
         slot = _make_slot(index, origin_x_um, obstacle_map, config, config.pad_offset_um)

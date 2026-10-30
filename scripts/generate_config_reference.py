@@ -51,8 +51,7 @@ from photonic_router import cli as cli_module
 from photonic_router import config as config_module
 from photonic_router import env_overlay as env_overlay_module
 from photonic_router import flow_options as flow_options_module
-
-from translation.electrical import types as electrical_types_module
+from photonic_router.electrical import types as electrical_types_module
 
 OUTPUT_PATH = REPO_ROOT / "docs" / "CONFIGURATION.md"
 
@@ -73,11 +72,11 @@ SPECIAL_ENV_PATHS: dict[tuple[str, ...], tuple[str, ...]] = {
     ),
 }
 
-#: `ElectricalRoutingConfig` (`translation/electrical/types.py`) gives every field a
+#: `ElectricalRoutingConfig` (`python/photonic_router/electrical/types.py`) gives every field a
 #: value but no per-field doc comment or trailing docstring, so `_field_docs` (which
 #: reads exactly those two forms out of `config.py` and `flow_options.py`) finds
 #: nothing for this class. Every description below was written by reading the field's
-#: use across `translation/electrical/*.py` (grep `config.<field>`), not extracted
+#: use across `python/photonic_router/electrical/*.py` (grep `config.<field>`), not extracted
 #: from source; Task 2 of the 2026-09-28 electrical-docs slice leaves `types.py`
 #: itself out of scope, so the descriptions live here instead of as comments there.
 ELECTRICAL_FIELD_DESCRIPTIONS: dict[str, str] = {
@@ -548,7 +547,7 @@ def render() -> str:
         "  choices: which benchmark, which stages run, which artifacts are written.",
         "  It is the second argument of `photonic_router.flow.route_benchmark`. Its",
         "  `electrical.electrical_config` field is a third dataclass,",
-        "  `ElectricalRoutingConfig` (`translation/electrical/types.py`), 37 fields deep",
+        "  `ElectricalRoutingConfig` (`python/photonic_router/electrical/types.py`), 37 fields deep",
         "  and given its own section below rather than appearing inline.",
         "",
         "Precedence, lowest to highest (`python/photonic_router/config_loading.py`,",
@@ -584,7 +583,7 @@ def render() -> str:
     lines.append("")
     lines.append(
         "Reached through `FlowOptions.electrical.electrical_config` "
-        "(`translation/electrical/types.py`), and from there passed to every stage of "
+        "(`python/photonic_router/electrical/types.py`), and from there passed to every stage of "
         "the electrical pipeline by `route_electrical_heaters` (`docs/ARCHITECTURE.md`, "
         '"the heater-metal pipeline as stages"). `cli.py::_flow_options` builds one '
         "`ElectricalRoutingConfig(...)` from seven `--electrical-*` flags; every other "
