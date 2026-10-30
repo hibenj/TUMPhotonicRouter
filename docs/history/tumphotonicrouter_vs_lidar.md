@@ -226,7 +226,7 @@ architecture.
 ## Claim Boundaries
 
 - The performance argument here is code-structure based. Use
-  `docs/photonic_baseline.md`, `scripts/benchmark_photonic.py`, and
+  `docs/history/photonic_baseline.md`, `scripts/benchmark_photonic.py`, and
   `scripts/profile_astar.py` for measured local numbers.
 - The comparison should not be read as a final quality benchmark until the same
   benchmark suite is run through both projects on the same machine and process.

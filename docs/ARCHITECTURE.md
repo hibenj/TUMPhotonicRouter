@@ -1,888 +1,419 @@
 # Architecture
 
-TUMPhotonicRouter routes photonic integrated circuits: given a schematic
-(instances of couplers, MMIs, heaters, and the nets between their ports) and a
-placement, it produces a GDS layout in which every net is a waveguide path that
-satisfies the geometric design rules (bend radius, clearance) and in which
-waveguide crossings are realized by crossing cells.
+This document describes the router as the tree is now. It was rewritten from
+scratch in phase 8 slice D of the 2026-10 do-over; the previous version, with
+its milestone narrative and the removal lists, stays reachable in git history
+(`git show cdecf9a:docs/ARCHITECTURE.md`). What changed when, and why, is in
+[`CHANGELOG.md`](../CHANGELOG.md); the state that produced the paper's numbers
+is the tag `date2027-results` (section 11).
 
-Rust owns the grid database and the search; Python owns gdsfactory, the
-benchmarks, the stage sequence and every artifact. Both sides are organised the
-same way: one declared interface per replaceable concern (a Rust `trait`, a
-Python `typing.Protocol`), one implementation file per concern, and a top-level
-flow that can be read as a sequence of calls.
-
-This document is the map. The knobs themselves are in
-[`docs/CONFIGURATION.md`](CONFIGURATION.md) (generated from the dataclasses by
-`scripts/generate_config_reference.py`); the paper's numbers and their
-provenance are in [`docs/DATE2027_REPRODUCTION.md`](DATE2027_REPRODUCTION.md);
-the restructuring that produced this layout is
-`.agent/execplans/2026-09-22-modular-readable-router-restructure.md`; the
-electrical heater-metal pipeline (section 2's `python/photonic_router/electrical/`
-subsection) was named as stages by
-`.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`'s
-Milestone 4.
-
-**How to read it.** Every claim below names the file it can be checked in.
-Line counts are `wc -l` on the branch `restructure/modular-engine` at
-2026-09-24 (Milestone 6 complete, commit `18530b8`) for sections 1 and 3-10,
-and at 2026-09-28 (Electrical Milestone 4 slice 4 complete, commit `c71c6a5`)
-for the `python/photonic_router/electrical/` subsection of section 2; they are orders of
-magnitude, not contracts. Historical file names appear only where a paragraph
-says explicitly that they are historical.
+Line counts are `wc -l` at the commit that introduced this document, rounded;
+they are orders of magnitude, not contracts. Rust paths without a crate
+prefix (`src/...`) are relative to `crates/router-core/`.
 
 Contents:
 
-1. [The Rust crate, module by module](#1-the-rust-crate-module-by-module)
-2. [The Python side, module by module](#2-the-python-side-module-by-module)
-3. [The flow: the literal sequence of stage calls](#3-the-flow-the-literal-sequence-of-stage-calls)
+1. [What the router does](#1-what-the-router-does)
+2. [The pipeline, stage by stage](#2-the-pipeline-stage-by-stage)
+3. [The data model](#3-the-data-model)
 4. [The search interface, and how to add an engine](#4-the-search-interface-and-how-to-add-an-engine)
 5. [The negotiation loop, its policies, and how to add a policy](#5-the-negotiation-loop-its-policies-and-how-to-add-a-policy)
-6. [Configuration objects and precedence](#6-configuration-objects-and-precedence)
-7. [The three paper configurations](#7-the-three-paper-configurations)
-8. [Build and test commands](#8-build-and-test-commands)
-9. [Removal candidates (Milestone 8)](#9-removal-candidates-milestone-8)
-10. [Shared state between stages](#10-shared-state-between-stages)
-
-
-## 1. The Rust crate, module by module
-
-The Rust side is a Cargo workspace (phase 8 slice B of the 2026-10 do-over;
-`Cargo.toml` at the root holds the members, the shared dependency versions and
-the clippy allows). `crates/router-core` is the engine: pure Rust, no `pyo3`
-dependency, so `cargo test -p router-core` runs without a Python interpreter.
-`crates/router-py` is the PyO3 surface only: it wraps the core's `Router` in
-the `PyPhotonicRouter` class, converts every argument and result at that edge,
-and builds the extension module `photonic_router._rust` (maturin reads it
-through `pyproject.toml`'s `manifest-path`). Errors the core raised as Python
-exceptions before are `router_core::RouterError` values now
-(`RouterError::Config` becomes a `ValueError` in `router-py`'s `py_err`);
-the core's other fallible calls return `Result<_, String>` and the binding
-picks the exception per call site, as it always did.
-
-`crates/router-core/src/lib.rs` is the core's crate root: it declares the
-modules and re-exports the public names `router-py` and the tests use. It
-contains no logic. Below it are two module trees -- `search/` (one net) and
-`engine/` (many nets) -- plus the grid and geometry modules both are built on.
-The Rust paths in this document (`src/...`) are relative to
-`crates/router-core/` unless they name `crates/router-py/`.
-
-### `src/search/` -- one net, one path
-
-`src/search/mod.rs` (128 lines) owns the search *interface* and nothing else:
-`SearchEnvironment` (the obstacle map and primitive library a search runs
-against), `SearchRequest` (source, target, port-open cells, and the two
-optional shapes `DynamicExpansion` and `CrossingSearch`), `SearchOutcome`
-(route plus counters), the `NetSearch` trait with its single `search` method,
-and `anchor_open_cells`, the one helper both engines use to build their anchor
-set. It must not know how any engine works, must not touch Python, and must not
-know that a multi-net loop exists.
-
-`src/search/state.rs` (269 lines) owns the state and result types shared by
-every engine: `State` (grid position plus heading, with angle normalisation),
-`RouteResult`, `RouteSearchStats`. `src/search/geometry.rs` (272 lines) owns the
-grid-polyline geometry the engines and the reconstruction step share (waypoint
-compression, orientation and segment-intersection primitives). Neither knows
-about costs, heuristics or obstacle ownership.
-
-`src/search/grid_dijkstra.rs` (474 lines) is the second `NetSearch`
-implementation, `GridDijkstraSearch`: uniform cost (f = g), the full grid, no
-routing window and no crossing hook, built by calling the A* kernel's own
-building blocks. It exists to prove the seam is real and to serve as an
-optimality oracle in tests; it refuses a crossing request with an
-`unsupported_request` stat. It must not acquire crossing support -- that is what
-makes it a useful oracle.
-
-`src/search/test_support.rs` (417 lines, `#[cfg(test)]`) owns the search-side
-fixtures; production code must not reach into it.
-
-### `src/search/astar/` -- the production engine
-
-The A* engine is one module tree so that each concern of the kernel can be read
-on its own. `mod.rs` (1,033 lines) owns `AStarSearch`, the two stable
-free-function conveniences (`route_single_net`, `route_single_net_with_config`)
-and `run_search`, the single body every request shape flows through.
-`kernel.rs` (1,479 lines) owns the loop itself (`run`), generic over a
-`CrossingLegalityHook`: build grid, seed, pop, goal test, candidate moves,
-legality, cost, push-or-improve. `config.rs` (169 lines) owns `AStarConfig` and
-the small enums that parameterise a search. `cost.rs` (546 lines) owns every
-g-cost term as a named function (`length_cost`, `bend_cost`,
-`heuristic_estimate`, `step_cost`) -- no cost arithmetic belongs anywhere else.
-`heuristic.rs` (439 lines) owns the plain, diagonal and heading-aware
-estimates. `expansion.rs` (2,459 lines) owns move generation
-(`candidate_moves`), the reject rules (`move_is_legal` returning a
-`MoveVerdict`) and the push-or-improve steps. `window.rs` (664 lines) owns
-routing-window bookkeeping and the progressively-larger-window driver.
-`dense.rs` owns the dense per-search storage (`DenseRoutingGrid`,
-bitsets, owner grids). `crossing_rules.rs` (2,254 lines,
-plus `crossing_rules/tests.rs` 3,368) owns crossing legality and the
-`CrossingLegalityHook` trait with its `NoCrossingHook` / `LiveCrossingHook`
-implementations. `simple_route.rs` (3,341 lines) owns the simple route tried
-before full A*: the straight/L/Z/turnaround candidates, the obstacle queries
-they are checked against and the conversion to a `RouteResult` (phase 2 slice
-F merged the former `src/simple_routes.rs` into it). `diagnostics.rs` (833 lines) owns the tracing and report
-printers (which take a `&mut dyn Write`, stderr in production, so tests can
-read them). `svg.rs` (116 lines) owns debug SVG export. None of these modules
-may read configuration from the environment or commit anything to the obstacle
-map: a search reads the map, the engine writes it.
-
-### `src/engine/` -- many nets, commitment, repair
-
-`src/engine/mod.rs` owns the `Router` struct (until phase 8 slice B the
-`PyPhotonicRouter` pyclass itself) -- the
-router's per-run state: the obstacle map, the primitive library, the crossing
-context, the committed routes and opened cells, the history/congestion
-bookkeeping, the typed `RouterConfig`, and `search_engine: Box<dyn NetSearch +
-Send + Sync>`, chosen once at construction by `search_engine_for`. It declares
-the submodules and owns no algorithm.
-
-`jobs.rs` (331 lines) owns the per-net job and batch types (`NativeRouteJob`,
-the repair batch state and its defaults). `cells.rs` (632 lines) owns the cell
-arithmetic: footprint inflation, port footprint cells, clearance-exempt cells,
-commit and core cells. `commit.rs` (805 lines) owns committing a route to the
-obstacle map and everything that accumulates on a successful commit (history,
-long-straight congestion, crossing spacing, post-commit guidance).
-`search_call.rs` owns `SearchCall`, the value that describes one
-search-and-commit of one net: the job, the three radii, the kind (`Plain` or
-`Repair`), the fail-fast budget, the history weight, the long-straight
-override, the crossing-free flag and the probe-guided partners. `search_calls.rs`
-(about 2,100 lines) owns the bridge from such a call to a `SearchRequest`: the
-one `route_and_commit` body (phase 3 slice B of the 2026-10 do-over merged the
-former native and repair copies; the four ways a repair call differs are fields
-of the call or branches on its kind), `astar_config`, the collision-crossing
-search, and the crossing search configuration, and it calls
-`self.search_engine.search(...)`. Nothing per attempt lives on the router
-struct any more: every knob a search needs arrives in its `SearchCall`. `crossing_reservation.rs` (2,830
-lines) owns crossing reservations, partner sets and the realized-crossing
-validation. `crossing_geometry.rs` (about 1,200 lines) owns the pure geometry used
-there (segment intersection, point-segment distance, parallel overlap,
-collinearity, centerline compression) and the one crossing-legality predicate
-(below). `endpoint_correction.rs` (1,295 lines)
-owns the checked grid-to-port correction pass. `diagnostics.rs` (248 lines)
-owns the trace records and the batch timers. `test_support.rs` (750 lines,
-`#[cfg(test)]`) owns the engine-side fixtures. No module here implements a search; each one calls the interface of
-section 4.
-
-**Crossing legality.** Behind `RouterConfig::crossing.unified_legality`
-(`PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`, default off; do-over phase 4
-slice B) there is one predicate, `crossing_geometry::crossing_legality(
-&CrossingCandidate, &CrossingLegalityRule) -> CrossingVerdict`: one
-perpendicularity test (normalised dot product within 1e-6; grid angles map onto
-it through `grid_angle_direction`), one margin `required_margin_cells =
-half_size + bend_runout` on the GRID route (the compressed waypoints, on which a
-bend contributes its arms as straight cells) for the route's run before the
-crossing and both sides of the partner, `half_size` cells of pure straight after
-it (the search's straight-after debt, paid by straight primitives only), then
-the spacing term (slice B-2): two crossing elements never share a grid cell --
-the candidate's reservation window, every cell within `half_size` of its centre
-on both axes (`[floor(c-h), ceil(c+h)]`, the window the reservations are built
-from), must be disjoint from the window of the nearest other crossing of the
-same route (`too_close_same_route`) and of the nearest crossing already
-registered on the map by other nets (`too_close_registered`; the partner's
-crossings with third nets among them); for grid-point centres this is a centre
-distance of `2 * half_size + 1` cells on one axis (5 cells = 10 um on the paper's
-2 um grid). The callers supply the neighbours
-(`crossing_geometry::nearest_crossing_neighbour`): the search hook knows this
-move's earlier intersections and the partner's registered elements
-(`CrossingSearchPartner::registered_crossing_centres`; the kernel's chain check
-keeps the windows of earlier moves disjoint, since the search state carries no
-crossing positions), the commit check and the post-commit assessment know the
-route's other intersections and the registered events. Then `footprint_blocked`
-(a dynamic cell of a third net inside the element's `half_size` window) and
-`missing_event` (post-commit only: no registered `CrossingEvent` within 1.5
-cells). The verdict is `Legal` or the first failing reason (`not_perpendicular`,
-`margin_short_{route_before,route_after,partner}`,
-`too_close_{same_route,registered}`, `footprint_blocked`, `missing_event`). The
-verdict records (`crossing_verdicts()`) are committed state like the events: a
-rip-up drops a net's records and the braid repair's rollback restores them with
-the events (slice B-2; left behind, the records of a discarded reroute surfaced
-as phantom crossings in the Python verifier). With the switch on, the search hook
-(`crossing_rules.rs`, `crossing_move_outcome_with_segments`), the commit check
-(`invalid_crossing_intersections_for_route`) and the post-commit validation
-(`unified_crossing_assessment`, which also registers the events and records
-one `CrossingVerdictRecord` per realized intersection for the
-`crossing_verdicts()` binding) all call it with the router's one
-`crossing_legality_rule()`, so the search never produces a crossing the commit
-rejects; Python (`route_rust_crossing_verification.py`) then classifies realized
-crossings from those verdicts and does not re-decide them (the endpoint-access
-and shared-endpoint exemptions, the collinear-overlap check and the
-footprint-polygon overlap check are geometry and stay; `photonic_verification.py`
-still checks the realised GDS polygons). With the switch off, the three legacy
-paths run exactly as before -- the search's own checks, the grid check with its
-`half_size + bend_runout` before / `half_size` after rule, and the realized
-validator's `half_size * grid` margin on the realized centerline -- and Python
-re-decides from its own footprint geometry (`footprint_half_um` from the placed
-component's bounding box, `_crossing_footprint_blockers`). The 27-cell ablation
-decides which side stays; the later slice deletes the other.
-
-### `src/engine/negotiation/` -- the loop and its policies
-
-`mod.rs` (16 lines) is the module list. `loop_.rs` (1,257 lines, 711 of them
-code and 546 tests) owns the loop itself in three functions:
-`run_negotiated_batch(jobs, params) -> (RepairBatchState, NegotiationCounters)`
-(103 lines) is the rounds without PyO3, `route_net_this_round(..) -> NetOutcome`
-(100 lines) is one net's turn, and `global_ripup_round(.., &mut NetQueue, ..)`
-(98 lines) is LiDAR's `ripupfailedNets` at round end; the setup, the per-net
-`SearchArgs`, the braid requeue and the post-rip-up guidance are small helpers
-beside them, and the binding's `route_many_with_negotiated_repair_and_commit`
-(`crates/router-py/src/lib.rs`) is the thin converter above it (phase 3 slice D
-of the 2026-10 do-over). The batch arrives
-from Python as a list of `RouteJob` objects (the `#[pyclass]` in
-`crates/router-py/src/types.rs`: net id, source and target `State`, the opened,
-clearance-exempt and foreign-keep-out cell lists, the two port centers in
-micrometers, keyword-only constructor, read-only fields); `native_jobs_from_py`
-(`crates/router-py/src/convert.rs`) turns them into the engine's `NativeRouteJob`s once, at the boundary, and
-nothing below it sees Python (phase 3 slice E replaced the eight-field tuples
-the binding took before). The result stays a dictionary. Each *rule* the
-loop applies lives in its own module and can be replaced without touching the
-loop: `budget.rs` (206 lines, `AttemptKind`, `BudgetSchedule`,
-`LadderBudgets`), `crossing_free.rs` (102 lines, `CrossingFreePolicy`,
-`PlannedPairsOnly`, `Never`), `ripup.rs` (315 lines,
-`ripup_illegal_crossing_partners`, the local rip-up rule), `queue.rs` (263
-lines, `NetQueue` and the three tables the rules read, all behind methods),
-`attempt.rs` (371 lines, one attempt and its trace line), `probe.rs` (497
-lines, "who is blocking this net"), `braid.rs` (890 lines, the local swap of
-two crossing routes), `trace.rs` (108 lines, every
-`PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG` line of the loop but the per-attempt
-one). Section 5 reads the loop in full.
-
-### `crates/router-py/` -- the PyO3 surface
-
-`lib.rs` owns the `PyPhotonicRouter` class (`inner: Router`) and its
-`#[pymethods]` block (42 methods): every method Python can call on the
-router, and nothing else. The plain-data methods (static cells and
-rectangles, port openings, net cells, the raw obstacle views, rip-up) forward
-to the core methods of the same name (`crates/router-core/src/engine/api.rs`);
-the others convert the Python arguments, call the core and build the Python
-result. The engine helpers the block shares (`invalidate_meander_base_prefix`,
-`clear_static_cells`, `add_history_cells`, `effective_bend_radius_um`) are
-`Router` methods in the core; the long-straight record conversion stays in a
-plain `impl` block here. `lib.rs` also registers the `#[pymodule] _rust` and
-maps `RouterError` to Python (`py_err`). `static_obstacle.rs` owns
-`build_static_obstacle_map_rs` and the `PyStaticCellSet` handle over the
-core's `build_static_obstacle_map_from_geometry` and `StaticCellSet`.
-`tests.rs` holds the binding tests that read a Python result
-(`cargo test -p router-py`, with `PYO3_PYTHON`).
-`types.rs` owns the `#[pyclass]` configuration, job and result types
-(including `PyRouterConfig`, which validates the search engine name at
-construction) and their conversions into the core's plain structs
-(`GridSpec`, `PrimitiveLibraryConfig`, `AStarParams`, `RouterConfig`,
-`State`). `convert.rs` (578 lines) owns the conversions in both directions
-(route results, batch timing dictionaries, primitive descriptions).
-`meander_py.rs` (1,447 lines) owns the meander bindings: the `#[pyclass]
-MeanderPlanner` (phase 6 slice C of the 2026-10 do-over) that holds one
-router's path-length-matching state -- the registered routes with their
-open cells, the route geometries, the reserved cells, the occupancy-prefix
-and reserved-index caches, the registration profile -- behind `register`,
-`register_geometries`, `reserve_rect`, `clear_reserved`, `open_cell_count`,
-`profile`, `plan_requests`, `plan_final`, `plan_centerline` (the depth
-sweep) and the static `realize`, plus the result-to-dict conversions and
-the search policy `auto_meander_search_config_rs`. The router keeps two
-counters the planner syncs on at every call (`obstacle_generation`, bumped
-wherever the obstacle map changes; `static_reset_generation`, bumped by
-`clear_static_cells`), so a commit after registration still drops the
-prefix and a static reset still drops the registration, as they did while
-the state lived on the router. The rule that
-makes this tree readable: bindings convert and delegate, they do not decide.
-Anything that decides belongs in `engine/` or `search/`.
-
-### The grid and geometry modules
-
-`src/obstacle_map.rs` (1,725 lines) owns the routing database: the single
-source of truth for blocked cells, static rectangles, dynamic per-net
-ownership, packed `u64` cell keys, clearance metrics, congestion and history.
-Everything above it queries it; it knows nothing about nets' names, search or
-Python. `src/static_obstacle_builder.rs` (1,778 lines) owns building that map
-from rasterized geometry (Python extracts the polygons and ports).
-`src/primitives.rs` (427 lines) owns the movement primitives and their
-footprint metadata. `src/crossings.rs` (374 lines) owns the crossing
-constraints and the expected-pair context, deliberately independent of the A*
-hot path. `src/geometry_realization.rs` (5,457 lines) owns centerline-to-polygon
-realization and the endpoint-correction geometry (phase 6 slice A of the
-2026-10 do-over deleted the box-planner meander generation and the
-pre-routing port-access connector that lived beside them). (The simple-route candidates that lived in
-`src/simple_routes.rs` are in `src/search/astar/simple_route.rs` since phase 2
-slice F.) `src/meander/` is the meander stage (phase 6 slice C gathered the
-three former top-level files into one tree; `mod.rs` re-exports every public
-item, so `crate::meander::X` names any of them): `geometry.rs` (988 lines)
-the analytic comb planner, `search.rs` (1,641) the obstacle-aware run
-extraction, occupancy prefix and depth sweep, `plan.rs` (2,572) the
-registered path-length-matching planner and, since phase 6 slice B of the
-2026-10 do-over, every decision in it: `plan_registered_geometry_requirement_requests` takes one
-requirement's request vector (its candidate bundles in order, one requested
-extra length per edge, and the requiring edge as the same-edge split
-fallback) and answers which candidate planned, or the split, or nothing;
-`plan_registered_geometry_final_requests` takes every physical edge's total
-and tries the whole sequence, then each edge direct, then split. `src/config.rs` (302 lines) owns the typed configuration tree
-(`RouterConfig` and its four groups) -- since Milestone 1, `grep -rn
-"env::var\|var_os" src/` is empty, so no algorithm in the crate reads the
-environment.
-
-
-## 2. The Python side, module by module
-
-### `python/photonic_router/` -- the package a human drives
-
-`flow.py` (809 lines) owns the flow: `route_benchmark(config, options)` and
-`route_schematic(schematic, config, options)`, the two entry points, plus the
-`run_routing_flow` keyword wrapper kept for existing callers. It reads neither
-the environment nor a command line. `flow_options.py` (200 lines) owns
-`FlowOptions`: the flow-level choices as eleven frozen groups, one group per
-consuming stage. `cli.py` (811 lines) owns the command line: the parser, the
-benchmark defaults (`benchmarks/<name>.toml`), `--configuration`, and `_flow_options`, which turns the
-parsed arguments into `FlowOptions`; `__main__.py` (51 lines) makes it `python
--m photonic_router route <benchmark>`. `config.py` (412 lines) owns
-`RoutingConfig` and `RouterConfig` -- the typed configuration trees;
-`env_overlay.py` (839 lines) owns the one `PHOTONIC_ROUTER_*` overlay table
-(`ENV_OVERLAY`) and is the only place in the repository that parses those
-strings; `config_loading.py` (37 lines) owns `build_config(stable_env)`, the
-precedence of section 6. `static_obstacle_builder.py` (1,162 lines) owns
-obstacle extraction and the `ObstacleMapBuilder` Protocol;
-`primitive_library.py` (179) owns the 1:1 map from Rust primitive ids to
-gdsfactory components; `crossing_demand.py` (about 470) and `crossing_plan.py`
-(about 280) own the crossing plan: the demand cuts the placed layout into
-*bands* between the component *columns* (a column is a maximal set of
-instances whose placed x-extents overlap or touch; a net whose two terminals
-point into one band from its two walls is confined to that band), orders the
-terminals on each wall top to bottom, and takes the pairs whose order
-differs between the two walls as the band's invariant crossings; the plan's
-bubble-sort sequencing (`build_crossing_plan` over `LaneRank`s, one stage per
-band keyed by its two column indices) turns the two wall orders into the
-ordered `CrossingEvent`s contribution 2 places tiles for and contribution 1
-hands to the router as pairs. `CrossingDemand.lower_bound()` is the sum of
-invariant pairs: the crossing count of every band-confined routing of that
-placement. Nets outside the band model (same wall, non-adjacent walls, a
-vertical port, a port pointing off the chip) are listed with reasons and get
-no events; the 17 paper benchmarks have none. Until phase 4 slice C of the
-2026-10 do-over the plan came from `topology_analysis.py` (graph depth and
-placed-port rank per edge, or a benchmark's explicit `NODE_DEPTHS` /
-`NODE_RANKS` / `EDGE_RANKS` tables); that module is the test oracle now
-(`tests/e2e/test_crossing_demand_equality.py` keeps both equal on all 17
-benchmarks, events and order included) and the routing flow reads no
-topology metadata any more;
-`path_length_graph.py` (about 380: the directed graph of a schematic
-and the arrival analysis that turns routed lengths into the missing length
-per edge; since 2026-10-07 every net is pointed along the light from the
-components' fan-in and fan-out, `port_roles.py` (about 130: the table of
-each generic component's input-side ports, the photonic counterpart of a
-gate's fan-in list, which a benchmark extends for cells of its own with
-`INPUT_PORTS_BY_COMPONENT`): the light is propagated from the benchmark's
-`input` nodes, the side it arrives at a component on is that instance's
-input side, so a folded mesh that runs an MMI against its numbering is
-oriented right; `output` and `sink` nodes end it (a sink is a dead end such
-as an end cap, which output matching leaves alone); whichever way the net
-was written, while the edge key keeps the net as routed and the analysis
-carries the oriented ends for its consumers), `graph_analysis.py` (85),
-`benchmark_extractor.py` (177) and `routing_layers.py` (133) own their named
-analyses. Nothing in this package may import `photonic_router.routing`'s stage
-internals; it goes through the routing API (`python/photonic_router/routing/api.py`).
-
-### `python/photonic_router/routing/` -- the routing session as stages
-
-`session.py` (372 lines) owns the session shell and nothing else: it validates
-the keywords into `SessionSettings`, builds `SessionState`, and calls the nine
-phases (section 3) plus, when `detour_pass_factor > 0`, the detour pass
-between phases 7 and 8. `settings.py` (295 lines) owns `SessionSettings`, the
-frozen inputs of one run (49 fields grouped by consumer) with the
-constructor's validation rules. `state.py` (339 lines) owns `SessionState`,
-everything one run computes: one documented field per value, grouped by first
-writing phase, with writer and reader phases named (section 10).
-`stages.py` (217 lines) owns the nine `Protocol`s, the optional `DetourPass`
-(phase 7b) and the small frozen dataclasses a phase returns -- the declared contract each phase answers to.
-`crossing_plan_info.py` (316 lines) owns `CrossingPlanInfo`, the typed crossing
-plan (66 fields grouped by writer phase) with `to_dict`/`from_dict` at the
-report boundaries. `timing.py` (38 lines) owns the pipeline timers.
-
-The nine stage modules own one phase each and are named for it:
-`obstacle_context.py` (94), `router_setup.py` (280), `route_jobs.py` (1,664),
-`crossing_plan_stage.py` (656), `handoff.py` (794), `dispatch.py` (575; its
-route/attempt/failure write-ups live in `diagnostics.py`, 1,205, behind the
-debug path and take no routing decision, and its `native_route_jobs` is the
-one place that packs the kernel's `RouteJob`s, for the first routing, the
-detour pass and the two verify-repair passes alike), `finalize.py` (1,161),
-`verify_repair.py` (1,079), `realize.py` (123); the optional
-`detour_pass.py` (179) sits between finalize and verify. A stage
-takes `(settings, state, <its input>)` and returns its product; it calls its
-own helpers by name and another stage's helper through an explicit import. A
-stage must not know the command line, must not read the environment, and must
-not reach back into the session object -- since Milestone 5 there is no
-session object to reach into. `api.py` (516 lines) owns the module-level
-routing API (`route_match_and_realize` and the fan-out anchor query): the
-boundary the flow's optical stage helper (`python/photonic_router/flow_optical.py`) calls,
-reaching it through the `photonic_router.routing.route_rust` re-export.
-
-### The modules that were `translation/*.py`
-
-Since phase 8 slice A these live in the one package, grouped as `records/` (`route_rust_types`, `_records`, `_geometry`, `_realization`, `_obstacle_config`, `route_order`, `layout_from_schematic`), `crossings/` (the `route_rust_crossing_*` modules, `crossing_*`, `preplaced_crossing_grids`, `topology_analysis`), `plm/` (`route_rust_meanders`, `path_length_*`), `verify/` (`photonic_verification`, `route_rust_endpoint_correction`) and `gds/` (`gds_circuit_*`, `gds_write_options`, `route_gds`, `route_overview_svg`, `route_rust_debug_artifacts`).
-
-`routing/route_rust.py` (428 lines) is a re-export shim over `photonic_router.routing`,
-kept because the reproduction scripts, the benchmark defaults and many
-tests import names from that path; no behaviour lives in it. The modules with
-real content are `route_rust_types.py` (1,363, the shared record and job
-types), `route_rust_records.py` (477, the route bookkeeping),
-`route_rust_geometry.py` (686), `route_rust_realization.py` (486),
-`route_rust_endpoint_correction.py` (905), `route_rust_meanders.py` (1,855),
-`route_rust_crossing_plan.py` (689), `route_rust_crossing_components.py` (461),
-`route_rust_crossing_verification.py` (918), `route_rust_debug_artifacts.py`
-(342) and `route_rust_obstacle_config.py` (164).
-Beside them: `preplaced_crossing_grids.py` (about 1,400 since phase 4
-slice A, contribution 2's crossing-structure placement),
-`crossing_structures.py` (248),
-`crossing_modes.py` (57, the mode vocabulary), `crossing_verification_report.py`
-(803), `photonic_verification.py` (1,155, the authoritative geometry
-verifier), the two `path_length_*.py` modules (`path_length_requirements.py`,
-658, the timing requirements and, folded in since phase 6 slice B, the
-delay-insertion candidates; `path_length_diagnostics.py`, 587;
-since 2026-10-05 `path_length_diagnostics.py` also carries the path-length
-bookkeeping by physical edge: the meander report's
-`realized_extra_length_um_by_edge` names the edge each meander was actually
-drawn on, which may be a delay-insertion candidate upstream of the requiring
-edge, and the matching-group diagnostics and the acceptance check carry the
-realized lengths, arrivals and spreads, with a 1 nm tolerance on a group's
-realized spread; since 2026-10-07 `build_requirement_delay_candidates` finds those
-upstream candidates by structure, a serial node with one net in and one out
-passing a delay unchanged and a node whose whole output bundle needs the same
-delay taking it on its inputs, whatever the instances are called, and
-`--path-length-allow-residual` lets a run finish with reported residuals,
-`plm_over_tolerance` in the SUMMARY, where a design is unbalanced on
-purpose), `route_overview_svg.py` (about 190, the routes overview
-SVG `build/routes/<benchmark>_overview.svg` the flow writes under
-`--debug-svgs`: every routed waveguide with its realized length and a legend
-with the totals and the chip dimensions), `route_order.py` (203, the net
-orders), `layout_from_schematic.py` (93), `route_gds.py` (179, the
-gdsfactory reference router) and `gds_write_options.py` (18).
-
-Path-length matching, who decides what (phase 6 slice B of the 2026-10
-do-over): `path_length_requirements.py` computes how much extra length each
-edge needs and where it may go (the edge itself, or upstream where every
-group stays matched); `route_rust_meanders.py` (1,849 lines, from 3,010)
-turns that into request vectors for one `MeanderPlanner(router)`
-(`crates/router-py/src/meander_py.rs`, phase 6 slice C: `register` and
-`register_geometries` once per pass, `plan_requests` per requirement,
-`plan_final` once, `reserve_rect` per committed plan) and Rust decides every
-plan. The selection pass sends one Rust call per requirement (the candidate bundles in order,
-shared upstream bundle before recursive upstream before the direct edge, each
-edge asked for its new total where it already carries a planned meander, and
-the requiring edge as the same-edge split fallback); the final pass sends
-every physical edge's total in one call and commits what Rust planned
-(sequence, then per edge direct, then split). The Python-side "mixed"
-planner for edges that already carried a meander and the Python split
-fallback are gone, both moved into the Rust call exactly (the thirteen PLM
-cells of `docs/plm_baseline.json` reproduce). The report is a dataclass per
-requirement (`MeanderEdgeReport` in `route_rust_types.py`: edge, requested,
-credited and physical inserted length, planned edges, status, reason) inside
-a `MeanderInsertionReport` that `path_length_diagnostics.py` and the flow's
-`python/photonic_router/flow_plm.py` (227 lines, from 336) read; its `to_info_dict()` is
-the GDS meta info `meander_insertion_report`. The timers, counters and
-per-candidate attempts (`MeanderPlanningProfile`) are built only under
-`--debug-meanders`; the SUMMARY tokens and the acceptance decision never
-depend on the flag. Its tests are five files by concern on one fixture module
-(phase 6 slice C): `tests/test_path_length_graph.py` (the graph and arrival
-analysis), `test_path_length_requirements.py` (requirements and the upstream
-delay candidates), `test_meander_planner.py` (the planner, through the fake
-backend and `MeanderPlanner` of `tests/fixtures/path_length.py` or the real
-one), `test_path_length_diagnostics.py` and `test_path_length_flow.py` (the
-monkeypatched flow); the fixture module also builds the link-based netlists
-(`schematic_from_links`) and the records those tests analyse.
-
-Since 2026-10-05 two modules turn a foundry GDS into a benchmark:
-`gds_circuit_extraction.py` (about 550 lines) walks the hierarchy of a
-tape-out GDS to its leaf instances, classifies them by cell-name rules from an
-`ExtractionConfig` (component kinds, composite containers, placeholders,
-black boxes without core shapes, heater cells without metal as bare arms,
-two bare arms with S-bends on both sides as one arm pair whose box cuts the
-nets and whose abutting ports become zero-length nets), merges every waveguide cell's shapes on its
-first drawn core layer into one region so that each connected polygon is one
-net, and reads a net's ports off the polygon's end caps (one waveguide width,
-neighbours perpendicular) that touch a component's shapes, lie in a black
-box, sit within a tolerance of an empty placeholder's origin, or
-(`open_ends`) touch nothing: an I/O cell missing from the file.
-`gds_circuit_rebuild.py` (about 300) replaces every component by a generic
-gdsfactory component parameterized to reproduce the original port geometry
-(`GenericMapping`: the MMI's taper and gap from its port spacing, the
-heater's length from its span, a bare arm as a straight of its span, an
-MZI arm pair as `gds_circuit_components.arm_pair` built from straights
-and circular 90-degree bends of the benchmark's routing radius, a
-directional coupler as `gds_circuit_components.directional_coupler` built
-the same way (two waveguides running to a gap, coupling and spreading
-again, which the router could not draw at a 0.75 um port pitch), a one-bus
-ring's coupling length, a 10 um straight for an end cap or an open end)
-placed so that its ports coincide with the original ones, and writes the
-result as a benchmark module. A
-two-port 2D grating coupler is split into two one-port generic couplers
-(`split_kinds`), which the extractor moves apart to `split_pitch_um` because
-the generic coupler is wider than the original 9.9 um pitch; rebuilt
-elements must never overlap (the owner's rule, 2026-10-06, even where the
-layout then departs from the original), which `overlapping_instances`
-checks on every rebuilt layout and the extraction script enforces.
-`scripts/extract_private_benchmark.py <name>` runs both on the owner's
-confidential circuits; their configurations (they name foundry cells) and
-the generated modules live in the git-ignored package `benchmarks/private/`,
-which `python -m photonic_router route private.<name>` imports as
-`benchmarks.private.<name>`. Nothing in the repository names a foundry cell.
-
-### `python/photonic_router/electrical/` -- the heater-metal pipeline as stages
-
-`python/photonic_router/electrical/` (28 modules, 9,440 lines) owns the heater-metal
-routing stack: terminal extraction, the common bus, pad planning, detailed
-pad-wire routing, metal realization and its own verification and debug SVGs.
-It shares the grid vocabulary with the optical side but has its own router;
-the optical stages must not import it. `__init__.py` (61 lines) is the public
-re-export surface every caller outside the package imports through. Below,
-in the pipeline order of `route_electrical.py::route_electrical_heaters`:
-
-`route_electrical.py` (214 lines) owns `route_electrical_heaters`, the
-literal twelve-stage sequence, after the pattern of
-`python/photonic_router/routing/session.py::run` -- one call per stage, each returning
-the frozen product its `stages.py` Protocol names. It decides nothing itself
-beyond the guard that skips a stage when its inputs are not ready (the next
-subsection).
-
-`stages.py` (234 lines) owns the twelve `typing.Protocol` declarations
-(`TerminalExtractor` through `DebugArtifactWriter`), one per stage, after the
-pattern of `python/photonic_router/routing/stages.py`; its module docstring records
-every place an implementation's real parameter names or defaults differ from
-the stage table below, so the Protocol and the function it types never
-silently drift apart.
-
-`types.py` (486 lines) owns every dataclass the pipeline passes between
-stages: `ElectricalRoutingConfig` (the typed configuration, with its own
-`validate()`), the terminal and port-access types
-(`ElectricalTerminal`, `TerminalPairGroup`, `ElectricalPortAccess`), one
-result type per stage (`ElectricalObstacleMap`, `CommonBusRoutingResult`,
-`PadPlan`, `PadSideReconciliation`, `CommonBusEscapeResult`,
-`IndividualEscapeTopologyResult`, `DetailedBundleRoutingResult`,
-`ElectricalVerificationResult`), and the top-level `ElectricalRoutingResult`.
-No algorithm lives here.
-
-`terminal_extraction.py` (208 lines), stage 1: `extract_heater_terminal_pairs`
-finds heater instances by component-name pattern and instance prefix
-(`config.heater_component_patterns`, `heater_instance_prefixes`) and groups
-each heater's electrical ports into its two interchangeable
-`ElectricalTerminal`s (`TerminalPairGroup`). Must not touch the grid or the
-obstacle map.
-
-`obstacle_extraction.py` (187 lines), stage 2: `build_electrical_obstacle_map`
-builds the layer-filtered electrical grid (reusing
-`photonic_router.static_obstacle_builder`), the die and layout bounding
-boxes, the fixed `BusStripe`, and, through `port_access`, every terminal's
-grid-anchored port access. Must decide obstacles and anchors, never a route.
-
-`port_access.py` (286 lines) owns the terminal-to-grid anchor selection every
-later phase reuses: `build_electrical_port_accesses` /
-`build_terminal_port_access` (one `ElectricalPortAccess` per terminal per
-purpose), `choose_route_start_cell` / `ordered_route_start_cells`
-(`RouteStartChoice`). Knows grid cells and physical points, not routing
-algorithms.
-
-`terminal_contacts.py` (365 lines) owns the physical contact geometry of one
-terminal: `terminal_access_path` (`TerminalAccessPath`, the continuous
-adapter before the gridded route tail), `select_terminal_port_for_side` /
-`select_terminal_contact`, `terminal_contact_bboxes`,
-`terminal_access_keepout_bbox`, `port_contact_bbox`. Pure geometry, no grid
-search.
-
-`common_bus_router.py` (about 600 lines), stages 3 and 4: `route_common_bus`
-dispatches the column-trunk phase (`column_trunks.py`), then a local-trunk
-phase, then the straight drops of every heater left over (phase 2b,
-`_route_lone_straight_drops`, 2026-10-05: a lone heater drops straight to
-the stripe from whichever terminal has a legal column before the greedy
-search can join it sideways to a neighbour's branch), then a greedy
-per-terminal BFS through `bus_search.py`, selecting exactly one terminal per
-heater; `trim_common_bus_to_connections` is the public `CommonBusTrimmer`,
-limiting the realized stripe to its used span (to the outer edge of the
-escape's band under the bus pad). It owns the phase order and
-terminal-selection policy, not cell-level search.
-
-`column_trunks.py` (442 lines) owns the straight column-trunk construction
-(Milestone 3): `route_column_trunks` groups selected bus terminals by column
-and drops one straight vertical trunk with a stub per member beside the
-heater bodies; `straight_drop_to_bus` is the single-terminal case (every
-lone heater in phase 2b, and a swapped terminal). Falls back to
-`bus_search`'s BFS when a column is obstructed.
-
-`bus_search.py` (191 lines) owns the grid-search primitives every common-bus
-phase shares: `all_terminal_cells`, `forbidden_terminal_cells`,
-`nearest_terminal_cell`, `axis_path`, `path_hits_blockers`,
-`shortest_path_to_tree` (the BFS to the growing tree). No phase ordering or
-terminal-selection policy lives here.
-
-`individual_topology.py` (609 lines), stage 5:
-`compute_individual_escape_topology` routes every individual (non-bus)
-terminal coarsely toward the pad side, groups them into `EscapeBundle`s
-ordered by row (row 1 the terminal nearest the pad row), and records
-`terminal_order` and `cell_usage`. Feeds `pad_slots`' block order and the
-channel router's row order.
-
-`pad_slots.py` (about 600 lines), stage 6: `plan_pad_slots` lays out the
-one-sided pad-pitch grid (one `PadSlot` per index) and assigns every selected
-bus or individual net to a slot (`PadAssignment`). The individual pads are
-chosen to minimize the routing (pad-choice plan, 2026-10-05): every terminal's
-corridor lane is computed as the channel router will build it
-(`_lane_by_terminal_id`, through `river_routing.bundle_opening_edge` and
-`corridor_lane_column`), the pads are assigned to the wires in lane order,
-one per slot, minimizing the sum of the horizontal runs between lane and pad
-column (`assign_pad_slots`, an exact dynamic programme; the lane order is
-forced, since out-of-order pads always make runs cross on the one metal
-layer), and the pad row's origin is chosen by the same measure over one pitch
-of offsets (`assign_pad_slots_with_origin`). A multi-row bundle therefore
-gets its pads on both sides of its lane band. The channel between the layout
-and the pad row is sized from the channel router's own track count on those
-lanes and pad columns (`_pad_channel_track_count` runs
-`river_routing.assign_tracks`), plus the lowest track's reservation radius
-over the layout's top row (`_required_pad_channel_offset_um`). The bus pad
-keeps the configured end of the row with its escape gap
-(`common_bus_pad_slot_gap`); a forced `pad_origin_x_um` keeps the owner's
-sequential placement.
-
-`pad_side_reconciliation.py` (243 lines), stage 7: `reconcile_pad_sides` /
-`_apply_pad_side_consistency_swap` swap a lone heater's bus and individual
-terminal roles when its individual exit points away from its own pad, then
-re-run stages 4 through 6 (trim, topology, pad-slot planning) from the swap;
-a heater with no such mismatch leaves every object unchanged.
-
-`escape_router.py` (246 lines), stage 8: `route_common_bus_escape` is the
-path from the common-bus tree to its assigned pad slot, trying the endpoint
-dogleg first and a BFS to the target cells as the fallback.
-
-`bundle_detail_router.py` (506 lines), stage 9, the dispatcher:
-`route_detailed_bundles` collects every escape bundle's members,
-channel-routes them jointly (`river_routing.route_bundles_as_channels`),
-commits the placed wires in track order, and falls back, wire by wire, to
-the full-grid search (`pad_wire_search.route_full_grid_pad_wire`) for the
-wires the channel router could not place. Owns commit/fail bookkeeping and
-route ordering, not the geometry of either construction.
-
-`river_routing.py` (581 lines) owns the channel router:
-`assign_corridor_lanes` gives one bundle's wires their corridor lanes in row
-order; the pure `assign_tracks` assigns one horizontal track per wire over
-all bundles jointly (constrained left-edge, filled from the pad side down
-with row preference, under two crossing constraints: a wire lies below every
-run crossing its corridor lane and above every run crossing its pad column;
-a constraint cycle sends the wire to the fallback); `build_wire_path` makes
-each wire a monotone L or 3-bend Z (`count_direction_changes`).
-`bundle_opening_edge`, `corridor_lane_column` and `pad_column_cell` are
-shared with `pad_slots`, so the pad plan sizes the channel from the same
-track count the router will use.
-
-`pad_wire_search.py` (347 lines) owns the per-wire fallback:
-`route_full_grid_pad_wire` (a reachability check plus the A* stub search
-`search_pad_wire`) routes one pad wire against obstacles, other terminals,
-and already-committed wires.
-
-`wire_geometry.py` (242 lines) owns the grid and wire geometry both pad-wire
-modules share: `wire_reservation_radius_cells` / `wire_spacing_radius_cells`
-(the clearance-versus-spacing distinction Milestone 2's verification fix
-introduced), `dilate_cells`, `cells_from_point_path`, `centerline_points`,
-and the plain grid-segment and cell-center helpers.
-
-`metal_realization.py` (405 lines), stage 10: `realize_electrical_metal`
-turns every routed path (bus, escape, pad wires) plus pads and terminal
-contacts into klayout-merged metal rectangles on `config.metal_layer` (and
-pad markers on `pad_marker_layer`), using `rect_geometry`'s clipping helpers
-and `terminal_contacts.terminal_access_path`.
-
-`rect_geometry.py` (396 lines) owns the rectangle primitives both
-realization and verification use: `wire_rects_for_points` (Manhattan wire
-rectangles, with the `trim_start` end-cap option Milestone 1 added),
-`clip_manhattan_path_at_first_bbox_entry` / `clip_manhattan_path_start_at_bbox`,
-`disjoint_union_rects`, `union_rect_area`, `rect_intersects` /
-`rect_intersection`. No net or realization logic.
-
-`pitch_grid.py` (69 lines) owns the small grid-cell helpers used across the
-package: `bbox_to_grid_cells`, `grid_cell_center_um` (the one copy Milestone
-4 slice 1 folded four private copies into), `disk_cells`, `cells_bbox`.
-
-`net_geometry.py` (595 lines) owns `build_net_geometries`: one
-`NetGeometry` (rectangles tagged with their source, allowed cells and boxes,
-centerlines) per net, shared by `verification.py`'s contracts and
-`metrics.py`'s quality numbers so neither module re-derives geometry from
-the route objects.
-
-`verification.py` (409 lines), stage 11 (the contracts): `verify_electrical_routing`
-and every issue-producing check -- terminal contacts, common-bus
-connectivity and pad contact, cross-net overlap and spacing, raw-obstacle
-overlap, blocked-cell clearance -- as `ElectricalVerificationIssue`s;
-delegates the geometry to `net_geometry` and the numeric summary to
-`metrics.quality_metrics`.
-
-`metrics.py` (about 570 lines), stage 11 (the metrics): `quality_metrics` is the
-reported numbers that are not pass/fail contracts -- `pad_wire_detour_total_um`
-(a wire's length minus the monotone path through its own corridor lane:
-stub, run, vertical; zero for every channel-routed wire, owner decision
-2026-10-05), `bus_length_um` / `bus_bend_count`, `wire_metal_area_um2`,
-cross-net spacing, the per-wire `pad_wires` table -- plus `min_rect_spacing` and the
-same-net overlap classification the module's docstring says are not the
-verifier's business.
-
-`debug.py` (78 lines), stage 12, the dispatcher: `write_debug_artifacts`
-decides which SVGs to write and returns their paths, delegating the actual
-export to `debug_grid_svg` and `metal_snapshot_svg` -- the contract
-`route_electrical_heaters` used to build inline before Milestone 4 slice 4.
-
-`debug_grid_svg.py` (441 lines) owns `export_electrical_debug_svg` /
-`electrical_debug_svg`: the grid-coordinate debug view (obstacles, terminal
-openings, the bus, the routes).
-
-`metal_snapshot_svg.py` (365 lines) owns
-`export_electrical_metal_snapshot_svg` / `electrical_metal_snapshot_svg`:
-the physical-coordinate snapshot of the realized metal read back off the
-routed layout.
-
-`svg_support.py` (20 lines) owns `_all_port_accesses`, the one helper both
-SVG exporters share.
-
-### The `flow_*.py` modules
-
-`routing_flow.py` (5 lines, repository root) is a shim over `photonic_router.cli`, so
-`python routing_flow.py <benchmark> [flags]` keeps working for the reproduction
-scripts and the benchmark defaults. The siblings are the flow's stage
-helpers, now in the package and imported by `photonic_router.flow`:
-`python/photonic_router/flow_config.py` (269, the `SCRIPT_*` defaults and option resolution),
-`python/photonic_router/flow_optical.py` (176, the call into `route_match_and_realize`),
-`python/photonic_router/flow_verification.py` (391), `python/photonic_router/flow_plm.py` (227),
-`python/photonic_router/flow_electrical.py` (200), `python/photonic_router/flow_reporting.py` (551, console
-output and timing formatting), `python/photonic_router/flow_stats.py` (227, the legacy stats
-collector) and `python/photonic_router/flow_component_info.py` (24).
-
-### The electrical flow: the twelve stage calls
-
-`route_electrical_heaters` (`python/photonic_router/electrical/route_electrical.py`) is
-the literal sequence; the types are the Protocols of
-`python/photonic_router/electrical/stages.py`:
-
-| # | call in `route_electrical.py::route_electrical_heaters` | input | product |
+6. [The configuration surface](#6-the-configuration-surface)
+7. [Code layout: the Rust crates and the Python package](#7-code-layout-the-rust-crates-and-the-python-package)
+8. [Build, tests and oracles; how to add a benchmark](#8-build-tests-and-oracles-how-to-add-a-benchmark)
+9. [Switches for experiments](#9-switches-for-experiments)
+10. [Invariants](#10-invariants)
+11. [History and provenance](#11-history-and-provenance)
+
+
+## 1. What the router does
+
+Input: a gdsfactory `Schematic` (instances, their placements, and the nets
+between their ports), built by a benchmark module's `build_schematic()`.
+Output: a routed gdsfactory `Component`, written as
+`build/routed_<benchmark>.gds`, in which
+
+* every net is one waveguide polygon on the routing layer, built from
+  straights and circular bends of one bend radius;
+* two waveguides overlap only at a crossing, which is a placed crossing
+  component, perpendicular, with straight run-outs on both sides;
+* nothing overlaps a component or another waveguide's clearance;
+* optionally, groups of paths have equal optical length (meanders inserted),
+  and heater terminals are wired to pads on a metal layer.
+
+The work is split by cost. Rust (`crates/router-core`) owns the grid
+database, the single-net search, the multi-net negotiation, crossing
+legality, endpoint correction geometry, polygon realization and the meander
+planner: everything that runs per cell or per state. Python
+(`python/photonic_router/`) owns gdsfactory, the benchmarks, the stage
+sequence, the crossing plan, the path-length analysis, verification against
+the realized polygons, the electrical router and every report and debug
+artifact. The two meet in the PyO3 extension `photonic_router._rust`, built
+from `crates/router-py`, whose only job is to convert at the boundary.
+
+Both sides are organised the same way: one declared interface per
+replaceable concern (a Rust `trait`, a Python `typing.Protocol`), one module
+per concern, and a top-level function that reads as the sequence of stage
+calls (`photonic_router.flow.route_schematic`,
+`photonic_router.routing.session.run`, `Router::run_negotiated_batch`,
+`photonic_router.electrical.route_electrical.route_electrical_heaters`).
+
+
+## 2. The pipeline, stage by stage
+
+```text
+benchmark module ──build_schematic()──> Schematic
+  └─ layout_from_schematic ─────────────> unrouted Component
+       ├─ [contribution 2] crossing demand -> pre-placed crossing tiles
+       └─ routing session (routing/session.py::run, nine phases)
+            1 static obstacle map (Python extraction, Rust rasterization)
+            2 router setup (PyPhotonicRouter, primitive library, A* config)
+            3 route jobs (ports -> grid states, port access, fan-out runways)
+            4 crossing plan (placement demand -> events, port footprints)
+            5 static handoff (final jobs, net order)
+            6 dispatch -> Rust: negotiated loop -> search calls -> A* kernel
+            7 finalize: route records, endpoint correction
+           7b [optional] detour pass
+            8 final repair and verification of the realized crossings
+            9 realization, crossing components, debug artifacts
+       ├─ path-length matching (analysis, Rust meander planner, re-realization)
+       ├─ photonic verification (realized polygons) -> build/verification/
+       ├─ [optional] heater electrical routing (twelve stages)
+       └─ GDS write, SUMMARY line
+```
+
+### 2.1 Entry points
+
+`python -m photonic_router route <benchmark> [flags]` (`__main__.py`) and
+`python routing_flow.py <benchmark> [flags]` (a five-line shim at the
+repository root, which the reproduction scripts call) both run
+`photonic_router.cli.main`. It reads the benchmark's defaults from
+`benchmarks/<name>.toml`, builds a `RoutingConfig` (`config_loading.build_config`)
+and a `FlowOptions` (`cli._flow_options`), and calls
+`photonic_router.flow.route_benchmark(config, options)`, which loads
+`benchmarks.<name>` and calls `route_schematic(schematic, config, options)`.
+Nothing below `cli.py` sees a command line; nothing below `config_loading.py`
+reads the environment.
+
+### 2.2 Layout from schematic
+
+`records/layout_from_schematic.py` turns the `Schematic` into an unrouted
+`Component`: every instance placed, no route. Its bounding box sizes the
+grid.
+
+### 2.3 Pre-placed crossing grids (contribution 2 only)
+
+With `--preplaced-crossing-grids true`, `flow._preplaced_crossing_grids_stage`
+builds the placement's `CrossingDemand` (`crossings/crossing_demand.py`): the
+chip is cut into vertical *bands* between *columns* of components (a column
+is a maximal set of instances whose placed x-extents overlap or touch); a net
+whose two terminals point into one band from its two walls is *confined* to
+it; two confined nets must cross iff their top-to-bottom order differs
+between the two walls. `CrossingDemand.require_band_layered()` refuses a
+design with nets outside that model (same wall, non-adjacent walls, a
+vertical port, a port pointing off the chip); the flow re-raises that as a
+`RuntimeError` naming the nets and suggesting `--crossing-mode lidar-pure` or
+`lidar-guided`. `stage_schedule()` lists the bands with crossing events, left
+to right; `crossings/preplaced_crossing_grids.py`
+(`derive_preplaced_crossing_layout`) places a tile of crossing components
+per band from it, and the session then routes the stubs between ports and
+tiles crossing-free. No paper benchmark has a net outside the band model.
+
+### 2.4 Phase 1: the static obstacle map
+
+`routing/obstacle_context.py` calls `static_obstacle_builder.build_static_obstacle_map`:
+`benchmark_extractor.py` extracts the component polygons and ports from the
+layout (layer selection in `routing_layers.py`), and the Rust builder
+(`src/static_obstacle_builder.rs`, through `build_static_obstacle_map_rs` in
+`crates/router-py/src/static_obstacle.rs`) does the grid work: grid spec,
+bounding boxes (`bounding_boxes`, the default) or rasterized polygons
+(`rasterized_polygons`), clearance inflation, port openings, and a
+`StaticCellSet` handle that stays in Rust. A chip-boundary keep-out band is
+added outside the routable box. The product is an `ObstacleContext`
+(obstacle map data, crossing device info, the obstacle debug SVG path).
+
+### 2.5 Phase 2: router setup
+
+`routing/router_setup.py` builds the `PyPhotonicRouter` (`GridSpec`,
+`PrimitiveLibraryConfig`, `AStarConfig`, the flat `RouterConfig` from
+`RoutingConfig.router.to_rust`), installs the static cells and rectangles,
+and records the grid origin and the clearance radii on the session state.
+The bend radius is rounded up to whole grid cells.
+
+### 2.6 Phase 3: route jobs
+
+`routing/route_jobs.py` turns every net into a `RouteJob`: source and target
+grid `State`s (cell plus heading, from the port position and orientation),
+the cells opened for each port's access, clearance-exempt cells, and for
+dense multi-port instances the fan-out access (`--fanout-access-mode`:
+runways, static stubs, virtual anchor ports). Phase 3b
+(`apply_long_straight_fanout_exemption`) marks the nets that contribution 2
+searches without the long-straight congestion penalty.
+
+### 2.7 Phase 4: the crossing plan
+
+`routing/crossing_plan_stage.py` builds the crossing plan when crossings are
+enabled: the same `CrossingDemand` as in 2.3, and per band the bubble-sort
+sequencing of the two wall orders (`crossings/crossing_plan.py`,
+`build_crossing_plan` over `LaneRank`s) into ordered `CrossingEvent`s. Under
+`--crossing-mode lidar-guided` (contribution 1) the planned pairs guide the
+search (costs, the crossing-free policy, net order); under `lidar-pure`
+(baseline) crossings are discovered during search and the plan is reported
+only. The stage also computes the port footprints and the foreign-port
+keep-outs. Its typed record is `CrossingPlanInfo`
+(`routing/crossing_plan_info.py`), which later phases extend with the
+realized crossings. `crossings/topology_analysis.py` (graph depth and port
+rank) is the older plan, kept as the test oracle
+(`tests/e2e/test_crossing_demand_equality.py` holds both equal on the 17
+paper benchmarks); the flow does not read it.
+
+### 2.8 Phase 5: the static handoff
+
+`routing/handoff.py` produces the jobs exactly as the kernel will see them
+(snapped endpoints, foreign keep-outs) in their routing order
+(`records/route_order.py`, `--net-order`; topological layers by default,
+`topological-span` under contribution 2).
+
+### 2.9 Phase 6: dispatch to the kernel
+
+`routing/dispatch.py` hands the jobs to
+`PyPhotonicRouter.route_many_with_negotiated_repair_and_commit`. The binding
+converts the `RouteJob` objects to `NativeRouteJob`s once
+(`convert.rs::native_jobs_from_py`) and calls
+`Router::run_negotiated_batch` (`src/engine/negotiation/loop_.rs`, section
+5). Every search the loop makes is a `SearchCall` value
+(`src/engine/search_call.rs`: the job, the radii, `Plain` or `Repair`, the
+budget, the history weight, the long-straight override, the crossing-free
+flag, the probe-guided partners). One body,
+`route_and_commit` (`src/engine/search_calls.rs`), turns a call into a
+`SearchRequest`: first the simple-route candidates
+(`src/search/astar/simple_route.rs`: straight, L, Z, turnaround, checked cell
+by cell), then the engine's `NetSearch::search` (section 4), with a
+`LiveCrossingHook` when the request carries a `CrossingSearch` (crossings
+enabled) and `NoCrossingHook` otherwise. A found route is committed to
+the obstacle map (`src/engine/commit.rs`: footprint, clearance halo,
+history, congestion, crossing events and reservations in
+`src/engine/crossing_reservation.rs`). The loop's result comes back as a
+dictionary; the per-attempt records and trace lines land in the session
+state (`routing/diagnostics.py` writes them up under the debug options).
+
+### 2.10 Phase 7: route records and endpoint correction
+
+`routing/finalize.py` builds one `RoutedNetRecord` per net from the kernel's
+results and the native crossing events. A grid route starts and ends on cell
+centres; endpoint correction splices its centerline onto the exact physical
+port (`verify/route_rust_endpoint_correction.py` for the crossing-aware
+splice, the Rust pass `src/engine/endpoint_correction.rs` for the checked
+grid-to-port correction and commit). `EndpointCorrectionCategory`
+(`records/route_rust_types.py`) names which pass treats which net (fan-out
+stubs, crossing nets, plain nets).
+
+Phase 7b, only with `--detour-pass-factor F > 0` (`routing/detour_pass.py`):
+every net whose recorded length exceeds `F` times its free lower bound
+(Manhattan distance of its port centres plus two bends) is ripped up and the
+set is routed again in one negotiated batch, shortest first, up to three
+passes while the set shrinks (SUMMARY `detours=`).
+
+### 2.11 Phase 8: final repair and verification of the crossings
+
+`routing/verify_repair.py` checks the realized crossings of the records
+(`crossings/route_rust_crossing_verification.py`). Illegal ones go to two
+repair passes (final crossing repair, issue-group repair), which call the
+same negotiated loop; no paper cell reaches them. What stays illegal is
+handed to phase 9 and reported.
+
+### 2.12 Phase 9: realization
+
+`routing/realize.py` turns every record into polygons
+(`records/route_rust_realization.py` over the Rust realization in
+`src/geometry_realization.rs`: centerline to one closed waveguide polygon),
+places a PDK crossing component at every realized crossing
+(`crossings/route_rust_crossing_components.py`) and assembles the
+`RustRouteDebugArtifacts` (route SVGs, failure diagnostics, crossing JSON
+and text reports under `build/`). `session.run` returns the routed layout
+and the debug artifacts.
+
+### 2.13 Path-length matching (PLM)
+
+`routing/api.py::route_match_and_realize` (the boundary the flow's optical
+stage, `flow_optical.py`, calls) continues after the session when
+`--path-length-matching true`:
+
+1. `plm/path_length_graph.py` builds the directed graph of the schematic,
+   oriented along the light from the benchmark's `input` nodes
+   (`port_roles.py` names each generic component's input-side ports; a
+   benchmark extends it with `INPUT_PORTS_BY_COMPONENT`), and turns the
+   routed lengths into arrivals and the missing length per edge.
+2. `plm/path_length_requirements.py` computes the requirements (which edge
+   needs how much, per matching group and, with `--path-length-match-outputs
+   true`, at the outputs) and the delay-insertion candidates upstream of a
+   requiring edge, found by structure.
+3. `plm/route_rust_meanders.py` turns that into request vectors for one
+   `MeanderPlanner` (`crates/router-py/src/meander_py.rs`): `register` /
+   `register_geometries` once per pass, `plan_requests` per requirement,
+   `plan_final` once, `reserve_rect` per committed plan. Rust
+   (`src/meander/plan.rs`) decides every plan: which candidate bundle, the
+   per-edge direct plan, or the same-edge split; `src/meander/geometry.rs` is
+   the analytic comb, `src/meander/search.rs` the obstacle-aware placement.
+4. The meanders are spliced into the records and realized; the report is a
+   `MeanderInsertionReport` of `MeanderEdgeReport`s, stored in the GDS meta
+   info as `meander_insertion_report`. `plm/path_length_diagnostics.py` and
+   `flow_plm.py` check acceptance (a 1 nm tolerance on a group's realized
+   spread); `--path-length-allow-residual true` finishes with residuals
+   reported (`plm_over_tolerance` in the SUMMARY) instead of failing.
+
+The timers and per-candidate attempts (`MeanderPlanningProfile`) exist only
+under `--debug-meanders`; no SUMMARY token or acceptance decision depends on
+that flag.
+
+### 2.14 Photonic verification
+
+`flow_verification.py` runs the verifiers on the realized geometry:
+`verify/photonic_verification.py` (on the realized polygons, with klayout
+and shapely: cross-net waveguide overlaps, waveguide-obstacle overlaps,
+crossing-component overlaps, routes outside the chip, self-intersections,
+missing, extra or duplicate route records, endpoint-correction errors) and
+the crossing report (`crossings/crossing_verification_report.py`). The JSON
+reports go to `build/verification/<benchmark>_{photonic,crossing}_verification.json`;
+their error count is the SUMMARY's `verifier_errors`. A failing verification
+does not write the GDS unless
+`PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE` is set.
+
+### 2.15 Heater electrical routing: the heater-metal pipeline as stages
+
+With `--electrical-routing true` (on by default for `heater_s_mod`),
+`flow_electrical.py::run_electrical_routing_step` calls
+`electrical/route_electrical.py::route_electrical_heaters`, a literal
+sequence of twelve stages, each typed by a Protocol in `electrical/stages.py`
+and returning a frozen product from `electrical/types.py`:
+
+| # | stage | module | product |
 | --- | --- | --- | --- |
-| 1 | `TerminalExtractor` -- `extract_heater_terminal_pairs(component, schematic, config)` | `(Component, Schematic \| None, ElectricalRoutingConfig \| None)` | `tuple[TerminalPairGroup, ...]` |
-| 2 | `ObstacleMapBuilder` -- `build_electrical_obstacle_map(component, terminal_groups, config)` | `+ terminal_groups` | `ElectricalObstacleMap` |
-| 3 | `CommonBusRouter` -- `route_common_bus(terminal_groups, obstacle_map, config)` | `+ obstacle_map` | `CommonBusRoutingResult` |
-| 4 | `CommonBusTrimmer` -- `trim_common_bus_to_connections(obstacle_map, common_bus, config)` | `+ common_bus` | `(ElectricalObstacleMap, CommonBusRoutingResult)` |
-| 5 | `EscapeTopologyPlanner` -- `compute_individual_escape_topology(obstacle_map, common_bus, config)` | `+ trimmed obstacle_map, common_bus` | `IndividualEscapeTopologyResult` |
-| 6 | `PadPlanner` -- `plan_pad_slots(common_bus, obstacle_map, config, escape_topology)` | `+ escape_topology` | `PadPlan` |
-| 6b | `CommonBusTrimmer` again -- `trim_common_bus_to_connections(obstacle_map, common_bus, config, keep_span_to_x_um=common_bus_stripe_reach_x_um(pad_plan, config))` | `+ pad_plan` | `(ElectricalObstacleMap, CommonBusRoutingResult)` with the stripe reaching the outer edge of the escape's band under the bus pad |
-| 7 | `PadSideReconciler` -- `reconcile_pad_sides(obstacle_map, common_bus, individual_topology, pad_plan, config, keep_span_to_x_um=...)` | `+ individual_topology, pad_plan` | `PadSideReconciliation` (re-runs stages 4-6b when it swaps a heater, with the same `keep_span_to_x_um`) |
-| 8 | `BusEscapeRouter` -- `route_common_bus_escape(obstacle_map, common_bus, pad_plan, config)` | `+ reconciled pad_plan` | `CommonBusEscapeResult` |
-| 9 | `PadWireRouter` -- `route_detailed_bundles(obstacle_map, common_bus, common_bus_escape, topology, pad_plan, config)` | `+ common_bus_escape` | `DetailedBundleRoutingResult` |
-| 10 | `MetalRealizer` -- `realize_electrical_metal(component, obstacle_map, common_bus, common_bus_escape, detailed_bundle_routes, pad_plan, config)` | `+ detailed_bundle_routes` | `Component` |
-| 11 | `ElectricalVerifier` -- `verify_electrical_routing(obstacle_map, common_bus, common_bus_escape, detailed_bundle_routes, pad_plan, config)` | `+ routed Component` | `ElectricalVerificationResult` |
-| 12 | `DebugArtifactWriter` -- `write_debug_artifacts(debug_dir, debug_prefix, *, obstacle_map=..., ...)` | `+ every object above` | `dict[str, str]` |
+| 1 | terminal extraction | `terminal_extraction.py` | heater terminal pairs |
+| 2 | electrical obstacle map | `obstacle_extraction.py`, `port_access.py` | `ElectricalObstacleMap` |
+| 3 | common bus | `common_bus_router.py`, `column_trunks.py`, `bus_search.py` | `CommonBusRoutingResult` |
+| 4 | bus trim | `common_bus_router.py` | trimmed bus |
+| 5 | escape topology | `individual_topology.py` | `IndividualEscapeTopologyResult` |
+| 6 | pad slots | `pad_slots.py` | `PadPlan` (6b trims the bus again to the pad plan) |
+| 7 | pad-side reconciliation | `pad_side_reconciliation.py` | `PadSideReconciliation` |
+| 8 | bus escape | `escape_router.py` | `CommonBusEscapeResult` |
+| 9 | pad wires | `bundle_detail_router.py`, `river_routing.py`, `pad_wire_search.py` | `DetailedBundleRoutingResult` |
+| 10 | metal realization | `metal_realization.py`, `rect_geometry.py` | routed `Component` |
+| 11 | verification and metrics | `verification.py`, `net_geometry.py`, `metrics.py` | `ElectricalVerificationResult` |
+| 12 | debug artifacts | `debug.py`, `debug_grid_svg.py`, `metal_snapshot_svg.py` | SVG paths |
 
-Guards: if stage 1 finds
-no heaters, the pipeline returns right after stage 2 with an empty
-`CommonBusRoutingResult` and a plain component copy -- stages 3-12 never run.
-Stages 5 and 6 (`EscapeTopologyPlanner`, `PadPlanner`) run only when
-`common_bus.success` (no `failed_heaters`). Stage 7
-(`PadSideReconciler`) always runs, even with `individual_topology` or
-`pad_plan` still `None`; it returns its four inputs unchanged when no heater
-needs its roles swapped. Stage 8 (`BusEscapeRouter`) runs only once a pad
-plan exists. Stage 9 (`PadWireRouter`) needs a pad plan, a topology and a
-*successful* bus escape. Stage 10 (`MetalRealizer`) runs whenever the common
-bus itself succeeded, independent of the escape or the pad wires. Stage 11
-(`ElectricalVerifier`) runs only once stage 10 produced a component. Stage
-12 (`DebugArtifactWriter`) always runs and accepts a `None` for every object
-a skipped stage never produced.
+A stage whose inputs are not ready is skipped (no heaters: return after
+stage 2; no successful bus: no pad planning; no pad plan: no escape or pad
+wires); stage 12 always runs. The electrical router shares the grid
+vocabulary with the optical side but not its kernel; the optical stages do
+not import `photonic_router.electrical`. Its parameters are
+`ElectricalRoutingConfig` (seven `--electrical-*` flags reach it).
 
-The entry point is `run_electrical_routing_step`
-(`python/photonic_router/flow_electrical.py` at the repository root), called from `photonic_router.flow.route_schematic` after path-length
-matching, guarded by `options.electrical.enable_electrical_routing`. That
-flag, and the `ElectricalRoutingConfig` it passes down, are set by
-`--electrical-routing true` on the command line or
-`FlowOptions.electrical.enable_electrical_routing` when calling
-`route_benchmark` directly; `benchmarks/heater_s_mod.toml` sets
-`--include-heater-obstacles true --electrical-routing true`, so that
-benchmark routes electrically by default. No paper configuration (section 7)
-enables it.
+### 2.16 GDS and the SUMMARY line
 
-### Checking the electrical result
+`flow_reporting.write_or_show_routed_layout` writes
+`build/routed_<benchmark>.gds` (or opens KLayout with `--show-klayout`), and
+every run, a failed one too, ends with one line from
+`flow_stats.format_flow_summary_line`:
 
-`scripts/benchmark_electrical.py --suite --check --compare-baseline` runs
-the four deterministic electrical cases --
-`heater_single`, `heater_lanes_20`, `heater_lanes_ripup`, `heater_s_mod` --
-and checks each one's `quality_metrics` (`python/photonic_router/electrical/metrics.py`)
-against `BENCHMARK_GUARDRAILS`. The guardrail idea (`--check`'s module
-docstring, Decision Log of
-`.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`):
-two zero-tolerance geometry contracts stay pinned at zero
-(`same_net_redundant_overlap_pair_count`, `metal_redundant_area_overcount_um2`)
-plus the unconditional cross-net clearance check
-(`cross_net_min_spacing_um`), and four routing-quality quantities are
-limited instead of the old pad-inventory sizes -- total and per-wire pad-wire
-detour and bend count (`pad_wire_detour_total_um`,
-`pad_wire_max_bend_count`), the common bus's own bend count
-(`bus_bend_count`), and the union area of wire-only metal
-(`wire_metal_area_um2`, bus stripe/branches/escape, individual routes,
-adapters and contacts, deliberately excluding pad markers). `--compare-baseline`
-reports every metric that drifted from the pinned
-`tests/baselines/electrical_suite_metrics.json`; the pin is rewritten with
-`--suite --output tests/baselines/electrical_suite_metrics.json` when a
-milestone changes the numbers on purpose.
+```text
+SUMMARY benchmark=... nets=... route_failures=... detours=... verifier_errors=...
+verifier_warnings=... plm_groups=... plm_over_tolerance=... meander_inserted_um=...
+electrical_heaters=... electrical_pads=... electrical_failed_wires=... electrical_ok=... total_s=...
+```
+
+(one line in the output). A stage that did not run prints `-`, never a
+guessed zero.
 
 
-## 3. The flow: the literal sequence of stage calls
+## 3. The data model
 
-The outer flow is `photonic_router/flow.py`: `route_benchmark` loads the
-benchmark module named in `options.loading` and calls `route_schematic`, whose
-body is the stage outline -- layout from schematic, optionally the pre-placed
-crossing grid stage (contribution 2), `run_photonic_routing_stage` (the routing
-session below), `verify_and_attach_photonic_reports`,
-`attach_and_report_path_length_matching`, optionally
-`run_electrical_routing_step`, then `write_or_show_routed_layout`.
+**Grid and cells.** One single-layer grid per run: `GridSpec { width,
+height, grid_size_um, origin_x_um, origin_y_um }` (`src/config.rs`; 2 um per
+cell by default, `--grid-size-um`). A cell is `(x, y)` with `0 <= x < width`;
+sets of cells use the packed key `CellKey = u64`, `pack_xy(x, y) = (x as u32)
+<< 32 | (y as u32)` (`src/obstacle_map.rs`), reversible by `unpack_xy`.
 
-The pre-placed crossing grid stage (`_preplaced_crossing_grids_stage`,
-contribution 2) builds the placement's `CrossingDemand` and, since phase 4
-slice D of the 2026-10 do-over, works from its `StageSchedule`
-(`CrossingDemand.stage_schedule()`, `python/photonic_router/crossings/crossing_demand.py`):
-the bands with crossing events, left to right, each a `Band` with its
-x-extent (the right face of the left wall column to the left face of the
-right one), its two wall orders, the nets confined to it and its
-`CrossingStagePlan` (the events in bubble-sort order, keyed by the two
-column indices, which the stage plan still calls `source_depth` /
-`target_depth` because the tile names are built from them). The tiles
-builder of `python/photonic_router/crossings/preplaced_crossing_grids.py`
-(`derive_preplaced_crossing_layout(schematic, unrouted_layout, schedule)`)
-iterates over that schedule instead of the plan's stage dictionary; it keeps
-measuring each stage's free band between the lanes' own port faces, which
-equals the schedule band on the Benes cells and reaches 15.9 um past the
-right wall face on three multiport-MMI stages whose target ports sit
-recessed inside their column (`tests/test_preplaced_crossing_grids.py` pins
-the relation; switching would move the column grid). Before anything is
-placed the stage calls `CrossingDemand.require_band_layered()`: a design with
-nets outside the band model (same wall, non-adjacent walls, a vertical port,
-a port pointing off the chip) is refused with a `RuntimeError` naming the
-nets and reasons -- "pre-placed crossing grids need a band-layered design:
-2 net(s) outside the band model (non_adjacent_walls: n_12; same_wall: n_7);
-route with --crossing-mode lidar-pure or lidar-guided" -- instead of
-crashing in the tile placement or silently leaving those crossings
-unplaced. The 17 paper benchmarks have no such net.
+**Headings and states.** Eight headings in 45-degree steps, `angle` 0 = east,
+counter-clockwise (`DIRECTIONS` in `src/primitives.rs`: 1 = north-east, 2 =
+north, ..., 7 = south-east). A search state is `State { x, y, angle }`
+(`src/search/state.rs`), angle taken modulo 8.
 
-The routing session itself is `python/photonic_router/routing/session.py::run`. The
-calls below are that function (nine phases, and the optional detour pass 7b);
-the types are the Protocols of `python/photonic_router/routing/stages.py`:
+**Primitives.** `create_photonic_primitive_library` builds, per start
+heading, a short and a long straight, the two 90-degree bends and, when
+`allow_45_degree_turns` (the CLI default; `--allow-45-degree-turns false`
+turns it off), the two 45-degree bends. Every `Primitive` carries its id
+(`u16`), start and end heading, grid displacement, the conservative
+`footprint` cells the search checks, its length, its bend cost and a
+`PrimitiveGeometry` (`Straight { length_um }` or `Bend { radius_um,
+angle_delta }`) that realization draws. All bends share the one bend radius
+in cells. `python/photonic_router/primitive_library.py` maps the ids to
+gdsfactory components.
 
-| # | call in `session.py::run` | input | product |
-| --- | --- | --- | --- |
-| 1 | `obstacle_context.build_static_obstacle_context(settings, state)` | `(SessionSettings, SessionState)` | `ObstacleContext` (obstacle map, crossing device info, obstacle SVG) |
-| 2 | `router_setup.configure_router_and_grid(settings, state, context.obstacle_map)` | `+ obstacle_map` | `None` -- writes `state.router`, `primitive_cfg`, `astar_cfg`, the grid origin and the clearance radii |
-| 3 | `route_jobs_stage.build_route_jobs_and_fanout_clustering(settings, state, settings.schematic.netlist.routes)` | `+ nets` | `RouteJobsResult` (route jobs, endpoint port specs by instance, dense runway lengths by spec) |
-| 3b | `route_jobs_stage.apply_long_straight_fanout_exemption(settings, state)` | `(settings, state)` | `None` -- contribution 2's long-straight exemption |
-| 4 | `crossing_plan_stage.build_crossing_plan_and_port_footprints(settings, state, jobs.route_jobs, jobs.endpoint_port_specs_by_instance, jobs.dense_port_runway_length_by_spec, context.obstacle_map, context.crossing_device_info)` | `+ jobs, port specs, runway lengths, obstacle map, device info` | `PlannedJobs` (jobs after planning, foreign keepouts by instance) |
-| 5 | `handoff.finalize_route_jobs_and_static_handoff(settings, state, planned.route_jobs, planned.foreign_port_keepout_cells_by_instance, context.obstacle_map)` | `+ planned jobs, keepouts, obstacle map` | `FinalJobs` (jobs as handed to the kernel, `astar_start_s`) |
-| 6 | `dispatch.dispatch_native_routing(settings, state, final.route_jobs)` | `+ final jobs` | `None` -- runs the kernel's negotiated loop; results land in `state.route_bookkeeping` with the loop's counters |
-| 7 | `finalize.finalize_routing_results(settings, state, final.route_jobs, final.astar_start_s)` | `+ final jobs, t0` | `RoutedRecords` (one `RoutedNetRecord` per net, `astar_elapsed_s`) |
-| 7b | `detour_pass.run_detour_pass(settings, state, routed)`, only when `settings.detour_pass_factor > 0` (`--detour-pass-factor`) | `+ records` | `RoutedRecords` again: every net whose recorded length exceeds the factor times its free lower bound (Manhattan distance of its port centers plus two bends) ripped up and routed again in one negotiated batch, shortest first, up to three passes while the set shrinks; `state.detour_pass_reroutes` counts them (SUMMARY `detours=`) |
-| 8 | `verify_repair.repair_and_verify_final_geometry(settings, state, routed.routed_net_records)` | `+ records` | `VerifiedRecords` (records after final repair, the crossings still illegal) |
-| 9 | `realize.realize_and_assemble_debug_artifacts(settings, state, final.route_jobs, verified.routed_net_records, verified.illegal_realized_crossings, context.obstacle_map, context.obstacle_svg, routed.astar_elapsed_s)` | `+ records, illegal crossings, obstacle map, SVG, elapsed` | `RustRouteDebugArtifacts` |
+**The obstacle map** (`ObstacleMap`, `src/obstacle_map.rs`) is the routing
+database: one dense record per in-bounds cell, stored column-wise as planes
+-- `flags: u8` (static, static-rectangle, dynamic, dynamic-core bits, always
+allocated), static and dynamic reference counts, the dynamic `owner`
+(`NetId`), `history_cost` and `congestion_cost` (allocated on first write,
+shared copy-on-write between clones) -- plus the static rectangles as given,
+an overflow map of second and later owners, and per-net cell lists
+(`net_routes`, `net_core_routes`). "Is this cell free" is the flags byte
+alone. Static obstacles and committed nets are separate, so a net can be
+ripped up and rerouted without rebuilding the layout geometry.
 
-`run` returns `(state.routed_layout, debug_artifacts)`. Phases 2 and 6 are the
-two that return `None`: their whole effect is on `state` and on the kernel, and
-`stages.py` says so in the Protocol docstring. Which fields they write is
-documented per field in `state.py` (section 10).
+**Route jobs.** Python's `RouteJob` (`records/route_rust_types.py`) is the
+per-net input; the binding's `#[pyclass] RouteJob`
+(`crates/router-py/src/types.rs`, keyword-only, read-only) carries the net
+id, source and target `State`, the opened, clearance-exempt and foreign
+keep-out cells and the two port centres in um, and becomes the engine's
+`NativeRouteJob` (`src/engine/jobs.rs`).
+
+**Route results.** `RouteResult` (`src/search/state.rs`): the `states`, the
+`primitives` (ids), the grid `cells`, the `compressed_waypoints`, total
+length and cost, the requested and reached target, and `RouteSearchStats`
+(window attempts, full-grid fallback, expanded states, heap traffic,
+crossing candidate and reject counters, timings). On the Python side one
+`RoutedNetRecord` per net holds the route, its centerline in um, the
+correction and crossing metadata that realization and verification read.
+
+**Crossing events and verdicts.** A committed crossing is a `CrossingEvent`
+(`src/engine/crossing_reservation.rs`: the two net ids, the point, the two
+grid segments and headings, the reserved cells). Under the unified legality
+switch (section 9) every realized intersection also gets a
+`CrossingVerdictRecord` with the `CrossingCandidate` (the two directions,
+the four straight runs, the point, the nearest other crossings), the
+`CrossingLegalityRule` (`half_size_cells`, `bend_runout_cells`) and the
+`CrossingVerdict`: `Legal`, `NotPerpendicular`, `MarginShort { side }`,
+`TooClose { other }`, `FootprintBlocked` or `MissingEvent`, spelled in
+reports as `legal`, `not_perpendicular`, `margin_short_{route_before,
+route_after,partner}`, `too_close_{same_route,registered}`,
+`footprint_blocked`, `missing_event`. `PyPhotonicRouter.crossing_verdicts()`
+reports them. The planning side's `CrossingEvent` (`crossings/crossing_plan.py`)
+is a different record: a planned pair of edges, its band (`source_depth`,
+`target_depth`: the two wall-column indices), level and order.
+
+**Meander plans.** A requirement's request vector (candidate bundles in
+order, one requested extra length per edge, the requiring edge as the split
+fallback) goes to `MeanderPlanner.plan_requests`; the answer names which
+candidate planned, or the split, or nothing, with the analytic comb
+geometry per edge (`src/meander/geometry.rs`: boxes, U-turn count, exact
+inserted length and footprint). The report side is `MeanderEdgeReport`
+(edge, requested, credited and physical inserted length, planned edges,
+status, reason) inside a `MeanderInsertionReport`.
+
+**Session state.** `SessionSettings` (`routing/settings.py`) holds the
+frozen inputs of one routing session; `SessionState` (`routing/state.py`)
+everything it computes, one documented field per value with its writing,
+mutating and reading phases (`w:`, `m:`, `r:`). Eighteen fields are written
+by more than one phase and carry a `# shared writer` marker (the crossing
+plan, the port-access tables, the static row indexes, the search counters
+and timing buckets, the route bookkeeping); every other field has one
+writer.
 
 
 ## 4. The search interface, and how to add an engine
 
-Every single-net search in the crate goes through one trait, declared in
-`src/search/mod.rs`:
+Every single-net search goes through one trait (`src/search/mod.rs`):
 
 ```rust
 pub trait NetSearch {
@@ -890,401 +421,480 @@ pub trait NetSearch {
 }
 ```
 
-* `SearchEnvironment { obstacle_map, primitives }` -- what the search runs
-  against. It switches on nothing: every request against the same environment
-  sees the same map and the same primitive set.
+* `SearchEnvironment { obstacle_map, primitives }`: what the search runs
+  against. Every request against the same environment sees the same map
+  and primitive set.
 * `SearchRequest { source, target, port_open_cells, dynamic_expansion,
-  crossing, config }` -- one net's question. The two optional members are the
-  request *shape*: `DynamicExpansion { radius_cells, clearance_exempt_cells }`
-  widens the clearance halo (used by repair to let a route brush past a net it
-  is about to rip up) and, being present, forgoes the simple-route
-  shortcut; `CrossingSearch { config, reservation_open_cells }` asks for a
-  route that crosses named partner nets, with `Some(_)` selecting the
-  collision-crossing reservation anchor set and `None` reusing
-  `port_open_cells` for it.
-* `SearchOutcome { route, stats }` -- `route` is `None` on failure whatever the
-  cause (infeasible, timed out, budget exhausted), and `stats` carries the real
+  crossing, config }`: one net's question. The optional
+  `DynamicExpansion { radius_cells, clearance_exempt_cells }` widens the
+  clearance halo (repair uses it to let a route brush past a net it is
+  about to rip up); the optional `CrossingSearch { config,
+  reservation_open_cells }` asks for a route that may cross partner nets.
+* `SearchOutcome { route, stats }`: `route` is `None` on any failure
+  (infeasible, timed out, budget exhausted); `stats` carries the real
   counters on every path.
 
-Two implementations exist: `AStarSearch` (`src/search/astar/mod.rs`), the
-production engine, whose `search` is a straight call into one `run_search`
-body; and `GridDijkstraSearch` (`src/search/grid_dijkstra.rs`), the
-uniform-cost oracle. The router holds one of them as `search_engine: Box<dyn
-NetSearch + Send + Sync>` (`src/engine/mod.rs`), chosen once at construction by
-`search_engine_for(&RouterConfig)` from `RouterConfig::search.engine`
-(`src/config.rs`: `SEARCH_ENGINE_ASTAR = "astar"`,
-`SEARCH_ENGINE_GRID_DIJKSTRA = "grid-dijkstra"`).
+Two implementations exist. `AStarSearch` (`src/search/astar/`) is the
+production engine: `search` calls `run_search`, which sets up the routing
+window driver (`window.rs`: a source-target window, progressively larger,
+then the full grid) around the kernel loop `kernel::run`, generic over a
+`CrossingLegalityHook` (`NoCrossingHook` or `LiveCrossingHook`,
+`crossing_rules.rs`): seed, pop, goal test, candidate moves
+(`expansion.rs`), legality (`move_is_legal` returning a `MoveVerdict`),
+cost (`cost.rs`: length, bend, history, long-straight and proactive
+congestion terms), heuristic (`heuristic.rs`: plain, diagonal and
+heading-aware estimates), push-or-improve on dense per-search storage
+(`dense.rs`). `GridDijkstraSearch` (`src/search/grid_dijkstra.rs`) is the
+uniform-cost oracle: f = g, full grid, no window, no crossing hook, built
+from the kernel's own building blocks; it refuses a crossing request with
+the `unsupported_request` stat.
 
-**To add an engine.** (1) Write it as its own module under `src/search/`,
-implementing `NetSearch`; reuse the kernel's building blocks
-(`build_search_grid`, `candidate_moves`, `move_is_legal`,
-`push_or_improve_dense`, `goal_reached`) rather than re-deriving them, as
+The router holds one engine as `search_engine: Box<dyn NetSearch + Send +
+Sync>` (`src/engine/mod.rs`), chosen once at construction by
+`search_engine_for(&RouterConfig)` from `RouterConfig::search.engine`
+(`SEARCH_ENGINE_ASTAR = "astar"`, `SEARCH_ENGINE_GRID_DIJKSTRA =
+"grid-dijkstra"`; overlay variable `PHOTONIC_ROUTER_SEARCH_ENGINE`).
+
+**To add an engine.** (1) Write it as a module under `src/search/`
+implementing `NetSearch`; reuse the kernel's building blocks (grid setup,
+`candidate_moves`, `move_is_legal`, push-or-improve, goal test) as
 `grid_dijkstra.rs` does. (2) Decide what it does with a request shape it does
-not support and report it in the stats instead of failing silently
-(`unsupported_request`). (3) Add a name constant in `src/config.rs` and a branch
-in `search_engine_for` (`src/engine/mod.rs`). (4) Accept the name in
-`PyRouterConfig::new` (`crates/router-py/src/types.rs`), which is what rejects unknown
-values, and in `SearchOverrides.engine` (`python/photonic_router/config.py`),
-whose overlay name is `PHOTONIC_ROUTER_SEARCH_ENGINE`
-(`python/photonic_router/env_overlay.py`). (5) Test it against the interface,
-not against A*'s internals: the Dijkstra engine's tests (cost equal to A* on
-the plain fixtures, crossing request refused, the negotiated loop runs on it,
-`benes_4x4_flat` routes end to end under contribution 2) are the pattern.
+not support and report it in the stats (`unsupported_request`) instead of
+failing silently. (3) Add a name constant in `src/config.rs` and a branch in
+`search_engine_for`. (4) Accept the name in `PyRouterConfig::new`
+(`crates/router-py/src/types.rs`), which rejects unknown values, and in
+`SearchOverrides.engine` (`python/photonic_router/config.py`). (5) Test it
+against the interface, not against A*'s internals: the Dijkstra tests (cost
+equal to A* on the plain fixtures, crossing request refused, the negotiated
+loop runs on it, `tests/e2e/test_search_engine.py` routes a benchmark end to
+end) are the pattern.
 
 
 ## 5. The negotiation loop, its policies, and how to add a policy
 
-`run_negotiated_batch` in `src/engine/negotiation/loop_.rs` is the loop every
-paper row runs. Read as a sentence: route the nets in the order given; when one
+`Router::run_negotiated_batch(jobs, params)` (`src/engine/negotiation/loop_.rs`)
+is the loop every paper row runs, and the repository's only batch routing
+entry point. Read as a sentence: route the nets in the order given; when one
 fails, ask the probe who is blocking it; rip up what the local rip-up rule
-names and search once more (guided by the probe's legal crossing partners when
-it reported any); requeue whoever did not resolve, rip up at round end what the
-probes blamed for the nets still failing, and iterate until every net is routed
-or `max_rounds` is exhausted. The code reads the same way since phase 3 slice D
-of the 2026-10 do-over: `run_negotiated_batch` is the rounds, each net's turn
-is `route_net_this_round`, which returns `Routed`, `Failed` or `ProbeAborted`,
-and the round end is `global_ripup_round`. Two crossing-accepting repairs used
-to run between the probe and the rip-up, the legal-only probe-guided search and
-the direct-crossing search; the 27-cell ablation of 2026-10 found both inert
-(byte-identical crossings and GDS lengths with either switched off) and phase 3
-slice A removed them. Around it: history and congestion are cleared at entry, a
-braid pass follows every committed route, a probe that finds no path at all
-aborts the batch naming the failed net, and two epoch resets stand, both from
-the paper's runs: the global rip-up clears the history map and the once-per-epoch
-set exactly once per batch, on its second call, and the loop clears them and the
-failure counts after two rounds without a single committed route
-(`RESET_AFTER_ROUNDS_WITHOUT_PROGRESS = 2`).
+names and search once more (guided by the probe's legal crossing partners
+when it reported both legal and illegal ones); requeue whoever did not
+resolve, rip up at round end what the probes blamed for the nets still
+failing, and iterate until every net routes or `max_rounds` is exhausted.
 
-The rules are values, one module each, chosen before the first round:
+The code has the same shape. `run_negotiated_batch` is the rounds;
+`route_net_this_round` is one net's turn and returns `Routed`, `Failed` or
+`ProbeAborted`; `global_ripup_round` is the round end (LiDAR's
+`ripupfailedNets`). Around it:
 
-| policy | trait and implementations | what it decides |
+* the batch starts by clearing history and congestion
+  (`begin_negotiated_batch`);
+* a net that has not failed yet gets one retry at the larger first-retry
+  budget before the probe runs, except in the last round;
+* the probe is diagnostic only; a probe that finds no path at all aborts the
+  batch naming the failed net (the loop's only early exit);
+* a braid pass (`braid.rs`, the local swap of two crossing routes) follows
+  every committed route;
+* two epoch resets, both as in the paper's runs: the global rip-up clears
+  the history map and the once-per-epoch set exactly once per batch, on its
+  second call; and after `RESET_AFTER_ROUNDS_WITHOUT_PROGRESS = 2` rounds
+  without a committed route the loop clears the history and the failure
+  counts;
+* a batch that does not converge is returned with whatever routed and a
+  `failed_net_id` / `failed_error` (the soft failure).
+
+The rules are values, one module each, chosen once in `batch_context`
+before the first round:
+
+| policy | types (`src/engine/negotiation/`) | what it decides |
 | --- | --- | --- |
-| Budget | `BudgetSchedule`, `LadderBudgets` (`negotiation/budget.rs`) | the expansion budget of one attempt, given its `AttemptKind` (`First`, `FirstRetry`, `PostRipUp`), the net's failure count and the round; `None` means unbounded. The braid passes put their constant budget (`NEGOTIATED_BUDGET_BRAID`) on every `SearchCall` they build |
-| Crossing-free | `CrossingFreePolicy`, `PlannedPairsOnly`, `Never` (`negotiation/crossing_free.rs`) | whether this net's searches this round run crossing-free (contribution 1's rule for nets the plan gives no crossing; `Never` without guidance) |
-| Rip-up | `ripup_illegal_crossing_partners` (`negotiation/ripup.rs`), behind `if no_ripup` in the loop | which committed nets a blocked net displaces -- and it does the ripping, because rip-up mutates the obstacle map and `batch.final_routes`; it returns the ids it ripped, in the order it found them. `no_ripup` skips it (nothing ripped, the net fails its round): the binding's `no_ripup=True` with `max_rounds = 1` is the no-repair mode (`RipupRerouteConfig(enabled=False)`). It was a one-method trait with a second implementation that returned no victims until phase 3 slice D folded it into that `if` |
-| Queue | `NetQueue` (`negotiation/queue.rs`) | the work order plus the three tables the other rules read: failure counts, the nets already ripped this epoch, and each net's most recent probe blockers |
+| Budget | `BudgetSchedule`, `LadderBudgets` (`budget.rs`) | the expansion budget of one attempt from its `AttemptKind` (`First`, `FirstRetry`, `PostRipUp`), the net's failure count and the round (`NegotiationConfig.budget_first`, `budget_first_retry`, `budget_retry`); the braid passes use the constant `NEGOTIATED_BUDGET_BRAID` (`src/engine/jobs.rs`) |
+| Crossing-free | `CrossingFreePolicy`, `PlannedPairsOnly`, `Never` (`crossing_free.rs`) | whether this net's searches run crossing-free this round (contribution 1: nets the plan gives no crossing; `Never` without guidance) |
+| Rip-up | `ripup_illegal_crossing_partners` (`ripup.rs`), behind `if no_ripup` in the loop | which committed nets a blocked net displaces; it does the ripping and returns the ids. `no_ripup` with `max_rounds = 1` is the no-repair mode (`RipupRerouteConfig(enabled=False)`) |
+| Queue | `NetQueue` (`queue.rs`) | the work order plus the tables the other rules read: failure counts, the nets already ripped this epoch, each net's most recent probe blockers |
 
-`negotiation/attempt.rs` builds each attempt's `SearchCall` from the batch's
-`SearchArgs` (radii and flags, plus the two weights the loop chooses per net:
-the history weight once a net has failed, the long-straight override for the
-exempt fan-out nets) and turns the attempt into its `native_negotiated_search`
-trace line; `negotiation/probe.rs` answers "who blocks this net";
-`negotiation/braid.rs` swaps two crossing routes locally, its two plain
-searches and the victim's repair fallback being `SearchCall`s under the braid
-budget.
+`attempt.rs` builds each attempt's `SearchCall` from the batch's
+`SearchArgs` (radii and flags, plus the two weights chosen per net: the
+history weight once a net has failed, the long-straight override for the
+exempt fan-out nets) and writes its `native_negotiated_search` trace line;
+`probe.rs` answers "who blocks this net"; `trace.rs` holds the other
+`PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG` lines.
 
 The loop accepts any legal path, however long, and never revisits a routed
-net unless a later net rips it up as a blocker; a net that had to go around
-a route which a later round moved away keeps its detour (the 457 um spiral
-of a 54.7 um feed in one of the owner's Clements meshes, ExecPlan
-2026-10-06-detour-aware-routing). Two opt-in measures sit outside the loop
-and leave the defaults byte-identical. `--net-order span`
-(`python/photonic_router/records/route_order.py`) routes the nets with the nearest ports first
-across all depth layers, so the short interior nets of a cell are committed
-before the long wires that would otherwise run through it. The detour pass
-(phase 7b, `python/photonic_router/routing/detour_pass.py`) measures every recorded
-route against its free lower bound and re-runs the same negotiated batch on
-the nets above the factor. Neither smooths or edits geometry: the pass only
-chooses which nets to search again, and the search is the same A*. The
-alternative of treating a detour as a failure inside the loop itself stays
-open (the plan's Milestone 4).
+net unless a later net rips it up. Two opt-in measures outside the loop
+address the detours that leaves: `--net-order span` (nearest ports first
+across the depth layers) and the detour pass (2.10). Both leave the defaults
+unchanged.
 
 **To add a policy.** (1) Declare the decision as a trait in its own module
 under `src/engine/negotiation/`, with today's behaviour as the first
-implementation, and keep the trait's method signature to what the decision
-needs. (2) Construct it once in `batch_context`, which `run_negotiated_batch`
-calls before the round loop, next to `budgets` and `crossing_free_policy`; the
-loop body must ask the policy, never re-derive the decision. A decision with
-exactly two outcomes and no state is an `if` on a `NegotiationParams` field,
-not a trait (the rip-up switch is the example). (3) If a configuration field
-selects it, add the field to `NegotiationConfig` on both sides (`src/config.rs`
-and `python/photonic_router/config.py`) and an `ENV_OVERLAY` entry
-(`python/photonic_router/env_overlay.py`); `docs/CONFIGURATION.md` then picks it
-up on the next regeneration. (4) Test the policy directly (the trace text per
-`AttemptKind` in `negotiation/attempt.rs`'s tests) and the loop through
-`run_negotiated_batch`, which needs no Python.
+implementation and a method signature limited to what the decision needs.
+(2) Construct it once in `batch_context`; the loop body asks the policy and
+never re-derives the decision. A decision with two outcomes and no state is
+an `if` on a `NegotiationParams` field, not a trait (the rip-up switch is the
+example). (3) If a configuration field selects it, add the field to
+`NegotiationConfig` on both sides (`src/config.rs`,
+`python/photonic_router/config.py`), to `RouterConfig.to_rust` and
+`PyRouterConfig`, and an `ENV_OVERLAY` entry
+(`python/photonic_router/env_overlay.py`); regenerate
+`docs/CONFIGURATION.md` and the stub (section 8). (4) Test the policy
+directly and the loop through `run_negotiated_batch`, which needs no Python
+(`cargo test -p router-core`).
 
 
-## 6. Configuration objects and precedence
-
-Five objects, each with one job:
+## 6. The configuration surface
 
 | object | file | what it carries |
 | --- | --- | --- |
-| `RouterConfig` (Rust) | `src/config.rs` | the kernel's own parameters: `negotiation`, `search`, `crossing`, `diagnostics`. Plain data with today's defaults; no algorithm in `src/` reads the environment |
-| `RouterConfig` (Python) | `python/photonic_router/config.py` | the frozen mirror of the above, field for field and default for default; `to_rust` builds the flat-keyword `rust_backend.RouterConfig` |
-| `RoutingConfig` | `python/photonic_router/config.py` | the whole Python-side tree: `router` plus `crossing_plan`, `crossing_grid`, `fanout`, `engine`, `search`, `diagnostics` and `write_gds_on_photonic_verification_failure` |
-| `FlowOptions` | `python/photonic_router/flow_options.py` | the flow-level choices in eleven groups, one per consuming stage (`loading`, `layout`, `obstacles`, `preplaced_grids`, `optical`, `verification`, `path_length`, `electrical`, `debug`, `output`, `stats`) |
-| `SessionSettings` / `SessionState` | `python/photonic_router/routing/settings.py`, `state.py` | one routing session's frozen inputs, and everything it computes |
+| `RouterConfig` (Rust) | `src/config.rs` | the kernel's parameters in four groups: `negotiation` (`NegotiationConfig`), `search` (`SearchOverrides`), `crossing` (`CrossingEngineConfig`), `diagnostics` (`KernelDiagnostics`); plain data, no algorithm reads the environment |
+| `RouterConfig` (Python) | `python/photonic_router/config.py` | the frozen mirror, field for field and default for default; `to_rust` builds the binding's flat-keyword `RouterConfig` |
+| `RoutingConfig` | `python/photonic_router/config.py` | the Python-side tree: `router`, `crossing_plan`, `crossing_grid`, `fanout`, `search` (`SearchTuning`), `diagnostics` (`FlowDiagnostics`) and `write_gds_on_photonic_verification_failure` |
+| `FlowOptions` | `python/photonic_router/flow_options.py` | the flow-level choices in eleven frozen groups, one per consuming stage: `loading`, `layout`, `obstacles`, `preplaced_grids`, `optical`, `verification`, `path_length`, `electrical`, `debug`, `output`, `stats` |
+| `ElectricalRoutingConfig` | `python/photonic_router/electrical/types.py` | the electrical pipeline's parameters, inside `FlowOptions.electrical` |
+| `SessionSettings` | `python/photonic_router/routing/settings.py` | one routing session's frozen inputs, built from the two trees above |
 
-Precedence, lowest to highest, as `photonic_router/config_loading.py::build_config`
-and `photonic_router/cli.py::main` apply it:
+Precedence, lowest to highest (`config_loading.build_config`, `cli.main`):
 
-1. **Defaults** -- the dataclass defaults in `config.py` and `flow_options.py`.
-2. **The benchmark's stable block** -- the `[config]` table (and the `[flags]`
-   table, its default command-line flags) of `benchmarks/<name>.toml`, read by
-   `cli.py::load_benchmark_defaults` through `_benchmark_stable_defaults` and
-   passed to `build_config` as `stable_env`.
-3. **The process environment** -- `PHOTONIC_ROUTER_*`, applied through the one
-   overlay table `ENV_OVERLAY` in `python/photonic_router/env_overlay.py`. It
-   wins over the stable block, exactly as `os.environ.setdefault` did before
-   Milestone 1. A variable absent from the environment is never applied, so
-   "unset" keeps the dataclass default rather than parsing an empty value.
-4. **The command line** -- the parsed arguments, turned into `FlowOptions` by
-   `cli.py::_flow_options`. `--configuration`'s flags are inserted *before* the
-   user's own flags, so an explicit flag always wins (section 7).
+1. the dataclass defaults (`config.py`, `flow_options.py`, the `SCRIPT_*`
+   constants of `flow_config.py` that the parser uses as defaults);
+2. the benchmark's file `benchmarks/<name>.toml`: its `[flags]` table
+   (flag names without `--`, in file order) is prepended to the command
+   line, its `[config]` table (`PHOTONIC_ROUTER_*` names without the prefix,
+   string values) is applied through the overlay; under
+   `--preplaced-crossing-grids true` the `--crossings` / `--crossing-mode`
+   flags of the file are dropped (`stable_flags_for_configuration`);
+3. the process environment, `PHOTONIC_ROUTER_*`, through the same overlay
+   table `ENV_OVERLAY` (`env_overlay.py`, the only module that parses those
+   strings); it wins over the benchmark's `[config]`; an absent variable is
+   never applied;
+4. the command line: `--configuration`'s flags are inserted after the
+   benchmark's flags and before the user's own, so an explicit flag wins.
 
-`docs/CONFIGURATION.md` lists every field of `RoutingConfig` and `FlowOptions`
-with its type, default, overlay variable and command-line flag; it is generated
-by `scripts/generate_config_reference.py` and asserted by
-`tests/test_config_reference.py`, so it cannot drift from the code.
+The three paper configurations are pinned in `cli.py`'s
+`_CONFIGURATION_FLAGS` (`baseline` = `--crossing-mode lidar-pure`,
+`contribution1` = `--crossing-mode lidar-guided`, `contribution2` =
+`--preplaced-crossing-grids true --verbose-routes`), exactly the flags
+`scripts/results/reproduce_date2027.sh` passes; changing one changes what the
+paper's numbers mean. Exactly one runs at a time. The crossing modes are
+`CROSSING_MODES = ("lidar-pure", "lidar-guided")`
+(`crossings/crossing_modes.py`); contribution 2 is a flow flag, not a mode.
+
+[`docs/CONFIGURATION.md`](CONFIGURATION.md) lists every field of
+`RoutingConfig`, `FlowOptions` and `ElectricalRoutingConfig` with its type,
+default, overlay variable and flag. It is generated by
+`scripts/generate_config_reference.py` from the dataclasses, the overlay
+table and the parser, and `tests/test_config_reference.py` fails when the
+checked-in file differs from a fresh generation.
 
 
-## 7. The three paper configurations
+## 7. Code layout: the Rust crates and the Python package
 
-Exactly one of the three runs at a time (repository rule; the flags are pinned
-in `python/photonic_router/cli.py`'s `_CONFIGURATION_FLAGS`, which says in a
-comment that changing one changes what the paper's numbers mean):
+### 7.1 The Cargo workspace
 
-| `--configuration` | expands to | what it does |
+The root `Cargo.toml` is the workspace: members `crates/router-core` and
+`crates/router-py`, shared package fields and dependency versions
+(`pyo3 0.22` with `abi3-py38`, `rustc-hash 2`), and two workspace-wide clippy
+allows (`too_many_arguments`, `type_complexity`) that name the debt they
+stand for. `rust-toolchain.toml` selects `stable`.
+
+### 7.2 `crates/router-core` (about 50,000 lines, tests included)
+
+Pure Rust, depends on `rustc-hash` only, so `cargo test -p router-core` runs
+without a Python interpreter. `src/lib.rs` declares the modules and
+re-exports the public names; it contains no logic.
+
+| module | lines | responsibility |
+| --- | ---: | --- |
+| `config.rs` | 360 | `RouterConfig` and its four groups, `GridSpec`, the search-engine names |
+| `error.rs` | 30 | `RouterError` (`Config`, a Python `ValueError` at the binding) |
+| `obstacle_map.rs` | 2,100 | the routing database (section 3); `tests/obstacle_map_tests.rs` (180) is its integration test |
+| `static_obstacle_builder.rs` | 1,600 | grid spec, rasterization, clearance inflation, port openings, `StaticCellSet` |
+| `primitives.rs` | 390 | headings, primitives, the primitive library |
+| `crossings.rs` | 200 | `CrossingConfig`, `CrossingContext`, `CrossingPair`: crossing settings and expected pairs, independent of the A* hot path |
+| `geometry_realization.rs` | 5,460 | route to centerline to polygon, waypoint compression, endpoint snapping |
+| `search/mod.rs` | 130 | the `NetSearch` interface (section 4) |
+| `search/state.rs`, `geometry.rs` | 250, 270 | `State`, `RouteResult`, `RouteSearchStats`; grid-polyline geometry |
+| `search/grid_dijkstra.rs` | 450 | the uniform-cost oracle engine |
+| `search/astar/` | 15,000 + 3,100 tests | the A* engine: `mod.rs` (940, `AStarSearch`, `run_search`), `kernel.rs` (1,470), `expansion.rs` (2,440), `crossing_rules.rs` (2,240, plus `crossing_rules/tests.rs`), `simple_route.rs` (3,340), `dense.rs` (1,560), `window.rs` (660), `cost.rs` (550), `heuristic.rs` (440), `config.rs` (390, `AStarConfig`, `AStarParams`), `diagnostics.rs` (830, trace printers over `&mut dyn Write`), `svg.rs` (120) |
+| `engine/mod.rs` | 300 | `Router`: the obstacle map, primitive library, crossing context, committed routes, history bookkeeping, `RouterConfig`, the search engine, the generation counters the meander planner syncs on |
+| `engine/api.rs` | 210 | the plain-data operations the binding forwards to (static cells and rectangles, port openings, net cells, raw views, rip-up) |
+| `engine/jobs.rs`, `cells.rs`, `commit.rs` | 320, 640, 470 | job and batch types; footprint and port cell arithmetic; committing a route |
+| `engine/search_call.rs`, `search_calls.rs` | 260, 1,870 | the `SearchCall` value and the one `route_and_commit` body |
+| `engine/crossing_reservation.rs` | 3,480 | crossing events, reservations, partner sets, realized-crossing validation, verdict records |
+| `engine/crossing_geometry.rs` | 1,250 | segment geometry and the crossing-legality predicate |
+| `engine/endpoint_correction.rs` | 1,060 | the checked grid-to-port correction pass |
+| `engine/diagnostics.rs` | 250 | trace records and batch timers |
+| `engine/negotiation/` | 4,010 | the loop (`loop_.rs`, 1,200 with its tests) and its rules: `budget.rs`, `crossing_free.rs`, `ripup.rs`, `queue.rs`, `attempt.rs`, `probe.rs`, `braid.rs` (930), `trace.rs` |
+| `meander/` | 5,230 | `geometry.rs` (990, analytic comb), `search.rs` (1,640, obstacle-aware placement and occupancy prefix), `plan.rs` (2,570, the registered PLM planner and every plan decision); `mod.rs` re-exports |
+
+Test fixtures live in `search/test_support.rs` and `engine/test_support.rs`
+(`#[cfg(test)]`); production code does not use them.
+
+### 7.3 `crates/router-py` (about 4,600 lines)
+
+The PyO3 surface, built by maturin into `photonic_router._rust`
+(`pyproject.toml`: `manifest-path = "crates/router-py/Cargo.toml"`,
+`module-name = "photonic_router._rust"`, `python-source = "python"`).
+
+| module | lines | responsibility |
+| --- | ---: | --- |
+| `lib.rs` | 1,150 | `PyPhotonicRouter { inner: Router }` and its `#[pymethods]` (about forty methods), the `#[pymodule]`, `py_err` (`RouterError` to Python) |
+| `types.rs` | 940 | the `#[pyclass]` configuration, job and result types (`RouterConfig`, `AStarConfig`, `GridSpec`, `State`, `RouteJob`, `RouteResult`, ...) and their conversion into the core's structs |
+| `convert.rs` | 590 | conversions in both directions (route results, timing dictionaries, `native_jobs_from_py`) |
+| `meander_py.rs` | 1,490 | `MeanderPlanner` (`register`, `register_geometries`, `reserve_rect`, `clear_reserved`, `open_cell_count`, `profile`, `plan_requests`, `plan_final`, `plan_centerline`, static `realize`) and `auto_meander_search_config_rs` |
+| `static_obstacle.rs` | 200 | `build_static_obstacle_map_rs`, `PyStaticCellSet` |
+| `tests.rs` | 240 | binding tests that read a Python result (need `PYO3_PYTHON`) |
+
+The rule: bindings convert and delegate, they do not decide. The planner
+holds a router's path-length-matching state and syncs on the router's
+`obstacle_generation` (bumped wherever the obstacle map changes) and
+`static_reset_generation` counters, so a commit after registration drops its
+occupancy prefix and a static reset drops the registration.
+`python/photonic_router/_rust.pyi` (760 lines) is the generated type stub.
+
+### 7.4 The Python package `python/photonic_router/` (about 45,700 lines)
+
+Top-level modules (23 files, 7,300 lines):
+
+| module | lines | responsibility |
+| --- | ---: | --- |
+| `__main__.py`, `cli.py` | 50, 850 | `python -m photonic_router route`; the parser, benchmark defaults, `--configuration`, `_flow_options` |
+| `flow.py` | 870 | `route_benchmark`, `route_schematic` (the stage outline) and the `run_routing_flow` keyword wrapper |
+| `flow_options.py`, `flow_config.py` | 210, 270 | `FlowOptions`; the `SCRIPT_*` defaults and option resolution |
+| `flow_optical.py`, `flow_verification.py`, `flow_plm.py`, `flow_electrical.py` | 180, 400, 230, 200 | the flow's stage helpers |
+| `flow_reporting.py`, `flow_stats.py`, `flow_component_info.py` | 550, 300, 30 | console output, GDS write; `RoutingFlowStats` and the SUMMARY line; component info |
+| `config.py`, `config_loading.py`, `env_overlay.py` | 390, 40, 810 | the configuration trees, their precedence, the overlay table |
+| `static_obstacle_builder.py`, `benchmark_extractor.py`, `routing_layers.py` | 930, 180, 130 | obstacle extraction and the `ObstacleMapBuilder` Protocol; geometry and port extraction; layer and port access tables |
+| `primitive_library.py`, `port_roles.py`, `graph_analysis.py`, `benchmark_metadata.py` | 180, 150, 60, 190 | primitive ids to components; input-side ports; shared graph context; benchmark metadata (`NODE_TYPES`, `INTERNAL_DELAYS_UM`, `INPUT_PORTS_BY_COMPONENT`) |
+
+Sub-packages:
+
+| package | files, lines | responsibility |
 | --- | --- | --- |
-| `baseline` | `--crossing-mode lidar-pure` | crossings are discovered during search |
-| `contribution1` | `--crossing-mode lidar-guided` | a precomputed crossing plan guides costs and order |
-| `contribution2` | `--preplaced-crossing-grids true --verbose-routes` | crossing structures are placed before routing, the rest is routed crossing-free |
+| `routing/` | 20, 10,100 | the routing session: `session.py` (the nine-phase `run`), `settings.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `crossing_plan_info.py`, `timing.py`, `api.py` (`route_match_and_realize`), `route_rust.py` (a re-export shim for older import paths) |
+| `crossings/` | 11, 5,800 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,400, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 1,300 for verification), `crossing_verification_report.py`, `topology_analysis.py` (test oracle) |
+| `plm/` | 5, 3,600 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,850) |
+| `verify/` | 3, 2,150 | `photonic_verification.py` (1,240, the geometry verifier), `route_rust_endpoint_correction.py` (900) |
+| `records/` | 8, 3,600 | `route_rust_types.py` (1,540, the shared records), `route_rust_records.py`, `route_rust_geometry.py`, `route_rust_realization.py`, `route_rust_obstacle_config.py`, `route_order.py` (`NET_ORDERS`), `layout_from_schematic.py` |
+| `gds/` | 8, 2,850 | GDS write options, the routes overview SVG, debug probe artifacts, gdsfactory's reference router (`route_gds.py`), and circuit extraction and rebuild from a foundry GDS (`gds_circuit_extraction.py`, `gds_circuit_rebuild.py`, `gds_circuit_components.py`) |
+| `electrical/` | 29, 10,300 | the heater-metal pipeline (2.15); `__init__.py` is its public surface |
 
-They are exactly the flags `scripts/results/reproduce_date2027.sh` passes for
-each row. So
+A stage module takes `(settings, state, <its input>)` and returns its
+product; it does not see the command line, the environment or a session
+object. Code outside `routing/` reaches the session through `routing/api.py`
+or the `photonic_router.routing` re-exports.
+
+### 7.5 Around the package
+
+| path | contents |
+| --- | --- |
+| `benchmarks/` | one module per benchmark (`build_schematic()`), `benchmarks/<name>.toml` defaults, shared builders (`benes.py`, `cascade.py`), `data/` (mesh YAML), `private/` (git-ignored) |
+| `scripts/` | `lint.sh`, `test_baseline.sh`, the generators (`generate_config_reference.py`, `generate_rust_stubs.py`), `benchmark_photonic.py`, `benchmark_electrical.py`, `profile_astar.py`, `extract_private_benchmark.py`, `make_mesh_slice_benchmark.py`, `crossing_benchmark_report.py`, `lidar_bridge/`, `path_investigation/` (an exploratory harness kept as written) |
+| `scripts/results/` | the oracles and the archive tooling (section 8) |
+| `tests/` | unit tests by module, `e2e/` (full runs, marker `e2e`), `electrical/` (one module per electrical stage), `fixtures/` (synthetic layouts, sessions, PLM fixtures), `baselines/` (pinned numbers) |
+| `docs/` | this document, the generated configuration reference, the reproduction documents and their pinned tables, `history/` (earlier states) |
+
+
+## 8. Build, tests and oracles; how to add a benchmark
+
+The commands, with the lint and commit conventions, are in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). In short:
 
 ```bash
-.venv/bin/python -m photonic_router route benes_8x8_flat --configuration contribution2
-```
-
-is the paper's contribution 2 row of `benes_8x8_flat`. Overrides are ordinary
-flags after it: `--configuration contribution1 --crossing-mode lidar-pure` is
-contribution 1 with the crossing mode overridden
-(`cli.py::configuration_flags`).
-
-
-## 8. Build and test commands
-
-From the repository root, with `.venv` present. `rust-toolchain.toml` pins
-the host's stable toolchain; `cargo test -p router-py` additionally needs
-`PYO3_PYTHON` because that crate links the Python it is built for
-(`router-core` does not):
-
-```bash
-# Build the kernel into python/photonic_router/_rust.abi3.so
-PYO3_PYTHON="$PWD/.venv/bin/python3" \
-  .venv/bin/maturin develop --release
-
-# Rust unit tests: the engine without Python, the bindings with it
-cargo test --release -p router-core
-PYO3_PYTHON="$PWD/.venv/bin/python" \
-  cargo test --release -p router-py
-cargo fmt --all      # before testing; cargo fmt --all -- --check in review
-
-# Python tests: the whole suite, and the fast part (markers in pyproject.toml)
-.venv/bin/python -m pytest -q tests
+.venv/bin/pip install -e ".[dev]" pytest        # first build
+.venv/bin/maturin develop --release             # after a change under crates/
+cargo test --release -p router-core             # the engine, no Python
+PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --release -p router-py
 .venv/bin/python -m pytest -q -m "not e2e" tests
-
-# The electrical pipeline's own tests, one module per stage of stages.py
-.venv/bin/python -m pytest -q tests/electrical
-
-# Both suites against the pinned baseline (tests/baselines/test_baseline.txt)
-scripts/test_baseline.sh
-
-# The electrical benchmark suite: four deterministic cases against their
-# guardrails and the pinned baseline (docs/ARCHITECTURE.md section 2,
-# "Checking the electrical result")
-.venv/bin/python scripts/benchmark_electrical.py --suite --check --compare-baseline
-
-# The reproduction gate: the nine smallest paper cells, about two minutes
-scripts/results/gate_short.sh
-
-# The path-length-matching gate: heater_s_mod and cascade_8_compact against
-# docs/plm_baseline.json, about 10 s (docs/PLM_REPRODUCTION.md)
-scripts/results/plm_gate.sh
-
-# The full 27-cell reproduction (about 2.5 h; RESULTS_ROOT is never results/)
-scripts/results/reproduce_date2027.sh
-.venv/bin/python scripts/results/compare_date2027.py results_date2027 \
-  <path>/EXPERIMENTS_TABLE_SOURCES.json
-# Byte-compare every verification report between two reproduction roots
-scripts/results/compare_verification_reports.sh <root_a> <root_b>
-
-# The configuration reference
-.venv/bin/python scripts/generate_config_reference.py            # regenerate
-.venv/bin/python scripts/generate_config_reference.py --check    # verify
+.venv/bin/python -m pytest -q tests             # with the end-to-end runs
+scripts/test_baseline.sh                        # both suites against tests/baselines/test_baseline.txt
+scripts/lint.sh                                 # ruff, generated files, mypy, rustfmt, clippy
 ```
 
-`scripts/test_baseline.sh` passes only when the Rust suite has no failures, the
-Python failure list equals the pinned one (empty), neither pass count has
-dropped below the pin, and the not-e2e run is under 60 s.
-`scripts/results/gate_short.sh` prints nine `ok` rows and `all reproduced cells
-match`; it compares crossing count and GDS length exactly and requires zero
-verifier errors (`docs/date2027_table_sources.json`,
-`scripts/results/compare_date2027.py`). `docs/DATE2027_REPRODUCTION.md` records
-which commit last reproduced all 27 cells.
-`scripts/results/compare_verification_reports.sh` pairs the newest run of each
-cell in two roots and byte-compares their photonic and crossing verification
-reports; the reports carry no timing, so identical bytes mean identical
-verdicts and issue lists (the acceptance of the 2026-09-24 verifier plan, which
-took the verifier's share of the full run from 5,207 s to 140 s).
-`tests/electrical/` holds the electrical pipeline's own tests, one module per
-stage of `python/photonic_router/electrical/stages.py` (Milestone 4 slice 5 of
-`.agent/execplans/2026-09-25-electrical-routing-quality-and-cleanup.md`),
-with fixtures in `tests/fixtures/` after the pattern the optical side already
-follows; it replaces the single `tests/test_electrical_routing.py`.
-`scripts/benchmark_electrical.py --suite --check --compare-baseline` is the
-electrical equivalent of `scripts/results/gate_short.sh`: it is not part of
-`scripts/test_baseline.sh` and has no paper-cell dependency, since no paper
-configuration routes electrically (section 7).
+### 8.1 The oracles
 
+Two pinned reproductions guard behaviour; a change that may move a routed
+result runs them.
 
-### The SUMMARY line and the merge review (2026-09-29)
+* **The paper gate**, `scripts/results/gate_short.sh` (about two minutes):
+  routes the nine smallest paper cells (Benes 4x4 and 8x8 flat, ADEPT 8x8;
+  baseline, contribution 1, contribution 2) through
+  `reproduce_date2027.sh short` into a temporary root and compares them with
+  `compare_date2027.py` against `docs/date2027_table_sources.json`: crossing
+  count and GDS length exact (to 0.01 um), zero verifier errors. It prints
+  one `ok` row per cell and `all reproduced cells match`, and exits non-zero
+  otherwise. The full 27 cells are `reproduce_date2027.sh` (about 2.5 h, into
+  `results_date2027/`, never `results/`) followed by `compare_date2027.py
+  results_date2027 docs/date2027_table_sources.json`; `--with-bounds` adds
+  the placement lower bound (`docs/date2027_crossing_bounds.json`) and the
+  excess per cell. [`docs/DATE2027_REPRODUCTION.md`](DATE2027_REPRODUCTION.md)
+  records the provenance and every full re-verification.
+* **The PLM gate**, `scripts/results/plm_gate.sh` (two to three minutes):
+  routes `heater_s_mod` and `cascade_8_compact` and compares GDS length,
+  meander length, group count, groups over tolerance, realized spreads, nets,
+  rc and verifier errors against `docs/plm_baseline.json` (`plm_table.py
+  --compare`), ending with `all PLM cells match`. The full thirteen cells are
+  `plm_baseline.sh`; see [`docs/PLM_REPRODUCTION.md`](PLM_REPRODUCTION.md).
 
-Every `route` run ends with one fixed line, `SUMMARY benchmark=... nets=...
-route_failures=... detours=... verifier_errors=... verifier_warnings=... plm_groups=...
-plm_over_tolerance=... meander_inserted_um=... electrical_heaters=...
-electrical_pads=... electrical_failed_wires=... electrical_ok=... total_s=...`
-(`photonic_router.flow_stats.format_flow_summary_line`; a stage that did not run
-prints `-`). The stages fill the `RoutingFlowStats` record the flow creates
-for every run; per-route search counters are collected only with
-`collect_route_stats`, which the legacy `run_routing_flow` turns on when a
-caller hands in its own record. The saved workflow
-`.claude/workflows/merge-review.js` (`/merge-review`, optional `base`)
-reviews every file changed against `main` with one reviewer each, has two
-independent verifiers try to refute every finding, and returns one ranked
-list; it is the review step before a merge.
+Beside them: `scripts/test_baseline.sh` (pass counts and the failure list of
+both suites, and the fast suite under 60 s),
+`scripts/benchmark_electrical.py --suite --check --compare-baseline` (the four
+heater cases against their guardrails and
+`tests/baselines/electrical_suite_metrics.json`; no paper configuration
+routes electrically), and `scripts/results/compare_verification_reports.sh
+<root_a> <root_b>` (byte-compares the verification reports of two roots;
+they carry no timing). Routing-loop times are printed as ratios and never
+compared: they depend on the machine.
 
-## 9. Removal candidates (Milestone 8)
+A change that moves a pinned number on purpose re-pins it in the same
+commit and says why in the message (CONTRIBUTING.md).
 
-The repository owner decided every candidate on 2026-09-24 (all removals as
-recommended, under the constraint that the working benchmarks stay exact), and
-Milestone 8 carries them out one slice at a time. The label was the string
-`candidate for removal, see Milestone 8`; after Slice C
-`grep -rn "candidate for removal" src/ python/` is empty, so what
-is left below is the one item still named in the ExecPlan's Milestone 8 section.
+### 8.2 How to add a benchmark
 
-Already removed, Slice A, the legacy engine (2026-09-24): the legacy repair
-loop with its ~25-helper chain (the whole `src/engine/legacy_repair.rs`, 3,739
-lines) and its binding, the clean-probe commit, the orthogonal repair fallback
-(its config field `enable_orthogonal_repair_fallback` removed with it), the
-non-repair batch binding (the negotiated loop with `max_rounds = 1` and
-`no_ripup` replaces it),
-the negotiated-displacement trio and `ripup_repair_set_victims`, the
-engine-selection fields and their two environment variables, and every helper
-those left unreachable. Two decisions came with the slice: the two
-mid-pipeline repair passes of `python/photonic_router/routing/verify_repair.py` now call
-the negotiated loop (D8), and the probe-guided and direct-crossing budgets
-follow `NegotiationConfig` instead of the constants, whose values are those
-fields' defaults (D9; both attempts were removed in phase 3 slice A of the
-2026-10 do-over after the ablation found them inert).
+1. Write `benchmarks/<name>.py` with `build_schematic() -> Schematic`
+   (gdsfactory's `Schematic`: instances, placements, nets). Reuse a builder
+   where one exists (`benes.py`, `cascade.py`); `heater_single.py` is a small
+   example. Optional module attributes the analyses read:
+   `INPUT_PORTS_BY_COMPONENT` (input-side ports of custom cells, for PLM),
+   `NODE_TYPES` and `INTERNAL_DELAYS_UM` (benchmark metadata).
+2. If it needs non-default flags or overlay settings, add
+   `benchmarks/<name>.toml` with a `[flags]` table (flag names without `--`;
+   booleans as `true`/`false`) and a `[config]` table (`PHOTONIC_ROUTER_*`
+   names without the prefix, string values). A comment block at the top
+   says why. `tests/test_benchmark_defaults.py` loads every TOML through the
+   CLI helper.
+3. Run it: `.venv/bin/python -m photonic_router route <name>` and read the
+   SUMMARY line (`verifier_errors=0`).
+4. If it is to be pinned, add it to `scripts/results/plm_baseline.sh` (PLM)
+   or a results script, and re-pin the table in the same commit.
 
-Already removed, Slice B, the window and collision crossing modes (D2,
-2026-09-24): `expected_pairs_partner_set`, `crossing_allowed_partner_set` and
-`try_route_through_expected_crossing_partner` with every branch keyed on
-`allow_only_expected_pairs == true` or `use_collision_crossing_routing ==
-false`, the field `use_collision_crossing_routing` and its pymethod
-`set_collision_crossing_routing`, the two mode names (`CROSSING_MODES` is now
-`("lidar-pure", "lidar-guided")`, `is_collision_mode` folded into
-`is_lidar_mode`, the flow default became `lidar-pure`), the hard-constraint
-branch of `_build_crossing_plan_info` and the window-only Weighted-A*
-iteration cap. `CrossingConfig::allow_only_expected_pairs` stayed until phase 4
-slice A of the 2026-10 do-over removed the hard-constraint API as a whole:
-`CrossingConstraint`, `CrossingContext::{constraints, allows_pair,
-has_expected_pair, expected_crossing_count, allowed_partners_for,
-ordered_constraints_for, replace_constraints, clear_constraints}`, the six
-pymethods (`crossing_constraints`, `set_crossing_constraints`,
-`clear_crossing_constraints`, `crossing_expected_count`,
-`crossing_has_expected_pair`, `crossing_allows_pair`) and the Python keyword
-`allow_only_expected_crossings`; `allows_pair` had reduced to
-`config.enabled`, so the engine now tests that directly and the
-`unexpected_pair` verdict is gone from both verifiers. The same slice removed
-everything that was constant because of it (`net_has_crossing_requirements`,
-the crossing spacing history, `require_all_partners` with `all_partner_mask`,
-`goal_extra_ok` and the window-mode progress heuristic, the
-`next_partner_index` key component, `min_straight_cells_per_crossing` end to
-end -- `crossing_required_margin_cells` never read it), the dead second and
-third copies of the rank-inversion analysis (`TopologyCrossing` /
-`_find_rank_inversions`, `benes.py::find_rank_crossings`; the plan's events
-from `crossing_plan.build_crossing_plan` are the one copy), the third
-`realized_intersections` producer
-(`_augment_crossing_plan_with_realized_overlaps` with the `actual_crossings`
-fields of `CrossingPlanInfo`), the unreachable pre-placed grid builders of
-`python/photonic_router/crossings/preplaced_crossing_grids.py` (fan modes `router`, `in_grid`,
-`stretched`; tile placement `lines`; only the `tiles` builder every paper cell
-ran remains) and `is_lidar_mode` (constant true since the collision mode went).
+A benchmark built from a foundry GDS goes through
+`scripts/extract_private_benchmark.py <name>` into the git-ignored
+`benchmarks/private/` and runs as `route private.<name>`; nothing in the
+repository names a foundry cell.
 
-Already removed, Slice C, the small leftovers (2026-09-24): the five Python
-helpers no stage reached (`record_elapsed` in `python/photonic_router/routing/timing.py`
-and `_append_grid_step`, `_fanout_stub_centerline_um`,
-`_append_circular_stub_bend`, `_cross2` in `python/photonic_router/routing/route_jobs.py`),
-the 22-line demo wrapper module of `python/photonic_router/`, the two
-`RipupRerouteConfig` budgets the deleted repair chain owned with their two
-command-line flags and the two unused `python/photonic_router/flow_config.py` constants
-behind them, the dead negotiated-engine environment field `run.txt` recorded
-(`scripts/results/run_and_archive.sh`), and the unused crossing-mode keyword
-of `_effective_crossing_search_loss`. Two things came
-with the slice: D7's doc comment now describes the code (the epoch reset fires
-once per batch, when the global rip-up counter reaches 2 -- the behaviour the
-paper's runs used -- pinned by a new
-`third_global_ripup_does_not_clear_history_again` test), and the Weighted-A*
-iteration cap Slice B removed with the window mode is back in
-`python/photonic_router/routing/router_setup.py`, its condition folded to
-`not settings.enable_crossings`.
+### 8.3 Generated files
 
-Still open:
-
-Nothing. The list is empty since Slice D (2026-09-24) deleted the four toy
-benchmark modules (`TOY`, `mmi_heater`, `mmi_heater_8x4`,
-`mmi_heater_8x4_ripup_reroute`) together with the unused `generate_toy.py`:
-`scripts/benchmark_electrical.py` now runs its three cases on the real
-heater-only benchmarks `heater_single`, `heater_lanes_20` and
-`heater_lanes_ripup`, built from the synthetic fixtures of Milestone 6. The
-electrical guardrail finding those cases exposed (seven guardrails red on every
-case since the 2026-06 changes to `python/photonic_router/electrical`, owner decision
-pending) is item 3 of `.agent/REPOSITORY_STATE.md`'s Current Findings.
-
-Each removal is one slice and one commit with the short gate after it, so any
-single one can be reverted; the full 27-cell reproduction runs at the end.
-
-
-## 10. Shared state between stages
-
-`SessionState` (`python/photonic_router/routing/state.py`) is one mutable record the nine
-phases share, grouped by the phase that *first* writes each field, with the
-writing (`w:`), mutating (`m:`) and reading (`r:`) phases named per field.
-Nineteen fields are written by more than one phase and carry a `# shared
-writer` marker. That is real coupling between phases, not an accident of the
-old attribute soup, and it is the concrete list Milestone 8 negotiates; a
-later plan may split the state phase by phase. The phase numbers are the nine
-`run()` steps of section 3, with `0` for the session constructor.
-
-| field | writer phases | also read by |
+| file | generator | checked by |
 | --- | --- | --- |
-| `route_nets_timings_s` | 0, mutated by 6 | 1, 6, 9 |
-| `route_svgs` | 1, mutated by 6 | 6, 9 |
-| `raw_static_cells_by_y` | 2, 4 (built on demand) | 4 |
-| `raw_static_rect_ranges_by_y` | 2, 4 (built on demand) | 4 |
-| `heater_opening_rect_ranges_by_y` | 2, 4 (built on demand) | 4 |
-| `static_blocked_cells_before_port_reservations` | 2, 5 (mutated by 5) | 5, 6 |
-| `port_access_cells_by_spec` | 3, mutated by 4 | 4, 5 |
-| `port_access_candidate_cells_by_spec` | 3, mutated by 4 | 4, 5 |
-| `port_access_rule_by_spec` | 3, mutated by 4 | 4, 6 |
-| `port_runway_cells_by_spec` | 3, mutated by 4 | 4, 5, 6 |
-| `crossing_plan_info` | 4, mutated by 4, 7, 8, 9 | 4, 5, 7, 8, 9 |
-| `route_bookkeeping` | 5 (its phase-7 writes go through its own attributes) | 6, 7, 8 |
-| `route_timing_buckets` | 5, mutated by 6 | 6, 7, 9 |
-| `route_attempt_records` | 5, mutated by 6 | 6, 9 |
-| `repair_count` | 5, 6 | 7, 9 |
-| `simple_route_count` | 5, 6 | 7, 9 |
-| `total_expanded_states` | 5, 6 | 7 |
-| `native_repair_trace_records` | 5, 6 | 6 |
+| `docs/CONFIGURATION.md` | `scripts/generate_config_reference.py` | `--check`, `tests/test_config_reference.py` |
+| `python/photonic_router/_rust.pyi` | `scripts/generate_rust_stubs.py` (reads the built module) | `--check`, `tests/test_rust_stub.py` |
+| `docs/date2027_crossing_bounds.json` | `scripts/results/crossing_lower_bound.py --all-paper-cells --json docs/date2027_crossing_bounds.json` | `compare_date2027.py --with-bounds` reads it |
+| `docs/plm_baseline.json` | `scripts/results/plm_table.py results_plm --json docs/plm_baseline.json` | `plm_gate.sh` |
+| `tests/baselines/test_baseline.txt` | `TEST_BASELINE_UPDATE=1 scripts/test_baseline.sh` | `scripts/test_baseline.sh` |
+| `tests/baselines/electrical_suite_metrics.json` | `scripts/benchmark_electrical.py --suite --output tests/baselines/electrical_suite_metrics.json` | `--compare-baseline` |
+| `benchmarks/<slice>.py` + `.toml` | `scripts/make_mesh_slice_benchmark.py` | the slice's own tests |
 
-Read as a shape: the crossing plan is written by four phases (4, 7, 8, 9); the
-port-access tables by 3 and 4; the static row indexes by 2 and 4; the search
-counters, the timing buckets, the attempt records and the trace records by 5 and
-6; the route bookkeeping and the SVG registry span the dispatch boundary. Every
-other field of `SessionState` has exactly one writing phase, and `state.py`
-names it.
+`docs/date2027_table_sources.json` is the paper's `EXPERIMENTS_TABLE_SOURCES.json`
+(written by `scripts/results/paper_table.py` next to the paper's sources); it
+is the reference, not regenerated here.
+
+
+## 9. Switches for experiments
+
+These exist to measure alternatives; all are off (or neutral) by default, so
+the defaults route the paper's numbers.
+
+* **Unified crossing legality**, `RouterConfig.crossing.unified_legality`
+  (`PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`, presence). On, the search
+  hook (`crossing_rules.rs`), the commit check and the post-commit validation
+  all decide a crossing with one predicate,
+  `crossing_geometry::crossing_legality(&CrossingCandidate,
+  &CrossingLegalityRule) -> CrossingVerdict`: one perpendicularity test
+  (normalised dot product within 1e-6); one margin, `required_margin_cells =
+  half_size + bend_runout`, on the grid route (where a bend contributes its
+  arms as straight cells) for the route's run before the crossing and both
+  sides of the partner; `half_size` cells of pure straight after it; spacing,
+  i.e. the candidate's reservation window (every cell within `half_size` of
+  its centre on both axes) disjoint from the nearest other crossing of the
+  same route and of the registered crossings of other nets; then the
+  footprint (no third net's dynamic cell in the window) and, post-commit,
+  the registered event. The verdict records are committed state: a rip-up
+  drops them and the braid rollback restores them with the events. Python
+  (`route_rust_crossing_verification.py`) then classifies realized crossings
+  from the verdicts instead of re-deciding them. Off, the three legacy paths
+  and the Python re-decision run as before. It is a switch until the 27-cell
+  ablation decides which side stays.
+* **Negotiation switches** (`NegotiationConfig`, overlay
+  `PHOTONIC_ROUTER_NEGOTIATED_*` and `PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR`):
+  `disable_braid_repair`, `braid_escalation`, `crossing_free_unplanned`
+  (default on), and the ablation switches `disable_source_column_widening`,
+  `disable_post_ripup_guidance`, `disable_simple_route_probe`,
+  `history_on_first_attempt`; plus the three budgets.
+* **Search** (`SearchOverrides`): `engine` (`astar` / `grid-dijkstra`),
+  `astar_timeout_ms`, `max_dense_states`, `long_straight_congestion_weight`;
+  and on the command line `--heuristic-mode`, `--primitive-ordering`,
+  `--heap-tie-breaker`, `--use-indexed-heap`, `--enable-simple-routes`,
+  `--routing-window-scale`, `--max-iterations`.
+* **Order and detours**: `--net-order` (`NET_ORDERS` in
+  `records/route_order.py`), `--detour-pass-factor`.
+* **Diagnostics**: `--debug-timing true` (stage and per-route timing),
+  `--debug-meanders` (the PLM planning profile and per-candidate log),
+  `--debug-svgs <selector>`, `--attempt-diagnostics`, `--verbose-routes`;
+  the kernel traces of `KernelDiagnostics` (`PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG`,
+  `PHOTONIC_ROUTER_TRACE_CROSSING*`, ...), which `reproduce_date2027.sh` turns
+  on for the archived runs. `--debug-stop-after-route N` is the exception
+  that does change the result: it routes only the first `N` nets.
+
+`scripts/results/ablation.sh` and `ablation_table.py` run and tabulate the
+27-cell ablation over these switches.
+
+
+## 10. Invariants
+
+Each of these is true of the current code and checked as named.
+
+1. **No algorithm reads the environment.** `grep -rn "env::var\|var_os"
+   crates/` is empty; on the Python side `PHOTONIC_ROUTER_*` strings are
+   parsed only in `env_overlay.py`, and only `config_loading.py` and the
+   `from_environment` constructors in `config.py` read `os.environ` for them.
+2. **Python and Rust configuration mirror each other.** Every
+   `RouterConfig` field exists on both sides with the same default; a field
+   is added on both sides together and `docs/CONFIGURATION.md` is
+   regenerated (`tests/test_config_reference.py`).
+3. **A search reads the map, the engine writes it.** No module under
+   `src/search/` commits to or rips up the obstacle map outside its tests;
+   commitment is `src/engine/commit.rs`, rip-up the negotiation rules.
+4. **One batch entry point.** Every multi-net routing, the first routing,
+   the detour pass and the two verify-repair passes alike, goes through
+   `run_negotiated_batch`; `routing/dispatch.py::native_route_jobs` is the
+   one place that packs the kernel's jobs.
+5. **One search interface.** Every single-net search goes through
+   `NetSearch::search`; the oracle engine refuses what it cannot do
+   (`unsupported_request`) rather than approximating it.
+6. **The obstacle map's flags agree with its counts.** `STATIC_BIT` iff a
+   static reference exists, `DYNAMIC_BIT` iff a dynamic one does,
+   `STATIC_RECT_BIT` iff a static rectangle covers the cell; a cell's owner
+   list mirrors `net_routes` exactly (module documentation of
+   `src/obstacle_map.rs` and its tests).
+7. **The search never produces a crossing the commit rejects** when unified
+   legality is on: the hook, the commit check and the post-commit validation
+   call the same predicate with the router's one `crossing_legality_rule()`.
+8. **Bindings convert and delegate.** `crates/router-py` holds no routing
+   decision; `cargo tree -p router-core` contains no `pyo3`.
+9. **Stages are pure of the outside.** No routing stage reads the command
+   line or the environment; the optical stages do not import
+   `photonic_router.electrical`.
+10. **Pre-placed grids refuse what they cannot model.** A design with a net
+    outside the band model is rejected before any tile is placed.
+11. **Tracing does not change results.** `--debug-meanders` changes what
+    is printed, not a plan, a SUMMARY token or the acceptance decision; the
+    kernel traces change output and time, not routes (the reproduction runs
+    use `PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG=1` and match the archives;
+    `--verbose-routes` is part of the contribution 2 configuration).
+12. **Generated files cannot drift.** `docs/CONFIGURATION.md` and
+    `_rust.pyi` are compared with a fresh generation in the tests and in CI.
+
+
+## 11. History and provenance
+
+The release history is [`CHANGELOG.md`](../CHANGELOG.md): the do-over of
+2026-10 (phases 0 to 8, which produced this layout) is its Unreleased
+section, one bullet per slice with the evidence that it kept the numbers.
+The paper's numbers were produced by the engine at the tag
+`date2027-results` (commit `960d0ee`, 2026-09-22; branch `DATE2027-results`);
+the archived runs are attached to that tag's GitHub release, and
+[`docs/DATE2027_REPRODUCTION.md`](DATE2027_REPRODUCTION.md) traces every row
+to its commit. Other tags mark earlier states: `baseline-2026-09-03`,
+`paper-base-2026-09-07`, `pre-do-over-2026-10-27`. Documents that describe
+earlier states of the repository are kept in [`docs/history/`](history/README.md);
+they are not descriptions of the current code.

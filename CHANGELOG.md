@@ -6,10 +6,11 @@ versioned release yet.
 
 ## Unreleased
 
-The do-over of 2026-10 (analysis and phase plan: the owner's
-`working/.agent/TUMPhotonicRouter/DO_OVER_ANALYSIS.md`). Phase 0, hygiene
-and freeze, changes no routing behaviour; the nine-cell paper reproduction
-(`scripts/results/gate_short.sh`) is the check for every slice.
+The do-over of 2026-10, in nine phases: 0 hygiene and freeze, 1 ablation switches, 2 routing
+database and single-net search, 3 negotiation loop, 4 crossings, 5 ports (open), 6 path-length
+matching, 7 electrical (open), 8 release layout (one package, a Cargo workspace, benchmark TOML,
+documentation). Each slice preserves the routed results unless its entry says otherwise; the
+checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/plm_gate.sh`.
 
 ### Added
 
@@ -65,6 +66,26 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- Release documentation and metadata (phase 8 slice D; documentation only, no
+  code or behaviour change: nine-cell gate exact). `README.md` rewritten for a
+  user (what the router does, install, quick start, the 27-cell DATE 2027 table
+  with the placement lower bound, reproduction, status with the license
+  pending); `docs/ARCHITECTURE.md` rewritten against the current tree (the
+  pipeline stage by stage, the data model, both crates and the package with
+  line counts, the configuration surface, the oracles, how to add a benchmark,
+  the experiment switches, the invariants; the previous text stays in git
+  history); `CONTRIBUTING.md` refreshed (build, test, lint, the two gates, the
+  re-pin rule for both oracles, the generated files, the commit convention).
+  `pyproject.toml` gains `description`, `readme`, `authors` (placeholder),
+  `keywords`, `classifiers`, `[project.urls]`, and `requires-python` becomes
+  `>=3.12` (CI runs 3.12; `cli.py` needs `tomllib`); no `license` field.
+  `CITATION.cff` added with the paper as `preferred-citation`, authors and the
+  license left as owner placeholders. The documents that describe earlier
+  states (`repository_finished_state.md`, `photonic_baseline.md`,
+  `profiling.md`, `crossing_baselines.md`, `crossing_flow_repair_ideas.md`, the
+  two LiDAR comparisons) moved to `docs/history/` with a README;
+  `docs/astar_quality_baseline.json` stays because `scripts/profile_astar.py`
+  reads it.
 - Benchmark defaults as one TOML file per benchmark (phase 8 slice C; no
   behaviour change: nine-cell and PLM gates exact, the parsed flags and
   overlay identical for every benchmark). The `STABLE_ROUTING_FLAGS` /

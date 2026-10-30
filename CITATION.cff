@@ -1,0 +1,38 @@
+# Citation metadata (https://citation-file-format.github.io/).
+#
+# Placeholders the repository owner fills before the release:
+#   - every "TODO owner" author entry (software and paper);
+#   - the paper's final title, pages and DOI once the DATE 2027
+#     proceedings are out (the title stays a placeholder while the review is blind);
+#   - license: pending (owner decision: MIT, Apache-2.0 or the TUM default).
+#     There is no `license` key until that decision is made; add it together
+#     with the LICENSE file.
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+type: software
+title: "TUMPhotonicRouter"
+abstract: >-
+  A grid-based photonic waveguide router for gdsfactory schematics: A* search
+  with straight, 45-degree and 90-degree primitives of a fixed bend radius,
+  legal waveguide crossings, negotiated rip-up and reroute, pre-placed
+  crossing grids, path-length matching with meanders, and heater electrical
+  routing. Rust core, Python flow.
+authors:
+  - name: "TODO owner"
+repository-code: "https://github.com/hibenj/TUMPhotonicRouter"
+version: "0.1.0"
+keywords:
+  - photonics
+  - photonic integrated circuits
+  - waveguide routing
+  - electronic design automation
+  - gdsfactory
+preferred-citation:
+  type: conference-paper
+  title: "TODO paper title (the DATE 2027 submission is under double-blind review; fill in after acceptance)"
+  authors:
+    - name: "TODO owner"
+  conference:
+    name: "Design, Automation and Test in Europe Conference (DATE)"
+  collection-title: "Proceedings of the Design, Automation and Test in Europe Conference (DATE 2027)"
+  year: 2027

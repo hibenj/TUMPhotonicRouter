@@ -1,255 +1,156 @@
 # TUMPhotonicRouter
 
-TUMPhotonicRouter is a Rust + Python framework for automated photonic
-integrated circuit routing. Python owns gdsfactory integration, benchmark
-loading, layout realization, path-length matching, and electrical orchestration;
-Rust owns the routing database, obstacle-map acceleration, A* search, crossing
-constraints, rip-up/repair, and geometry-heavy planning kernels.
+A grid-based waveguide router for photonic integrated circuits. It takes a
+placed [gdsfactory](https://gdsfactory.github.io/gdsfactory/) schematic
+(instances, placements, nets between ports) and writes a routed GDS in which
+every net is a waveguide that keeps the bend radius and the clearance, and
+every crossing of two waveguides is a crossing cell.
 
-The project is an active research/prototype router, but it is already more than
-a standalone optical detailed router: it contains schematic translation, optical
-routing, placement-derived crossing support, path-length matching with meanders,
-heater electrical routing, diagnostics, and benchmarking.
+- **Single-net search**: A* over grid states `(x, y, heading)` with eight
+  headings and a primitive set of straights, 45-degree and 90-degree bends of
+  one fixed bend radius (rounded up to whole grid cells); a straight/L/Z
+  shortcut is tried before the search.
+- **Legal crossings**: two waveguides may cross only perpendicularly, with a
+  straight margin on both sides; each realized crossing becomes a crossing
+  component in the GDS.
+- **Negotiated rip-up and reroute**: a failing net asks who blocks it, rips
+  them up, and the loop iterates with history costs until every net routes.
+- **Pre-placed crossing grids**: the crossings a placement forces (band
+  inversions between component columns) can be placed as crossing tiles
+  before routing, so the rest routes crossing-free.
+- **Path-length matching**: the routed lengths are analysed along the light
+  path and meanders are inserted where a group of paths must arrive equal.
+- **Heater electrical routing**: heater terminals, a common bus, pad
+  planning and pad wires on a metal layer, with their own verification.
 
-## Current Capabilities
+The search, the routing database and the meander planner are Rust
+(`crates/`); gdsfactory integration, the stage sequence, verification and
+every artifact are Python (`python/photonic_router/`).
 
-| Area | Implemented behavior |
-| --- | --- |
-| Schematic flow | Load Python/gdsfactory benchmarks, build unrouted layouts, route and write GDS/debug artifacts |
-| Optical routing | 8-heading primitive router with straight, 45-degree, and 90-degree transitions |
-| Fast optical paths | Straight, L, Z, and turnaround candidates are tried before dense A* where legal |
-| Obstacle handling | Rust static/dynamic obstacle database with compact rectangles, packed cell keys, dense bitsets, and prefix tables |
-| Crossing support | Optional placement-derived crossing guidance (the band demand), expected-pair validation, crossing reservations, and local crossing repair |
-| Repair | Dynamic route commitment, rip-up/reroute, rollback, and history costs |
-| Path-length matching | Graph analysis, missing-length requirements, analytic meander insertion, and Rust meander planners |
-| Electrical routing | Heater terminal extraction, pad planning, bus/detail routing, and verification |
-| Realization | Rust route records are converted into gdsfactory geometry/components |
-| Diagnostics | Obstacle SVGs, route SVGs, crossing reports, failed-route logs, timing buckets, and per-attempt counters |
+## Install
 
-## Routing Flow
-
-```text
-Python benchmark schematic
-        |
-        v
-gdsfactory unrouted layout
-        |
-        v
-static obstacle grid, compact rectangles, and port openings
-        |
-        v
-optional topology crossing plan
-        |
-        v
-Rust optical routing
-  - simple-route candidates
-  - dense primitive A*
-  - expected crossing search
-  - rip-up/reroute repair
-        |
-        v
-physical route realization
-        |
-        +--> optional path-length matching and meanders
-        |
-        +--> optional heater electrical routing
-        |
-        v
-routed Component / GDS / debug artifacts
-```
-
-## Why It Is Fast
-
-The main speed difference is not a single heuristic. It comes from keeping the
-high-frequency routing operations in compiled, cache-friendly data structures.
-
-| Technique | Effect |
-| --- | --- |
-| Rust hot path | A* expansion, primitive legality, route commitment, rip-up, history updates, and crossing checks avoid Python interpreter/object overhead |
-| Direct state indexing | `(x, y, angle)` maps to dense arrays for cost, parent, generation, and closed-state data |
-| Compact obstacle map | Static/dynamic cells use packed `u64` keys and dense occupancy bits instead of per-cell Python objects |
-| Compact static rectangles | Bounding-box obstacles can stay as rectangles instead of being fully materialized into millions of cells |
-| Prefix-sum occupancy | Segment and rectangular footprint checks become constant-time table queries inside routing windows |
-| Primitive footprint profiles | Straight and rectangular footprints take the fast prefix path; only irregular footprints fall back to per-cell checks |
-| Simple-route bypass | Easy nets finish without heap traffic or broad graph search |
-| Routing windows | A* first searches a source-target window and only expands/falls back when needed |
-| Topology-derived crossings | Expected crossing partners are precomputed from net topology, so crossing search and repair can focus on valid pairs instead of discovering arbitrary overlaps |
-| Native repair database | Committed routes, owners, rollback snapshots, history costs, and crossing reservations are maintained in Rust |
-
-This design makes obstacle queries and bookkeeping cheap enough that the router
-can spend its time on actual search decisions. The checked-in baseline numbers
-are in `docs/photonic_baseline.md`; they are local measurements, not portable
-hardware-independent guarantees.
-
-## Important Files
-
-The full module map, with one paragraph per module and the interfaces between
-them, is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); every configuration
-field is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
-
-| File | Role |
-| --- | --- |
-| `docs/ARCHITECTURE.md` | The module map, the stage sequence, the search and negotiation interfaces |
-| `python/photonic_router/flow.py` | The flow: `route_benchmark(config, options)` and `route_schematic` |
-| `python/photonic_router/cli.py` | The command line, including `--configuration` (`routing_flow.py` is a shim over it) |
-| `python/photonic_router/config.py` | `RoutingConfig` / `RouterConfig`, the typed configuration trees |
-| `python/photonic_router/routing/` | The routing session as nine phases (`session.py::run`) behind the Protocols of `stages.py` |
-| `python/photonic_router/static_obstacle_builder.py` | Static obstacle extraction, Rust fallback handling, compact bbox payloads |
-| `python/photonic_router/crossings/crossing_demand.py` | The crossings a placement forces: bands between component columns, invariant pairs, the lower bound |
-| `python/photonic_router/crossings/crossing_plan.py` | Converts the two wall orders of a band into ordered crossing events |
-| `crates/router-core/src/search/` | One net: the `NetSearch` interface, the A* engine (`astar/`), the Dijkstra oracle |
-| `crates/router-core/src/engine/` | Many nets: jobs, commitment, crossing reservations, endpoint correction |
-| `crates/router-core/src/engine/negotiation/` | The rip-up-and-repair loop and its budget / crossing-free / rip-up / queue policies |
-| `crates/router-py/src/` | The PyO3 surface (its own crate): the `#[pymethods]` block, the config/result types, the converters |
-| `crates/router-core/src/obstacle_map.rs` | Static/dynamic route database, packed cells, rip-up, history costs |
-| `crates/router-core/src/crossings.rs` | Crossing constraints and expected-pair context |
-| `crates/router-core/src/search/astar/simple_route.rs` | The simple route: straight/L/Z/turnaround candidates tried before the kernel |
-| `crates/router-core/src/primitives.rs` | Photonic movement primitives and footprint metadata |
-| `crates/router-core/src/geometry_realization.rs` | Route polygons, port access, and meander geometry |
-| `python/photonic_router/electrical/` | Heater electrical routing stack |
-| `scripts/benchmark_photonic.py` | End-to-end photonic benchmark runner |
-| `scripts/profile_astar.py` | Isolated Rust A* profiler |
-
-## Build
+Needs a stable Rust toolchain (`rust-toolchain.toml` selects `stable`;
+install it with [rustup](https://rustup.rs)) and Python 3.12 (the version CI
+runs). From the repository root:
 
 ```bash
-maturin develop --release
+python3.12 -m venv .venv
+.venv/bin/pip install -e ".[dev]" pytest     # builds the Rust extension through maturin
+.venv/bin/maturin develop --release          # rebuild after a change under crates/
 ```
 
-This builds the Rust extension as:
+The extension lands at `python/photonic_router/_rust.abi3.so`. Windows hosts
+without Visual Studio: [`docs/WINDOWS_RUST_TOOLCHAIN.md`](docs/WINDOWS_RUST_TOOLCHAIN.md).
 
-```text
-photonic_router._rust
-```
-
-Rust-only check:
-
-```bash
-cargo build
-```
-
-## Run
-
-The entry point is `python -m photonic_router route <benchmark> [flags]`.
-`--configuration` names one of the three configurations the paper compares;
-exactly one of them runs at a time.
+## Quick start
 
 ```bash
 .venv/bin/python -m photonic_router route benes_8x8_flat --configuration baseline
-.venv/bin/python -m photonic_router route benes_8x8_flat --configuration contribution1
-.venv/bin/python -m photonic_router route benes_8x8_flat --configuration contribution2
-```
-
-A flag after `--configuration` overrides it, so the configurations are
-starting points, not modes:
-
-```bash
-.venv/bin/python -m photonic_router route benes_16x16_flat \
-  --configuration contribution1 \
-  --debug-timing
-```
-
-Enable path-length matching:
-
-```bash
-.venv/bin/python -m photonic_router route heater_s_mod \
-  --path-length-matching \
-  --path-length-match-outputs \
-  --include-heater-obstacles
-```
-
-Enable heater electrical routing:
-
-```bash
-.venv/bin/python -m photonic_router route heater_s_mod \
-  --electrical-routing \
-  --include-heater-obstacles
-```
-
-The older script form still works and is what the reproduction scripts and the
-benchmark defaults (`benchmarks/<name>.toml`) use, because `routing_flow.py` is a shim over the same
-command line:
-
-```bash
+# the same command line through the repository-root shim:
 .venv/bin/python routing_flow.py benes_8x8_flat --crossing-mode lidar-pure
 ```
 
-Every flag, with its default and the `RoutingConfig` / `FlowOptions` field it
-sets, is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+The benchmark name is a module under `benchmarks/`; its defaults
+(`benchmarks/<name>.toml`) are applied first and any flag given on the
+command line overrides them. The routed layout is written to
+`build/routed_<benchmark>.gds`, the verification reports to
+`build/verification/`, and the run ends with one grep-able line:
 
-## Debug Output
-
-When debug SVGs or crossing diagnostics are enabled, artifacts are written under
-`build/`:
-
-| Output | Meaning |
-| --- | --- |
-| `build/static_obstacles/*_obstacles.svg` | Rasterized/compact obstacle view and port openings |
-| `build/routes/*.svg` | Per-net routed paths |
-| `build/routes/*_FAILED.txt` | Failure diagnostics |
-| `build/routes/*_diagnostics.txt` | Port/opening/occupancy details |
-| `build/crossings/*_crossings.json` | Expected and realized crossing metadata |
-| `build/crossings/*_crossings.txt` | Human-readable crossing plan and realization summary |
-| `build/electrical/*.svg` | Electrical routing snapshots |
-| `build/routed_<benchmark>.gds` | Final routed layout |
-
-## Benchmarking
-
-End-to-end photonic benchmark:
-
-```bash
-python3 scripts/benchmark_photonic.py --include-heater-obstacles --ripup-reroute
+```text
+SUMMARY benchmark=benes_4x4_flat nets=40 route_failures=2 detours=- verifier_errors=0 verifier_warnings=0 plm_groups=- plm_over_tolerance=- meander_inserted_um=- electrical_heaters=- electrical_pads=- electrical_failed_wires=- electrical_ok=- total_s=2.1
 ```
 
-Isolated Rust A* profiler:
+`verifier_errors=0` is the verdict on the geometry; `route_failures` counts
+failed search attempts that the negotiation later repaired; `-` means the
+stage did not run. Path-length matching and heater routing are on by default
+for `heater_s_mod` (see `benchmarks/heater_s_mod.toml`):
 
 ```bash
-python3 scripts/profile_astar.py
+.venv/bin/python -m photonic_router route heater_s_mod
 ```
 
-Electrical benchmark:
+Boolean flags take a value (`--path-length-matching true`). Every flag and
+setting, with its default, is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md);
+`--debug-svgs all` writes obstacle and per-route SVGs under `build/`.
+
+## Benchmarks and the DATE 2027 numbers
+
+`benchmarks/` holds Benes networks (`benes_<n>x<n>`, and the `_flat`
+variants with every switch expanded into its primitives), ADEPT-style
+multiport-MMI meshes (`multiportmmi_<n>x<n>` and their band slices),
+path-length-matching cascades (`cascade_{8,12,16}_*`), heater benchmarks
+(`heater_s_mod`, `heater_single`, `heater_lanes_*`) and a Clements mesh.
+
+The paper compares three configurations; `--configuration` names them, and
+exactly one runs at a time:
+
+| `--configuration` | expands to | what it does |
+| --- | --- | --- |
+| `baseline` | `--crossing-mode lidar-pure` | crossings are discovered during search |
+| `contribution1` | `--crossing-mode lidar-guided` | the placement's crossing plan guides costs and order |
+| `contribution2` | `--preplaced-crossing-grids true --verbose-routes` | crossing tiles are placed before routing |
+
+The 27 cells of ours in the paper's results table: crossings (X) and GDS
+waveguide length in um (L), from
+[`docs/date2027_table_sources.json`](docs/date2027_table_sources.json).
+"Bound" is the placement-derived lower bound on crossings, the sum of band
+inversions between component columns
+([`docs/date2027_crossing_bounds.json`](docs/date2027_crossing_bounds.json)):
+no routing that keeps each net inside its band can have fewer.
+
+| cell | benchmark | bound | baseline X | baseline L | contr. 1 X | contr. 1 L | contr. 2 X | contr. 2 L |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Benes 4x4 | `benes_4x4_flat` | 2 | 2 | 9484.511 | 2 | 9475.187 | 2 | 9475.255 |
+| Benes 8x8 | `benes_8x8_flat` | 16 | 16 | 31418.224 | 16 | 31312.203 | 16 | 31348.890 |
+| Benes 16x16 | `benes_16x16_flat` | 88 | 88 | 92323.991 | 88 | 92106.172 | 88 | 93654.793 |
+| Benes 32x32 | `benes_32x32_flat` | 416 | 416 | 270827.610 | 416 | 270872.224 | 416 | 277886.703 |
+| Benes 64x64 | `benes_64x64_flat` | 1824 | - | - | - | - | 1824 | 1159313.330 |
+| Benes 128x128 | `benes_128x128_flat` | 7680 | - | - | - | - | 7680 | 4938323.005 |
+| ADEPT 8x8 | `multiportmmi_8x8` | 33 | 33 | 25160.335 | 33 | 25073.626 | 33 | 26319.970 |
+| ADEPT 16x16 | `multiportmmi_16x16` | 63 | 63 | 90200.066 | 63 | 89586.040 | 63 | 96331.277 |
+| ADEPT 32x32 | `multiportmmi_32x32` | 121 | 121 | 336038.575 | 121 | 334816.567 | 121 | 360764.408 |
+| ADEPT 64x64 | `multiportmmi_64x64` | 209 | 217 | 1305628.208 | 209 | 1302769.960 | 209 | 1408033.109 |
+| ADEPT 128x128 | `multiportmmi_128x128` | 311 | - | - | - | - | 311 | 5573562.981 |
+
+Every cell routes with zero verifier errors. The realized crossing count
+equals the bound everywhere except ADEPT 64x64 under the baseline (+8), which
+both contributions close.
+
+## Reproducing the numbers
 
 ```bash
-python3 scripts/benchmark_electrical.py
+scripts/results/gate_short.sh                    # nine smallest cells, about two minutes
+scripts/results/reproduce_date2027.sh            # all 27 cells, about 2.5 h, into results_date2027/
+.venv/bin/python scripts/results/compare_date2027.py results_date2027 \
+  docs/date2027_table_sources.json --with-bounds
+scripts/results/plm_gate.sh                      # path-length matching: two cells
+scripts/results/plm_baseline.sh                  # all thirteen PLM cells, into results_plm/
 ```
 
-Current checked-in baseline: `docs/photonic_baseline.md`.
+`gate_short.sh` ends with `all reproduced cells match` when crossings and GDS
+length are exact and the verifier reports no error. Provenance, the engine
+commits behind each row and the archived runs (attached to the
+`date2027-results` release) are in
+[`docs/DATE2027_REPRODUCTION.md`](docs/DATE2027_REPRODUCTION.md); the
+path-length-matching baseline is in
+[`docs/PLM_REPRODUCTION.md`](docs/PLM_REPRODUCTION.md).
 
-## Tests
+## How it is built
 
-```bash
-.venv/bin/python -m pytest -q tests                 # everything
-.venv/bin/python -m pytest -q -m "not e2e" tests    # without the benchmark-loading tests
-cargo test --release -p router-core                 # the engine, no Python needed
-```
+The pipeline is: schematic, unrouted layout, static obstacle map, route
+jobs, crossing plan, the negotiated loop in the Rust kernel, endpoint
+correction, path-length matching, realization, verification, GDS.
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) describes each stage, the data
+model, the two Rust crates (`router-core`, the engine with no Python
+dependency, and `router-py`, the PyO3 bindings) and the Python package, the
+configuration surface, the oracles and how to add a benchmark.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the build, test and lint commands.
 
-The `PYO3_PYTHON` setting `cargo test -p router-py` needs, the pinned baseline script and
-the reproduction gate are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-section 8; Windows hosts without Visual Studio see
-[`docs/WINDOWS_RUST_TOOLCHAIN.md`](docs/WINDOWS_RUST_TOOLCHAIN.md).
+## Status
 
-Useful targeted checks:
+Research code. It produced the results of the DATE 2027 paper and is being
+restructured (see [`CHANGELOG.md`](CHANGELOG.md)); the Python and Rust APIs
+are not stable and there is no versioned release yet.
 
-```bash
-.venv/bin/python -m pytest tests/test_rust_backend_import.py -v
-.venv/bin/python -m pytest tests/test_routing_stages.py -v
-.venv/bin/python -m pytest tests/test_route_rust_records.py -v
-.venv/bin/python -m pytest tests/test_electrical_routing.py -v
-.venv/bin/python -m pytest tests/e2e/test_routing_flow_stats.py -v
-cargo test -p router-core crossing
-```
-
-## Related Notes
-
-- `docs/ARCHITECTURE.md` - the module map, the flow, and the interfaces.
-- `docs/CONFIGURATION.md` - every configuration field, generated from the
-  dataclasses by `scripts/generate_config_reference.py`.
-- `docs/DATE2027_REPRODUCTION.md` - the paper's rows, their provenance, and how
-  to reproduce them.
-- `docs/repository_finished_state.md` - focused finished-state target for
-  crossings and PLM.
-- `docs/tumphotonicrouter_vs_lidar.md` - code-based comparison with LiDAR.
-- `docs/tumphotonicrouter_vs_lidar2_functionality.md` - functionality-only
-  comparison with the local LiDAR 2.0 paper.
-- `docs/profiling.md` - profiling workflow and optimization notes.
-- `docs/photonic_baseline.md` - local baseline timing snapshot.
+**License: pending** (owner decision; there is no `LICENSE` file yet, so no
+rights are granted until one is added). How to cite: [`CITATION.cff`](CITATION.cff).

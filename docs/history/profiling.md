@@ -21,7 +21,7 @@ Useful variants:
 .venv/bin/python scripts/benchmark_photonic.py heater_s_mod --include-heater-obstacles --ripup-reroute --primitive-ordering long_straight_first
 .venv/bin/python scripts/benchmark_photonic.py heater_s_mod --include-heater-obstacles --ripup-reroute --primitive-ordering target_biased
 .venv/bin/python scripts/benchmark_photonic.py heater_s_mod --include-heater-obstacles --ripup-reroute --heuristic-mode distance
-.venv/bin/python scripts/benchmark_photonic.py --output docs/photonic_baseline.md --include-heater-obstacles --ripup-reroute
+.venv/bin/python scripts/benchmark_photonic.py --output docs/history/photonic_baseline.md --include-heater-obstacles --ripup-reroute
 ```
 
 Historical note: every measurement quoted from here to the end of this section
