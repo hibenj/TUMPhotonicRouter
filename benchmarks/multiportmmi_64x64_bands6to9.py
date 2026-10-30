@@ -10,7 +10,6 @@ from pathlib import Path
 
 from gdsfactory.schematic import Schematic
 
-from benchmarks.multiportmmi_64x64 import STABLE_ROUTING_ENV, STABLE_ROUTING_FLAGS  # noqa: F401
 from benchmarks.multiportmmi_yaml import build_schematic_from_lidar_yaml
 
 BENCHMARK_YAML = Path(__file__).with_name("data") / "multiportmmi_64x64_bands6to9.yml"

@@ -8,7 +8,6 @@ from __future__ import annotations
 from gdsfactory.schematic import Schematic
 
 from benchmarks.cascade import build_cascade_schematic, internal_delays_um, node_types
-from benchmarks.heater_s_mod import STABLE_ROUTING_FLAGS as STABLE_ROUTING_FLAGS
 
 N_MODES = 12
 LAYOUT = "diagonal"

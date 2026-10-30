@@ -552,7 +552,7 @@ def render() -> str:
         "",
         "Precedence, lowest to highest (`python/photonic_router/config_loading.py`,",
         "`python/photonic_router/cli.py::main`): the dataclass defaults below, then the",
-        "benchmark module's `STABLE_ROUTING_ENV` block, then the process environment,",
+        "benchmark's `[config]` table (`benchmarks/<name>.toml`), then the process environment,",
         "then the command line. The environment column names the overlay variable that",
         "reaches a field (`python/photonic_router/env_overlay.py`'s `ENV_OVERLAY`); the",
         "command-line column names the flag `photonic_router.cli::_flow_options` fills a",

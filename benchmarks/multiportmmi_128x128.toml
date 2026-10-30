@@ -1,0 +1,20 @@
+# Default flags and configuration overlay of multiportmmi_128x128 (the former STABLE_ROUTING_* block); CLI flags override, the process environment wins for [config].
+#
+# Inherited from multiportmmi_32x32's stable configuration (2026-09-10,
+# 128x128 added for the scaling experiment); the 32x32 sibling-fanout
+# crossings (e.g. net 156's legal 11-crossing thread) need between 5M and
+# 20M expansions in their saturated windows -- affordable since the
+# eager-completion fix, and cheaper than letting the repair cascade grind
+# (its constrained searches are provably empty on this net class). See
+# .agent/execplans/2026-09-01-forced-90-degree-route-degradation.md.
+
+[flags]
+crossings = true
+crossing-mode = "lidar-pure"
+fanout-access-mode = "static-stubs"
+foreign-port-keepout-cells = 0
+max-iterations = 20000000
+
+[config]
+LONG_STRAIGHT_CONGESTION_WEIGHT = "0.05"
+FANOUT_STUB_BEND_DEGREES = "90"

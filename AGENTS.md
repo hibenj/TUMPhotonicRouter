@@ -39,7 +39,7 @@ by a grid A* over straight and bend primitives in Rust (`src/`, bound through
 PyO3 as `photonic_router._rust`), path lengths are matched, and heater metal is
 routed electrically (`python/photonic_router/electrical/`). Benchmarks are Python modules
 in `benchmarks/` with a `build_schematic()` and optional
-`STABLE_ROUTING_FLAGS`; `heater_s_mod` is the 8-mode cascade, `cascade_*` the
+`benchmarks/<name>.toml` with its default flags; `heater_s_mod` is the 8-mode cascade, `cascade_*` the
 generated 8, 12 and 16-mode cascades, folded, diagonal, compact (the
 diagonal at the smallest column pitch that routes clean) and folded_compact
 (the fold likewise). The owner's tape-out circuits are rebuilt from their GDS

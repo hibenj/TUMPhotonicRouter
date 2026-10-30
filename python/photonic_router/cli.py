@@ -23,8 +23,12 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
+import re
 import sys
+from pathlib import Path
 
+import tomllib
 from gdsfactory.component import Component
 
 from photonic_router.config_loading import build_config
@@ -629,26 +633,70 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _benchmark_stable_defaults(argv: list[str] | None) -> tuple[list[str], dict[str, str]]:
-    """The selected benchmark's `STABLE_ROUTING_FLAGS` / `STABLE_ROUTING_ENV`.
+_CONFIG_PREFIX = "PHOTONIC_ROUTER_"
+_BENCHMARK_NAME = re.compile(r"[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*")
 
-    A benchmark module may declare the configuration it is known to route
-    cleanly with. Those flags become the CLI defaults for that benchmark:
-    they are parsed first, so anything given explicitly on the command line
-    still wins (argparse keeps the last occurrence). `benchmark_photonic.py`
-    and the tests pass their flags explicitly and are unaffected."""
+
+def _benchmark_defaults_path(name: str) -> Path | None:
+    """`benchmarks/<name>.toml` (a dotted name such as `private.x` is a
+    sub-directory), or None when the benchmark has no such file."""
+    if not _BENCHMARK_NAME.fullmatch(name):
+        return None
+    try:
+        spec = importlib.util.find_spec("benchmarks")
+    except (ImportError, ValueError):
+        return None
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    for location in spec.submodule_search_locations:
+        path = Path(location).joinpath(*name.split(".")).with_suffix(".toml")
+        if path.is_file():
+            return path
+    return None
+
+
+def _toml_flag_token(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return repr(value)
+    return str(value)
+
+
+def load_benchmark_defaults(name: str) -> tuple[list[str], dict[str, str]]:
+    """The default flags and the configuration overlay of benchmark `name`.
+
+    Read from `benchmarks/<name>.toml`: `[flags]` (keys are flag names without
+    `--`, in file order) become `--<key> <value>` argv tokens, `[config]`
+    (keys are `PHOTONIC_ROUTER_*` variable names without the prefix) become
+    the overlay mapping, returned under the full variable names. A benchmark
+    without a file has no defaults: `([], {})`."""
+    path = _benchmark_defaults_path(name)
+    if path is None:
+        return [], {}
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    flags: list[str] = []
+    for key, value in data.get("flags", {}).items():
+        flags += [f"--{key}", _toml_flag_token(value)]
+    env = {f"{_CONFIG_PREFIX}{key}": str(value) for key, value in data.get("config", {}).items()}
+    return flags, env
+
+
+def _benchmark_stable_defaults(argv: list[str] | None) -> tuple[list[str], dict[str, str]]:
+    """The selected benchmark's defaults from `benchmarks/<name>.toml`.
+
+    A benchmark may declare the configuration it is known to route cleanly
+    with. Those flags become the CLI defaults for that benchmark: they are
+    parsed first, so anything given explicitly on the command line still wins
+    (argparse keeps the last occurrence). `benchmark_photonic.py` and the
+    tests pass their flags explicitly and are unaffected."""
     probe = argparse.ArgumentParser(add_help=False)
     probe.add_argument("benchmark", nargs="?")
     known, _ = probe.parse_known_args(sys.argv[1:] if argv is None else argv)
     if not known.benchmark:
         return [], {}
-    try:
-        module = importlib.import_module(f"benchmarks.{known.benchmark}")
-    except ImportError:
-        return [], {}
-    flags = [str(flag) for flag in getattr(module, "STABLE_ROUTING_FLAGS", ())]
-    env = {str(k): str(v) for k, v in dict(getattr(module, "STABLE_ROUTING_ENV", {})).items()}
-    return flags, env
+    return load_benchmark_defaults(known.benchmark)
 
 
 _CROSSING_DISCOVERY_FLAGS: frozenset[str] = frozenset({"--crossings", "--crossing-mode"})
@@ -693,7 +741,7 @@ def main(argv: list[str] | None = None) -> Component:
         stable_flags,
         preplaced_crossing_grids=_requests_preplaced_crossing_grids(configuration_argv + user_argv),
     )
-    # The benchmark's STABLE_ROUTING_ENV block and the process environment go
+    # The benchmark's [config] table and the process environment go
     # through the overlay table into one configuration object (environment
     # wins, as os.environ.setdefault did before); nothing is written to the
     # environment any more.

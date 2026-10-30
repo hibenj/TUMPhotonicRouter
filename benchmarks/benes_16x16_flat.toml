@@ -1,0 +1,18 @@
+# Same block as benes_16x16.toml (the former re-export of benes_16x16's STABLE_ROUTING_* block, kept as its own file); CLI flags override, the process environment wins for [config].
+#
+# Stable crossing-router baseline, July 2026:
+# $env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT="0.05"
+# python routing_flow.py benes_16x16 --crossings true --crossing-mode lidar-pure
+# --fanout-access-mode static-stubs --foreign-port-keepout-cells 0
+# Static fanout stubs use the router default bend style, currently 90 degrees.
+
+[flags]
+crossings = true
+crossing-mode = "lidar-pure"
+fanout-access-mode = "static-stubs"
+foreign-port-keepout-cells = 0
+proactive-congestion-weight = 4.0
+proactive-congestion-radius-cells = 3
+
+[config]
+LONG_STRAIGHT_CONGESTION_WEIGHT = "0.05"

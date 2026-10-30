@@ -1422,7 +1422,7 @@ def test_realized_record_region_equals_component_path():
 
     # heater_s_mod, routed with its own stable configuration (90-degree
     # routing, 10 um bends, path-length matching, heater obstacles --
-    # `benchmarks/heater_s_mod.py`'s `STABLE_ROUTING_FLAGS`, the way
+    # `benchmarks/heater_s_mod.toml`'s `[flags]`, the way
     # `tests/e2e/test_routing_flow_stats.py::test_heater_s_mod_90_degree_plm_regression`
     # loads and routes it), every routed record.
     from photonic_router import benchmark_metadata

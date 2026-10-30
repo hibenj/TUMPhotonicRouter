@@ -10,8 +10,8 @@ production code changed for this slice.
 
 Thirteen benchmarks, one run each, config label `plm`: `heater_s_mod` and
 the twelve cascades `cascade_{8,12,16}_{compact,diagonal,folded,folded_compact}`.
-Each is routed with its own `STABLE_ROUTING_FLAGS` (the cascades re-export
-`heater_s_mod`'s block), which `routing_flow.py <bench>` applies by itself:
+Each is routed with its own `[flags]` table in `benchmarks/<bench>.toml` (the cascades carry
+`heater_s_mod.toml`'s block), which `routing_flow.py <bench>` applies by itself:
 `--allow-45-degree-turns false --bend-radius-um 10 --path-length-matching
 true --path-length-match-outputs true --include-heater-obstacles true
 --electrical-routing true --waveguide-clearance-um 3.0 --crossings false`.

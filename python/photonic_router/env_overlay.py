@@ -5,7 +5,7 @@
 `photonic_router.config.RoutingConfig`, applied here and only here.
 Everything else in the codebase takes a `RoutingConfig` (or, at the
 Rust boundary, a `RouterConfig`) object explicitly; this module exists for
-the benchmark modules' `STABLE_ROUTING_ENV` blocks, the reproduction
+the benchmarks' `[config]` tables (`benchmarks/<name>.toml`), the reproduction
 scripts, and ad-hoc experiments.
 
 Each entry of `ENV_OVERLAY` is one `(name, path, parse)` triple: `path` is

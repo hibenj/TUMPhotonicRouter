@@ -1,0 +1,18 @@
+# Default flags and configuration overlay of benes_8x8 (the former STABLE_ROUTING_* block); CLI flags override, the process environment wins for [config].
+#
+# Stable crossing-router baseline, July 2026:
+# $env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT="0.05"
+# python routing_flow.py benes_8x8 --crossings true --crossing-mode lidar-pure
+# --fanout-access-mode static-stubs --foreign-port-keepout-cells 0
+# Static fanout stubs use the router default bend style, currently 90 degrees.
+
+[flags]
+crossings = true
+crossing-mode = "lidar-pure"
+fanout-access-mode = "static-stubs"
+foreign-port-keepout-cells = 0
+proactive-congestion-weight = 4.0
+proactive-congestion-radius-cells = 3
+
+[config]
+LONG_STRAIGHT_CONGESTION_WEIGHT = "0.05"

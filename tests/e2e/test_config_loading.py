@@ -1,5 +1,5 @@
 """`photonic_router.config_loading.build_config`: defaults, then the
-benchmark's STABLE_ROUTING_ENV block, then the process environment; nothing is
+benchmark's `[config]` table (`benchmarks/<name>.toml`), then the process environment; nothing is
 written to os.environ (Milestone 1, Slice 3)."""
 
 from __future__ import annotations

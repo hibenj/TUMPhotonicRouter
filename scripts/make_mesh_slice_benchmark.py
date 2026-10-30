@@ -80,8 +80,8 @@ def slice_yaml(data: dict, first_column: str, last_column: str) -> dict:
 
 MODULE_TEMPLATE = '''"""{name}: slice of {parent} keeping the columns {first} .. {last}
 ({n_instances} instances, {n_nets} nets), generated {date} by
-scripts/make_mesh_slice_benchmark.py. Same placements, ports and stable flags
-as the parent; net names are the parent's, so the routing order is the
+scripts/make_mesh_slice_benchmark.py. Same placements, ports and default flags
+(`benchmarks/{name}.toml`, a copy of the parent's) as the parent; net names are the parent's, so the routing order is the
 parent's order restricted to these nets."""
 
 from __future__ import annotations
@@ -91,7 +91,6 @@ from pathlib import Path
 from gdsfactory.schematic import Schematic
 
 from benchmarks.multiportmmi_yaml import build_schematic_from_lidar_yaml
-from benchmarks.{parent} import STABLE_ROUTING_ENV, STABLE_ROUTING_FLAGS  # noqa: F401
 
 BENCHMARK_YAML = Path(__file__).with_name("data") / "{name}.yml"
 N = {n_side}
@@ -144,6 +143,13 @@ def main() -> int:
             n_side=n_side,
         )
     )
+    parent_toml = ROOT / "benchmarks" / f"{args.parent}.toml"
+    if parent_toml.is_file():
+        body = parent_toml.read_text().split("\n", 1)[1]
+        (ROOT / "benchmarks" / f"{args.name}.toml").write_text(
+            f"# Same block as {args.parent}.toml (copied by scripts/make_mesh_slice_benchmark.py); "
+            f"CLI flags override, the process environment wins for [config].\n{body}"
+        )
     print(
         f"{args.name}: {len(out['instances'])} instances, {len(out['nets'])} nets -> {out_yaml.name}, benchmarks/{args.name}.py"
     )

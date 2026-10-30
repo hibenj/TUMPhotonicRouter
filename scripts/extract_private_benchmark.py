@@ -31,7 +31,7 @@ from photonic_router.gds.gds_circuit_rebuild import (
 )
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 
-STABLE_ROUTING_FLAGS: tuple[str, ...] = (
+PRIVATE_BASE_FLAGS: tuple[str, ...] = (
     "--allow-45-degree-turns",
     "false",
     # 5 um, not the cascades' 10: every MZI arm of these circuits leaves its
@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     print(circuit.report())
     if args.report_only:
         return 0
-    flags = STABLE_ROUTING_FLAGS + tuple(FLAG_OVERRIDES.get(args.name, ()))
+    flags = PRIVATE_BASE_FLAGS + tuple(FLAG_OVERRIDES.get(args.name, ()))
     # the arm pair is drawn with the benchmark's own routing bends
     bend_radius_um = float(flags[flags.index("--bend-radius-um") + 1])
     schematic = generic_schematic(

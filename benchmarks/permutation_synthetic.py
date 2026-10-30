@@ -24,32 +24,6 @@ from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
-# The multiportmmi stable block: static stubs for dense port groups and the
-# lidar-pure crossing search for the baseline control; grid mode drops the
-# crossing flags itself.
-STABLE_ROUTING_ENV: dict[str, str] = {
-    "PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT": "0.05",
-    "PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES": "90",
-}
-
-STABLE_ROUTING_FLAGS: tuple[str, ...] = (
-    "--crossings",
-    "true",
-    "--crossing-mode",
-    "lidar-pure",
-    "--fanout-access-mode",
-    "static-stubs",
-    # --routing-window-scale 0.35 removed 2026-08-31: the CLI default
-    # 0.05 routes identically clean and 15-30% faster (heuristics-audit
-    # experiments, .agent/execplans/2026-08-31-engine-performance-baseline.md).
-    "--foreign-port-keepout-cells",
-    "0",
-    "--proactive-congestion-weight",
-    "4.0",
-    "--proactive-congestion-radius-cells",
-    "3",
-)
-
 BAR_WIDTH_UM = 20.0
 BAR_MARGIN_UM = 5.0
 

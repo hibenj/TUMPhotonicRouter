@@ -1,7 +1,7 @@
 #!/bin/bash
 # Phase 6 slice 0: the path-length-matching (PLM) baseline. Routes
 # heater_s_mod and the twelve cascades once each under their benchmark
-# stable flags (STABLE_ROUTING_FLAGS in benchmarks/<bench>.py: 90-degree
+# stable flags (`[flags]` of benchmarks/<bench>.toml: 90-degree
 # turns, 10 um bends, PLM with output matching, heater obstacles, electrical
 # routing, 3 um clearance, no crossings; `routing_flow.py <bench>` applies
 # them itself) and archives every run under RESULTS_ROOT (default

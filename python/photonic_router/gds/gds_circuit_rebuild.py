@@ -11,6 +11,7 @@ extraction itself is ``gds_circuit_extraction``.
 from __future__ import annotations
 
 import functools
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -327,8 +328,9 @@ def write_benchmark_module(
     node_types: dict[str, str] | None = None,
     internal_delays_um: dict[str, float] | None = None,
 ) -> None:
-    """Write a benchmark module (``build_schematic``, ``STABLE_ROUTING_FLAGS``, and the
-    path-length metadata ``NODE_TYPES`` and ``INTERNAL_DELAYS_UM`` when given)."""
+    """Write a benchmark module (``build_schematic`` and the path-length metadata
+    ``NODE_TYPES`` and ``INTERNAL_DELAYS_UM`` when given) and, next to it, its
+    default flags as ``<module>.toml`` (``benchmarks/<name>.toml`` format)."""
 
     lines = [
         f'"""{title}',
@@ -344,11 +346,8 @@ def write_benchmark_module(
         "",
         "from photonic_router.gds.gds_circuit_components import register_generic_components",
         "",
-        "STABLE_ROUTING_FLAGS: tuple[str, ...] = (",
+        "INSTANCES = (",
     ]
-    for flag in flags:
-        lines.append(f"    {flag!r},")
-    lines += [")", "", "INSTANCES = ("]
     for name, instance in schematic.netlist.instances.items():
         placement = schematic.placements[name]
         lines.append(
@@ -387,6 +386,34 @@ def write_benchmark_module(
         "",
     ]
     Path(path).write_text("\n".join(lines), encoding="utf-8")
+    Path(path).with_suffix(".toml").write_text(defaults_toml(title, flags), encoding="utf-8")
+
+
+def _toml_scalar(token: str) -> str:
+    """A command-line value token as a TOML value (bool, int, float or string)."""
+    if token in ("true", "false"):
+        return token
+    for convert in (int, float):
+        try:
+            value = convert(token)
+        except ValueError:
+            continue
+        if repr(value) == token:
+            return token
+    return json.dumps(token)
+
+
+def defaults_toml(title: str, flags: tuple[str, ...]) -> str:
+    """The ``[flags]`` table of a ``benchmarks/<name>.toml`` for the flag tokens
+    ``--name value ...``; a flag given twice keeps its last value (argparse's rule)."""
+    pairs: dict[str, str] = {}
+    for index in range(0, len(flags), 2):
+        pairs[flags[index].removeprefix("--")] = flags[index + 1]
+    lines = [f"# {title}; CLI flags override.", ""]
+    if pairs:
+        lines.append("[flags]")
+        lines += [f"{key} = {_toml_scalar(value)}" for key, value in pairs.items()]
+    return "\n".join(lines) + "\n"
 
 
 def _port_span_and_separation(ports: tuple[ExtractedPort, ...]) -> tuple[float, float]:

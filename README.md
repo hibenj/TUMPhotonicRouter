@@ -167,7 +167,7 @@ Enable heater electrical routing:
 ```
 
 The older script form still works and is what the reproduction scripts and the
-benchmark stable blocks use, because `routing_flow.py` is a shim over the same
+benchmark defaults (`benchmarks/<name>.toml`) use, because `routing_flow.py` is a shim over the same
 command line:
 
 ```bash

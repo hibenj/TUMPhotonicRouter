@@ -329,7 +329,7 @@ environment.
 the environment nor a command line. `flow_options.py` (200 lines) owns
 `FlowOptions`: the flow-level choices as eleven frozen groups, one group per
 consuming stage. `cli.py` (811 lines) owns the command line: the parser, the
-benchmark stable block, `--configuration`, and `_flow_options`, which turns the
+benchmark defaults (`benchmarks/<name>.toml`), `--configuration`, and `_flow_options`, which turns the
 parsed arguments into `FlowOptions`; `__main__.py` (51 lines) makes it `python
 -m photonic_router route <benchmark>`. `config.py` (412 lines) owns
 `RoutingConfig` and `RouterConfig` -- the typed configuration trees;
@@ -416,7 +416,7 @@ reaching it through the `photonic_router.routing.route_rust` re-export.
 Since phase 8 slice A these live in the one package, grouped as `records/` (`route_rust_types`, `_records`, `_geometry`, `_realization`, `_obstacle_config`, `route_order`, `layout_from_schematic`), `crossings/` (the `route_rust_crossing_*` modules, `crossing_*`, `preplaced_crossing_grids`, `topology_analysis`), `plm/` (`route_rust_meanders`, `path_length_*`), `verify/` (`photonic_verification`, `route_rust_endpoint_correction`) and `gds/` (`gds_circuit_*`, `gds_write_options`, `route_gds`, `route_overview_svg`, `route_rust_debug_artifacts`).
 
 `routing/route_rust.py` (428 lines) is a re-export shim over `photonic_router.routing`,
-kept because the reproduction scripts, the benchmark stable blocks and many
+kept because the reproduction scripts, the benchmark defaults and many
 tests import names from that path; no behaviour lives in it. The modules with
 real content are `route_rust_types.py` (1,363, the shared record and job
 types), `route_rust_records.py` (477, the route bookkeeping),
@@ -736,7 +736,7 @@ SVG exporters share.
 
 `routing_flow.py` (5 lines, repository root) is a shim over `photonic_router.cli`, so
 `python routing_flow.py <benchmark> [flags]` keeps working for the reproduction
-scripts and the benchmark stable blocks. The siblings are the flow's stage
+scripts and the benchmark defaults. The siblings are the flow's stage
 helpers, now in the package and imported by `photonic_router.flow`:
 `python/photonic_router/flow_config.py` (269, the `SCRIPT_*` defaults and option resolution),
 `python/photonic_router/flow_optical.py` (176, the call into `route_match_and_realize`),
@@ -788,7 +788,7 @@ matching, guarded by `options.electrical.enable_electrical_routing`. That
 flag, and the `ElectricalRoutingConfig` it passes down, are set by
 `--electrical-routing true` on the command line or
 `FlowOptions.electrical.enable_electrical_routing` when calling
-`route_benchmark` directly; `benchmarks/heater_s_mod.py`'s stable block sets
+`route_benchmark` directly; `benchmarks/heater_s_mod.toml` sets
 `--include-heater-obstacles true --electrical-routing true`, so that
 benchmark routes electrically by default. No paper configuration (section 7)
 enables it.
@@ -1021,9 +1021,10 @@ Precedence, lowest to highest, as `photonic_router/config_loading.py::build_conf
 and `photonic_router/cli.py::main` apply it:
 
 1. **Defaults** -- the dataclass defaults in `config.py` and `flow_options.py`.
-2. **The benchmark's stable block** -- `STABLE_ROUTING_ENV` (and its stable
-   flags) from the benchmark module, read by `cli.py::_benchmark_stable_defaults`
-   and passed to `build_config` as `stable_env`.
+2. **The benchmark's stable block** -- the `[config]` table (and the `[flags]`
+   table, its default command-line flags) of `benchmarks/<name>.toml`, read by
+   `cli.py::load_benchmark_defaults` through `_benchmark_stable_defaults` and
+   passed to `build_config` as `stable_env`.
 3. **The process environment** -- `PHOTONIC_ROUTER_*`, applied through the one
    overlay table `ENV_OVERLAY` in `python/photonic_router/env_overlay.py`. It
    wins over the stable block, exactly as `os.environ.setdefault` did before

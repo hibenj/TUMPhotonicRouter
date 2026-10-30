@@ -2,7 +2,7 @@
 `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`).
 
 Precedence, lowest to highest: the dataclass defaults, the benchmark's
-``STABLE_ROUTING_ENV`` block, the process environment. That is exactly what
+``[config]`` table of ``benchmarks/<name>.toml``, the process environment. That is exactly what
 the CLI did before through ``os.environ.setdefault`` (a variable already in
 the environment beat the benchmark's block); the block is now applied through
 the same overlay table as the environment, and the process environment is
@@ -26,7 +26,7 @@ def build_config(
     """Defaults, then the benchmark's stable block, then the environment.
 
     ``stable_env`` holds ``PHOTONIC_ROUTER_*`` names exactly as a benchmark
-    module's ``STABLE_ROUTING_ENV`` declares them. ``environ`` defaults to
+    file's ``[config]`` table declares them (with the prefix). ``environ`` defaults to
     ``os.environ``; pass a mapping in tests. A name present in both is taken
     from ``environ``. Values are parsed by the overlay's per-variable rules,
     so an invalid value raises here instead of at first use."""

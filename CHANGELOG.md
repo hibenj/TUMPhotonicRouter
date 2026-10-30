@@ -65,6 +65,18 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- Benchmark defaults as one TOML file per benchmark (phase 8 slice C; no
+  behaviour change: nine-cell and PLM gates exact, the parsed flags and
+  overlay identical for every benchmark). The `STABLE_ROUTING_FLAGS` /
+  `STABLE_ROUTING_ENV` module attributes are gone; `benchmarks/<name>.toml`
+  holds a `[flags]` table (flag names without `--`, in order) and a `[config]`
+  table (`PHOTONIC_ROUTER_*` names without the prefix, string values), with
+  the old blocks' comments. `cli.py::load_benchmark_defaults(name)` reads it
+  and `_benchmark_stable_defaults` applies it as before; the printed
+  "Benchmark stable defaults applied" lines are unchanged. The slice
+  generators (`write_benchmark_module`, `scripts/make_mesh_slice_benchmark.py`)
+  write the TOML next to the module. Guard: no benchmark module defines the
+  attributes (`tests/test_no_legacy_imports.py`).
 - A Cargo workspace with the engine and the bindings as two crates (phase 8
   slice B; no behaviour change: nine-cell and PLM gates exact, the extension
   stub unchanged). `crates/router-core` is the former `src/` without

@@ -487,7 +487,7 @@ def test_heater_s_mod_realized_meanders_leave_no_residual_mismatch(monkeypatch):
 
 
 def test_heater_s_mod_stable_configuration_routes_matches_and_wires():
-    """`benchmarks.heater_s_mod.STABLE_ROUTING_FLAGS` end to end: 90-degree
+    """The `[flags]` of `benchmarks/heater_s_mod.toml` end to end: 90-degree
     routing, 10 um bends, path-length matching, heater electrical routing."""
     stats = RoutingFlowStats()
     routed = run_routing_flow(

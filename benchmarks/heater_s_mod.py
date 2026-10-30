@@ -12,39 +12,6 @@ from __future__ import annotations
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
-# Stable configuration (repository owner, 2026-08-28): 90-degree routing with
-# a 10 um bend radius, path-length matching of every gate and of the outputs,
-# heater obstacles, and heater electrical routing. This is the configuration
-# `tests/test_routing_flow_stats.py::`
-# `test_heater_s_mod_stable_configuration_routes_matches_and_wires`
-# runs end to end:
-#   python routing_flow.py heater_s_mod --allow-45-degree-turns false --bend-radius-um 10
-#     --path-length-matching true --path-length-match-outputs true
-#     --include-heater-obstacles true --electrical-routing true
-#     --waveguide-clearance-um 3.0 --crossings false
-# 3 um between waveguides (at 0 um, routes and meander bumps may run one grid
-# cell -- 1.5 um edge to edge -- from each other); crossings off because this
-# benchmark has none and the crossing-aware search only costs repairs here.
-# `routing_flow.py heater_s_mod` applies these flags as its defaults.
-STABLE_ROUTING_FLAGS: tuple[str, ...] = (
-    "--allow-45-degree-turns",
-    "false",
-    "--bend-radius-um",
-    "10",
-    "--path-length-matching",
-    "true",
-    "--path-length-match-outputs",
-    "true",
-    "--include-heater-obstacles",
-    "true",
-    "--electrical-routing",
-    "true",
-    "--waveguide-clearance-um",
-    "3.0",
-    "--crossings",
-    "false",
-)
-
 LANE_COUNT = 4
 
 

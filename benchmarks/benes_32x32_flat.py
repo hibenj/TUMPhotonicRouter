@@ -18,7 +18,7 @@ from benchmarks.benes import (
     benes_flat_topology_metadata,
     build_benes_schematic,
 )
-from benchmarks.benes_32x32 import NETWORK_SIZE, STABLE_ROUTING_ENV, STABLE_ROUTING_FLAGS
+from benchmarks.benes_32x32 import NETWORK_SIZE
 
 TOPOLOGY_METADATA = benes_flat_topology_metadata(NETWORK_SIZE)
 NODE_DEPTHS = TOPOLOGY_METADATA["node_depths"]
@@ -34,8 +34,6 @@ __all__ = [
     "NODE_DEPTHS",
     "NODE_RANKS",
     "NODE_TYPES",
-    "STABLE_ROUTING_ENV",
-    "STABLE_ROUTING_FLAGS",
     "TOPOLOGY_METADATA",
     "build_schematic",
 ]

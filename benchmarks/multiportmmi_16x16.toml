@@ -1,0 +1,21 @@
+# Default flags and configuration overlay of multiportmmi_16x16 (the former STABLE_ROUTING_* block); CLI flags override, the process environment wins for [config].
+#
+# Stable crossing-router baseline, July 2026:
+# $env:PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT="0.05"
+# $env:PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES="90"
+# python routing_flow.py multiportmmi_16x16 --crossings true
+# --crossing-mode lidar-pure --fanout-access-mode static-stubs
+# --routing-window-scale 0.35 --foreign-port-keepout-cells 0
+
+[flags]
+crossings = true
+crossing-mode = "lidar-pure"
+fanout-access-mode = "static-stubs"
+# --routing-window-scale 0.35 removed 2026-08-31: the CLI default
+# 0.05 routes identically clean and 15-30% faster (heuristics-audit
+# experiments, .agent/execplans/2026-08-31-engine-performance-baseline.md).
+foreign-port-keepout-cells = 0
+
+[config]
+LONG_STRAIGHT_CONGESTION_WEIGHT = "0.05"
+FANOUT_STUB_BEND_DEGREES = "90"

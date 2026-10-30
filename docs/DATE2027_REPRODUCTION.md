@@ -23,6 +23,11 @@ is final; this branch exists so the numbers can be regenerated.
   `39ea78d`). It regresses the Benes ladder and was never part of the
   baseline / contribution 1 rows. See "Verification" for the mesh
   contribution 2 rows, which were archived with it in the kernel.
+- Benchmark defaults: the flags `routing_flow.py <bench>` applies by itself (for
+  the Benes and ADEPT rows `--crossings true --crossing-mode lidar-pure`, the
+  static-stub fan-out access and the congestion settings) and the
+  `PHOTONIC_ROUTER_*` overlay live in `benchmarks/<name>.toml` (`[flags]`,
+  `[config]`), one file per benchmark; the command line overrides them.
 - Baseline (`--crossing-mode lidar-pure`) and contribution 1
   (`--crossing-mode lidar-guided`) run the kernel with no extra environment.
 - Build: `.venv/bin/maturin develop --release` (`rust-toolchain.toml` pins

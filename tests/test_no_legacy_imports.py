@@ -55,3 +55,13 @@ def test_no_string_reference_to_removed_modules() -> None:
 def test_translation_directory_is_gone() -> None:
     assert not (ROOT / "translation").exists() or not any((ROOT / "translation").glob("*.py"))
     assert not any(ROOT.glob("routing_flow_*.py"))
+
+
+def test_no_benchmark_module_defines_stable_blocks() -> None:
+    """Benchmark defaults live in `benchmarks/<name>.toml` (phase 8 slice C)."""
+    offenders = []
+    for path in sorted((ROOT / "benchmarks").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "STABLE_ROUTING_FLAGS" in text or "STABLE_ROUTING_ENV" in text:
+            offenders.append(path.name)
+    assert not offenders, f"STABLE_ROUTING_* still in: {offenders}"

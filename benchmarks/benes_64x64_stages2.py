@@ -20,8 +20,6 @@ from benchmarks.benes_64x64 import (
 )
 from benchmarks.benes_64x64 import (
     NETWORK_SIZE,
-    STABLE_ROUTING_ENV,
-    STABLE_ROUTING_FLAGS,
     STAGE_PITCH_UM,
 )
 from benchmarks.benes_64x64 import (
@@ -61,8 +59,6 @@ __all__ = [
     "NODE_DEPTHS",
     "NODE_RANKS",
     "NODE_TYPES",
-    "STABLE_ROUTING_ENV",
-    "STABLE_ROUTING_FLAGS",
     "build_schematic",
 ]
 
