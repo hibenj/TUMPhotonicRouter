@@ -95,6 +95,11 @@ _UNIFIED_REASON_TO_REPAIR_REASON: Mapping[str, str] = {
     "margin_short_route_after": "insufficient_straight_margin",
     "margin_short_partner": "insufficient_straight_margin",
     "footprint_blocked": "crossing_footprint_contains_route_geometry",
+    # Slice B-2: the candidate's reservation window shares a cell with another
+    # crossing element's (the route's own or a registered one) -- the repair
+    # loop's overlapping-footprints case.
+    "too_close_same_route": "crossing_footprint_overlap",
+    "too_close_registered": "crossing_footprint_overlap",
     "missing_event": "missing_event",
 }
 

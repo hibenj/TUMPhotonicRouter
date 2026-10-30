@@ -93,6 +93,7 @@ fn collision_crossing_search_accepts_expected_dynamic_core_collision() {
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
@@ -189,6 +190,7 @@ fn planned_partner_crossing_uses_its_own_price_and_unplanned_pays_crossing_loss(
                 target_terminal_bump_guard: None,
                 crossing_loss_override: Some(0.0),
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 2,
@@ -196,6 +198,7 @@ fn planned_partner_crossing_uses_its_own_price_and_unplanned_pays_crossing_loss(
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         crossing_half_size_cells: 0,
@@ -245,6 +248,7 @@ fn u_partner(single_discounted_crossing: bool) -> CrossingSearchPartner {
         target_terminal_bump_guard: None,
         crossing_loss_override: Some(0.0),
         single_discounted_crossing,
+        registered_crossing_centres: Vec::new(),
     }
 }
 
@@ -293,6 +297,7 @@ fn budget_is_per_partner_two_planned_partners_are_both_discounted() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: Some(0.0),
                 single_discounted_crossing: true,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 2,
@@ -300,6 +305,7 @@ fn budget_is_per_partner_two_planned_partners_are_both_discounted() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: Some(0.0),
                 single_discounted_crossing: true,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         crossing_half_size_cells: 0,
@@ -328,6 +334,7 @@ fn partners_without_price_override_price_like_the_baseline() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 2,
@@ -335,6 +342,7 @@ fn partners_without_price_override_price_like_the_baseline() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         crossing_half_size_cells: 0,
@@ -425,6 +433,7 @@ fn crossing_move_detects_offset_diagonal_halo_contact() {
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
@@ -534,6 +543,7 @@ fn perpendicular_diagonal_x_approach_move_is_rejected_and_containing_move_accept
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
@@ -674,6 +684,7 @@ fn consecutive_perpendicular_diagonal_crossings_on_one_line() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 2,
@@ -681,6 +692,7 @@ fn consecutive_perpendicular_diagonal_crossings_on_one_line() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         crossing_half_size_cells: 2,
@@ -759,6 +771,7 @@ fn consecutive_perpendicular_diagonal_crossings_with_benchmark_margin() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 2,
@@ -766,6 +779,7 @@ fn consecutive_perpendicular_diagonal_crossings_with_benchmark_margin() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         crossing_half_size_cells: 2,
@@ -842,6 +856,7 @@ fn vertical_route_crosses_two_horizontal_partners_with_benchmark_margin() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 2,
@@ -849,6 +864,7 @@ fn vertical_route_crosses_two_horizontal_partners_with_benchmark_margin() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         crossing_half_size_cells: 2,
@@ -915,6 +931,7 @@ fn vertical_descent_across_two_horizontals(
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 2,
@@ -922,6 +939,7 @@ fn vertical_descent_across_two_horizontals(
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         crossing_half_size_cells: 2,
@@ -999,6 +1017,7 @@ fn diagonal_route_across_two_parallel_backslash_partners(
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 2,
@@ -1006,6 +1025,7 @@ fn diagonal_route_across_two_parallel_backslash_partners(
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         crossing_half_size_cells: 2,
@@ -1125,6 +1145,87 @@ fn unified_predicate_decides_the_vertical_descent_like_the_legacy_checks() {
     assert!(stats.crossing_reject_reservation_overlap > 0);
 }
 
+/// Slice B-2, the search hook: a crossing element already registered on
+/// the partner three cells beside the straight descent (`(33, 40)` against
+/// the crossing at `(30, 40)`, half 2: windows [28, 32] and [31, 35] share
+/// two columns) is `TooClose { Registered }`. The legacy search meets the
+/// same element as static reservation cells; on this map there are none,
+/// so the legacy route crosses at x = 30 while the unified one must not.
+/// Booked on the legacy counter for a blocked window
+/// (`crossing_reject_unmatched_footprint`).
+fn vertical_descent_beside_a_registered_element(
+    unified_legality: bool,
+) -> (Option<RouteResult>, RouteSearchStats) {
+    let mut map = ObstacleMap::new(60, 80);
+    let y_a = 40;
+    let partner_a: Vec<(i32, i32)> = (0..60).map(|k| (k, y_a)).collect();
+    assert!(map.commit_route_with_clearance_and_allowed_core_overlaps(
+        1,
+        &partner_a,
+        &partner_a,
+        &[],
+        &FxHashSet::default()
+    ));
+    let library = primitive_library();
+    let crossing = CrossingSearchConfig {
+        diagnostics: KernelDiagnostics::default(),
+        net_id: 3,
+        partners: vec![CrossingSearchPartner {
+            net_id: 1,
+            waypoints: vec![(0, y_a), (59, y_a)],
+            target_terminal_bump_guard: None,
+            crossing_loss_override: None,
+            single_discounted_crossing: false,
+            registered_crossing_centres: vec![(33.0, f64::from(y_a))],
+        }],
+        crossing_half_size_cells: 2,
+        bend_runout_cells: 3,
+        unified_legality,
+        crossing_loss: 1.0,
+        terminal_bump_guard: None,
+    };
+    test_route_single_net_with_collision_crossing_config_with_stats(
+        &map,
+        &library,
+        State::new(30, 70, 6),
+        State::new(30, 10, 6),
+        None,
+        None,
+        &AStarConfig {
+            diagnostics: KernelDiagnostics::default(),
+            use_routing_window: false,
+            enable_simple_routes: false,
+            ..AStarConfig::default()
+        },
+        0,
+        None,
+        &crossing,
+    )
+}
+
+#[test]
+fn unified_predicate_keeps_the_crossing_out_of_a_registered_elements_window() {
+    let (legacy_route, legacy_stats) = vertical_descent_beside_a_registered_element(false);
+    let legacy_route = legacy_route.expect("the legacy search sees no obstacle");
+    assert!(legacy_route.cells.contains(&(30, 40)));
+    assert_eq!(legacy_stats.crossing_reject_unmatched_footprint, 0);
+
+    let (unified_route, unified_stats) = vertical_descent_beside_a_registered_element(true);
+    assert!(unified_stats.crossing_reject_unmatched_footprint > 0);
+    if let Some(route) = unified_route {
+        let crossing_x: Vec<i32> = route
+            .cells
+            .iter()
+            .filter(|&&(_, y)| y == 40)
+            .map(|&(x, _)| x)
+            .collect();
+        assert!(
+            crossing_x.iter().all(|&x| !(29..=37).contains(&x)),
+            "every unified crossing keeps its window clear of (33, 40): {crossing_x:?}"
+        );
+    }
+}
+
 /// Predicate 1 (only straight cells inside the crossing window), route
 /// side: a turn primitive never crosses. Route heads east from (2,5)
 /// into a radius-3 turn (arms of 3 cells, corner at (5,5)); the partner
@@ -1164,6 +1265,7 @@ fn crossing_inside_turn_arm(
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 2,
         bend_runout_cells: 3,
@@ -1341,6 +1443,7 @@ fn matrix_row2_before_margin_on_a_pure_straight_approach() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             }],
             crossing_half_size_cells: 2,
             bend_runout_cells: 3,
@@ -1443,6 +1546,7 @@ fn matrix_row3_partner_margin_on_the_raw_polyline() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             }],
             crossing_half_size_cells: 2,
             bend_runout_cells: 3,
@@ -1513,6 +1617,7 @@ fn matrix_row4_crossing_at_a_partner_endpoint_with_half_size_zero() {
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 1,
@@ -1577,6 +1682,7 @@ fn crossing_move_rejects_parallel_diagonal_on_mirrored_halo_side() {
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
@@ -1654,6 +1760,7 @@ fn crossing_move_rejects_bend_arm_non_perpendicular_intersection() {
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 0,
         bend_runout_cells: 0,
@@ -1910,6 +2017,7 @@ fn crossing_move_rejects_internal_bend_kink_before_after_margin() {
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 1,
         bend_runout_cells: 2,
@@ -2065,6 +2173,7 @@ fn terminal_bump_guard_test_setup(
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 2,
         bend_runout_cells: 0,
@@ -2317,6 +2426,7 @@ fn crossing_move_rejects_two_crossings_with_overlapping_windows_in_one_move() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 3,
@@ -2324,6 +2434,7 @@ fn crossing_move_rejects_two_crossings_with_overlapping_windows_in_one_move() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         // Predicate 2 (2026-09-03): partners 3 cells apart with
@@ -2409,6 +2520,7 @@ fn crossing_pending_after_keeps_debt_of_the_later_crossing() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
             CrossingSearchPartner {
                 net_id: 3,
@@ -2416,6 +2528,7 @@ fn crossing_pending_after_keeps_debt_of_the_later_crossing() {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         // Re-pinned 2026-09-03 (predicate 2): partners 5 cells apart
@@ -2492,6 +2605,7 @@ fn crossing_move_marks_n35_n32_short_after_runout_as_pending() {
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 3,
         bend_runout_cells: 2,
@@ -2610,6 +2724,7 @@ fn crossing_margin_counts_terminal_bend_arm_before_next_crossing() {
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         }],
         crossing_half_size_cells: 2,
         bend_runout_cells: 2,
@@ -2818,6 +2933,7 @@ mod kernel_hook_dispatch {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             }],
             crossing_half_size_cells: 0,
             bend_runout_cells: 0,
@@ -2923,6 +3039,7 @@ mod kernel_hook_dispatch {
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             }],
             crossing_half_size_cells: 0,
             bend_runout_cells: 0,

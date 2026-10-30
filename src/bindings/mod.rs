@@ -135,11 +135,14 @@ impl PyPhotonicRouter {
     /// `RouterConfig.crossing_unified_legality`). One dict per
     /// (net, partner, point): the point in um, the two grid segments, `legal`,
     /// `reason` (`legal`, `not_perpendicular`, `margin_short_<side>`,
-    /// `footprint_blocked`, `missing_event`), `perpendicular`, the four
-    /// straight runs and the two required margins in grid cells,
-    /// `footprint_blocked`, `event_registered`, and `margins_from_grid`
-    /// (false when the grid route had no intersection near the point and the
-    /// realized straights were measured instead).
+    /// `too_close_<other>`, `footprint_blocked`, `missing_event`),
+    /// `perpendicular`, the four straight runs and the two required margins
+    /// in grid cells, the spacing inputs (slice B-2: `required_spacing_cells`,
+    /// `nearest_same_route_cells` / `nearest_registered_cells` as Chebyshev
+    /// centre distances or `None`, `too_close_other` as `same_route` /
+    /// `registered` / `None`), `footprint_blocked`, `event_registered`, and
+    /// `margins_from_grid` (false when the grid route had no intersection near
+    /// the point and the realized straights were measured instead).
     pub(crate) fn crossing_verdicts(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
         let mut out = Vec::with_capacity(self.crossing_verdicts.len());
         for record in &self.crossing_verdicts {
@@ -169,6 +172,22 @@ impl PyPhotonicRouter {
             d.set_item("partner_after_cells", candidate.partner_after_cells)?;
             d.set_item("required_margin_cells", record.rule.required_margin_cells())?;
             d.set_item("required_after_cells", record.rule.required_after_cells())?;
+            d.set_item(
+                "required_spacing_cells",
+                record.rule.required_spacing_cells(),
+            )?;
+            d.set_item(
+                "nearest_same_route_cells",
+                candidate.nearest_same_route_cells(),
+            )?;
+            d.set_item(
+                "nearest_registered_cells",
+                candidate.nearest_registered_cells(),
+            )?;
+            d.set_item(
+                "too_close_other",
+                record.verdict.too_close_other().map(|other| other.name()),
+            )?;
             d.set_item("footprint_blocked", candidate.footprint_blocked)?;
             d.set_item("event_registered", candidate.event_registered)?;
             d.set_item("margins_from_grid", record.margins_from_grid)?;

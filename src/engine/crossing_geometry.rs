@@ -404,6 +404,27 @@ impl MarginSide {
     }
 }
 
+/// Whose crossing element the candidate's window overlaps (phase 4 slice
+/// B-2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CrossingNeighbour {
+    /// Another crossing of the route being judged (an earlier or later one
+    /// along its path).
+    SameRoute,
+    /// A crossing already registered on the map (another net's
+    /// `CrossingEvent`; the partner's crossings with third nets among them).
+    Registered,
+}
+
+impl CrossingNeighbour {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            CrossingNeighbour::SameRoute => "same_route",
+            CrossingNeighbour::Registered => "registered",
+        }
+    }
+}
+
 /// The one verdict of [`crossing_legality`]: legal, or the single reason the
 /// candidate is not. The reasons are tested in the order listed and the
 /// first failing one is the verdict, so a non-perpendicular candidate is
@@ -414,6 +435,15 @@ pub(crate) enum CrossingVerdict {
     NotPerpendicular,
     MarginShort {
         side: MarginSide,
+        have_cells: f64,
+        need_cells: f64,
+    },
+    /// The candidate's reservation window shares a cell with another
+    /// crossing element's (`other`); `have_cells` is the Chebyshev distance
+    /// of the two centres in cells, `need_cells` the rule's
+    /// `required_spacing_cells`.
+    TooClose {
+        other: CrossingNeighbour,
         have_cells: f64,
         need_cells: f64,
     },
@@ -428,7 +458,8 @@ impl CrossingVerdict {
 
     /// The reason as the diagnostics, the commit errors and the Python
     /// verifier spell it: `legal`, `not_perpendicular`,
-    /// `margin_short_<side>`, `footprint_blocked`, `missing_event`.
+    /// `margin_short_<side>`, `too_close_<other>`, `footprint_blocked`,
+    /// `missing_event`.
     pub(crate) fn reason(&self) -> &'static str {
         match self {
             CrossingVerdict::Legal => "legal",
@@ -445,6 +476,14 @@ impl CrossingVerdict {
                 side: MarginSide::Partner,
                 ..
             } => "margin_short_partner",
+            CrossingVerdict::TooClose {
+                other: CrossingNeighbour::SameRoute,
+                ..
+            } => "too_close_same_route",
+            CrossingVerdict::TooClose {
+                other: CrossingNeighbour::Registered,
+                ..
+            } => "too_close_registered",
             CrossingVerdict::FootprintBlocked => "footprint_blocked",
             CrossingVerdict::MissingEvent => "missing_event",
         }
@@ -453,6 +492,13 @@ impl CrossingVerdict {
     pub(crate) fn margin_side(&self) -> Option<MarginSide> {
         match self {
             CrossingVerdict::MarginShort { side, .. } => Some(*side),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn too_close_other(&self) -> Option<CrossingNeighbour> {
+        match self {
+            CrossingVerdict::TooClose { other, .. } => Some(*other),
             _ => None,
         }
     }
@@ -469,6 +515,18 @@ impl CrossingVerdict {
 /// bend may follow it directly -- Point 2 of 2026-09-03, which found that
 /// demanding `required_margin_cells` after the crossing discards
 /// kernel-legal, realized-clean routes).
+///
+/// Spacing (phase 4 slice B-2): two crossing elements never share a grid
+/// cell. Each crossing owns the reservation window of every cell within
+/// `half_size` of its centre on both axes (`reservation_window_span`, the
+/// window `crossing_reservation_window_keys` builds); the windows of two
+/// crossings must be disjoint, which for centres on grid points is a centre
+/// distance of `required_spacing_cells` = `2 * half_size + 1` cells on at
+/// least one axis. This is the rule the legacy search paid through its
+/// reservation bookkeeping (`reservation_overlap`, the kernel's chain check,
+/// the pending straight debt) and the commit through
+/// `crossing_events_have_disjoint_reservations` and the static reservation
+/// cells of committed crossings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CrossingLegalityRule {
     pub(crate) half_size_cells: i32,
@@ -483,13 +541,87 @@ impl CrossingLegalityRule {
     pub(crate) fn required_after_cells(&self) -> i32 {
         self.half_size_cells.max(0)
     }
+
+    /// The centre distance (Chebyshev, in cells) at which two reservation
+    /// windows with grid-point centres become disjoint: `2 * half_size + 1`.
+    pub(crate) fn required_spacing_cells(&self) -> i32 {
+        2 * self.half_size_cells.max(0) + 1
+    }
+}
+
+/// The cells `[floor(c - half), ceil(c + half)]` a crossing centred at `c`
+/// reserves on one axis -- the span `crossing_reservation_window_keys` and
+/// `local_crossing_reservation_window_keys` build (one cell wider on an
+/// axis where the centre sits on a cell boundary).
+pub(crate) fn reservation_window_span(centre: f64, half_size_cells: i32) -> (i32, i32) {
+    let half = f64::from(half_size_cells.max(0));
+    (
+        (centre - half).floor() as i32,
+        (centre + half).ceil() as i32,
+    )
+}
+
+/// Whether the reservation windows of two crossings centred at `a` and `b`
+/// (grid coordinates) share a cell.
+pub(crate) fn crossing_windows_overlap(a: (f64, f64), b: (f64, f64), half_size_cells: i32) -> bool {
+    let (a_x0, a_x1) = reservation_window_span(a.0, half_size_cells);
+    let (b_x0, b_x1) = reservation_window_span(b.0, half_size_cells);
+    if a_x1 < b_x0 || b_x1 < a_x0 {
+        return false;
+    }
+    let (a_y0, a_y1) = reservation_window_span(a.1, half_size_cells);
+    let (b_y0, b_y1) = reservation_window_span(b.1, half_size_cells);
+    !(a_y1 < b_y0 || b_y1 < a_y0)
+}
+
+/// The Chebyshev distance of two centres in cells (the metric of the square
+/// reservation windows).
+pub(crate) fn chebyshev_cells(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).abs().max((a.1 - b.1).abs())
+}
+
+/// The neighbour a candidate at `point` is judged against: the nearest
+/// (Chebyshev) of `others` whose window overlaps the candidate's, or, when
+/// none does, the nearest overall (so the record still names the closest
+/// element). A centre within 1e-6 cells of `point` is the candidate itself
+/// and is skipped. The overlapping ones come first because the overlap
+/// threshold of an axis depends on the centres' fractional parts: among two
+/// neighbours at the same Chebyshev distance one may share a cell and the
+/// other not.
+pub(crate) fn nearest_crossing_neighbour(
+    point: (f64, f64),
+    half_size_cells: i32,
+    others: impl IntoIterator<Item = (f64, f64)>,
+) -> Option<(f64, f64)> {
+    let mut best: Option<(bool, f64, (f64, f64))> = None;
+    for other in others {
+        let distance = chebyshev_cells(point, other);
+        if distance <= 1e-6 {
+            continue;
+        }
+        let overlaps = crossing_windows_overlap(point, other, half_size_cells);
+        let better = match best {
+            None => true,
+            Some((best_overlaps, best_distance, _)) => {
+                (overlaps && !best_overlaps)
+                    || (overlaps == best_overlaps && distance < best_distance)
+            }
+        };
+        if better {
+            best = Some((overlaps, distance, other));
+        }
+    }
+    best.map(|(_, _, other)| other)
 }
 
 /// One crossing as the predicate sees it: the two directions (any scale,
 /// grid-angle unit vectors or physical segment vectors), the four straight
-/// runs in grid cells, whether the crossing element's footprint cells carry
-/// an unrelated net, and whether a `CrossingEvent` is registered for it
-/// (`None` before commit, when no event can exist yet).
+/// runs in grid cells, the centre in grid coordinates with the nearest
+/// other crossing of the same route and the nearest crossing registered on
+/// the map (`nearest_crossing_neighbour`; `None` when there is none),
+/// whether the crossing element's footprint cells carry an unrelated net,
+/// and whether a `CrossingEvent` is registered for it (`None` before
+/// commit, when no event can exist yet).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CrossingCandidate {
     pub(crate) route_direction: (f64, f64),
@@ -498,8 +630,27 @@ pub(crate) struct CrossingCandidate {
     pub(crate) route_after_cells: f64,
     pub(crate) partner_before_cells: f64,
     pub(crate) partner_after_cells: f64,
+    pub(crate) point: (f64, f64),
+    pub(crate) nearest_same_route: Option<(f64, f64)>,
+    pub(crate) nearest_registered: Option<(f64, f64)>,
     pub(crate) footprint_blocked: bool,
     pub(crate) event_registered: Option<bool>,
+}
+
+impl CrossingCandidate {
+    /// Chebyshev distance in cells to the nearest other crossing of the
+    /// same route, `None` when there is none.
+    pub(crate) fn nearest_same_route_cells(&self) -> Option<f64> {
+        self.nearest_same_route
+            .map(|other| chebyshev_cells(self.point, other))
+    }
+
+    /// Chebyshev distance in cells to the nearest registered crossing,
+    /// `None` when there is none.
+    pub(crate) fn nearest_registered_cells(&self) -> Option<f64> {
+        self.nearest_registered
+            .map(|other| chebyshev_cells(self.point, other))
+    }
 }
 
 /// The one perpendicularity test: the normalised dot product of the two
@@ -526,7 +677,9 @@ pub(crate) fn grid_angle_direction(angle: u8) -> (f64, f64) {
 /// the search never produces a crossing the commit rejects. Tests, in
 /// order: perpendicular; route before >= `required_margin_cells`; route
 /// after >= `required_after_cells`; partner on both sides >=
-/// `required_margin_cells`; footprint not blocked; event registered when
+/// `required_margin_cells`; reservation window disjoint from the nearest
+/// same-route crossing's and from the nearest registered crossing's
+/// (`TooClose`, slice B-2); footprint not blocked; event registered when
 /// the caller knows (`Some(false)` is `MissingEvent`, `None` skips the
 /// test). Margins compare with a 1e-9 tolerance, as every legacy path did.
 pub(crate) fn crossing_legality(
@@ -562,6 +715,21 @@ pub(crate) fn crossing_legality(
             have_cells: partner_margin,
             need_cells: need,
         };
+    }
+    let need_spacing = f64::from(rule.required_spacing_cells());
+    for (other, neighbour) in [
+        (CrossingNeighbour::SameRoute, candidate.nearest_same_route),
+        (CrossingNeighbour::Registered, candidate.nearest_registered),
+    ] {
+        if let Some(neighbour) = neighbour {
+            if crossing_windows_overlap(candidate.point, neighbour, rule.half_size_cells) {
+                return CrossingVerdict::TooClose {
+                    other,
+                    have_cells: chebyshev_cells(candidate.point, neighbour),
+                    need_cells: need_spacing,
+                };
+            }
+        }
     }
     if candidate.footprint_blocked {
         return CrossingVerdict::FootprintBlocked;
@@ -785,6 +953,9 @@ mod tests {
             route_after_cells: 8.0,
             partner_before_cells: 8.0,
             partner_after_cells: 8.0,
+            point: (20.0, 20.0),
+            nearest_same_route: None,
+            nearest_registered: None,
             footprint_blocked: false,
             event_registered: Some(true),
         }
@@ -794,6 +965,8 @@ mod tests {
     fn crossing_legality_rule_has_one_margin_and_the_half_footprint_after() {
         assert_eq!(RULE.required_margin_cells(), 5);
         assert_eq!(RULE.required_after_cells(), 2);
+        // Two 5x5 windows (half 2) are disjoint from 5 cells apart.
+        assert_eq!(RULE.required_spacing_cells(), 5);
         // Negative inputs clamp to zero, as the legacy
         // `crossing_required_margin_cells` did.
         let clamped = CrossingLegalityRule {
@@ -802,6 +975,7 @@ mod tests {
         };
         assert_eq!(clamped.required_margin_cells(), 0);
         assert_eq!(clamped.required_after_cells(), 0);
+        assert_eq!(clamped.required_spacing_cells(), 1);
     }
 
     #[test]
@@ -929,5 +1103,148 @@ mod tests {
             crossing_legality(&both, &RULE),
             CrossingVerdict::FootprintBlocked
         );
+    }
+
+    /// Slice B-2: two crossings of one route exactly `2 * half + 1` = 5
+    /// cells apart own disjoint 5x5 windows ([18, 22] and [23, 27]) and
+    /// pass; one cell closer the windows share the column x = 22 and the
+    /// verdict is `TooClose { SameRoute }` with the centre distance.
+    #[test]
+    fn crossing_legality_accepts_spacing_at_the_limit_and_rejects_one_cell_less() {
+        let at_limit = CrossingCandidate {
+            nearest_same_route: Some((25.0, 20.0)),
+            ..legal_candidate()
+        };
+        assert!(crossing_legality(&at_limit, &RULE).is_legal());
+        assert_eq!(at_limit.nearest_same_route_cells(), Some(5.0));
+
+        let one_closer = CrossingCandidate {
+            nearest_same_route: Some((24.0, 20.0)),
+            ..legal_candidate()
+        };
+        let verdict = crossing_legality(&one_closer, &RULE);
+        assert_eq!(
+            verdict,
+            CrossingVerdict::TooClose {
+                other: CrossingNeighbour::SameRoute,
+                have_cells: 4.0,
+                need_cells: 5.0,
+            }
+        );
+        assert_eq!(verdict.reason(), "too_close_same_route");
+        assert_eq!(
+            verdict.too_close_other(),
+            Some(CrossingNeighbour::SameRoute)
+        );
+        assert_eq!(verdict.margin_side(), None);
+        // The windows are squares: a diagonal neighbour four cells away on
+        // both axes shares the cell (22, 22) as well.
+        let diagonal = CrossingCandidate {
+            nearest_same_route: Some((24.0, 24.0)),
+            ..legal_candidate()
+        };
+        assert_eq!(
+            crossing_legality(&diagonal, &RULE).reason(),
+            "too_close_same_route"
+        );
+        // Five cells away on one axis is enough whatever the other axis.
+        let offset = CrossingCandidate {
+            nearest_same_route: Some((25.0, 23.0)),
+            ..legal_candidate()
+        };
+        assert!(crossing_legality(&offset, &RULE).is_legal());
+    }
+
+    /// Slice B-2: another net's registered crossing element inside the
+    /// candidate's window is `TooClose { Registered }`; it is tested after
+    /// the same-route neighbour and before the footprint.
+    #[test]
+    fn crossing_legality_rejects_a_registered_crossing_component_in_the_window() {
+        let registered = CrossingCandidate {
+            nearest_registered: Some((20.0, 17.0)),
+            footprint_blocked: true,
+            ..legal_candidate()
+        };
+        let verdict = crossing_legality(&registered, &RULE);
+        assert_eq!(
+            verdict,
+            CrossingVerdict::TooClose {
+                other: CrossingNeighbour::Registered,
+                have_cells: 3.0,
+                need_cells: 5.0,
+            }
+        );
+        assert_eq!(verdict.reason(), "too_close_registered");
+        assert_eq!(registered.nearest_registered_cells(), Some(3.0));
+        let both = CrossingCandidate {
+            nearest_same_route: Some((16.0, 20.0)),
+            ..registered
+        };
+        assert_eq!(
+            crossing_legality(&both, &RULE).too_close_other(),
+            Some(CrossingNeighbour::SameRoute)
+        );
+        // A registered element five cells away is clear; the footprint
+        // reason then follows.
+        let clear = CrossingCandidate {
+            nearest_registered: Some((20.0, 15.0)),
+            ..registered
+        };
+        assert_eq!(
+            crossing_legality(&clear, &RULE),
+            CrossingVerdict::FootprintBlocked
+        );
+    }
+
+    /// The window is cell-exact, as `crossing_reservation_window_keys`
+    /// builds it: a centre on a cell boundary (a diagonal x diagonal
+    /// crossing at a half cell) widens the window by one cell on that
+    /// axis, so two such centres five cells apart still share a cell
+    /// ([18, 23] and [23, 28]) while a grid-point centre five cells from
+    /// a half-cell one does not ([18, 22] and [23, 28]).
+    #[test]
+    fn crossing_windows_overlap_follows_the_floor_ceil_window() {
+        assert_eq!(reservation_window_span(20.0, 2), (18, 22));
+        assert_eq!(reservation_window_span(20.5, 2), (18, 23));
+        assert!(!crossing_windows_overlap((20.0, 20.0), (25.0, 20.0), 2));
+        assert!(crossing_windows_overlap((20.0, 20.0), (24.0, 20.0), 2));
+        assert!(crossing_windows_overlap((20.5, 20.0), (25.5, 20.0), 2));
+        assert!(!crossing_windows_overlap((20.0, 20.0), (25.5, 20.0), 2));
+        assert!(!crossing_windows_overlap((20.5, 20.0), (26.5, 20.0), 2));
+        let half_cell = CrossingCandidate {
+            point: (20.5, 20.0),
+            nearest_same_route: Some((25.5, 20.0)),
+            ..legal_candidate()
+        };
+        assert_eq!(
+            crossing_legality(&half_cell, &RULE),
+            CrossingVerdict::TooClose {
+                other: CrossingNeighbour::SameRoute,
+                have_cells: 5.0,
+                need_cells: 5.0,
+            }
+        );
+    }
+
+    /// The neighbour the callers hand the predicate: the nearest
+    /// overlapping one first (at equal distance a neighbour whose window
+    /// shares a cell outranks one whose window does not), the candidate's
+    /// own centre skipped, the nearest overall when nothing overlaps.
+    #[test]
+    fn nearest_crossing_neighbour_prefers_an_overlapping_window() {
+        let point = (20.5, 20.0);
+        // (25.5, 25.0): x half-half shares x = 23, y int-int at distance 5
+        // is disjoint -> windows disjoint. (25.5, 20.0): overlaps.
+        let others = [point, (25.5, 25.0), (25.5, 20.0), (40.0, 40.0)];
+        assert_eq!(
+            nearest_crossing_neighbour(point, 2, others),
+            Some((25.5, 20.0))
+        );
+        assert_eq!(
+            nearest_crossing_neighbour(point, 2, [point, (30.0, 20.0), (27.0, 20.0)]),
+            Some((27.0, 20.0))
+        );
+        assert_eq!(nearest_crossing_neighbour(point, 2, [point]), None);
+        assert_eq!(chebyshev_cells((1.0, 2.0), (4.0, -3.0)), 5.0);
     }
 }

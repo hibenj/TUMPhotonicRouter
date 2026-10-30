@@ -671,6 +671,10 @@ def _rust_verdict(**overrides: object) -> dict[str, object]:
         "partner_after_cells": 5.0,
         "required_margin_cells": 3,
         "required_after_cells": 2,
+        "required_spacing_cells": 5,
+        "nearest_same_route_cells": None,
+        "nearest_registered_cells": None,
+        "too_close_other": None,
         "footprint_blocked": False,
         "event_registered": True,
         "margins_from_grid": True,
@@ -715,6 +719,9 @@ def test_unified_verifier_reports_the_rust_verdict_instead_of_deciding():
     assert crossing["segment_b_margin_um"] == 5.0
     assert crossing["rust_verdict"]["reason"] == "legal"
     assert crossing["rust_verdict"]["event_registered"] is True
+    # Slice B-2: the spacing inputs travel with the verdict.
+    assert crossing["rust_verdict"]["required_spacing_cells"] == 5
+    assert crossing["rust_verdict"]["too_close_other"] is None
     # The footprint polygon is still built from the geometry for the
     # component placement.
     assert len(crossing["crossing_footprint_polygon_um"]) == 4
@@ -728,6 +735,8 @@ def test_unified_verifier_reports_the_rust_verdict_instead_of_deciding():
         ("margin_short_route_before", "route_before"),
         ("margin_short_route_after", "route_after"),
         ("margin_short_partner", "partner"),
+        ("too_close_same_route", None),
+        ("too_close_registered", None),
         ("footprint_blocked", None),
         ("missing_event", None),
     ],

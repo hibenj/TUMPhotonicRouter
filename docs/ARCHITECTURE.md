@@ -139,7 +139,7 @@ search, and the crossing search configuration, and it calls
 `self.search_engine.search(...)`. Nothing per attempt lives on the router
 struct any more: every knob a search needs arrives in its `SearchCall`. `crossing_reservation.rs` (2,830
 lines) owns crossing reservations, partner sets and the realized-crossing
-validation. `crossing_geometry.rs` (about 900 lines) owns the pure geometry used
+validation. `crossing_geometry.rs` (about 1,200 lines) owns the pure geometry used
 there (segment intersection, point-segment distance, parallel overlap,
 collinearity, centerline compression) and the one crossing-legality predicate
 (below). `endpoint_correction.rs` (1,295 lines)
@@ -158,11 +158,30 @@ half_size + bend_runout` on the GRID route (the compressed waypoints, on which a
 bend contributes its arms as straight cells) for the route's run before the
 crossing and both sides of the partner, `half_size` cells of pure straight after
 it (the search's straight-after debt, paid by straight primitives only), then
-`footprint_blocked` (a dynamic cell of a third net inside the element's
-`half_size` window) and `missing_event` (post-commit only: no registered
-`CrossingEvent` within 1.5 cells). The verdict is `Legal` or the first failing
-reason (`not_perpendicular`, `margin_short_{route_before,route_after,partner}`,
-`footprint_blocked`, `missing_event`). With the switch on, the search hook
+the spacing term (slice B-2): two crossing elements never share a grid cell --
+the candidate's reservation window, every cell within `half_size` of its centre
+on both axes (`[floor(c-h), ceil(c+h)]`, the window the reservations are built
+from), must be disjoint from the window of the nearest other crossing of the
+same route (`too_close_same_route`) and of the nearest crossing already
+registered on the map by other nets (`too_close_registered`; the partner's
+crossings with third nets among them); for grid-point centres this is a centre
+distance of `2 * half_size + 1` cells on one axis (5 cells = 10 um on the paper's
+2 um grid). The callers supply the neighbours
+(`crossing_geometry::nearest_crossing_neighbour`): the search hook knows this
+move's earlier intersections and the partner's registered elements
+(`CrossingSearchPartner::registered_crossing_centres`; the kernel's chain check
+keeps the windows of earlier moves disjoint, since the search state carries no
+crossing positions), the commit check and the post-commit assessment know the
+route's other intersections and the registered events. Then `footprint_blocked`
+(a dynamic cell of a third net inside the element's `half_size` window) and
+`missing_event` (post-commit only: no registered `CrossingEvent` within 1.5
+cells). The verdict is `Legal` or the first failing reason (`not_perpendicular`,
+`margin_short_{route_before,route_after,partner}`,
+`too_close_{same_route,registered}`, `footprint_blocked`, `missing_event`). The
+verdict records (`crossing_verdicts()`) are committed state like the events: a
+rip-up drops a net's records and the braid repair's rollback restores them with
+the events (slice B-2; left behind, the records of a discarded reroute surfaced
+as phantom crossings in the Python verifier). With the switch on, the search hook
 (`crossing_rules.rs`, `crossing_move_outcome_with_segments`), the commit check
 (`invalid_crossing_intersections_for_route`) and the post-commit validation
 (`unified_crossing_assessment`, which also registers the events and records

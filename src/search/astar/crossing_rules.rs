@@ -7,8 +7,8 @@
 //! behaviour change.
 
 use crate::engine::crossing_geometry::{
-    crossing_legality, grid_angle_direction, CrossingCandidate, CrossingLegalityRule,
-    CrossingVerdict, MarginSide,
+    crossing_legality, grid_angle_direction, nearest_crossing_neighbour, CrossingCandidate,
+    CrossingLegalityRule, CrossingNeighbour, CrossingVerdict, MarginSide,
 };
 use crate::obstacle_map::{pack_xy, CellKey, NetId, ObstacleMap};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
@@ -48,6 +48,14 @@ pub struct CrossingSearchPartner {
     /// search key (`crossed_mask`, one bit per budgeted partner, at most 64
     /// -- partners beyond that stay unbudgeted).
     pub single_discounted_crossing: bool,
+    /// Phase 4 slice B-2 (`unified_legality` only; empty otherwise): the
+    /// centres, in grid coordinates (the snapped cell the reservation is
+    /// built around), of the crossing elements already registered on THIS
+    /// partner with other nets. The unified predicate judges a candidate
+    /// crossing's window against the nearest of them (`TooClose {
+    /// Registered }`); the legacy path meets the same elements as static
+    /// reservation cells in `crossing_reservation_window_is_clear`.
+    pub registered_crossing_centres: Vec<(f64, f64)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1109,6 +1117,24 @@ pub(crate) fn record_unified_crossing_reject(
             record_perpendicular_crossing_reject(stats, crossing, partner_net_id, search_start);
             stats.crossing_reject_margin += 1;
         }
+        CrossingVerdict::TooClose {
+            other: CrossingNeighbour::SameRoute,
+            ..
+        } => {
+            // The legacy `reservation_overlap` check of two windows of one
+            // move.
+            record_perpendicular_crossing_reject(stats, crossing, partner_net_id, search_start);
+            stats.crossing_reject_reservation_overlap += 1;
+        }
+        CrossingVerdict::TooClose {
+            other: CrossingNeighbour::Registered,
+            ..
+        } => {
+            // The legacy path met the element's static reservation cells in
+            // `crossing_reservation_window_is_clear`.
+            record_perpendicular_crossing_reject(stats, crossing, partner_net_id, search_start);
+            stats.crossing_reject_unmatched_footprint += 1;
+        }
         CrossingVerdict::FootprintBlocked => {
             record_perpendicular_crossing_reject(stats, crossing, partner_net_id, search_start);
             stats.crossing_reject_unmatched_footprint += 1;
@@ -1415,6 +1441,12 @@ pub(crate) fn crossing_move_outcome_with_segments(
                             bend_runout_cells: crossing.bend_runout_cells,
                         };
                         let segment_is_terminal = route_segment_idx + 1 == primitive_segments.len();
+                        // Slice B-2: the same-route neighbours the hook
+                        // knows are this move's earlier intersections (the
+                        // kernel's chain check keeps the windows of earlier
+                        // moves disjoint; the search state carries no
+                        // crossing positions); the registered neighbours
+                        // are the partner's committed crossing elements.
                         let candidate = CrossingCandidate {
                             route_direction: grid_angle_direction(route_segment.angle),
                             partner_direction: grid_angle_direction(partner_segment.angle),
@@ -1430,6 +1462,19 @@ pub(crate) fn crossing_move_outcome_with_segments(
                             },
                             partner_before_cells: u * partner_segment.length,
                             partner_after_cells: (1.0 - u) * partner_segment.length,
+                            point: (x, y),
+                            nearest_same_route: nearest_crossing_neighbour(
+                                (x, y),
+                                crossing.crossing_half_size_cells,
+                                route_intersections.iter().map(
+                                    |existing: &CrossingRouteIntersection| (existing.x, existing.y),
+                                ),
+                            ),
+                            nearest_registered: nearest_crossing_neighbour(
+                                (x, y),
+                                crossing.crossing_half_size_cells,
+                                partner.registered_crossing_centres.iter().copied(),
+                            ),
                             footprint_blocked: !crossing_reservation_window_is_clear(
                                 obstacle_map,
                                 crossing.net_id,

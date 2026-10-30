@@ -32,6 +32,13 @@ impl PyPhotonicRouter {
         let base_target_terminal_bump_guards = self.committed_target_terminal_bump_guards.clone();
         let base_opened_cell_keys = self.committed_opened_cell_keys.clone();
         let base_crossing_events = self.crossing_events.clone();
+        // Slice B-2: the verdict records (`crossing_verdicts()`, filled under
+        // `unified_legality`) are state of the committed routes like the
+        // events and are restored with them. Left behind, the records of a
+        // discarded reroute surfaced in the Python verifier as crossings of
+        // routes that no longer exist (benes_32x32 contribution 1, net 851:
+        // 13 phantom crossings, three overlapping net 850's real ones).
+        let base_crossing_verdicts = self.crossing_verdicts.clone();
         let base_routes = batch.final_routes.clone();
 
         let ripup_start = native_batch_timer(collect_native_timing);
@@ -80,6 +87,7 @@ impl PyPhotonicRouter {
                 self.committed_target_terminal_bump_guards = base_target_terminal_bump_guards;
                 self.committed_opened_cell_keys = base_opened_cell_keys;
                 self.crossing_events = base_crossing_events;
+                self.crossing_verdicts = base_crossing_verdicts;
                 batch.final_routes = base_routes;
                 self.invalidate_meander_base_prefix();
                 return VictimRerouteOutcome::Failed;
@@ -167,6 +175,7 @@ impl PyPhotonicRouter {
                             base_target_terminal_bump_guards;
                         self.committed_opened_cell_keys = base_opened_cell_keys;
                         self.crossing_events = base_crossing_events;
+                        self.crossing_verdicts = base_crossing_verdicts;
                         batch.final_routes = base_routes;
                         self.invalidate_meander_base_prefix();
                         return VictimRerouteOutcome::Failed;
@@ -341,6 +350,7 @@ impl PyPhotonicRouter {
         let base_target_terminal_bump_guards = self.committed_target_terminal_bump_guards.clone();
         let base_opened_cell_keys = self.committed_opened_cell_keys.clone();
         let base_crossing_events = self.crossing_events.clone();
+        let base_crossing_verdicts = self.crossing_verdicts.clone();
         let base_routes = batch.final_routes.clone();
         let base_attempts = batch.attempts.len();
 
@@ -391,6 +401,7 @@ impl PyPhotonicRouter {
         self.committed_target_terminal_bump_guards = base_target_terminal_bump_guards;
         self.committed_opened_cell_keys = base_opened_cell_keys;
         self.crossing_events = base_crossing_events;
+        self.crossing_verdicts = base_crossing_verdicts;
         batch.final_routes = base_routes;
         batch.attempts.truncate(base_attempts);
         self.invalidate_meander_base_prefix();
@@ -700,6 +711,39 @@ mod tests {
             },
         ]);
         router.add_crossing_events(events);
+        // Slice B-2: a verdict record of the committed net 4 (as the
+        // unified validation leaves one) must survive the failed passes
+        // exactly like the events do -- the rip-up of net 4 drops it, the
+        // rollback restores it. Before the fix the restore forgot the
+        // records (benes_32x32 contribution 1: 13 phantom crossings).
+        let rule = CrossingLegalityRule {
+            half_size_cells: 2,
+            bend_runout_cells: 1,
+        };
+        router.crossing_verdicts.push(CrossingVerdictRecord {
+            net_id: vertical.net_id,
+            partner_net_id: diagonal.net_id,
+            point: (30.0, 30.0),
+            route_segment: Some(((30, 20), (30, 40))),
+            partner_segment: Some(((20, 20), (40, 40))),
+            candidate: CrossingCandidate {
+                route_direction: (0.0, 1.0),
+                partner_direction: (1.0, 1.0),
+                route_before_cells: 10.0,
+                route_after_cells: 10.0,
+                partner_before_cells: 10.0,
+                partner_after_cells: 10.0,
+                point: (30.0, 30.0),
+                nearest_same_route: None,
+                nearest_registered: None,
+                footprint_blocked: false,
+                event_registered: Some(true),
+            },
+            rule,
+            verdict: CrossingVerdict::NotPerpendicular,
+            margins_from_grid: true,
+        });
+        let events_before = router.crossing_events.len();
 
         let mut braid_failed_pairs: FxHashSet<(u64, u64)> = FxHashSet::default();
         let kept = router.run_braid_repair_passes(
@@ -715,6 +759,19 @@ mod tests {
             kept, 0,
             "net 4's own reroute cannot succeed via a plain search on this fixture, \
              so no pass can end keep=true"
+        );
+        assert_eq!(router.crossing_events.len(), events_before);
+        assert_eq!(
+            router.crossing_verdicts.len(),
+            1,
+            "the rollback restores the verdict records with the events"
+        );
+        assert_eq!(
+            (
+                router.crossing_verdicts[0].net_id,
+                router.crossing_verdicts[0].partner_net_id
+            ),
+            (vertical.net_id, diagonal.net_id)
         );
         assert_eq!(
             braid_failed_pairs,

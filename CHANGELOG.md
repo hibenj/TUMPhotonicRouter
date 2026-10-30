@@ -65,6 +65,31 @@ and freeze, changes no routing behaviour; the nine-cell paper reproduction
 
 ### Changed
 
+- The unified crossing-legality predicate enforces crossing-to-crossing spacing
+  (phase 4 slice B-2; switch off byte-identical, nine-cell gate reproduces). Two
+  crossing elements never share a grid cell: `crossing_legality` now tests the
+  candidate's reservation window (`[floor(c-h), ceil(c+h)]` on both axes, the
+  window the reservations are built from) against the nearest other crossing of
+  the same route and the nearest crossing registered by other nets, verdict
+  `CrossingVerdict::TooClose { other: SameRoute | Registered, have_cells,
+  need_cells }` (reasons `too_close_same_route` / `too_close_registered`,
+  `CrossingLegalityRule::required_spacing_cells = 2 * half_size + 1`, 5 cells =
+  10 um on the paper grid). `CrossingCandidate` carries the centre and the two
+  neighbours (`nearest_crossing_neighbour` picks them, overlapping windows first);
+  the search hook feeds this move's earlier intersections and the partner's
+  registered elements (`CrossingSearchPartner::registered_crossing_centres`,
+  filled under the switch), the commit check and the post-commit assessment the
+  route's other intersections and the registered events. `crossing_verdicts()`
+  records gain `required_spacing_cells`, `nearest_same_route_cells`,
+  `nearest_registered_cells`, `too_close_other`; `verify_repair` maps the two
+  reasons onto `crossing_footprint_overlap`. Fixed under the switch: the braid
+  repair's rollback restores the verdict records with the crossing events
+  (`try_braid_repair`, `try_ripup_single_victim_and_reroute_with`); before, the
+  records of a discarded reroute survived and the Python verifier, which reports
+  verdicts no event covers as their own records, placed phantom crossing
+  components for them (benes_32x32 contribution 1: 429 crossings instead of 416,
+  three `crossing_component_overlap` errors between net 851's phantoms and net
+  850's real crossings).
 - One meander module tree and one `MeanderPlanner` class (phase 6 slice C; no
   behaviour change: the nine-cell reproduction gate, the two-cell PLM gate and the
   thirteen PLM cells of `docs/plm_baseline.json` reproduce exactly). Rust:

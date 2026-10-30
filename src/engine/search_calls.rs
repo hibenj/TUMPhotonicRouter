@@ -361,6 +361,8 @@ impl PyPhotonicRouter {
                             .copied(),
                         crossing_loss_override: None,
                         single_discounted_crossing: false,
+                        registered_crossing_centres: self
+                            .registered_crossing_centres_on_partner(net_id, *partner_id),
                     })
             })
             .collect();
@@ -1602,6 +1604,7 @@ mod tests {
             target_terminal_bump_guard: None,
             crossing_loss_override: None,
             single_discounted_crossing: false,
+            registered_crossing_centres: Vec::new(),
         };
         let crossing_cfg = CrossingConfig {
             enabled: true,

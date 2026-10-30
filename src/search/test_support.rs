@@ -216,6 +216,7 @@ pub(crate) fn crossing_search_fixture() -> (
                 target_terminal_bump_guard: None,
                 crossing_loss_override: None,
                 single_discounted_crossing: false,
+                registered_crossing_centres: Vec::new(),
             },
         ],
         crossing_half_size_cells: 0,
