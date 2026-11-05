@@ -120,6 +120,18 @@ def configure_router_and_grid(
         )
     if settings.routing_window_scale is not None:
         state.astar_cfg.routing_window_scale = float(settings.routing_window_scale)
+    # Speed pass S4 (2026-11-05): the window ladder's length and its
+    # full-grid fallback, env-only strategy switches; unset keeps the
+    # kernel's defaults (3 expansions, fallback on).
+    search_tuning = settings.config.search
+    if search_tuning.routing_window_max_expansions is not None:
+        state.astar_cfg.routing_window_max_expansions = int(
+            search_tuning.routing_window_max_expansions
+        )
+    if search_tuning.routing_window_fallback_full_grid is not None:
+        state.astar_cfg.routing_window_fallback_full_grid = bool(
+            search_tuning.routing_window_fallback_full_grid
+        )
 
     state.route_clearance_um = max(
         0.0,

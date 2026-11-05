@@ -14,6 +14,17 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `SearchTuning.routing_window_max_expansions` /
+  `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS` and
+  `SearchTuning.routing_window_fallback_full_grid` /
+  `PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID` (speed pass S4, both
+  unset by default = the kernel's ladder of 3 expansions with the full-grid
+  fallback): env-only strategy switches for the window ladder, with the
+  ablation variants `window0_only` and `window0_full_budget`. The ADEPT 64
+  lidar-pure per-window log showed every success of every attempt kind in
+  window 0 and the later windows plus the fallback only burning the budget
+  tail of attempts already lost (about 20 % of attempt time); not exact, so
+  the 27-cell table decides.
 - `NegotiationConfig.first_attempt_full_budget` /
   `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET` (speed pass B1,
   default off): a never-failed net's first attempt runs at the retry budget

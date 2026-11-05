@@ -264,6 +264,21 @@ def nonnegative_int(name: str) -> Callable[[str], int | None]:
     return parse
 
 
+def zero_one_or_unset(name: str) -> Callable[[str], bool | None]:
+    """Parse `0` / `1` to a bool; a blank (after `.strip()`) value is "unset"
+    (`None`); any other value raises."""
+
+    def parse(raw: str) -> bool | None:
+        text = raw.strip()
+        if not text:
+            return None
+        if text in ("0", "1"):
+            return text == "1"
+        raise ValueError(f"{name} must be 0 or 1")
+
+    return parse
+
+
 def dense_fanout_min_ports_override(name: str) -> Callable[[str], int | None]:
     """Parse `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS`: blank (after
     `.strip()`) is "unset" (`None`); an unparseable value propagates
@@ -636,6 +651,16 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
     EnvVar(_PREFIX + "MIN_BEND_WEIGHT", ("search", "min_bend_weight"), plain_float),
     EnvVar(_PREFIX + "HEAP_TIE_BREAKER", ("search", "heap_tie_breaker"), heap_tie_breaker_override),
     EnvVar(
+        _PREFIX + "ROUTING_WINDOW_MAX_EXPANSIONS",
+        ("search", "routing_window_max_expansions"),
+        nonnegative_int(_PREFIX + "ROUTING_WINDOW_MAX_EXPANSIONS"),
+    ),
+    EnvVar(
+        _PREFIX + "ROUTING_WINDOW_FALLBACK_FULL_GRID",
+        ("search", "routing_window_fallback_full_grid"),
+        zero_one_or_unset(_PREFIX + "ROUTING_WINDOW_FALLBACK_FULL_GRID"),
+    ),
+    EnvVar(
         _PREFIX + "LONG_STRAIGHT_EXEMPT_DENSE_FANOUT",
         ("search", "long_straight_exempt_dense_fanout"),
         exact_one,
@@ -779,8 +804,8 @@ def apply_env_overlay(config: object, environ: Mapping[str, str] | None = None) 
 
 __all__ = [
     "ENV_OVERLAY",
-    "SPECIALLY_HANDLED_NAMES",
     "EnvVar",
+    "SPECIALLY_HANDLED_NAMES",
     "apply_env_overlay",
     "cell_pair",
     "cell_pairs_semicolon",
@@ -813,4 +838,5 @@ __all__ = [
     "usize_or_default",
     "usize_positive",
     "zero_one_crossing_budget",
+    "zero_one_or_unset",
 ]

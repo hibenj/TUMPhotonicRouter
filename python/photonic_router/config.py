@@ -220,6 +220,14 @@ class SearchTuning:
     #: pre-placed crossing grids are enabled and this field is still
     #: `None`; the site tests `is True`.
     long_straight_exempt_dense_fanout: bool | None = None
+    #: `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS`: non-negative int, `None`
+    #: = unset (the kernel's default ladder, 3 expansions). Strategy switch
+    #: (speed pass S4, 2026-11-05): `0` searches window 0 only.
+    routing_window_max_expansions: int | None = None
+    #: `PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID`: `0` or `1`, `None`
+    #: = unset (the kernel's default, on). Speed pass S4: `0` drops the
+    #: full-grid fallback after the ladder.
+    routing_window_fallback_full_grid: bool | None = None
 
 
 @dataclass(frozen=True)

@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 79 `RoutingConfig` fields (79 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 165 in total.
+Totals: 81 `RoutingConfig` fields (81 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 167 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -177,6 +177,8 @@ Mirrors the search-tuning env reads of `python/photonic_router/routing/route_rus
 | `min_bend_weight` | `float` | `12.0` | `PHOTONIC_ROUTER_MIN_BEND_WEIGHT` | `PHOTONIC_ROUTER_MIN_BEND_WEIGHT`: float, default 12.0. |
 | `heap_tie_breaker` | `str \| None` | `None` | `PHOTONIC_ROUTER_HEAP_TIE_BREAKER` | `PHOTONIC_ROUTER_HEAP_TIE_BREAKER`: only exactly `"smaller_g"` or `"larger_g"` override; any other value (including unset) means `None`, and the site computes its own default. |
 | `long_straight_exempt_dense_fanout` | `bool \| None` | `None` | `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT` | `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT`: `== "1"`. `None` = unset -- SELF-SET by `routing_flow.py` to True when pre-placed crossing grids are enabled and this field is still `None`; the site tests `is True`. |
+| `routing_window_max_expansions` | `int \| None` | `None` | `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS` | `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS`: non-negative int, `None` = unset (the kernel's default ladder, 3 expansions). Strategy switch (speed pass S4, 2026-11-05): `0` searches window 0 only. |
+| `routing_window_fallback_full_grid` | `bool \| None` | `None` | `PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID` | `PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID`: `0` or `1`, `None` = unset (the kernel's default, on). Speed pass S4: `0` drops the full-grid fallback after the ladder. |
 
 ### `diagnostics` -- `FlowDiagnostics`
 
