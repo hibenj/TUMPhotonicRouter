@@ -13,6 +13,7 @@
 //! No default, constant or floating-point operation order changes from
 //! the pre-Slice-3 inline code.
 
+#[cfg(test)]
 use crate::obstacle_map::pack_xy;
 use crate::primitives::{Primitive, DIRECTIONS};
 use crate::search::astar::config::AStarConfig;
@@ -39,6 +40,62 @@ impl PrimitiveSearchMetadata {
             base_step_cost: length_cost(primitive) + bend_cost(primitive, bend_weight),
         }
     }
+}
+
+/// The deduplicated offsets `primitive_lateral_congestion` visits for a
+/// footprint, in its visiting order (footprint cell, then distance, then
+/// side a before side b). Same cell set, so the blocked count is identical.
+pub(crate) fn lateral_band_offsets(
+    footprint: &[(i32, i32)],
+    angle: u8,
+    radius_cells: i32,
+) -> Vec<(i32, i32)> {
+    if radius_cells <= 0 || footprint.is_empty() {
+        return Vec::new();
+    }
+    let side_a = DIRECTIONS[((angle + 2) % 8) as usize];
+    let side_b = DIRECTIONS[((angle + 6) % 8) as usize];
+    let mut seen: FxHashSet<(i32, i32)> = FxHashSet::default();
+    let mut offsets = Vec::new();
+    for (dx, dy) in footprint.iter().copied() {
+        for distance in 1..=radius_cells {
+            for side in [side_a, side_b] {
+                let offset = (
+                    dx.saturating_add(side.0.saturating_mul(distance)),
+                    dy.saturating_add(side.1.saturating_mul(distance)),
+                );
+                if seen.insert(offset) {
+                    offsets.push(offset);
+                }
+            }
+        }
+    }
+    offsets
+}
+
+/// Blocked cells of the precomputed lateral band at one origin: the count
+/// `primitive_lateral_congestion` produces, over the offsets
+/// `lateral_band_offsets` listed.
+#[inline]
+pub(crate) fn lateral_congestion_from_band(
+    grid: &DenseRoutingGrid,
+    origin_x: i32,
+    origin_y: i32,
+    lateral_cells: &[(i32, i32)],
+) -> u32 {
+    let mut count = 0u32;
+    for (dx, dy) in lateral_cells.iter().copied() {
+        let Some(x) = origin_x.checked_add(dx) else {
+            continue;
+        };
+        let Some(y) = origin_y.checked_add(dy) else {
+            continue;
+        };
+        if grid.contains(x, y) && grid.is_blocked(x, y) {
+            count = count.saturating_add(1);
+        }
+    }
+    count
 }
 
 /// The primitive's raw path length in micrometers, full weight in the
@@ -90,7 +147,7 @@ pub(crate) fn step_cost(
     origin_y: i32,
     footprint: &[(i32, i32)],
     profile: &FootprintCollisionProfile,
-    start_angle: u8,
+    lateral_cells: &[(i32, i32)],
     is_straight: bool,
 ) -> f64 {
     let history_cost = if config.history_weight > 0.0 {
@@ -111,13 +168,11 @@ pub(crate) fn step_cost(
         && config.proactive_congestion_radius_cells > 0
         && is_straight
     {
-        f64::from(primitive_lateral_congestion(
+        f64::from(lateral_congestion_from_band(
             grid,
             origin_x,
             origin_y,
-            footprint,
-            start_angle,
-            config.proactive_congestion_radius_cells,
+            lateral_cells,
         )) * config.proactive_congestion_weight
     } else {
         0.0
@@ -335,7 +390,9 @@ pub(crate) fn primitive_footprint_congestion_with_profile(
 /// every footprint cell, deduplicated. Moved from
 /// `DenseRoutingGrid::primitive_lateral_congestion` (Milestone 3, Slice
 /// 3); no behaviour change.
-#[inline]
+/// Reference implementation kept for the equivalence test of the
+/// precomputed band (`lateral_band_matches_the_per_move_scan`).
+#[cfg(test)]
 pub(crate) fn primitive_lateral_congestion(
     grid: &DenseRoutingGrid,
     origin_x: i32,
@@ -498,8 +555,9 @@ mod tests {
 
         // Hand computed: carry(0) + base(10.0) + history(0) +
         // long_straight(congestion 10 * weight 0.5 = 5.0) + proactive(0).
+        let band = lateral_band_offsets(&footprint, 0, config.proactive_congestion_radius_cells);
         let result = step_cost(
-            &grid, &config, 0.0, 10.0, 2, 2, &footprint, &profile, 0, true,
+            &grid, &config, 0.0, 10.0, 2, 2, &footprint, &profile, &band, true,
         );
         assert_eq!(result, 15.0);
     }
@@ -526,8 +584,9 @@ mod tests {
 
         // Hand computed: only the north cell is blocked within radius 1,
         // south is not, so the lateral count is 1; term = 1 * 2.5 = 2.5.
+        let band = lateral_band_offsets(&footprint, 0, config.proactive_congestion_radius_cells);
         let result = step_cost(
-            &grid, &config, 0.0, 0.0, 2, 2, &footprint, &profile, 0, true,
+            &grid, &config, 0.0, 0.0, 2, 2, &footprint, &profile, &band, true,
         );
         assert_eq!(result, 2.5);
         assert_eq!(
@@ -539,8 +598,53 @@ mod tests {
         // the same blocked neighbour (is_straight gates the term, as the
         // inline block did with `primitive_class_is_straight`).
         let bend_result = step_cost(
-            &grid, &config, 0.0, 0.0, 2, 2, &footprint, &profile, 0, false,
+            &grid, &config, 0.0, 0.0, 2, 2, &footprint, &profile, &band, false,
         );
         assert_eq!(bend_result, 0.0);
+    }
+
+    /// The precomputed band counts exactly what the per-move scan counted,
+    /// for every heading, radius 1..=4, L-shaped and diagonal footprints,
+    /// on a grid with scattered blockers (speed pass 2026-10-30).
+    #[test]
+    fn lateral_band_matches_the_per_move_scan() {
+        let mut map = ObstacleMap::new(24, 24);
+        for (x, y) in [
+            (3, 4),
+            (5, 5),
+            (7, 9),
+            (9, 9),
+            (10, 12),
+            (12, 7),
+            (13, 13),
+            (15, 6),
+            (6, 15),
+            (11, 11),
+        ] {
+            map.add_static_cell(x, y);
+        }
+        let bounds = whole_map_bounds(&map);
+        let grid =
+            DenseRoutingGrid::from_obstacle_map(&map, bounds, None, 1_000, false, false, false)
+                .expect("grid");
+        let footprints: [&[(i32, i32)]; 3] = [
+            &[(0, 0), (1, 0), (2, 0), (3, 0)],
+            &[(0, 0), (1, 0), (2, 0), (2, 1), (2, 2)],
+            &[(0, 0), (1, 1), (2, 2), (3, 3)],
+        ];
+        for footprint in footprints {
+            for angle in 0..8u8 {
+                for radius in 1..=4 {
+                    let band = lateral_band_offsets(footprint, angle, radius);
+                    for (ox, oy) in [(2, 2), (8, 8), (11, 10), (0, 0), (20, 21)] {
+                        assert_eq!(
+                            lateral_congestion_from_band(&grid, ox, oy, &band),
+                            primitive_lateral_congestion(&grid, ox, oy, footprint, angle, radius),
+                            "footprint {footprint:?} angle {angle} radius {radius} origin ({ox},{oy})"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

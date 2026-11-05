@@ -852,17 +852,23 @@ pub(crate) fn unified_candidate_hits_active_local_crossing_reservation(
     } else {
         return false;
     }
+    // The candidate's witness cells (the current cell excluded). A handful
+    // per primitive, so a membership test by linear scan beats building a
+    // hash set per candidate (speed pass 2026-10-30: this function was 11 %
+    // of a lidar-pure run, most of it the set); same keys, same answer.
     let current_key = pack_xy(state.x, state.y);
-    let mut candidate_keys = FxHashSet::default();
-    for witness in &primitive_crossing.witnesses {
-        let key = pack_xy(state.x + witness.offset.0, state.y + witness.offset.1);
-        if key != current_key {
-            candidate_keys.insert(key);
-        }
-    }
-    if candidate_keys.is_empty() {
+    let witness_keys = primitive_crossing
+        .witnesses
+        .iter()
+        .map(|witness| pack_xy(state.x + witness.offset.0, state.y + witness.offset.1));
+    let candidate_count = witness_keys
+        .clone()
+        .filter(|key| *key != current_key)
+        .count();
+    if candidate_count == 0 {
         return false;
     }
+    let is_candidate = |key: CellKey| key != current_key && witness_keys.clone().any(|w| w == key);
 
     let mut cursor = current;
     loop {
@@ -873,10 +879,18 @@ pub(crate) fn unified_candidate_hits_active_local_crossing_reservation(
         let Some(node) = extended_nodes.get(ext_idx) else {
             return false;
         };
-        for key in &node.active_local_reservation_keys {
-            if candidate_keys.contains(key) {
-                return true;
-            }
+        // `chain_has_reservations` is cumulative over the parent chain, so
+        // a node without it has no reservation above it either: the rest
+        // of the walk could never match.
+        if !node.chain_has_reservations {
+            return false;
+        }
+        if node
+            .active_local_reservation_keys
+            .iter()
+            .any(|key| is_candidate(*key))
+        {
+            return true;
         }
         cursor = match node.parent {
             UnifiedParentRef::Dense(idx) => UnifiedOpenRef::Dense(idx),
@@ -921,6 +935,10 @@ pub(crate) fn unified_outcome_windows_overlap_own_reservations(
         let Some(node) = extended_nodes.get(ext_idx) else {
             return false;
         };
+        if !node.chain_has_reservations {
+            // Cumulative flag: nothing above this node carries a key.
+            return false;
+        }
         if hits(&node.active_local_reservation_keys) || hits(&node.pending_local_reservation_keys) {
             return true;
         }

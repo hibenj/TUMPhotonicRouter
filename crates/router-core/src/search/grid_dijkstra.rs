@@ -127,7 +127,11 @@ fn run_dijkstra(
     )?;
 
     let heuristic = SearchHeuristic::zero(target, primitives);
-    let tables = PrimitiveTables::build(primitives, config.bend_weight);
+    let tables = PrimitiveTables::build(
+        primitives,
+        config.bend_weight,
+        config.proactive_congestion_radius_cells,
+    );
     let accepted_target_angles = target_angle_acceptance(target, config);
     let move_context = MoveContext {
         dense_grid: &dense_grid,
@@ -214,6 +218,7 @@ fn run_dijkstra(
             &tables.metadata[angle],
             &tables.profiles[angle],
             &tables.crossings[angle],
+            &tables.lateral[angle],
             state,
             target,
             primitives.grid_size_um(),

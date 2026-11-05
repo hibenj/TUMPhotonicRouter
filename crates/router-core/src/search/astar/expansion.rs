@@ -326,6 +326,8 @@ pub(crate) struct CandidateMove<'a> {
     pub(crate) metadata: PrimitiveSearchMetadata,
     pub(crate) profile: &'a FootprintCollisionProfile,
     pub(crate) crossing: &'a PrimitiveCrossingMetadata,
+    /// `PrimitiveTables::lateral` entry of this primitive.
+    pub(crate) lateral: &'a [(i32, i32)],
     /// `metadata.transition_class`, the index of every per-class counter.
     pub(crate) class: usize,
     pub(crate) class_is_straight: bool,
@@ -343,6 +345,7 @@ pub(crate) struct CandidateMoves<'a> {
     metadata: &'a [PrimitiveSearchMetadata],
     profiles: &'a [FootprintCollisionProfile],
     crossing_metadata: &'a [PrimitiveCrossingMetadata],
+    lateral: &'a [Vec<(i32, i32)>],
 }
 
 impl<'a> Iterator for CandidateMoves<'a> {
@@ -360,6 +363,7 @@ impl<'a> Iterator for CandidateMoves<'a> {
             metadata,
             profile: &self.profiles[idx],
             crossing: &self.crossing_metadata[idx],
+            lateral: &self.lateral[idx],
             class: metadata.transition_class,
             class_is_straight: primitive_class_is_straight(metadata.transition_class),
         })
@@ -372,6 +376,7 @@ pub(crate) fn candidate_moves<'a>(
     metadata: &'a [PrimitiveSearchMetadata],
     profiles: &'a [FootprintCollisionProfile],
     crossing_metadata: &'a [PrimitiveCrossingMetadata],
+    lateral: &'a [Vec<(i32, i32)>],
     state: State,
     target: State,
     grid_size_um: f64,
@@ -387,6 +392,7 @@ pub(crate) fn candidate_moves<'a>(
         metadata,
         profiles,
         crossing_metadata,
+        lateral,
     }
 }
 
@@ -877,7 +883,7 @@ pub(crate) fn push_or_improve_dense<H: CrossingLegalityHook>(
         state.y,
         &primitive.footprint,
         candidate.profile,
-        primitive.start_angle,
+        candidate.lateral,
         candidate.class_is_straight,
     );
     let tentative_g = current_g + step_cost;
@@ -988,7 +994,7 @@ pub(crate) fn push_or_improve_extended<H: CrossingLegalityHook>(
         state.y,
         &primitive.footprint,
         candidate.profile,
-        primitive.start_angle,
+        candidate.lateral,
         candidate.class_is_straight,
     ) + extra_cost;
     let tentative_g = current_g + step_cost;
@@ -1120,6 +1126,13 @@ pub(crate) struct PrimitiveTables<'a> {
     pub(crate) metadata: Vec<Vec<PrimitiveSearchMetadata>>,
     pub(crate) profiles: Vec<Vec<FootprintCollisionProfile>>,
     pub(crate) crossings: Vec<Vec<PrimitiveCrossingMetadata>>,
+    /// The proactive lateral-congestion band per primitive: every footprint
+    /// cell shifted 1..=radius cells to either side of the start heading,
+    /// deduplicated. Precomputed once so `step_cost` counts blocked cells
+    /// over a fixed list instead of rebuilding the band and a hash set per
+    /// move (speed pass 2026-10-30; same cells, same count). Empty lists
+    /// when the radius is 0.
+    pub(crate) lateral: Vec<Vec<Vec<(i32, i32)>>>,
     /// Angle-preserving straight primitives per angle, longest first,
     /// used by the eager post-crossing completion chain. Longest-
     /// fitting-first matches the decomposition the old pending-state
@@ -1130,7 +1143,11 @@ pub(crate) struct PrimitiveTables<'a> {
 }
 
 impl<'a> PrimitiveTables<'a> {
-    pub(crate) fn build(primitives: &'a PrimitiveLibrary, bend_weight: f64) -> Self {
+    pub(crate) fn build(
+        primitives: &'a PrimitiveLibrary,
+        bend_weight: f64,
+        proactive_congestion_radius_cells: i32,
+    ) -> Self {
         let buckets: [&[Primitive]; 8] =
             std::array::from_fn(|angle| primitives.get_primitives_for_angle(angle as u8));
         let metadata: Vec<Vec<PrimitiveSearchMetadata>> = buckets
@@ -1159,6 +1176,21 @@ impl<'a> PrimitiveTables<'a> {
             .iter()
             .map(|bucket| bucket.iter().map(primitive_crossing_metadata).collect())
             .collect();
+        let lateral: Vec<Vec<Vec<(i32, i32)>>> = buckets
+            .iter()
+            .map(|bucket| {
+                bucket
+                    .iter()
+                    .map(|primitive| {
+                        cost::lateral_band_offsets(
+                            &primitive.footprint,
+                            primitive.start_angle,
+                            proactive_congestion_radius_cells,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
         let straights_per_angle: [Vec<(usize, i32)>; 8] = std::array::from_fn(|angle| {
             let mut straights: Vec<(usize, i32)> = buckets[angle]
                 .iter()
@@ -1177,6 +1209,7 @@ impl<'a> PrimitiveTables<'a> {
             metadata,
             profiles,
             crossings,
+            lateral,
             straights_per_angle,
         }
     }
@@ -1272,7 +1305,7 @@ pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
         state.y,
         &primitive.footprint,
         profile,
-        primitive.start_angle,
+        candidate.lateral,
         candidate.class_is_straight,
     ) + extra_cost;
     let first_parent = match current_ref {
@@ -1435,7 +1468,7 @@ pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
             chain_state.y,
             &step_primitive.footprint,
             step_profile,
-            step_primitive.start_angle,
+            &tables.lateral[pending_angle][step_idx],
             true,
         ) + step_extra_cost;
         let step_extension = CrossingExtension::from_outcome(&step_outcome);
@@ -1543,6 +1576,7 @@ mod tests {
         metadata: Vec<PrimitiveSearchMetadata>,
         profiles: Vec<FootprintCollisionProfile>,
         crossings: Vec<PrimitiveCrossingMetadata>,
+        lateral: Vec<Vec<(i32, i32)>>,
     }
 
     fn expansion_tables(
@@ -1561,6 +1595,9 @@ mod tests {
                 .map(|primitive| FootprintCollisionProfile::from_footprint(&primitive.footprint))
                 .collect(),
             crossings: bucket.iter().map(primitive_crossing_metadata).collect(),
+            // Radius 0 in these fixtures: the proactive term is off, so the
+            // band is empty exactly like the per-move scan was skipped.
+            lateral: bucket.iter().map(|_| Vec::new()).collect(),
         }
     }
 
@@ -1616,6 +1653,7 @@ mod tests {
             &tables.metadata,
             &tables.profiles,
             &tables.crossings,
+            &tables.lateral,
             state,
             target,
             primitives.grid_size_um(),
@@ -1674,6 +1712,7 @@ mod tests {
             &tables.metadata,
             &tables.profiles,
             &tables.crossings,
+            &tables.lateral,
             state,
             target,
             primitives.grid_size_um(),
@@ -1989,6 +2028,7 @@ mod tests {
             &tables.metadata,
             &tables.profiles,
             &tables.crossings,
+            &tables.lateral,
             state,
             target,
             primitives.grid_size_um(),
@@ -2164,6 +2204,7 @@ mod tests {
                 &tables.metadata,
                 &tables.profiles,
                 &tables.crossings,
+                &tables.lateral,
                 state,
                 context.target,
                 primitives.grid_size_um(),
@@ -2249,7 +2290,11 @@ mod tests {
             let mut chain_stats = RouteSearchStats::default();
             let completed = complete_crossing_corridor(
                 &context,
-                &PrimitiveTables::build(&primitives, config.bend_weight),
+                &PrimitiveTables::build(
+                    &primitives,
+                    config.bend_weight,
+                    config.proactive_congestion_radius_cells,
+                ),
                 &mut extended_nodes,
                 state,
                 100.0,
@@ -2317,6 +2362,7 @@ mod tests {
             &tables.metadata,
             &tables.profiles,
             &tables.crossings,
+            &tables.lateral,
             state,
             target,
             primitives.grid_size_um(),

@@ -497,7 +497,11 @@ pub(crate) fn run<H: CrossingLegalityHook>(
     )?;
     let search_heuristic = SearchHeuristic::new(target, primitives, config);
 
-    let tables = PrimitiveTables::build(primitives, config.bend_weight);
+    let tables = PrimitiveTables::build(
+        primitives,
+        config.bend_weight,
+        config.proactive_congestion_radius_cells,
+    );
     let target_tolerance = config.target_tolerance_cells.max(0);
     let accepted_target_angles = target_angle_acceptance(target, config);
     // Everything a single move's legality check reads that never
@@ -533,8 +537,14 @@ pub(crate) fn run<H: CrossingLegalityHook>(
     // structures cost two probes per touch plus rehash growth from empty
     // (measured ~10% of kernel time). Pre-sized to skip the growth
     // ladder; semantics identical.
+    // Capacity from the window: in lidar-pure nearly every touched state
+    // is extended, and growing from 4096 by doubling cost 5 % of a run in
+    // rehashes (perf 2026-10-30). One eighth of the state count (one
+    // heading per cell) is a safe first size, capped so a full-grid window
+    // cannot reserve gigabytes; the map still grows when it must.
+    let extended_capacity = (storage.state_count() / 8).clamp(4096, 1 << 22);
     let mut extended_state: FxHashMap<(State, CrossingExtension), (f64, bool)> =
-        FxHashMap::with_capacity_and_hasher(4096, Default::default());
+        FxHashMap::with_capacity_and_hasher(extended_capacity, Default::default());
 
     // Search-failure diagnosis (owner request 2026-09-01, after a failed
     // search's "why" -- proven-empty reachable space vs iteration cap vs
@@ -826,6 +836,7 @@ pub(crate) fn run<H: CrossingLegalityHook>(
             primitive_metadata,
             footprint_profiles,
             crossing_metadata,
+            &tables.lateral[angle],
             state,
             target,
             primitives.grid_size_um(),

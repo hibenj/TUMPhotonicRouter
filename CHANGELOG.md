@@ -66,6 +66,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Speed pass A3 (phase 9): three exact-preserving kernel fixes found by
+  `perf` on Benes 16x16 lidar-pure. The proactive lateral-congestion band is
+  precomputed per primitive (`PrimitiveTables::lateral`) instead of rebuilt
+  with a hash set per straight move; the two reservation parent-chain walks
+  stop at the first node without `chain_has_reservations` and test the
+  witness keys by linear scan instead of building a hash set per candidate;
+  the extended-state map is sized from the window instead of growing from
+  4096. Same cells, same membership tests, same map semantics; the nine-cell
+  gate is exact and Benes 16x16 lidar-pure drops from 318 s to 182 s on the
+  workstation under equal load (identical attempts and simple-route counts).
 - Release documentation and metadata (phase 8 slice D; documentation only, no
   code or behaviour change: nine-cell gate exact). `README.md` rewritten for a
   user (what the router does, install, quick start, the 27-cell DATE 2027 table
