@@ -16,6 +16,11 @@ Each is routed with its own `[flags]` table in `benchmarks/<bench>.toml` (the ca
 true --path-length-match-outputs true --include-heater-obstacles true
 --electrical-routing true --waveguide-clearance-um 3.0 --crossings false`.
 
+Path-length matching with the crossing-aware search on is not a supported
+combination (owner decision 10, 2026-11-05): every stable configuration runs
+`--crossings false`, the flow prints a warning when both are requested, and no
+PLM cell is pinned with crossings on.
+
 `docs/plm_baseline.json` holds, per benchmark, the quantities the gate pins:
 
 | quantity | source | compared |

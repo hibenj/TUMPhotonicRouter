@@ -87,7 +87,7 @@ def route_match_and_realize(
     *,
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
-    path_length_allow_residual: bool = False,
+    path_length_declared_unmatched_groups: tuple[str, ...] = (),
     path_length_output_scope: str = "all",
     input_ports_by_component: dict[str, tuple[str, ...]] | None = None,
     node_types: dict[str, str] | None = None,
@@ -404,12 +404,15 @@ def route_match_and_realize(
             analysis_info["path_length_acceptance"] = acceptance_summary
             if not acceptance_summary["passed"]:
                 failure = format_path_length_acceptance_failure(acceptance_summary)
-                if not path_length_allow_residual:
-                    raise RuntimeError(failure)
-                # owner's rule 2026-10-07: the run finishes and reports the
-                # residuals (SUMMARY plm_over_tolerance), the design may be
-                # unbalanced on purpose
-                print(f"      - WARNING: {failure} (--path-length-allow-residual)")
+                declared = frozenset(path_length_declared_unmatched_groups)
+                undeclared = _undeclared_failed_groups(acceptance_summary, declared)
+                analysis_info["path_length_declared_unmatched_groups"] = sorted(declared)
+                if undeclared:
+                    raise RuntimeError(f"{failure} Undeclared group(s): {', '.join(undeclared)}.")
+                # Decision 11 (2026-11-05): the benchmark declares the groups it
+                # leaves unmatched on purpose; the run finishes and reports them
+                # (SUMMARY plm_over_tolerance).
+                print(f"      - WARNING: {failure} (declared unmatched groups)")
 
     if debug_artifacts.realization_grid_spec is None:
         raise RuntimeError("Missing realization grid spec from routing phase.")
@@ -523,3 +526,23 @@ def static_fanout_anchors_um(
         spec: (float(anchor.center_um[0]), float(anchor.center_um[1]))
         for spec, anchor in state.fanout_anchor_by_port_spec.items()
     }
+
+
+def _undeclared_failed_groups(
+    acceptance_summary: dict[str, object], declared: frozenset[str]
+) -> list[str]:
+    """Node names of the groups the acceptance failed that the benchmark did not
+    declare unmatched (decision 11): the realized-spread failures and the
+    residual failures alike."""
+    names: list[str] = []
+    for key in ("failed_groups", "realized_failed_groups"):
+        groups = acceptance_summary.get(key, [])
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            name = str(group.get("node_name", ""))
+            if name not in declared and name not in names:
+                names.append(name)
+    return names

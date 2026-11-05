@@ -259,8 +259,13 @@ stage, `flow_optical.py`, calls) continues after the session when
    `MeanderInsertionReport` of `MeanderEdgeReport`s, stored in the GDS meta
    info as `meander_insertion_report`. `plm/path_length_diagnostics.py` and
    `flow_plm.py` check acceptance (a 1 nm tolerance on a group's realized
-   spread); `--path-length-allow-residual true` finishes with residuals
-   reported (`plm_over_tolerance` in the SUMMARY) instead of failing.
+   spread). Groups a benchmark declares unmatched on purpose
+   (`--path-length-declared-unmatched-groups`, decision 11 of 2026-11-05) are
+   reported (`plm_over_tolerance` in the SUMMARY) instead of failing the run;
+   a residual in any other group fails it. Path-length matching with the
+   crossing-aware search on is not a supported combination (decision 10):
+   every stable configuration runs crossings off, and the flow warns when
+   both are requested.
 
 The timers and per-candidate attempts (`MeanderPlanningProfile`) exist only
 under `--debug-meanders`; no SUMMARY token or acceptance decision depends on

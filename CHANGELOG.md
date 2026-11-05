@@ -84,6 +84,23 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Path-length matching, phase 6 slice D (owner decisions 10 to 13,
+  2026-11-05). Decision 11: `--path-length-allow-residual BOOL` is replaced by
+  `--path-length-declared-unmatched-groups NAMES`
+  (`PathLengthMatchingOptions.path_length_declared_unmatched_groups`): a
+  benchmark names the groups it leaves unmatched on purpose, a residual there
+  is reported (`plm_over_tolerance`) and the run finishes, a residual in any
+  other group fails the run (before, the flag accepted every residual).
+  Decision 12: the `RegisteredMeanderPlanner` trait and its only
+  implementation `RustRegisteredMeanderPlanner` (310 lines, no production
+  caller) are deleted; the free functions in `meander/plan.rs` are the
+  planner. Decision 10: path-length matching with the crossing-aware search on
+  is documented as unsupported and the flow warns when both are requested.
+  Decision 13 (feedback reroute on `no_candidate`) is not built: none of the
+  13 pinned PLM cells reaches `no_candidate`, so there is no case to measure
+  it on; it stays a proposed item with its first measurement (a cell that
+  provokes `no_candidate`, e.g. a reduced meander height) in the analysis.
+  PLM gate exact.
 - Crossing legality is one predicate, without a switch (owner decision
   2026-11-05 on the 27-cell ablation of phase 4 slice B: 20 cells identical,
   crossings never increase, ADEPT 64x64 baseline 217 -> 211 crossings with the

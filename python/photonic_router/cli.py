@@ -237,14 +237,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--path-length-allow-residual",
-        type=_parse_bool_flag,
-        default=False,
-        metavar="BOOL",
+        "--path-length-declared-unmatched-groups",
+        type=str,
+        default="",
+        metavar="NAMES",
         help=(
-            "Finish a run whose path-length matching leaves residual mismatches "
-            "and report them (SUMMARY plm_over_tolerance) instead of failing "
-            "(default: false)."
+            "Comma-separated node names of groups the design leaves unmatched on "
+            "purpose: a residual there is reported (SUMMARY plm_over_tolerance) "
+            "instead of failing the run; a residual in any other group fails it "
+            "(default: none; replaces --path-length-allow-residual)."
         ),
     )
     parser.add_argument(
@@ -818,7 +819,11 @@ def _flow_options(args: argparse.Namespace) -> FlowOptions:
         path_length=PathLengthMatchingOptions(
             enable_path_length_matching=args.path_length_matching,
             path_length_match_outputs=args.path_length_match_outputs,
-            path_length_allow_residual=args.path_length_allow_residual,
+            path_length_declared_unmatched_groups=tuple(
+                name.strip()
+                for name in str(args.path_length_declared_unmatched_groups).split(",")
+                if name.strip()
+            ),
             path_length_output_scope=args.path_length_output_scope,
             path_length_meander_height_um=args.path_length_meander_height_um,
         ),

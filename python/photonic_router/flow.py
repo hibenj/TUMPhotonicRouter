@@ -475,11 +475,18 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
                 f"{len(crossing_guidance_net_names)} net(s) -> crossings enabled "
                 "(lidar-guided, guidance restricted to those nets)"
             )
+    if options.path_length.enable_path_length_matching and enable_crossings:
+        # Decision 10 (2026-11-05): not a target; every stable configuration
+        # runs crossings off, the combination is unverified.
+        print(
+            "      - WARNING: path-length matching with the crossing-aware search on is "
+            "not a supported combination; the stable configurations run --crossings false"
+        )
     record_initial_route_stats(stats)
     optical_config = build_optical_routing_stage_config(
         enable_path_length_matching=options.path_length.enable_path_length_matching,
         path_length_match_outputs=options.path_length.path_length_match_outputs,
-        path_length_allow_residual=options.path_length.path_length_allow_residual,
+        path_length_declared_unmatched_groups=options.path_length.path_length_declared_unmatched_groups,
         path_length_output_scope=options.path_length.path_length_output_scope,
         path_length_meander_height_um=options.path_length.path_length_meander_height_um,
         enable_crossings=enable_crossings,
@@ -641,7 +648,7 @@ def run_routing_flow(
     show_klayout: bool = False,
     enable_path_length_matching: bool = False,
     path_length_match_outputs: bool = False,
-    path_length_allow_residual: bool = False,
+    path_length_declared_unmatched_groups: tuple[str, ...] = (),
     path_length_output_scope: str = "all",
     path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
     enable_crossings: bool = False,
@@ -837,7 +844,7 @@ def run_routing_flow(
             path_length=PathLengthMatchingOptions(
                 enable_path_length_matching=enable_path_length_matching,
                 path_length_match_outputs=path_length_match_outputs,
-                path_length_allow_residual=path_length_allow_residual,
+                path_length_declared_unmatched_groups=path_length_declared_unmatched_groups,
                 path_length_output_scope=path_length_output_scope,
                 path_length_meander_height_um=path_length_meander_height_um,
             ),

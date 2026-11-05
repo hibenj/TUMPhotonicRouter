@@ -280,7 +280,7 @@ No fields of its own.
 | --- | --- | --- | --- | --- |
 | `enable_path_length_matching` | `bool` | `False` | `--path-length-matching` | -- |
 | `path_length_match_outputs` | `bool` | `False` | `--path-length-match-outputs` | -- |
-| `path_length_allow_residual` | `bool` | `False` | `--path-length-allow-residual` | finish a run whose matching leaves residual mismatches and report them (SUMMARY plm_over_tolerance) instead of failing; default strict |
+| `path_length_declared_unmatched_groups` | `tuple[str, ...]` | `()` | `--path-length-declared-unmatched-groups` | node names of groups the design leaves unmatched on purpose (decision 11, 2026-11-05): a residual there is reported (SUMMARY plm_over_tolerance), a residual in any other group fails the run; default none (strict) |
 | `path_length_output_scope` | `str` | `'all'` | `--path-length-output-scope` | which outputs `--path-length-match-outputs` aligns with each other: ``all`` (every output to the latest) or ``depth`` (only outputs of the same depth) |
 | `path_length_meander_height_um` | `float` | `80.0` | `--path-length-meander-height-um` | -- |
 
