@@ -164,6 +164,31 @@ pub(crate) struct PrimitiveCrossingMetadata {
     pub(crate) extra_witness_offsets: Vec<(i32, i32)>,
     pub(crate) extra_witness_profile: FootprintCollisionProfile,
     pub(crate) has_extra_witnesses: bool,
+    /// `primitive_initial_straight_run_distance(primitive, primitive.start_angle)`
+    /// and `primitive_terminal_straight_run_cells(primitive, primitive.end_angle)`,
+    /// computed once per primitive instead of by a footprint walk per
+    /// candidate (speed pass 2026-11-05; the legality check and the hook's
+    /// no-contact path called both per move). Use through
+    /// `initial_straight_run_distance`, which falls back to the walk when
+    /// a caller's start angle is not the primitive's own.
+    pub(crate) initial_straight_run_distance: f64,
+    pub(crate) terminal_straight_run_cells: i32,
+}
+
+/// The primitive's initial straight run for `start_angle`: the precomputed
+/// value when the angle is the primitive's own start angle (every bucketed
+/// candidate), the footprint walk otherwise. Same number either way.
+#[inline]
+pub(crate) fn initial_straight_run_distance(
+    primitive: &Primitive,
+    primitive_crossing: &PrimitiveCrossingMetadata,
+    start_angle: u8,
+) -> f64 {
+    if start_angle % 8 == primitive.start_angle % 8 {
+        primitive_crossing.initial_straight_run_distance
+    } else {
+        primitive_initial_straight_run_distance(primitive, start_angle)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -360,6 +385,14 @@ pub(crate) fn primitive_crossing_metadata(primitive: &Primitive) -> PrimitiveCro
         extra_witness_offsets,
         extra_witness_profile,
         has_extra_witnesses,
+        initial_straight_run_distance: primitive_initial_straight_run_distance(
+            primitive,
+            primitive.start_angle,
+        ),
+        terminal_straight_run_cells: primitive_terminal_straight_run_cells(
+            primitive,
+            primitive.end_angle,
+        ),
     }
 }
 
@@ -694,6 +727,7 @@ impl CrossingLegalityHook for LiveCrossingHook<'_> {
                 current_key,
                 state,
                 primitive,
+                primitive_crossing,
                 primitive_class_is_straight,
                 self.capped_required_margin,
             )
@@ -907,6 +941,7 @@ pub(crate) fn crossing_no_contact_outcome(
     current_key: CrossingAStarKey,
     state: State,
     primitive: &Primitive,
+    primitive_crossing: &PrimitiveCrossingMetadata,
     is_straight: bool,
     capped_required_margin: i32,
 ) -> CrossingMoveOutcome {
@@ -920,10 +955,12 @@ pub(crate) fn crossing_no_contact_outcome(
         0
     };
     if !is_straight {
-        straight_run = primitive_terminal_straight_run_cells(primitive, primitive.end_angle)
+        straight_run = primitive_crossing
+            .terminal_straight_run_cells
             .min(capped_required_margin);
     }
-    let pending_initial_run = primitive_initial_straight_run_distance(primitive, state.angle);
+    let pending_initial_run =
+        initial_straight_run_distance(primitive, primitive_crossing, state.angle);
     let remaining_pending_after_crossing = if current_key.pending_after_crossing_cells > 0 {
         (f64::from(current_key.pending_after_crossing_cells) - pending_initial_run)
             .ceil()
@@ -1161,7 +1198,8 @@ pub(crate) fn crossing_move_outcome_with_segments(
     stats.crossing_hotpath_contact_checks += 1;
     let primitive_steps = primitive.dx.abs().max(primitive.dy.abs());
     let pending_before = f64::from(current_key.pending_after_crossing_cells);
-    let initial_run_distance = primitive_initial_straight_run_distance(primitive, state.angle);
+    let initial_run_distance =
+        initial_straight_run_distance(primitive, primitive_crossing, state.angle);
     let mut partial_pending_carry: i32 = 0;
     if pending_before > 0.0 {
         if current_key.pending_after_crossing_angle != state.angle {
@@ -1908,7 +1946,8 @@ pub(crate) fn crossing_move_outcome_with_segments(
     }
 
     if !is_straight {
-        straight_run = primitive_terminal_straight_run_cells(primitive, primitive.end_angle)
+        straight_run = primitive_crossing
+            .terminal_straight_run_cells
             .min(capped_required_margin);
     }
 

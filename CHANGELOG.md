@@ -73,6 +73,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Speed pass A7 (phase 9), exact: the two straight-run geometry values of a
+  primitive (initial straight run for its start angle, terminal straight
+  run for its end angle) are computed once per primitive into
+  `PrimitiveCrossingMetadata` instead of by a footprint walk per candidate
+  in the legality check, the hook's no-contact path, the contact path, the
+  dense push and the completion chain (`initial_straight_run_distance` falls
+  back to the walk when a caller's angle is not the primitive's own). The
+  lateral-congestion band tests each cell with one bounds check
+  (`is_blocked_in_grid`) instead of two. 509 core tests, nine-cell gate
+  exact, Benes 16x16 lidar-pure expansion counts identical; routing loop
+  136.8 s (bc2c0d8) -> 104.7 s side by side (111.5 s before A7); round 2 so far
+  about -23 %.
 - Speed pass A5/A6 (phase 9), two exact-preserving kernel fixes from a
   callgrind profile with cache simulation and line tables (Benes 8x8
   lidar-pure, A4 build). A5: each extended node stores the bounding box of

@@ -14,7 +14,7 @@ use crate::search::astar::config::{
 };
 use crate::search::astar::cost::{self, PrimitiveSearchMetadata};
 use crate::search::astar::crossing_rules::{
-    extend_unique_keys, primitive_crossing_metadata,
+    extend_unique_keys, initial_straight_run_distance, primitive_crossing_metadata,
     unified_candidate_hits_active_local_crossing_reservation,
     unified_outcome_windows_overlap_own_reservations, CrossingExtension, CrossingLegalityHook,
     CrossingMoveOutcome, PrimitiveCrossingMetadata,
@@ -532,7 +532,8 @@ pub(crate) fn move_is_legal<H: CrossingLegalityHook>(
     // not solely inside the reused legality functions, one of
     // which (`crossing_no_contact_outcome`) does not perform
     // this check on its own.
-    let pending_initial_run = primitive_initial_straight_run_distance(primitive, state.angle);
+    let pending_initial_run =
+        initial_straight_run_distance(primitive, primitive_crossing, state.angle);
     let pending_completed_by_primitive = current_extension.pending_after_crossing_cells > 0
         && pending_initial_run + 1.0e-9
             >= f64::from(current_extension.pending_after_crossing_cells);
@@ -909,7 +910,9 @@ pub(crate) fn push_or_improve_dense<H: CrossingLegalityHook>(
                 .saturating_add(primitive.dx.abs().max(primitive.dy.abs()))
                 .min(capped_required_margin)
         } else {
-            primitive_terminal_straight_run_cells(primitive, primitive.end_angle)
+            candidate
+                .crossing
+                .terminal_straight_run_cells
                 .min(capped_required_margin)
         };
     }
@@ -1418,7 +1421,8 @@ pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
         );
         step_footprint_free_diag = step_footprint_free;
         let step_pending_completed =
-            primitive_initial_straight_run_distance(step_primitive, chain_state.angle) + 1.0e-9
+            initial_straight_run_distance(step_primitive, step_crossing, chain_state.angle)
+                + 1.0e-9
                 >= f64::from(chain_extension.pending_after_crossing_cells);
         let Some((step_outcome, step_extra_cost)) = hook.evaluate(
             chain_state,

@@ -91,7 +91,7 @@ pub(crate) fn lateral_congestion_from_band(
         let Some(y) = origin_y.checked_add(dy) else {
             continue;
         };
-        if grid.contains(x, y) && grid.is_blocked(x, y) {
+        if grid.is_blocked_in_grid(x, y) {
             count = count.saturating_add(1);
         }
     }

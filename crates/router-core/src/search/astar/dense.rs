@@ -602,6 +602,17 @@ impl DenseRoutingGrid {
         }
     }
 
+    /// `contains(x, y) && is_blocked(x, y)` with one bounds test: a cell
+    /// outside the grid is NOT counted here (the lateral band's rule),
+    /// unlike `is_blocked`, which reports it as blocked.
+    #[inline]
+    pub(crate) fn is_blocked_in_grid(&self, x: i32, y: i32) -> bool {
+        match self.idx_of(x, y) {
+            Some(idx) => self.blocked_bits.get(idx),
+            None => false,
+        }
+    }
+
     #[inline]
     pub(crate) fn blocked_count(&self) -> usize {
         self.blocked_count
