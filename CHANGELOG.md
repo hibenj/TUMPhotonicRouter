@@ -73,6 +73,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Speed pass A4 (phase 9): the two reservation parent-chain walks (own-window
+  re-entry, own-window overlap) follow a per-node `reservation_ancestor`
+  link to the nearest key-bearing node instead of visiting every node of the
+  chain. Callgrind on Benes 8x8 lidar-pure attributed 41 % of all
+  instructions to the two walks (the second one shows up under the symbol
+  `blocked_count_in_rect` because the stripped extension gives the local
+  function no symbol of its own): under lidar-pure every chain below a
+  crossing kept the old cumulative `chain_has_reservations` flag, so the
+  early stop never fired and each candidate walked O(depth) nodes. The link
+  replaces the flag; the same key-bearing nodes are tested, in the same
+  nearest-first order, so the answers are unchanged (508 core tests, nine-cell
+  gate exact).
 - Speed pass A3 (phase 9): three exact-preserving kernel fixes found by
   `perf` on Benes 16x16 lidar-pure. The proactive lateral-congestion band is
   precomputed per primitive (`PrimitiveTables::lateral`) instead of rebuilt
@@ -83,6 +95,8 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   4096. Same cells, same membership tests, same map semantics; the nine-cell
   gate is exact and Benes 16x16 lidar-pure drops from 318 s to 182 s on the
   workstation under equal load (identical attempts and simple-route counts).
+  A4 measured side by side against the A3 build on the same cell: routing
+  loop 145 s -> 131 s, per-net expansion counts identical.
 - Release documentation and metadata (phase 8 slice D; documentation only, no
   code or behaviour change: nine-cell gate exact). `README.md` rewritten for a
   user (what the router does, install, quick start, the 27-cell DATE 2027 table

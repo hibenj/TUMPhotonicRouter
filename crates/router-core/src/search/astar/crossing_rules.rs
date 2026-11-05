@@ -24,7 +24,7 @@ use crate::search::astar::expansion::{
     compact_diagonal_halo_cells, primitive_initial_straight_run_distance,
     primitive_terminal_straight_run_cells, FootprintCollisionProfile,
 };
-use crate::search::astar::kernel::{UnifiedExtendedNode, UnifiedOpenRef, UnifiedParentRef};
+use crate::search::astar::kernel::{reservation_nodes, UnifiedExtendedNode, UnifiedOpenRef};
 use crate::search::astar::window::RoutingBounds;
 use crate::search::state::{RouteSearchStats, State};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -845,11 +845,8 @@ pub(crate) fn unified_candidate_hits_active_local_crossing_reservation(
     primitive_crossing: &PrimitiveCrossingMetadata,
     extended_nodes: &[UnifiedExtendedNode],
 ) -> bool {
-    if let UnifiedOpenRef::Extended(ext_idx) = current {
-        if !extended_nodes[ext_idx].chain_has_reservations {
-            return false;
-        }
-    } else {
+    let mut nodes = reservation_nodes(current, extended_nodes).peekable();
+    if nodes.peek().is_none() {
         return false;
     }
     // The candidate's witness cells (the current cell excluded). A handful
@@ -869,34 +866,13 @@ pub(crate) fn unified_candidate_hits_active_local_crossing_reservation(
         return false;
     }
     let is_candidate = |key: CellKey| key != current_key && witness_keys.clone().any(|w| w == key);
-
-    let mut cursor = current;
-    loop {
-        let UnifiedOpenRef::Extended(ext_idx) = cursor else {
-            // Tier-1 (dense) states never carry a local reservation.
-            return false;
-        };
-        let Some(node) = extended_nodes.get(ext_idx) else {
-            return false;
-        };
-        // `chain_has_reservations` is cumulative over the parent chain, so
-        // a node without it has no reservation above it either: the rest
-        // of the walk could never match.
-        if !node.chain_has_reservations {
-            return false;
-        }
-        if node
-            .active_local_reservation_keys
+    // Only the key-bearing nodes of the chain (Tier-1 states never carry a
+    // local reservation, so the walk ends at the first dense ancestor).
+    nodes.any(|node| {
+        node.active_local_reservation_keys
             .iter()
             .any(|key| is_candidate(*key))
-        {
-            return true;
-        }
-        cursor = match node.parent {
-            UnifiedParentRef::Dense(idx) => UnifiedOpenRef::Dense(idx),
-            UnifiedParentRef::Extended(idx) => UnifiedOpenRef::Extended(idx),
-        };
-    }
+    })
 }
 
 /// The unified kernel. See this module's own doc comment above for the
@@ -917,36 +893,15 @@ pub(crate) fn unified_outcome_windows_overlap_own_reservations(
     if outcome.active_reservation_keys.is_empty() && outcome.pending_reservation_keys.is_empty() {
         return false;
     }
-    match current {
-        UnifiedOpenRef::Extended(ext_idx) if extended_nodes[ext_idx].chain_has_reservations => {}
-        _ => return false,
-    }
     let hits = |keys: &[CellKey]| {
         keys.iter().any(|key| {
             outcome.active_reservation_keys.contains(key)
                 || outcome.pending_reservation_keys.contains(key)
         })
     };
-    let mut cursor = current;
-    loop {
-        let UnifiedOpenRef::Extended(ext_idx) = cursor else {
-            return false;
-        };
-        let Some(node) = extended_nodes.get(ext_idx) else {
-            return false;
-        };
-        if !node.chain_has_reservations {
-            // Cumulative flag: nothing above this node carries a key.
-            return false;
-        }
-        if hits(&node.active_local_reservation_keys) || hits(&node.pending_local_reservation_keys) {
-            return true;
-        }
-        cursor = match node.parent {
-            UnifiedParentRef::Dense(idx) => UnifiedOpenRef::Dense(idx),
-            UnifiedParentRef::Extended(idx) => UnifiedOpenRef::Extended(idx),
-        };
-    }
+    reservation_nodes(current, extended_nodes).any(|node| {
+        hits(&node.active_local_reservation_keys) || hits(&node.pending_local_reservation_keys)
+    })
 }
 
 pub(crate) fn crossing_no_contact_outcome(

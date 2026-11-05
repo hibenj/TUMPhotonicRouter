@@ -426,26 +426,60 @@ pub(crate) struct UnifiedExtendedNode {
     /// Maintained only under PHOTONIC_ROUTER_SEARCH_FAILURE_DIAG (0
     /// otherwise); powers the best-crossing-path dump on failure.
     pub(crate) crossings: u16,
-    /// True iff this node or any extended ancestor carries a reservation
-    /// key. Lets the two parent-chain walks (own-window re-entry, own
-    /// window overlap) return at once for the common key-free chain
-    /// (perf pass 2026-09-03: the walk was 8.8 % of a mm16 run).
-    pub(crate) chain_has_reservations: bool,
+    /// Index (into the extended arena) of the nearest node on this node's
+    /// parent chain, itself included, that carries a reservation key;
+    /// `NO_RESERVATION_ANCESTOR` when no node up to the Tier-1 root does.
+    /// The two parent-chain walks (own-window re-entry, own window
+    /// overlap) follow these links, so they visit only the key-bearing
+    /// nodes of a chain instead of every node (speed pass 2026-11-05: the
+    /// two walks were 41 % of a lidar-pure run's instructions because
+    /// every chain below a crossing kept the old cumulative flag; the
+    /// predecessor of this link, a cumulative bool, came from the perf pass
+    /// of 2026-09-03). Same nodes checked, same answers.
+    pub(crate) reservation_ancestor: u32,
 }
 
-pub(crate) fn chain_has_reservations_from(
+pub(crate) const NO_RESERVATION_ANCESTOR: u32 = u32::MAX;
+
+/// The `reservation_ancestor` link of a node about to be pushed at index
+/// `own_idx` with the given keys and parent.
+pub(crate) fn reservation_ancestor_from(
+    own_idx: usize,
     parent: UnifiedParentRef,
     active: &[CellKey],
     pending: &[CellKey],
     extended_nodes: &[UnifiedExtendedNode],
-) -> bool {
+) -> u32 {
     if !active.is_empty() || !pending.is_empty() {
-        return true;
+        return u32::try_from(own_idx).unwrap_or(NO_RESERVATION_ANCESTOR);
     }
     match parent {
-        UnifiedParentRef::Dense(_) => false,
-        UnifiedParentRef::Extended(idx) => extended_nodes[idx].chain_has_reservations,
+        UnifiedParentRef::Dense(_) => NO_RESERVATION_ANCESTOR,
+        UnifiedParentRef::Extended(idx) => extended_nodes[idx].reservation_ancestor,
     }
+}
+
+/// Iterates the key-bearing nodes of `current`'s parent chain, nearest
+/// first, following the `reservation_ancestor` links.
+pub(crate) fn reservation_nodes(
+    current: UnifiedOpenRef,
+    extended_nodes: &[UnifiedExtendedNode],
+) -> impl Iterator<Item = &UnifiedExtendedNode> {
+    let mut cursor = match current {
+        UnifiedOpenRef::Extended(ext_idx) => extended_nodes[ext_idx].reservation_ancestor,
+        UnifiedOpenRef::Dense(_) => NO_RESERVATION_ANCESTOR,
+    };
+    std::iter::from_fn(move || {
+        if cursor == NO_RESERVATION_ANCESTOR {
+            return None;
+        }
+        let node = &extended_nodes[cursor as usize];
+        cursor = match node.parent {
+            UnifiedParentRef::Dense(_) => NO_RESERVATION_ANCESTOR,
+            UnifiedParentRef::Extended(idx) => extended_nodes[idx].reservation_ancestor,
+        };
+        Some(node)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
