@@ -2,8 +2,8 @@
 
 Phase 6 of the do-over touches path-length matching (PLM). Before any of it
 is changed, this baseline pins what the PLM flow produces today on the
-benchmarks that exercise it, the way the 27-cell DATE 2027 reproduction
-(`docs/DATE2027_REPRODUCTION.md`) pins the crossing engine. Nothing in the
+benchmarks that exercise it, the way the 27-cell paper reproduction
+(`docs/PAPER_REPRODUCTION.md`) pins the crossing engine. Nothing in the
 production code changed for this slice.
 
 ## What the baseline contains

@@ -1,4 +1,4 @@
-# DATE 2027 results: engine, provenance and reproduction
+# Paper results: engine, provenance and reproduction
 
 Branch `DATE2027-results` holds the engine that produced every row of ours
 in the paper's results table (`EXPERIMENTS_TABLE_SOURCES.json` next to the
@@ -60,24 +60,24 @@ the reference router via `scripts/results/lidar_12h*.sh` and the bridge in
 ## Reproduction
 
 ```
-scripts/results/reproduce_date2027.sh            # all rows of ours, sequential
-scripts/results/reproduce_date2027.sh ladder     # Benes ladder only, all three configurations
-scripts/results/reproduce_date2027.sh c2-mesh    # the five mesh contribution 2 rows
-.venv/bin/python scripts/results/compare_date2027.py results_date2027 <path>/EXPERIMENTS_TABLE_SOURCES.json
+scripts/results/reproduce_paper.sh            # all rows of ours, sequential
+scripts/results/reproduce_paper.sh ladder     # Benes ladder only, all three configurations
+scripts/results/reproduce_paper.sh c2-mesh    # the five mesh contribution 2 rows
+.venv/bin/python scripts/results/compare_paper.py results_paper <path>/EXPERIMENTS_TABLE_SOURCES.json
 ```
 
-Archives go to `results_date2027/` (`RESULTS_ROOT`), never to `results/`, so
+Archives go to `results_paper/` (`RESULTS_ROOT`), never to `results/`, so
 the paper's archives stay the latest under their labels. The comparison is
 exact on crossing count and GDS length and requires zero verifier errors;
 routing-loop time is printed as a ratio and not compared, since it depends
-on the machine. `paper_table.py results_date2027 <main.tex>` would regenerate
+on the machine. `paper_table.py results_paper <main.tex>` would regenerate
 the table from a full reproduction (the LiDAR columns then need the LiDAR
 archives copied or linked into that root).
 
-`compare_date2027.py ... --with-bounds` adds two columns: the
+`compare_paper.py ... --with-bounds` adds two columns: the
 placement-derived lower bound on crossings (band inversions between the
 component columns, `scripts/results/crossing_lower_bound.py`, stored in
-`docs/date2027_crossing_bounds.json`) and the excess of the reproduced count
+`docs/paper_crossing_bounds.json`) and the excess of the reproduced count
 over it, "realised minus unavoidable". The bound is exact for any routing
 that keeps every net inside the band between its two component columns,
 which all 17 paper benchmarks allow (no net joins non-adjacent columns). On
@@ -90,13 +90,13 @@ its own baseline and short gate of the same pattern, `scripts/results/
 plm_baseline.sh`, `plm_table.py` and `plm_gate.sh` against
 `docs/plm_baseline.json`: see `docs/PLM_REPRODUCTION.md` (phase 6 slice 0).
 
-## Verification (2026-09-22, commits bb317c9..bcc86e8, `results_date2027/`)
+## Verification (2026-09-22, commits bb317c9..bcc86e8, `results_paper/`)
 
-`reproduce_date2027.sh` in the order ladder, c2-mesh, mesh-base,
+`reproduce_paper.sh` in the order ladder, c2-mesh, mesh-base,
 benes-large (sequential, 12:52-16:59, machine otherwise idle): all 27
 cells of ours reproduced, every one exact on crossing count and GDS
 length (to the archived 0.001 um), zero verifier errors, routing-loop time
-ratio 0.92-1.14 to the archives. `compare_date2027.py` output:
+ratio 0.92-1.14 to the archives. `compare_paper.py` output:
 
 | benchmark | config | crossings paper/repro | GDS length um paper/repro | errors | t_loop ratio | status |
 |---|---|---|---|---|---|---|
@@ -141,7 +141,7 @@ report byte-identical. LiDAR rows are not covered.
 
 ## Where the archives are
 
-The reproduction roots are not in git. The paper's run (`results_date2027/`, produced on commit 960d0ee, tag `date2027-results`) is attached to the GitHub release of that tag as `results_date2027.tar.gz` (36 MB, SHA256 in the release's `SHA256SUMS`); fetch and unpack it in the repository root with
+The reproduction roots are not in git. The paper's run (`results_paper/`, produced on commit 960d0ee, tag `date2027-results`) is attached to the GitHub release of that tag as `results_date2027.tar.gz` (36 MB, SHA256 in the release's `SHA256SUMS`); fetch and unpack it in the repository root with
 
     gh release download date2027-results -p 'results_date2027.tar.gz'
     tar xzf results_date2027.tar.gz

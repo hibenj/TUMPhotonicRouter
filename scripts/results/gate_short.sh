@@ -8,8 +8,8 @@
 set -u
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 root="$(mktemp -d "${TMPDIR:-/tmp}/gate_short_XXXX")"
-RESULTS_ROOT="$root" "$R/scripts/results/reproduce_date2027.sh" short
-"$R/.venv/bin/python" "$R/scripts/results/compare_date2027.py" "$root" "$R/docs/date2027_table_sources.json" --only-present
+RESULTS_ROOT="$root" "$R/scripts/results/reproduce_paper.sh" short
+"$R/.venv/bin/python" "$R/scripts/results/compare_paper.py" "$root" "$R/docs/paper_table_sources.json" --only-present
 rc=$?
 if [ "${GATE_KEEP:-0}" = 1 ]; then echo "kept: $root"; else rm -rf "$root"; fi
 exit $rc

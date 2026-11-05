@@ -577,7 +577,7 @@ The three paper configurations are pinned in `cli.py`'s
 `_CONFIGURATION_FLAGS` (`baseline` = `--crossing-mode lidar-pure`,
 `contribution1` = `--crossing-mode lidar-guided`, `contribution2` =
 `--preplaced-crossing-grids true --verbose-routes`), exactly the flags
-`scripts/results/reproduce_date2027.sh` passes; changing one changes what the
+`scripts/results/reproduce_paper.sh` passes; changing one changes what the
 paper's numbers mean. Exactly one runs at a time. The crossing modes are
 `CROSSING_MODES = ("lidar-pure", "lidar-guided")`
 (`crossings/crossing_modes.py`); contribution 2 is a flow flag, not a mode.
@@ -722,15 +722,15 @@ result runs them.
 * **The paper gate**, `scripts/results/gate_short.sh` (about two minutes):
   routes the nine smallest paper cells (Benes 4x4 and 8x8 flat, ADEPT 8x8;
   baseline, contribution 1, contribution 2) through
-  `reproduce_date2027.sh short` into a temporary root and compares them with
-  `compare_date2027.py` against `docs/date2027_table_sources.json`: crossing
+  `reproduce_paper.sh short` into a temporary root and compares them with
+  `compare_paper.py` against `docs/paper_table_sources.json`: crossing
   count and GDS length exact (to 0.01 um), zero verifier errors. It prints
   one `ok` row per cell and `all reproduced cells match`, and exits non-zero
-  otherwise. The full 27 cells are `reproduce_date2027.sh` (about 2.5 h, into
-  `results_date2027/`, never `results/`) followed by `compare_date2027.py
-  results_date2027 docs/date2027_table_sources.json`; `--with-bounds` adds
-  the placement lower bound (`docs/date2027_crossing_bounds.json`) and the
-  excess per cell. [`docs/DATE2027_REPRODUCTION.md`](DATE2027_REPRODUCTION.md)
+  otherwise. The full 27 cells are `reproduce_paper.sh` (about 2.5 h, into
+  `results_paper/`, never `results/`) followed by `compare_paper.py
+  results_paper docs/paper_table_sources.json`; `--with-bounds` adds
+  the placement lower bound (`docs/paper_crossing_bounds.json`) and the
+  excess per cell. [`docs/PAPER_REPRODUCTION.md`](PAPER_REPRODUCTION.md)
   records the provenance and every full re-verification.
 * **The PLM gate**, `scripts/results/plm_gate.sh` (two to three minutes):
   routes `heater_s_mod` and `cascade_8_compact` and compares GDS length,
@@ -782,13 +782,13 @@ repository names a foundry cell.
 | --- | --- | --- |
 | `docs/CONFIGURATION.md` | `scripts/generate_config_reference.py` | `--check`, `tests/test_config_reference.py` |
 | `python/photonic_router/_rust.pyi` | `scripts/generate_rust_stubs.py` (reads the built module) | `--check`, `tests/test_rust_stub.py` |
-| `docs/date2027_crossing_bounds.json` | `scripts/results/crossing_lower_bound.py --all-paper-cells --json docs/date2027_crossing_bounds.json` | `compare_date2027.py --with-bounds` reads it |
+| `docs/paper_crossing_bounds.json` | `scripts/results/crossing_lower_bound.py --all-paper-cells --json docs/paper_crossing_bounds.json` | `compare_paper.py --with-bounds` reads it |
 | `docs/plm_baseline.json` | `scripts/results/plm_table.py results_plm --json docs/plm_baseline.json` | `plm_gate.sh` |
 | `tests/baselines/test_baseline.txt` | `TEST_BASELINE_UPDATE=1 scripts/test_baseline.sh` | `scripts/test_baseline.sh` |
 | `tests/baselines/electrical_suite_metrics.json` | `scripts/benchmark_electrical.py --suite --output tests/baselines/electrical_suite_metrics.json` | `--compare-baseline` |
 | `benchmarks/<slice>.py` + `.toml` | `scripts/make_mesh_slice_benchmark.py` | the slice's own tests |
 
-`docs/date2027_table_sources.json` is the paper's `EXPERIMENTS_TABLE_SOURCES.json`
+`docs/paper_table_sources.json` is the paper's `EXPERIMENTS_TABLE_SOURCES.json`
 (written by `scripts/results/paper_table.py` next to the paper's sources); it
 is the reference, not regenerated here.
 
@@ -816,7 +816,7 @@ the defaults route the paper's numbers.
   (`route_rust_crossing_verification.py`) classifies realized crossings from
   the verdicts and never re-decides them. The paper's three legacy paths
   live on at the tag `date2027-results`; the cells whose numbers moved carry
-  a `current` block in `docs/date2027_table_sources.json`.
+  a `current` block in `docs/paper_table_sources.json`.
 * **Negotiation switches** (`NegotiationConfig`, overlay
   `PHOTONIC_ROUTER_NEGOTIATED_*` and `PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR`):
   `disable_braid_repair`, `braid_escalation`, `crossing_free_unplanned`
@@ -834,7 +834,7 @@ the defaults route the paper's numbers.
   `--debug-meanders` (the PLM planning profile and per-candidate log),
   `--debug-svgs <selector>`, `--attempt-diagnostics`, `--verbose-routes`;
   the kernel traces of `KernelDiagnostics` (`PHOTONIC_ROUTER_NATIVE_REPAIR_DIAG`,
-  `PHOTONIC_ROUTER_TRACE_CROSSING*`, ...), which `reproduce_date2027.sh` turns
+  `PHOTONIC_ROUTER_TRACE_CROSSING*`, ...), which `reproduce_paper.sh` turns
   on for the archived runs. `--debug-stop-after-route N` is the exception
   that does change the result: it routes only the first `N` nets.
 
@@ -896,7 +896,7 @@ section, one bullet per slice with the evidence that it kept the numbers.
 The paper's numbers were produced by the engine at the tag
 `date2027-results` (commit `960d0ee`, 2026-09-22; branch `DATE2027-results`);
 the archived runs are attached to that tag's GitHub release, and
-[`docs/DATE2027_REPRODUCTION.md`](DATE2027_REPRODUCTION.md) traces every row
+[`docs/PAPER_REPRODUCTION.md`](PAPER_REPRODUCTION.md) traces every row
 to its commit. Other tags mark earlier states: `baseline-2026-09-03`,
 `paper-base-2026-09-07`, `pre-do-over-2026-10-27`. Documents that describe
 earlier states of the repository are kept in [`docs/history/`](history/README.md);

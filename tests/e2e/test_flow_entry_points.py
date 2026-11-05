@@ -70,7 +70,7 @@ def test_flow_options_groups_are_frozen():
 
 def test_configuration_contribution2_expands_to_the_paper_flags():
     """`--configuration contribution2` is exactly the flags
-    scripts/results/reproduce_date2027.sh passes for a contribution 2 row."""
+    scripts/results/reproduce_paper.sh passes for a contribution 2 row."""
     assert cli.configuration_flags(["benes_8x8_flat", "--configuration", "contribution2"]) == [
         "--preplaced-crossing-grids",
         "true",

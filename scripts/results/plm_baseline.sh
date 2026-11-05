@@ -18,7 +18,7 @@
 # Environment: RESULTS_ROOT (archive root), PLM_TIMEOUT_S (per run, default
 # 3600), and `touch $RESULTS_ROOT/STOP` skips every run not yet started.
 # The log is $RESULTS_ROOT/reproduce.txt, one line per run (like
-# reproduce_date2027.sh); the archive's `metrics` line is appended to it.
+# reproduce_paper.sh); the archive's `metrics` line is appended to it.
 set -u
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$R" || exit 1
 PLM_BENCHMARKS="heater_s_mod"

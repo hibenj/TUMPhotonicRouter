@@ -47,9 +47,9 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   `docs/plm_baseline.json` was captured at 6f1a46d on cda-server-4 on 2026-10-29:
   all thirteen route clean (rc 0, 0 errors, 0 groups over tolerance, spread 0);
   `docs/PLM_REPRODUCTION.md` has the table and the procedure.
-- `scripts/results/compare_date2027.py --with-bounds` adds the placement-derived
+- `scripts/results/compare_paper.py --with-bounds` adds the placement-derived
   lower bound on crossings (band inversions, `scripts/results/crossing_lower_bound.py`,
-  table `docs/date2027_crossing_bounds.json` written by its `--json` option) and the
+  table `docs/paper_crossing_bounds.json` written by its `--json` option) and the
   excess "realised minus unavoidable" per cell (phase 4 slice E). On the 27 paper
   cells the excess is 0 everywhere except ADEPT 64x64 lidar-pure (+8).
 - One crossing-legality predicate behind a switch (phase 4 slice B).
@@ -84,6 +84,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Release decision 24 (owner, 2026-11-05): the paper's venue leaves file names
+  and texts while the review is double-blind. `reproduce_date2027.sh` ->
+  `reproduce_paper.sh`, `compare_date2027.py` -> `compare_paper.py`,
+  `docs/date2027_table_sources.json` -> `docs/paper_table_sources.json`,
+  `docs/date2027_crossing_bounds.json` -> `docs/paper_crossing_bounds.json`,
+  `docs/DATE2027_REPRODUCTION.md` -> `docs/PAPER_REPRODUCTION.md`, results root
+  `results_paper/`, reproduce.txt header "paper reproduction"; CITATION.cff
+  names the venue as a TODO until acceptance. Unchanged on purpose: the tag
+  `date2027-results`, the branch `DATE2027-results` and the release asset
+  `results_date2027.tar.gz`, which `gh release download` resolves by name.
 - Release decisions 20 and 21 (owner, 2026-11-05): the license is MIT
   (`LICENSE`, `pyproject.toml` `license` and classifier, `CITATION.cff`
   `license`; the copyright line names the authors collectively until the owner
@@ -127,10 +137,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   geometric re-decision with its footprint-blocker scan (about 950 lines with
   their tests; the kernel and engine tests that compared both paths now test
   the predicate). The paper's engine is the tag `date2027-results`. Cells
-  that move carry a `current` block in `docs/date2027_table_sources.json`:
+  that move carry a `current` block in `docs/paper_table_sources.json`:
   ADEPT 8x8 baseline 25160.335 -> 25171.624 um and contribution 1 25073.626 ->
   25090.058 um (33 crossings each, unchanged) on the nine-cell gate; the
-  27-cell table of this commit is in `docs/DATE2027_REPRODUCTION.md`.
+  27-cell table of this commit is in `docs/PAPER_REPRODUCTION.md`.
 - The window ladder's default is window 0 only (speed pass S4, owner decision
   2026-11-05): `routing_window_max_expansions` 3 -> 0 and
   `routing_window_fallback_full_grid` on -> off in the kernel defaults and the
@@ -141,8 +151,8 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   attempts already lost. Results: 24 cells identical, ADEPT 64 lidar-pure 217
   -> 213 crossings and -0.02 % length, ADEPT 32 c1 +0.003 %, ADEPT 64 c1
   -0.0001 %; total wall 0.91 of the round-2 head on the server, ADEPT 64
-  lidar-pure 0.88, ADEPT 32 c1 0.47. `docs/date2027_table_sources.json`
-  carries a `current` block for the three cells and `compare_date2027.py`
+  lidar-pure 0.88, ADEPT 32 c1 0.47. `docs/paper_table_sources.json`
+  carries a `current` block for the three cells and `compare_paper.py`
   checks against it (status `(current)`); the paper's ladder is the ablation
   variant `paper_ladder` (`PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS=3`,
   `PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID=1`). The variants
@@ -204,7 +214,7 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   loop 145 s -> 131 s, per-net expansion counts identical.
 - Release documentation and metadata (phase 8 slice D; documentation only, no
   code or behaviour change: nine-cell gate exact). `README.md` rewritten for a
-  user (what the router does, install, quick start, the 27-cell DATE 2027 table
+  user (what the router does, install, quick start, the 27-cell paper table
   with the placement lower bound, reproduction, status with the license
   pending); `docs/ARCHITECTURE.md` rewritten against the current tree (the
   pipeline stage by stage, the data model, both crates and the package with

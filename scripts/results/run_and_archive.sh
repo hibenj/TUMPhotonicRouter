@@ -14,7 +14,7 @@ set -u
 config="$1"; bench="$2"; shift 2
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # RESULTS_ROOT (default results/): archive root, so a reproduction run
-# (scripts/results/reproduce_date2027.sh) never shadows the paper's archives.
+# (scripts/results/reproduce_paper.sh) never shadows the paper's archives.
 root="${RESULTS_ROOT:-$R/results}"
 stamp="$(date +%Y%m%d-%H%M%S)"
 out="$root/$bench/$config/$stamp"; mkdir -p "$out"

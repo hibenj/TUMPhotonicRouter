@@ -36,7 +36,7 @@ dist/
 .cargo/config.toml
 /results_ablation/
 /results_ablation_server/
-/results_date2027/
+/results_paper/
 /results_plm/
 /results_plm_workstation/
 # The agent-process layer lives outside the public tree (decision 21, 2026-11-05).

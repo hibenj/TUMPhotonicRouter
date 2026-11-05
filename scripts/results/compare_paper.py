@@ -1,7 +1,7 @@
-"""Compare a reproduction of the DATE 2027 table (archives written by
-scripts/results/reproduce_date2027.sh) with the paper's sources, cell by cell.
+"""Compare a reproduction of the paper table (archives written by
+scripts/results/reproduce_paper.sh) with the paper's sources, cell by cell.
 
-Usage: compare_date2027.py <results_root> <EXPERIMENTS_TABLE_SOURCES.json> [--only-present]
+Usage: compare_paper.py <results_root> <EXPERIMENTS_TABLE_SOURCES.json> [--only-present]
        [--with-bounds [<crossing_bounds.json>]]
 
 `--only-present` compares only the cells that have a run under <results_root>
@@ -18,7 +18,7 @@ a reproduction run are listed as missing. Exit code 1 on any mismatch.
 
 `--with-bounds` adds two columns: the placement-derived lower bound on
 crossings (band inversions, `scripts/results/crossing_lower_bound.py`, stored
-in docs/date2027_crossing_bounds.json) and the excess of the reproduced count
+in docs/paper_crossing_bounds.json) and the excess of the reproduced count
 over it, "realised minus unavoidable". The bound is per benchmark, not per
 configuration, and is not part of the pass/fail comparison."""
 
@@ -47,7 +47,7 @@ def load_bounds(options: list[str]) -> dict[str, dict] | None:
     path = (
         Path(options[index + 1])
         if index + 1 < len(options) and not options[index + 1].startswith("--")
-        else Path(__file__).resolve().parents[2] / "docs" / "date2027_crossing_bounds.json"
+        else Path(__file__).resolve().parents[2] / "docs" / "paper_crossing_bounds.json"
     )
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -110,7 +110,10 @@ def main() -> int:
             if m.get("crossing_count") != expected.get("crossing_count"):
                 problems.append("crossings")
             length = m.get("gds_length_um")
-            if length is None or abs(float(length) - float(expected["gds_length_um"])) > LENGTH_TOL_UM:
+            if (
+                length is None
+                or abs(float(length) - float(expected["gds_length_um"])) > LENGTH_TOL_UM
+            ):
                 problems.append("length")
             t_ratio = (
                 float(m["routing_loop_s"]) / float(cell["routing_loop_s"])

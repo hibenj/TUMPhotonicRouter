@@ -2,7 +2,7 @@
 #
 # Placeholders the repository owner fills before the release:
 #   - every "TODO owner" author entry (software and paper);
-#   - the paper's final title, pages and DOI once the DATE 2027
+#   - the paper's final title, pages and DOI once the paper's venue
 #     proceedings are out (the title stays a placeholder while the review is blind);
 #   - the copyright holder in LICENSE (MIT, owner decision 20 of 2026-11-05;
 #     the file names the authors collectively until the owner sets the holder).
@@ -29,10 +29,10 @@ keywords:
   - gdsfactory
 preferred-citation:
   type: conference-paper
-  title: "TODO paper title (the DATE 2027 submission is under double-blind review; fill in after acceptance)"
+  title: "TODO paper title (the paper is under double-blind review; fill in after acceptance)"
   authors:
     - name: "TODO owner"
   conference:
-    name: "Design, Automation and Test in Europe Conference (DATE)"
-  collection-title: "Proceedings of the Design, Automation and Test in Europe Conference (DATE 2027)"
+    name: "TODO venue (the paper is under double-blind review; fill in after acceptance)"
+  collection-title: "TODO proceedings"
   year: 2027

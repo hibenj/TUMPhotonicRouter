@@ -71,12 +71,12 @@ scripts/results/plm_gate.sh      # two PLM cells    -> "all PLM cells match"
 ```
 
 `gate_short.sh` compares crossings, GDS length and verifier errors of the
-nine smallest DATE 2027 cells with `docs/date2027_table_sources.json`;
+nine smallest paper cells with `docs/paper_table_sources.json`;
 `plm_gate.sh` compares the path-length-matching quantities of `heater_s_mod`
 and `cascade_8_compact` with `docs/plm_baseline.json`. The full runs behind
-them are `scripts/results/reproduce_date2027.sh` (27 cells, about 2.5 h) and
+them are `scripts/results/reproduce_paper.sh` (27 cells, about 2.5 h) and
 `scripts/results/plm_baseline.sh` (13 cells); see
-[`docs/DATE2027_REPRODUCTION.md`](docs/DATE2027_REPRODUCTION.md) and
+[`docs/PAPER_REPRODUCTION.md`](docs/PAPER_REPRODUCTION.md) and
 [`docs/PLM_REPRODUCTION.md`](docs/PLM_REPRODUCTION.md). A change to the
 electrical router also runs
 `.venv/bin/python scripts/benchmark_electrical.py --suite --check --compare-baseline`.
@@ -86,8 +86,8 @@ reason.** This holds for both oracles. For the paper gate the paper's table
 itself does not move: a commit that changes a reproduced crossing count or
 length says so in its message, runs the full 27-cell reproduction, and
 records the new numbers and their provenance in
-`docs/DATE2027_REPRODUCTION.md` (and the bounds in
-`docs/date2027_crossing_bounds.json` when the placement changes). For the PLM
+`docs/PAPER_REPRODUCTION.md` (and the bounds in
+`docs/paper_crossing_bounds.json` when the placement changes). For the PLM
 gate the commit re-runs `plm_baseline.sh` and re-pins `docs/plm_baseline.json`
 (`plm_table.py results_plm --json docs/plm_baseline.json`). The same rule
 applies to `tests/baselines/`. A commit never moves a number silently.
@@ -101,7 +101,7 @@ when an output differs from a fresh generation.
 | --- | --- | --- |
 | `docs/CONFIGURATION.md` | `.venv/bin/python scripts/generate_config_reference.py` | a configuration field, overlay variable or flag changes |
 | `python/photonic_router/_rust.pyi` | `.venv/bin/python scripts/generate_rust_stubs.py` (after `maturin develop`) | a binding in `crates/router-py/` changes |
-| `docs/date2027_crossing_bounds.json` | `.venv/bin/python scripts/results/crossing_lower_bound.py --all-paper-cells --json docs/date2027_crossing_bounds.json` | a paper benchmark's placement changes |
+| `docs/paper_crossing_bounds.json` | `.venv/bin/python scripts/results/crossing_lower_bound.py --all-paper-cells --json docs/paper_crossing_bounds.json` | a paper benchmark's placement changes |
 | `docs/plm_baseline.json` | `.venv/bin/python scripts/results/plm_table.py results_plm --json docs/plm_baseline.json` | a PLM number moves on purpose |
 | `tests/baselines/test_baseline.txt` | `TEST_BASELINE_UPDATE=1 scripts/test_baseline.sh` | tests are added or removed |
 | `tests/baselines/electrical_suite_metrics.json` | `.venv/bin/python scripts/benchmark_electrical.py --suite --output tests/baselines/electrical_suite_metrics.json` | an electrical number moves on purpose |

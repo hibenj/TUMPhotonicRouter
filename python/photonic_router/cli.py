@@ -11,7 +11,7 @@ else in the flow sees a command line.
 `--configuration {baseline,contribution1,contribution2}` names the three
 configurations the paper's rows were produced with (owner rule 2026-09-04:
 exactly one of them runs at a time). It expands to exactly the flags
-`scripts/results/reproduce_date2027.sh` passes, inserted before the user's own
+`scripts/results/reproduce_paper.sh` passes, inserted before the user's own
 flags so that an explicit flag always wins.
 
 `routing_flow.py` in the repository root is a shim over this module, so
@@ -93,7 +93,7 @@ from photonic_router.routing.route_rust import RipupRerouteConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 _CONFIGURATION_FLAGS: dict[str, tuple[str, ...]] = {
-    # Exactly the flags scripts/results/reproduce_date2027.sh passes for each
+    # Exactly the flags scripts/results/reproduce_paper.sh passes for each
     # row of the paper's table. Changing one of these changes what the paper's
     # numbers mean, so they are pinned here and nowhere else.
     "baseline": ("--crossing-mode", "lidar-pure"),

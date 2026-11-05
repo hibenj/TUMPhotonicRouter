@@ -8,7 +8,7 @@ No routing runs: the benchmark's placed layout is built as the flow builds
 it and `photonic_router.crossings.crossing_demand.build_crossing_demand` counts the
 invariant crossing pairs of its bands (experiment 5e, 2026-10-29). The
 number is what a "realised minus unavoidable" column of
-`compare_date2027.py` or `summarize_run.py` subtracts; this module is the
+`compare_paper.py` or `summarize_run.py` subtracts; this module is the
 helper those scripts import (`lower_bound_for_benchmark`), the wiring into
 the table is a later slice.
 """
@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-TABLE_SOURCES = REPO_ROOT / "docs" / "date2027_table_sources.json"
+TABLE_SOURCES = REPO_ROOT / "docs" / "paper_table_sources.json"
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--all-paper-cells",
         action="store_true",
-        help="append every paper cell's benchmark from docs/date2027_table_sources.json",
+        help="append every paper cell's benchmark from docs/paper_table_sources.json",
     )
     parser.add_argument("--per-net", action="store_true", help="print the per-net bounds")
     parser.add_argument(
@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help="also write {benchmark: {bound, bands, outside, per_net}} to this file "
-        "(docs/date2027_crossing_bounds.json is what compare_date2027.py --with-bounds reads)",
+        "(docs/paper_crossing_bounds.json is what compare_paper.py --with-bounds reads)",
     )
     args = parser.parse_args(argv)
     benchmarks = list(args.benchmarks)

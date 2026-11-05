@@ -73,7 +73,7 @@ Boolean flags take a value (`--path-length-matching true`). Every flag and
 setting, with its default, is in [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md);
 `--debug-svgs all` writes obstacle and per-route SVGs under `build/`.
 
-## Benchmarks and the DATE 2027 numbers
+## Benchmarks and the paper numbers
 
 `benchmarks/` holds Benes networks (`benes_<n>x<n>`, and the `_flat`
 variants with every switch expanded into its primitives), ADEPT-style
@@ -92,10 +92,10 @@ exactly one runs at a time:
 
 The 27 cells of ours in the paper's results table: crossings (X) and GDS
 waveguide length in um (L), from
-[`docs/date2027_table_sources.json`](docs/date2027_table_sources.json).
+[`docs/paper_table_sources.json`](docs/paper_table_sources.json).
 "Bound" is the placement-derived lower bound on crossings, the sum of band
 inversions between component columns
-([`docs/date2027_crossing_bounds.json`](docs/date2027_crossing_bounds.json)):
+([`docs/paper_crossing_bounds.json`](docs/paper_crossing_bounds.json)):
 no routing that keeps each net inside its band can have fewer.
 
 | cell | benchmark | bound | baseline X | baseline L | contr. 1 X | contr. 1 L | contr. 2 X | contr. 2 L |
@@ -120,9 +120,9 @@ both contributions close.
 
 ```bash
 scripts/results/gate_short.sh                    # nine smallest cells, about two minutes
-scripts/results/reproduce_date2027.sh            # all 27 cells, about 2.5 h, into results_date2027/
-.venv/bin/python scripts/results/compare_date2027.py results_date2027 \
-  docs/date2027_table_sources.json --with-bounds
+scripts/results/reproduce_paper.sh            # all 27 cells, about 2.5 h, into results_paper/
+.venv/bin/python scripts/results/compare_paper.py results_paper \
+  docs/paper_table_sources.json --with-bounds
 scripts/results/plm_gate.sh                      # path-length matching: two cells
 scripts/results/plm_baseline.sh                  # all thirteen PLM cells, into results_plm/
 ```
@@ -130,7 +130,7 @@ scripts/results/plm_baseline.sh                  # all thirteen PLM cells, into 
 `gate_short.sh` ends with `all reproduced cells match` when crossings and GDS
 length are exact and the verifier reports no error. Cells whose numbers moved
 on purpose after the paper carry a `current` block in
-`docs/date2027_table_sources.json`; the comparison checks those cells against
+`docs/paper_table_sources.json`; the comparison checks those cells against
 `current` and marks them `(current)`. Two engine decisions of 2026-11-05 did
 that: the search runs its first routing window only (the paper's window
 ladder never produced a route beyond window 0 on any cell; ADEPT 64x64
@@ -143,7 +143,7 @@ micrometres on a few cells). The paper's engine lives on at the tag
 `date2027-results`. Provenance, the engine
 commits behind each row and the archived runs (attached to the
 `date2027-results` release) are in
-[`docs/DATE2027_REPRODUCTION.md`](docs/DATE2027_REPRODUCTION.md); the
+[`docs/PAPER_REPRODUCTION.md`](docs/PAPER_REPRODUCTION.md); the
 path-length-matching baseline is in
 [`docs/PLM_REPRODUCTION.md`](docs/PLM_REPRODUCTION.md).
 
@@ -160,7 +160,7 @@ configuration surface, the oracles and how to add a benchmark.
 
 ## Status
 
-Research code. It produced the results of the DATE 2027 paper and is being
+Research code. It produced the results of the paper and is being
 restructured (see [`CHANGELOG.md`](CHANGELOG.md)); the Python and Rust APIs
 are not stable and there is no versioned release yet.
 
