@@ -10,7 +10,7 @@ use crate::engine::crossing_geometry::{
     crossing_legality, grid_angle_direction, nearest_crossing_neighbour, CrossingCandidate,
     CrossingLegalityRule, CrossingNeighbour, CrossingVerdict, MarginSide,
 };
-use crate::obstacle_map::{pack_xy, CellKey, NetId, ObstacleMap};
+use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, NetId, ObstacleMap};
 use crate::primitives::{Primitive, PrimitiveGeometry, PrimitiveLibrary, DIRECTIONS};
 use crate::search::astar::config::{
     AStarConfig, NO_PENDING_CROSSING_ANGLE, NO_PENDING_CROSSING_PARTNER_INDEX,
@@ -853,25 +853,24 @@ pub(crate) fn unified_candidate_hits_active_local_crossing_reservation(
     // per primitive, so a membership test by linear scan beats building a
     // hash set per candidate (speed pass 2026-10-30: this function was 11 %
     // of a lidar-pure run, most of it the set); same keys, same answer.
-    let current_key = pack_xy(state.x, state.y);
-    let witness_keys = primitive_crossing
+    let witnesses = primitive_crossing
         .witnesses
         .iter()
-        .map(|witness| pack_xy(state.x + witness.offset.0, state.y + witness.offset.1));
-    let candidate_count = witness_keys
-        .clone()
-        .filter(|key| *key != current_key)
-        .count();
-    if candidate_count == 0 {
+        .map(|witness| (state.x + witness.offset.0, state.y + witness.offset.1))
+        .filter(|&cell| cell != (state.x, state.y));
+    if witnesses.clone().next().is_none() {
         return false;
     }
-    let is_candidate = |key: CellKey| key != current_key && witness_keys.clone().any(|w| w == key);
     // Only the key-bearing nodes of the chain (Tier-1 states never carry a
-    // local reservation, so the walk ends at the first dense ancestor).
+    // local reservation, so the walk ends at the first dense ancestor), and
+    // only those whose key box holds a witness cell get their keys scanned.
     nodes.any(|node| {
-        node.active_local_reservation_keys
-            .iter()
-            .any(|key| is_candidate(*key))
+        let bounds = &node.active_key_bounds;
+        witnesses.clone().any(|(x, y)| bounds.contains(x, y))
+            && node.active_local_reservation_keys.iter().any(|key| {
+                let cell = unpack_xy(*key);
+                witnesses.clone().any(|witness| witness == cell)
+            })
     })
 }
 

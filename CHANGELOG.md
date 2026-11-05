@@ -73,6 +73,19 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Speed pass A5/A6 (phase 9), two exact-preserving kernel fixes from a
+  callgrind profile with cache simulation and line tables (Benes 8x8
+  lidar-pure, A4 build). A5: each extended node stores the bounding box of
+  its active reservation keys (`KeyBounds`); the own-window re-entry check
+  tests a candidate's witness cells against the box before scanning the keys
+  (the keys x witnesses scan was 18 % of the instructions). A6: footprint and
+  halo rows of up to three cells are tested bit by bit in the blocked bitset
+  instead of through the 2D prefix sum (`SHORT_RUN_CELLS`); diagonal
+  primitives are rows of one or two cells, and the prefix path was 23 % of
+  the instructions, called 520 M times from the footprint, halo and hook
+  checks. A cell outside the grid is blocked for both paths, so the answers
+  are identical. 508 core tests, nine-cell gate exact; Benes 16x16
+  lidar-pure expansion counts identical, routing loop 138.7 s (bc2c0d8) -> 113.1 s side by side (131.5 s with A4 alone in the earlier pair).
 - Speed pass A4 (phase 9): the two reservation parent-chain walks (own-window
   re-entry, own-window overlap) follow a per-node `reservation_ancestor`
   link to the nearest key-bearing node instead of visiting every node of the

@@ -646,10 +646,22 @@ impl DenseRoutingGrid {
         )
     }
 
+    /// Runs up to this many cells long are tested cell by cell in the
+    /// blocked bitset instead of through the prefix sum: one bit per cell
+    /// against four prefix loads plus the bounds arithmetic. Same answer
+    /// (a cell outside the grid is blocked for `is_blocked` and makes the
+    /// prefix query `None`, so both report the run as not free). Speed pass
+    /// 2026-11-05: diagonal footprints and halos are rows of one or two
+    /// cells, and the prefix path was 20 % of a lidar-pure run.
+    const SHORT_RUN_CELLS: i32 = 3;
+
     #[inline]
     pub(crate) fn horizontal_segment_free(&self, y: i32, x0: i32, x1: i32) -> bool {
         let min_x = x0.min(x1);
         let max_x = x0.max(x1);
+        if max_x - min_x < Self::SHORT_RUN_CELLS {
+            return !(min_x..=max_x).any(|x| self.is_blocked(x, y));
+        }
         self.rect_free(min_x, max_x, y, y)
     }
 
@@ -657,6 +669,9 @@ impl DenseRoutingGrid {
     pub(crate) fn vertical_segment_free(&self, x: i32, y0: i32, y1: i32) -> bool {
         let min_y = y0.min(y1);
         let max_y = y0.max(y1);
+        if max_y - min_y < Self::SHORT_RUN_CELLS {
+            return !(min_y..=max_y).any(|y| self.is_blocked(x, y));
+        }
         self.rect_free(x, x, min_y, max_y)
     }
 

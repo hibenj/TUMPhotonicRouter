@@ -10,7 +10,7 @@
 //! `run`, and the expansion, insert-or-improve and eager post-crossing
 //! completion steps live in `expansion.rs`.
 
-use crate::obstacle_map::{pack_xy, CellKey, ObstacleMap};
+use crate::obstacle_map::{pack_xy, unpack_xy, CellKey, ObstacleMap};
 use crate::primitives::PrimitiveLibrary;
 use crate::search::astar::config::{
     AStarConfig, HeapTieBreaker, NO_GENERATION, NO_HEAP_POSITION, NO_PARENT,
@@ -437,6 +437,47 @@ pub(crate) struct UnifiedExtendedNode {
     /// predecessor of this link, a cumulative bool, came from the perf pass
     /// of 2026-09-03). Same nodes checked, same answers.
     pub(crate) reservation_ancestor: u32,
+    /// Bounding box of `active_local_reservation_keys` (empty when the list
+    /// is). The own-window re-entry check tests a candidate's witness cells
+    /// against this box before scanning the keys, so a chain of several
+    /// reservation windows costs a few comparisons per candidate instead of
+    /// keys x witnesses (speed pass 2026-11-05: that product was 17 % of
+    /// the instructions of a lidar-pure run). Pure prefilter, same answers.
+    pub(crate) active_key_bounds: KeyBounds,
+}
+
+/// Inclusive bounding box of a set of packed cell keys; `min > max` when
+/// the set is empty.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct KeyBounds {
+    pub(crate) min_x: i32,
+    pub(crate) min_y: i32,
+    pub(crate) max_x: i32,
+    pub(crate) max_y: i32,
+}
+
+impl KeyBounds {
+    pub(crate) fn of(keys: &[CellKey]) -> Self {
+        let mut bounds = Self {
+            min_x: i32::MAX,
+            min_y: i32::MAX,
+            max_x: i32::MIN,
+            max_y: i32::MIN,
+        };
+        for &key in keys {
+            let (x, y) = unpack_xy(key);
+            bounds.min_x = bounds.min_x.min(x);
+            bounds.min_y = bounds.min_y.min(y);
+            bounds.max_x = bounds.max_x.max(x);
+            bounds.max_y = bounds.max_y.max(y);
+        }
+        bounds
+    }
+
+    #[inline]
+    pub(crate) fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.min_x && x <= self.max_x && y >= self.min_y && y <= self.max_y
+    }
 }
 
 pub(crate) const NO_RESERVATION_ANCESTOR: u32 = u32::MAX;

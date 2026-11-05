@@ -22,8 +22,8 @@ use crate::search::astar::crossing_rules::{
 use crate::search::astar::dense::{DenseRoutingGrid, DenseSearchStorage};
 use crate::search::astar::heuristic::{distance_heuristic, SearchHeuristic};
 use crate::search::astar::kernel::{
-    heap_tie_score, next_search_generation, reservation_ancestor_from, OpenEntry, OpenSet,
-    UnifiedExtendedNode, UnifiedOpenRef, UnifiedParentRef,
+    heap_tie_score, next_search_generation, reservation_ancestor_from, KeyBounds, OpenEntry,
+    OpenSet, UnifiedExtendedNode, UnifiedOpenRef, UnifiedParentRef,
 };
 use crate::search::astar::window::RoutingBounds;
 use crate::search::state::{RouteSearchStats, State};
@@ -1074,6 +1074,7 @@ pub(crate) fn push_or_improve_extended<H: CrossingLegalityHook>(
         &pending_local_reservation_keys,
         extended_nodes,
     );
+    let node_active_key_bounds = KeyBounds::of(&active_local_reservation_keys);
     extended_nodes.push(UnifiedExtendedNode {
         state: next_state,
         extension: next_extension,
@@ -1084,6 +1085,7 @@ pub(crate) fn push_or_improve_extended<H: CrossingLegalityHook>(
         pending_local_reservation_keys,
         crossings: node_crossings,
         reservation_ancestor: node_reservation_ancestor,
+        active_key_bounds: node_active_key_bounds,
     });
     if failure_diag && (node_crossings > *best_crossings || best_crossing_ref.is_none()) {
         *best_crossings = node_crossings;
@@ -1337,6 +1339,7 @@ pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
         &first_pending_keys,
         extended_nodes,
     );
+    let first_active_key_bounds = KeyBounds::of(&first_active_keys);
     extended_nodes.push(UnifiedExtendedNode {
         state: next_state,
         extension: next_extension,
@@ -1347,6 +1350,7 @@ pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
         pending_local_reservation_keys: first_pending_keys,
         crossings: first_crossings,
         reservation_ancestor: first_reservation_ancestor,
+        active_key_bounds: first_active_key_bounds,
     });
     let mut chain_state = next_state;
     let mut chain_extension = next_extension;
@@ -1509,6 +1513,7 @@ pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
             &step_pending_keys,
             extended_nodes,
         );
+        let step_active_key_bounds = KeyBounds::of(&step_active_keys);
         extended_nodes.push(UnifiedExtendedNode {
             state: step_state,
             extension: step_extension,
@@ -1519,6 +1524,7 @@ pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
             pending_local_reservation_keys: step_pending_keys,
             crossings: step_crossings,
             reservation_ancestor: step_reservation_ancestor,
+            active_key_bounds: step_active_key_bounds,
         });
         last_idx = new_idx;
         chain_state = step_state;
