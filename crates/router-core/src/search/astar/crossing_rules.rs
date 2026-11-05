@@ -783,24 +783,54 @@ pub(crate) struct CrossingHookContext {
     pub(crate) capped_required_margin: i32,
 }
 
+/// `PHOTONIC_ROUTER_CROSSING_HOOK_KERNEL_GRID=1`: the crossing hook's dense
+/// grid is built like the kernel's search grid (port-open cells free, the
+/// dynamic expansion radius and its clearance-exempt cells) instead of the
+/// paper's bare grid (no opened cells, radius 0). Experiment switch for the
+/// 27-cell table (2026-11-05); read once per process.
+pub(crate) fn hook_kernel_grid_enabled() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("PHOTONIC_ROUTER_CROSSING_HOOK_KERNEL_GRID")
+            .map(|value| value == "1")
+            .unwrap_or(false)
+    })
+}
+
 impl CrossingHookContext {
+    /// `port_open_cells`, `dynamic_expansion_radius_cells` and
+    /// `dynamic_clearance_exempt_cells` are the kernel's grid inputs; the
+    /// hook's grid reads them only under `hook_kernel_grid_enabled()`.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn build(
         obstacle_map: &ObstacleMap,
         primitives: &PrimitiveLibrary,
         config: &AStarConfig,
         crossing: &CrossingSearchConfig,
         full_bounds: RoutingBounds,
+        port_open_cells: Option<&FxHashSet<CellKey>>,
+        dynamic_expansion_radius_cells: i32,
+        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
     ) -> Self {
+        let kernel_grid = hook_kernel_grid_enabled();
         let dense_grid = DenseRoutingGrid::from_obstacle_map_with_dynamic_expansion(
             obstacle_map,
             full_bounds,
-            None,
+            if kernel_grid { port_open_cells } else { None },
             config.max_dense_obstacle_cells,
             config.ignore_dynamic_obstacles,
             config.history_weight > 0.0,
             config.long_straight_congestion_weight > 0.0,
-            0,
-            None,
+            if kernel_grid {
+                dynamic_expansion_radius_cells
+            } else {
+                0
+            },
+            if kernel_grid {
+                dynamic_clearance_exempt_cells
+            } else {
+                None
+            },
         )
         .expect("dense grid should build for a valid obstacle map");
         let primitive_buckets: [&[Primitive]; 8] =

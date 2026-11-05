@@ -2258,8 +2258,16 @@ mod tests {
                 min_y: window_min_y,
                 ..full_bounds
             };
-            let hook_context =
-                CrossingHookContext::build(&map, &primitives, &config, &crossing, full_bounds);
+            let hook_context = CrossingHookContext::build(
+                &map,
+                &primitives,
+                &config,
+                &crossing,
+                full_bounds,
+                None,
+                0,
+                None,
+            );
             let hook = hook_context.hook(&map, &crossing, &config, None, None);
             let source = State::new(20, 50, 6);
             let target = State::new(20, 4, 6);
@@ -2341,8 +2349,16 @@ mod tests {
     fn push_or_improve_extended_keeps_the_better_g_and_ignores_a_worse_one() {
         let (map, primitives, config, crossing) = crossing_corridor_fixture();
         let bounds = full_map_bounds(&map);
-        let hook_context =
-            CrossingHookContext::build(&map, &primitives, &config, &crossing, bounds);
+        let hook_context = CrossingHookContext::build(
+            &map,
+            &primitives,
+            &config,
+            &crossing,
+            bounds,
+            None,
+            0,
+            None,
+        );
         let hook = hook_context.hook(&map, &crossing, &config, None, None);
         let source = State::new(20, 50, 6);
         let target = State::new(20, 4, 6);

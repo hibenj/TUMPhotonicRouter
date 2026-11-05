@@ -231,6 +231,9 @@ fn run_search(env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome
                         config,
                         crossing,
                         resolved_bounds,
+                        Some(&anchor_open_cells),
+                        dynamic_expansion_radius_cells,
+                        dynamic_clearance_exempt_cells,
                     );
                     let hook = context.hook(
                         obstacle_map,

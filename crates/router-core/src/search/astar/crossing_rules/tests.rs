@@ -2814,6 +2814,9 @@ mod kernel_hook_dispatch {
                     config,
                     crossing,
                     full_bounds,
+                    None,
+                    0,
+                    None,
                 );
                 let hook = context.hook(obstacle_map, crossing, config, None, None);
                 kernel::run(
@@ -2999,6 +3002,9 @@ mod kernel_hook_dispatch {
             &config,
             &far_crossing,
             full_bounds,
+            None,
+            0,
+            None,
         );
         let hook = context.hook(&empty_map, &far_crossing, &config, None, None);
         let counting = CountingHook {
@@ -3032,8 +3038,16 @@ mod kernel_hook_dispatch {
         // primitives the search actually generates.
         let (map, primitives, source, target, config, crossing) = crossing_fixture();
         let full_bounds = full_bounds_of(&map);
-        let context =
-            CrossingHookContext::build(&map, &primitives, &config, &crossing, full_bounds);
+        let context = CrossingHookContext::build(
+            &map,
+            &primitives,
+            &config,
+            &crossing,
+            full_bounds,
+            None,
+            0,
+            None,
+        );
         let hook = context.hook(&map, &crossing, &config, None, None);
         let counting = CountingHook {
             inner: &hook,
