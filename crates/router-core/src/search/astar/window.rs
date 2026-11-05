@@ -232,6 +232,17 @@ pub(crate) fn window_area(bounds: RoutingBounds) -> i64 {
     width * height
 }
 
+/// Diagnostic only (speed pass B3 measurement, 2026-11-05): set
+/// `PHOTONIC_ROUTER_WINDOW_REACHABILITY_DIAG=1` to run a cell-level
+/// reachability test per window and log its verdict next to the window's
+/// A* outcome. Read once per process.
+pub(crate) fn reachability_diag_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PHOTONIC_ROUTER_WINDOW_REACHABILITY_DIAG").is_ok_and(|v| v == "1")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,15 +685,4 @@ mod tests {
         assert_eq!(bounds.min_y, 8);
         assert_eq!(bounds.max_y, 12);
     }
-}
-
-/// Diagnostic only (speed pass B3 measurement, 2026-11-05): set
-/// `PHOTONIC_ROUTER_WINDOW_REACHABILITY_DIAG=1` to run a cell-level
-/// reachability test per window and log its verdict next to the window's
-/// A* outcome. Read once per process.
-pub(crate) fn reachability_diag_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("PHOTONIC_ROUTER_WINDOW_REACHABILITY_DIAG").is_ok_and(|v| v == "1")
-    })
 }

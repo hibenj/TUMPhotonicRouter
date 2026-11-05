@@ -1254,6 +1254,66 @@ pub(crate) fn reconstruct_route_unified(
     )
 }
 
+/// Diagnostic only (speed pass B3 measurement, 2026-11-05). Necessary
+/// condition for a window to contain a route: an 8-connected path of cells
+/// inside the dense grid from the source cell to a cell within the target
+/// tolerance whose intermediate cells are passable. A cell is impassable
+/// only when the dense grid blocks it AND the obstacle map calls it static:
+/// dynamic cells (and the extra dynamic clearance) may be legalized as a
+/// crossing, port-open cells are already free in the dense grid, and the
+/// source and the goal cells count regardless. Returns (reachable,
+/// microseconds, visited cells).
+fn cell_reachability(
+    dense_grid: &DenseRoutingGrid,
+    obstacle_map: &ObstacleMap,
+    source: State,
+    target: State,
+    config: &AStarConfig,
+) -> (bool, u128, usize) {
+    let start = Instant::now();
+    let bounds = dense_grid.bounds;
+    let width = (bounds.max_x - bounds.min_x + 1) as usize;
+    let height = (bounds.max_y - bounds.min_y + 1) as usize;
+    let tolerance = config.target_tolerance_cells.max(0);
+    let is_goal =
+        |x: i32, y: i32| (x - target.x).abs() <= tolerance && (y - target.y).abs() <= tolerance;
+    if !bounds.contains(source.x, source.y) {
+        return (false, start.elapsed().as_micros(), 0);
+    }
+    let mut visited = vec![false; width * height];
+    let idx = |x: i32, y: i32| (y - bounds.min_y) as usize * width + (x - bounds.min_x) as usize;
+    let mut queue: std::collections::VecDeque<(i32, i32)> = std::collections::VecDeque::new();
+    visited[idx(source.x, source.y)] = true;
+    queue.push_back((source.x, source.y));
+    let mut count = 1usize;
+    while let Some((x, y)) = queue.pop_front() {
+        if is_goal(x, y) {
+            return (true, start.elapsed().as_micros(), count);
+        }
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let (nx, ny) = (x + dx, y + dy);
+                if !bounds.contains(nx, ny) || visited[idx(nx, ny)] {
+                    continue;
+                }
+                if dense_grid.is_blocked(nx, ny)
+                    && obstacle_map.is_static_blocked(nx, ny)
+                    && !is_goal(nx, ny)
+                {
+                    continue;
+                }
+                visited[idx(nx, ny)] = true;
+                count += 1;
+                queue.push_back((nx, ny));
+            }
+        }
+    }
+    (false, start.elapsed().as_micros(), count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1568,64 +1628,4 @@ mod tests {
                 > 0
         );
     }
-}
-
-/// Diagnostic only (speed pass B3 measurement, 2026-11-05). Necessary
-/// condition for a window to contain a route: an 8-connected path of cells
-/// inside the dense grid from the source cell to a cell within the target
-/// tolerance whose intermediate cells are passable. A cell is impassable
-/// only when the dense grid blocks it AND the obstacle map calls it static:
-/// dynamic cells (and the extra dynamic clearance) may be legalized as a
-/// crossing, port-open cells are already free in the dense grid, and the
-/// source and the goal cells count regardless. Returns (reachable,
-/// microseconds, visited cells).
-fn cell_reachability(
-    dense_grid: &DenseRoutingGrid,
-    obstacle_map: &ObstacleMap,
-    source: State,
-    target: State,
-    config: &AStarConfig,
-) -> (bool, u128, usize) {
-    let start = Instant::now();
-    let bounds = dense_grid.bounds;
-    let width = (bounds.max_x - bounds.min_x + 1) as usize;
-    let height = (bounds.max_y - bounds.min_y + 1) as usize;
-    let tolerance = config.target_tolerance_cells.max(0);
-    let is_goal =
-        |x: i32, y: i32| (x - target.x).abs() <= tolerance && (y - target.y).abs() <= tolerance;
-    if !bounds.contains(source.x, source.y) {
-        return (false, start.elapsed().as_micros(), 0);
-    }
-    let mut visited = vec![false; width * height];
-    let idx = |x: i32, y: i32| (y - bounds.min_y) as usize * width + (x - bounds.min_x) as usize;
-    let mut queue: std::collections::VecDeque<(i32, i32)> = std::collections::VecDeque::new();
-    visited[idx(source.x, source.y)] = true;
-    queue.push_back((source.x, source.y));
-    let mut count = 1usize;
-    while let Some((x, y)) = queue.pop_front() {
-        if is_goal(x, y) {
-            return (true, start.elapsed().as_micros(), count);
-        }
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                if dx == 0 && dy == 0 {
-                    continue;
-                }
-                let (nx, ny) = (x + dx, y + dy);
-                if !bounds.contains(nx, ny) || visited[idx(nx, ny)] {
-                    continue;
-                }
-                if dense_grid.is_blocked(nx, ny)
-                    && obstacle_map.is_static_blocked(nx, ny)
-                    && !is_goal(nx, ny)
-                {
-                    continue;
-                }
-                visited[idx(nx, ny)] = true;
-                count += 1;
-                queue.push_back((nx, ny));
-            }
-        }
-    }
-    (false, start.elapsed().as_micros(), count)
 }
