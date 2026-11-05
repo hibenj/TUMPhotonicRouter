@@ -133,7 +133,20 @@ where
         stats.last_window_area_cells = window_area(bounds);
 
         let effective_cap = effective_max_iterations(config, stats);
-        if let Some(route) = try_bounds(obstacle_map, Some(bounds), stats, effective_cap) {
+        let expanded_before = stats.expanded_states;
+        let route = try_bounds(obstacle_map, Some(bounds), stats, effective_cap);
+        if reachability_diag_enabled() {
+            eprintln!(
+                "window-reachability-diag expansion_idx={} window={}x{} outcome={} expanded={} cap={}",
+                expansion_idx,
+                bounds.max_x - bounds.min_x + 1,
+                bounds.max_y - bounds.min_y + 1,
+                if route.is_some() { "routed" } else { "failed" },
+                stats.expanded_states - expanded_before,
+                effective_cap
+            );
+        }
+        if let Some(route) = route {
             return Some(route);
         }
     }
@@ -661,4 +674,15 @@ mod tests {
         assert_eq!(bounds.min_y, 8);
         assert_eq!(bounds.max_y, 12);
     }
+}
+
+/// Diagnostic only (speed pass B3 measurement, 2026-11-05): set
+/// `PHOTONIC_ROUTER_WINDOW_REACHABILITY_DIAG=1` to run a cell-level
+/// reachability test per window and log its verdict next to the window's
+/// A* outcome. Read once per process.
+pub(crate) fn reachability_diag_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("PHOTONIC_ROUTER_WINDOW_REACHABILITY_DIAG").is_ok_and(|v| v == "1")
+    })
 }
