@@ -131,6 +131,32 @@ impl DenseBitset {
             .unwrap_or(true)
     }
 
+    /// True iff none of the `len` consecutive bits from `idx` is set and
+    /// all of them exist (`get` reports a missing bit as set, so a run that
+    /// leaves the bitset is "not clear" here too). One or two word loads.
+    #[inline]
+    pub(crate) fn run_clear(&self, idx: usize, len: usize) -> bool {
+        debug_assert!((1..=BITSET_WORD_BITS).contains(&len));
+        let word_idx = idx / BITSET_WORD_BITS;
+        let bit_idx = idx % BITSET_WORD_BITS;
+        let Some(&word) = self.bits.get(word_idx) else {
+            return false;
+        };
+        let in_word = (BITSET_WORD_BITS - bit_idx).min(len);
+        let mask = (u64::MAX >> (BITSET_WORD_BITS - in_word)) << bit_idx;
+        if word & mask != 0 {
+            return false;
+        }
+        if in_word == len {
+            return true;
+        }
+        let Some(&next) = self.bits.get(word_idx + 1) else {
+            return false;
+        };
+        let rest = len - in_word;
+        next & (u64::MAX >> (BITSET_WORD_BITS - rest)) == 0
+    }
+
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.bits.len() * size_of::<u64>()
     }
@@ -660,7 +686,21 @@ impl DenseRoutingGrid {
         let min_x = x0.min(x1);
         let max_x = x0.max(x1);
         if max_x - min_x < Self::SHORT_RUN_CELLS {
-            return !(min_x..=max_x).any(|x| self.is_blocked(x, y));
+            // The whole row must lie inside the grid (a cell outside is
+            // blocked), then one index and one or two word loads.
+            if min_x < self.bounds.min_x
+                || max_x > self.bounds.max_x
+                || y < self.bounds.min_y
+                || y > self.bounds.max_y
+            {
+                return false;
+            }
+            let local_x = (min_x - self.bounds.min_x) as usize;
+            let local_y = (y - self.bounds.min_y) as usize;
+            let idx = local_y * (self.width as usize) + local_x;
+            return self
+                .blocked_bits
+                .run_clear(idx, (max_x - min_x + 1) as usize);
         }
         self.rect_free(min_x, max_x, y, y)
     }
@@ -860,6 +900,20 @@ impl DenseRoutingGrid {
 mod tests {
     use super::*;
     use crate::config::KernelDiagnostics;
+
+    #[test]
+    fn run_clear_matches_per_bit_get_across_word_boundaries() {
+        let mut bits = DenseBitset::new(200).unwrap();
+        for idx in [0usize, 5, 63, 64, 100, 127, 128, 199] {
+            bits.set(idx).unwrap();
+        }
+        for idx in 0..200usize {
+            for len in 1..=8usize {
+                let expected = (idx..idx + len).all(|i| !bits.get(i));
+                assert_eq!(bits.run_clear(idx, len), expected, "idx {idx} len {len}");
+            }
+        }
+    }
     use crate::search::astar::config::AStarConfig;
     use crate::search::astar::crossing_rules::{CrossingSearchConfig, CrossingSearchPartner};
     use crate::search::astar::expansion::compact_diagonal_halo_cells;

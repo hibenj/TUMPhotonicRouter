@@ -84,8 +84,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   primitives are rows of one or two cells, and the prefix path was 23 % of
   the instructions, called 520 M times from the footprint, halo and hook
   checks. A cell outside the grid is blocked for both paths, so the answers
-  are identical. 508 core tests, nine-cell gate exact; Benes 16x16
-  lidar-pure expansion counts identical, routing loop 138.7 s (bc2c0d8) -> 113.1 s side by side (131.5 s with A4 alone in the earlier pair).
+  are identical. A short row is one bounds test, one index and one or two
+  word loads (`DenseBitset::run_clear`, equivalence test against per-bit
+  `get` across word boundaries). 509 core tests, nine-cell gate exact; Benes
+  16x16 lidar-pure expansion counts identical, routing loop 138.7 s
+  (bc2c0d8) -> 113.1 s side by side with the first A6 (131.5 s with A4 alone
+  in the earlier pair), 111.5 s with the word-level rows.
 - Speed pass A4 (phase 9): the two reservation parent-chain walks (own-window
   re-entry, own-window overlap) follow a per-node `reservation_ancestor`
   link to the nearest key-bearing node instead of visiting every node of the
