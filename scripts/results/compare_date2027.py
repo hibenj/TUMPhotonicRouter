@@ -97,15 +97,20 @@ def main() -> int:
                 )
                 bad += 1
                 continue
+            # A cell with a `current` block is one whose engine default moved
+            # on purpose after the paper (the JSON's `current_note` says why):
+            # the expectation is the current result, the paper's numbers stay
+            # in the table for reference and the status says `(current)`.
+            expected = cell.get("current") or cell
             problems = []
             if m.get("rc") != "0":
                 problems.append(f"rc={m.get('rc')}")
             if int(m.get("photonic_error_count", -1)) != 0:
                 problems.append(f"errors={m.get('photonic_error_count')}")
-            if m.get("crossing_count") != cell.get("crossing_count"):
+            if m.get("crossing_count") != expected.get("crossing_count"):
                 problems.append("crossings")
             length = m.get("gds_length_um")
-            if length is None or abs(float(length) - float(cell["gds_length_um"])) > LENGTH_TOL_UM:
+            if length is None or abs(float(length) - float(expected["gds_length_um"])) > LENGTH_TOL_UM:
                 problems.append("length")
             t_ratio = (
                 float(m["routing_loop_s"]) / float(cell["routing_loop_s"])
@@ -113,6 +118,8 @@ def main() -> int:
                 else None
             )
             status = "ok" if not problems else "MISMATCH " + ",".join(problems)
+            if "current" in cell:
+                status += " (current)"
             bad += bool(problems)
             t_text = f"{t_ratio:.2f}" if t_ratio is not None else "--"
             print(

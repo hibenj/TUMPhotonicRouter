@@ -79,7 +79,7 @@ impl Default for AStarConfig {
             use_routing_window: true,
             routing_window_min_margin_cells: 12,
             routing_window_scale: 0.35,
-            routing_window_max_expansions: 3,
+            routing_window_max_expansions: 0,
             routing_window_fallback_full_grid: false,
             routing_window_growth: 0.5,
             // 100 M states = about 1.7 GB of eagerly allocated per-attempt
@@ -158,8 +158,15 @@ impl Default for AStarParams {
             use_routing_window: true,
             routing_window_min_margin_cells: 12,
             routing_window_scale: 0.35,
-            routing_window_max_expansions: 3,
-            routing_window_fallback_full_grid: true,
+            // Window 0 only since 2026-11-05 (speed pass S4, owner decision):
+            // on the 27 paper cells every route ever found came from the
+            // first window; the three further expansions and the full-grid
+            // fallback only spent the budget tail of attempts already lost.
+            // The paper's ladder (3 expansions + fallback) is restored with
+            // PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS=3 and
+            // PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID=1.
+            routing_window_max_expansions: 0,
+            routing_window_fallback_full_grid: false,
             routing_window_growth: 0.5,
             max_dense_obstacle_cells: 10_000_000,
             enable_simple_routes: true,

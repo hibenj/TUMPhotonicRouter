@@ -1,5 +1,6 @@
 {
   "definition": "t = routing_loop_s (net routing phase: obstacle map + search with rip-up and repair; contribution 2 plus preplaced_build_s, shown as t_build); LiDAR = lidar_routing_loop_s (Start Detailed Routing -> DrGridRoute succeed/fail); L = gds_length_um (routed polygons + crossing* instances on the WG layer of the routed GDS, area / 0.5 um)",
+  "current_note": "Cells with a `current` block: the engine's default changed on purpose after the paper and compare_date2027.py checks against `current` instead of the paper's numbers. 2026-11-05 (speed pass S4): the window ladder is window 0 only (routing_window_max_expansions 0, no full-grid fallback); on the 27 paper cells every route ever found came from window 0, the three further expansions and the fallback only spent the budget tail of attempts already lost. 24 cells are unchanged; these three moved. The paper's ladder is restored with PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS=3 PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID=1 (ablation variant paper_ladder).",
   "benes_rows": "benes_<n>x<n>_flat archives (switches expanded into their primitives plus the internal nets, the netlist LiDAR routes) on the frozen engine 8ddde83",
   "means": {
     "n": 8,
@@ -254,7 +255,12 @@
         "config": "contribution1",
         "routing_loop_s": 182.276,
         "gds_length_um": 334816.567,
-        "crossing_count": 121
+        "crossing_count": 121,
+        "current": {
+          "crossing_count": 121,
+          "gds_length_um": 334827.361,
+          "since": "2026-11-05 window-0 ladder (S4)"
+        }
       },
       "contribution2": {
         "archive": "results/multiportmmi_32x32/contribution2/20260917-155500",
@@ -279,14 +285,24 @@
         "config": "lidar-pure",
         "routing_loop_s": 3265.555,
         "gds_length_um": 1305628.208,
-        "crossing_count": 217
+        "crossing_count": 217,
+        "current": {
+          "crossing_count": 213,
+          "gds_length_um": 1305375.37,
+          "since": "2026-11-05 window-0 ladder (S4)"
+        }
       },
       "contribution1": {
         "archive": "results/multiportmmi_64x64/contribution1/20260916-190920",
         "config": "contribution1",
         "routing_loop_s": 969.206,
         "gds_length_um": 1302769.96,
-        "crossing_count": 209
+        "crossing_count": 209,
+        "current": {
+          "crossing_count": 209,
+          "gds_length_um": 1302768.792,
+          "since": "2026-11-05 window-0 ladder (S4)"
+        }
       },
       "contribution2": {
         "archive": "results/multiportmmi_64x64/contribution2/20260917-155529",

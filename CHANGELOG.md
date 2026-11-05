@@ -84,6 +84,24 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The window ladder's default is window 0 only (speed pass S4, owner decision
+  2026-11-05): `routing_window_max_expansions` 3 -> 0 and
+  `routing_window_fallback_full_grid` on -> off in the kernel defaults and the
+  `AStarConfig` binding signature. On the 27 paper cells every route ever
+  found came from window 0 (per-window log of ADEPT 64 lidar-pure: 370 + 44 +
+  92 successes in window 0, one in window 1, none from the fallback), the
+  three further expansions and the fallback only spent the budget tail of
+  attempts already lost. Results: 24 cells identical, ADEPT 64 lidar-pure 217
+  -> 213 crossings and -0.02 % length, ADEPT 32 c1 +0.003 %, ADEPT 64 c1
+  -0.0001 %; total wall 0.91 of the round-2 head on the server, ADEPT 64
+  lidar-pure 0.88, ADEPT 32 c1 0.47. `docs/date2027_table_sources.json`
+  carries a `current` block for the three cells and `compare_date2027.py`
+  checks against it (status `(current)`); the paper's ladder is the ablation
+  variant `paper_ladder` (`PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS=3`,
+  `PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID=1`). The variants
+  `window0_only` / `window0_full_budget` of the previous entry are gone
+  (`first_attempt_full_budget` covers the second; B1 stays off: six length
+  moves and Benes 16 c1 twice as slow).
 - Speed pass A7 (phase 9), exact: the two straight-run geometry values of a
   primitive (initial straight run for its start angle, terminal straight
   run for its end angle) are computed once per primitive into

@@ -221,12 +221,13 @@ class SearchTuning:
     #: `None`; the site tests `is True`.
     long_straight_exempt_dense_fanout: bool | None = None
     #: `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS`: non-negative int, `None`
-    #: = unset (the kernel's default ladder, 3 expansions). Strategy switch
-    #: (speed pass S4, 2026-11-05): `0` searches window 0 only.
+    #: = unset = the kernel's default, which since 2026-11-05 (speed pass S4)
+    #: is `0`: window 0 only. The paper's ladder is `3` (with the fallback
+    #: below set to `1`); the ablation variant `paper_ladder` sets both.
     routing_window_max_expansions: int | None = None
     #: `PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID`: `0` or `1`, `None`
-    #: = unset (the kernel's default, on). Speed pass S4: `0` drops the
-    #: full-grid fallback after the ladder.
+    #: = unset = the kernel's default, off since 2026-11-05 (speed pass S4).
+    #: `1` restores the paper's full-grid fallback after the ladder.
     routing_window_fallback_full_grid: bool | None = None
 
 

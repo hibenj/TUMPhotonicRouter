@@ -128,7 +128,15 @@ scripts/results/plm_baseline.sh                  # all thirteen PLM cells, into 
 ```
 
 `gate_short.sh` ends with `all reproduced cells match` when crossings and GDS
-length are exact and the verifier reports no error. Provenance, the engine
+length are exact and the verifier reports no error. Three cells carry a
+`current` block in `docs/date2027_table_sources.json` (ADEPT 32x32
+contribution 1, ADEPT 64x64 baseline and contribution 1): since 2026-11-05 the
+search runs its first routing window only (the paper's window ladder never
+produced a route beyond window 0 on any cell), which leaves 24 cells
+unchanged, improves ADEPT 64x64 baseline from 217 to 213 crossings and moves
+the three lengths by at most 0.02 %; the comparison checks those cells
+against `current` and marks them `(current)`. The paper's ladder is restored
+with the `paper_ladder` ablation variant. Provenance, the engine
 commits behind each row and the archived runs (attached to the
 `date2027-results` release) are in
 [`docs/DATE2027_REPRODUCTION.md`](docs/DATE2027_REPRODUCTION.md); the
