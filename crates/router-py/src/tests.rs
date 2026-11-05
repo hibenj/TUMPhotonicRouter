@@ -23,6 +23,7 @@ fn test_router_config(search_engine: &str) -> PyResult<PyRouterConfig> {
         false,
         false,
         false,
+        false, // negotiation_first_attempt_full_budget
         false,
         false,
         None,

@@ -14,6 +14,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `NegotiationConfig.first_attempt_full_budget` /
+  `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET` (speed pass B1,
+  default off): a never-failed net's first attempt runs at the retry budget
+  and the retry is skipped. Experiment 1 showed the heavy cells spending 20
+  to 60 % of all expansions on 2 M first attempts that then failed; the
+  change is not exact (the per-window cap follows the budget), so the 27-cell
+  table decides.
 - The path-length-matching baseline and gate (phase 6 slice 0): `scripts/results/plm_baseline.sh`
   routes `heater_s_mod` and the twelve `cascade_{8,12,16}_{compact,diagonal,folded,
   folded_compact}` under their stable flags into `results_plm/` (config label `plm`,

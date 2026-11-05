@@ -304,11 +304,22 @@ impl Router {
         // outside the last round -- one retry at the larger first-retry
         // budget before probe and rip-up run at all (owner decision
         // 2026-09-15 01:30).
-        let first = PlainAttempt::first(budget(AttemptKind::First), crossing_free);
+        // Speed pass B1 (switch `first_attempt_full_budget`, default off): the
+        // never-failed net's single attempt runs at the retry budget and the
+        // retry below is skipped. The heavy cells spent 20 to 60 % of all
+        // expansions on 2 M first attempts that then failed (experiment 1);
+        // not exact (the per-window cap follows the budget), so the 27-cell
+        // table decides whether it becomes the default.
+        let retry_eligible = failed_count == 0 && round != max_rounds;
+        let full_budget_first = ctx.negotiation.first_attempt_full_budget && retry_eligible;
+        let first_budget = if full_budget_first {
+            budget(AttemptKind::FirstRetry)
+        } else {
+            budget(AttemptKind::First)
+        };
+        let first = PlainAttempt::first(first_budget, crossing_free);
         let mut outcome = self.run_plain_attempt(state.batch, job, &args, first);
-        if matches!(outcome, PlainRouteOutcome::NotResolved)
-            && failed_count == 0
-            && round != max_rounds
+        if matches!(outcome, PlainRouteOutcome::NotResolved) && retry_eligible && !full_budget_first
         {
             let retry = PlainAttempt::first_retry(budget(AttemptKind::FirstRetry), crossing_free);
             outcome = self.run_plain_attempt(state.batch, job, &args, retry);

@@ -642,6 +642,8 @@ pub struct PyRouterConfig {
     pub negotiation_disable_source_column_widening: bool,
     #[pyo3(get)]
     pub negotiation_disable_post_ripup_guidance: bool,
+    #[pyo3(get, set)]
+    pub negotiation_first_attempt_full_budget: bool,
     #[pyo3(get)]
     pub negotiation_disable_simple_route_probe: bool,
     #[pyo3(get)]
@@ -732,6 +734,7 @@ impl PyRouterConfig {
         negotiation_disable_braid_repair=false,
         negotiation_disable_source_column_widening=false,
         negotiation_disable_post_ripup_guidance=false,
+        negotiation_first_attempt_full_budget=false,
         negotiation_disable_simple_route_probe=false,
         negotiation_history_on_first_attempt=false,
         search_astar_timeout_ms=None,
@@ -780,6 +783,7 @@ impl PyRouterConfig {
         negotiation_disable_braid_repair: bool,
         negotiation_disable_source_column_widening: bool,
         negotiation_disable_post_ripup_guidance: bool,
+        negotiation_first_attempt_full_budget: bool,
         negotiation_disable_simple_route_probe: bool,
         negotiation_history_on_first_attempt: bool,
         search_astar_timeout_ms: Option<u64>,
@@ -832,6 +836,7 @@ impl PyRouterConfig {
             negotiation_disable_braid_repair,
             negotiation_disable_source_column_widening,
             negotiation_disable_post_ripup_guidance,
+            negotiation_first_attempt_full_budget,
             negotiation_disable_simple_route_probe,
             negotiation_history_on_first_attempt,
             search_astar_timeout_ms,
@@ -892,6 +897,7 @@ impl From<&PyRouterConfig> for RouterConfig {
                 disable_braid_repair: cfg.negotiation_disable_braid_repair,
                 disable_source_column_widening: cfg.negotiation_disable_source_column_widening,
                 disable_post_ripup_guidance: cfg.negotiation_disable_post_ripup_guidance,
+                first_attempt_full_budget: cfg.negotiation_first_attempt_full_budget,
                 disable_simple_route_probe: cfg.negotiation_disable_simple_route_probe,
                 history_on_first_attempt: cfg.negotiation_history_on_first_attempt,
             },

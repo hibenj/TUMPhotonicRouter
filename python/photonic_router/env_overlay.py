@@ -392,6 +392,11 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         presence,
     ),
     EnvVar(
+        _PREFIX + "NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET",
+        ("router", "negotiation", "first_attempt_full_budget"),
+        presence,
+    ),
+    EnvVar(
         _PREFIX + "NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE",
         ("router", "negotiation", "disable_simple_route_probe"),
         presence,

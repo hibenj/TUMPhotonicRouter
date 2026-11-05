@@ -602,6 +602,7 @@ class RouterConfig:
         negotiation_disable_braid_repair: Any = False,
         negotiation_disable_source_column_widening: Any = False,
         negotiation_disable_post_ripup_guidance: Any = False,
+        negotiation_first_attempt_full_budget: Any = False,
         negotiation_disable_simple_route_probe: Any = False,
         negotiation_history_on_first_attempt: Any = False,
         search_astar_timeout_ms: Any = None,
@@ -720,6 +721,8 @@ class RouterConfig:
     def negotiation_disable_simple_route_probe(self) -> Any: ...
     @property
     def negotiation_disable_source_column_widening(self) -> Any: ...
+    @property
+    def negotiation_first_attempt_full_budget(self) -> Any: ...
     @property
     def negotiation_history_on_first_attempt(self) -> Any: ...
     @property
