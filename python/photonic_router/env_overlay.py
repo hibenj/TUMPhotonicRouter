@@ -450,11 +450,6 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("router", "crossing", "disable_rust_crossing_validation"),
         presence,
     ),
-    EnvVar(
-        _PREFIX + "UNIFIED_CROSSING_LEGALITY",
-        ("router", "crossing", "unified_legality"),
-        presence,
-    ),
     # Diagnostics (src/py_router.rs)
     EnvVar(_PREFIX + "NATIVE_PROGRESS", ("router", "diagnostics", "native_progress"), presence),
     EnvVar(
@@ -804,8 +799,8 @@ def apply_env_overlay(config: object, environ: Mapping[str, str] | None = None) 
 
 __all__ = [
     "ENV_OVERLAY",
-    "EnvVar",
     "SPECIALLY_HANDLED_NAMES",
+    "EnvVar",
     "apply_env_overlay",
     "cell_pair",
     "cell_pairs_semicolon",

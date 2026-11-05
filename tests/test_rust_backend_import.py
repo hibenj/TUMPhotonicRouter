@@ -46,9 +46,7 @@ def test_router_crossing_context_is_disabled_by_default():
     assert cfg.crossing_half_size_cells == 0
 
 
-def _collision_crossing_router(
-    *, crossing_half_size_cells: int = 0, unified_legality: bool = False
-):
+def _collision_crossing_router(*, crossing_half_size_cells: int = 0):
     backend = _load_rust_backend()
     assert backend is not None
 
@@ -68,7 +66,7 @@ def _collision_crossing_router(
             use_routing_window=False,
             heuristic_mode="distance",
         ),
-        backend.RouterConfig(crossing_unified_legality=unified_legality),
+        backend.RouterConfig(),
     )
     router.set_crossing_config(
         backend.CrossingConfig(
@@ -111,10 +109,9 @@ def test_collision_crossing_route_uses_local_dynamic_intersection():
     assert tuple(events[0]["partner_segment"]) == ((8, 2), (8, 10))
 
 
-def test_unified_legality_verdicts_match_the_events_and_the_python_verifier():
-    """Phase 4 slice B: with `crossing_unified_legality` the router records
-    one verdict per realized crossing, and the Python verifier's
-    classification is that verdict, not a re-decision."""
+def test_crossing_verdicts_match_the_events_and_the_python_verifier():
+    """The router records one verdict per realized crossing, and the Python
+    verifier's classification is that verdict, not a re-decision."""
     from types import SimpleNamespace
 
     from photonic_router.crossings.route_rust_crossing_verification import (
@@ -125,7 +122,7 @@ def test_unified_legality_verdicts_match_the_events_and_the_python_verifier():
     from photonic_router.records.route_rust_types import RoutedNetRecord
     from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 
-    backend, router = _collision_crossing_router(crossing_half_size_cells=1, unified_legality=True)
+    backend, router = _collision_crossing_router(crossing_half_size_cells=1)
     assert router.crossing_verdicts() == []
 
     router.route_single_net_and_commit(
@@ -174,7 +171,6 @@ def test_unified_legality_verdicts_match_the_events_and_the_python_verifier():
         native_crossing_events=events,
         realization_grid_spec=grid_spec,
         native_crossing_verdicts=verdicts,
-        unified_legality=True,
     )
     assert illegal == []
     native = info.realized_intersections[0]
@@ -207,7 +203,6 @@ def test_unified_legality_verdicts_match_the_events_and_the_python_verifier():
         },
         realization_grid_spec=grid_spec,
         native_crossing_verdicts=verdicts,
-        unified_legality=True,
     )
     assert illegal == []
     crossing = full_info.realized_intersections[0]

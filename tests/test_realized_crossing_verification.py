@@ -65,6 +65,7 @@ def test_realized_crossing_verifier_accepts_straight_expected_crossing():
             2: _record("b", ((5.0, 0.0), (5.0, 10.0))),
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[_rust_verdict()],
     )
 
     assert illegal == []
@@ -84,6 +85,7 @@ def test_realized_crossing_verifier_allows_lidar_pure_unexpected_crossing():
             2: _record("b", ((10.0, 0.0), (10.0, 20.0))),
         },
         realization_grid_spec=(24, 24, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[_rust_verdict(point=(10.0, 10.0))],
     )
 
     assert illegal == []
@@ -104,6 +106,11 @@ def test_realized_crossing_verifier_rejects_lidar_pure_non_perpendicular_crossin
             2: _record("b", ((10.0, 0.0), (14.0, 20.0))),
         },
         realization_grid_spec=(24, 24, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[
+            _rust_verdict(
+                point=(12.0, 10.0), legal=False, reason="not_perpendicular", perpendicular=False
+            )
+        ],
     )
 
     assert len(illegal) == 1
@@ -132,6 +139,7 @@ def test_realized_crossing_verifier_uses_route_waypoint_fallback():
             2: _record("b", ((5.0, 0.0), (5.0, 10.0))),
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[_rust_verdict()],
     )
 
     assert illegal == []
@@ -170,6 +178,7 @@ def test_realized_crossing_verifier_compresses_collinear_points():
             2: _record("b", ((5.0, 0.0), (5.0, 2.0), (5.0, 5.0), (5.0, 10.0))),
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[_rust_verdict()],
     )
 
     assert illegal == []
@@ -187,14 +196,24 @@ def test_realized_crossing_verifier_rejects_expected_bend_crossing():
             2: _record("b", ((5.0, 0.0), (5.0, 10.0))),
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[
+            _rust_verdict(
+                net_id=1,
+                partner_net_id=2,
+                legal=False,
+                reason="margin_short_route_after",
+                margin_side="route_after",
+                route_after_cells=0.0,
+            )
+        ],
     )
 
     reasons = {item["reason"] for item in illegal}
-    assert reasons == {"crossing_footprint_contains_bend", "collinear_route_overlap"}
+    assert reasons == {"margin_short_route_after", "collinear_route_overlap"}
     assert {item["classification"] for item in illegal} == {"illegal_unexpected_crossing"}
 
 
-def test_realized_crossing_verifier_reports_search_margin_from_half_size_and_runout():
+def test_realized_crossing_verifier_reports_the_one_margin_from_half_size_and_runout():
     info = _plan_info()
     info.bend_runout_cells_per_crossing = 3
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
@@ -206,6 +225,15 @@ def test_realized_crossing_verifier_reports_search_margin_from_half_size_and_run
             2: _record("b", ((5.0, 1.0), (5.0, 9.0))),
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[
+            _rust_verdict(
+                required_margin_cells=5,
+                route_before_cells=4.0,
+                route_after_cells=4.0,
+                partner_before_cells=4.0,
+                partner_after_cells=4.0,
+            )
+        ],
     )
 
     assert illegal == []
@@ -215,8 +243,8 @@ def test_realized_crossing_verifier_reports_search_margin_from_half_size_and_run
     assert crossing["segment_a_margin_um"] == 4.0
     assert crossing["segment_b_margin_um"] == 4.0
     assert crossing["crossing_footprint_um"] == 8.0
-    assert crossing["required_margin_um"] == 4.0
-    assert crossing["search_required_margin_um"] == 7.0
+    assert crossing["required_margin_um"] == 5.0
+    assert crossing["search_required_margin_um"] == 5.0
 
 
 def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():
@@ -253,6 +281,10 @@ def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():
             4: _record("d", ((6.0, -2.0), (6.0, 14.0))),
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[
+            _rust_verdict(point=(0.0, 0.0)),
+            _rust_verdict(net_id=4, partner_net_id=3, point=(6.0, 6.0)),
+        ],
     )
 
     reasons = {item["reason"] for item in illegal}
@@ -279,6 +311,10 @@ def test_realized_crossing_verifier_rejects_lidar_pure_overlapping_crossing_foot
             4: _record("d", ((7.0, 1.0), (7.0, 15.0))),
         },
         realization_grid_spec=(30, 30, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[
+            _rust_verdict(point=(0.0, 0.0)),
+            _rust_verdict(net_id=4, partner_net_id=3, point=(7.0, 7.0)),
+        ],
     )
 
     reasons = {item["reason"] for item in illegal}
@@ -298,11 +334,14 @@ def test_realized_crossing_verifier_rejects_route_inside_crossing_footprint():
             3: _record("c", ((1.0, 7.0), (4.0, 7.0))),
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+        native_crossing_verdicts=[
+            _rust_verdict(legal=False, reason="footprint_blocked", footprint_blocked=True)
+        ],
     )
 
     assert len(illegal) == 1
-    assert illegal[0]["reason"] == "crossing_footprint_contains_route_geometry"
-    assert illegal[0]["crossing_footprint_blockers"][0]["net_id"] == 3
+    assert illegal[0]["reason"] == "footprint_blocked"
+    assert illegal[0]["rust_verdict"]["footprint_blocked"] is True
 
 
 def test_realized_crossing_verifier_rejects_lidar_pure_footprint_blocker():
@@ -319,13 +358,17 @@ def test_realized_crossing_verifier_rejects_lidar_pure_footprint_blocker():
             3: _record("c", ((1.0, 7.0), (4.0, 7.0))),
         },
         realization_grid_spec=(20, 20, 2.0, 0.0, 0.0),
+        native_crossing_verdicts=[
+            _rust_verdict(
+                legal=False, reason="footprint_blocked", footprint_blocked=True, grid_size_um=2.0
+            )
+        ],
     )
 
     assert len(illegal) == 1
     crossing = info.realized_intersections[0]
     assert crossing["classification"] == "illegal_unexpected_crossing"
-    assert crossing["reason"] == "crossing_footprint_contains_route_geometry"
-    assert crossing["crossing_footprint_blockers"][0]["net_id"] == 3
+    assert crossing["reason"] == "footprint_blocked"
 
 
 def test_realized_crossing_verifier_ignores_route_endpoint_access():
@@ -368,6 +411,7 @@ def test_realized_crossing_verifier_does_not_treat_a_midroute_opened_cell_as_end
             2: _record("b", ((50.0, 0.0), (50.0, 100.0))),
         },
         realization_grid_spec=(80, 80, 2.0, 0.0, 0.0),
+        native_crossing_verdicts=[_rust_verdict(point=(50.0, 50.0), grid_size_um=2.0)],
     )
 
     assert illegal == []
@@ -394,6 +438,15 @@ def test_realized_crossing_verifier_rejects_opened_cell_crossing_near_endpoint()
             2: _record("b", ((6.0, 0.0), (12.0, 20.0))),
         },
         realization_grid_spec=(30, 30, 2.0, 0.0, 0.0),
+        native_crossing_verdicts=[
+            _rust_verdict(
+                point=(8.571, 8.571),
+                legal=False,
+                reason="not_perpendicular",
+                perpendicular=False,
+                grid_size_um=2.0,
+            )
+        ],
     )
 
     assert len(illegal) == 1
@@ -419,12 +472,21 @@ def test_realized_crossing_verifier_rejects_opened_cell_crossing_near_internal_b
             2: _record("b", ((0.0, 0.0), (9.9, 9.9), (20.0, 14.0))),
         },
         realization_grid_spec=(30, 30, 2.0, 0.0, 0.0),
+        native_crossing_verdicts=[
+            _rust_verdict(
+                point=(10.04, 9.96),
+                legal=False,
+                reason="not_perpendicular",
+                perpendicular=False,
+                grid_size_um=2.0,
+            )
+        ],
     )
 
     assert len(illegal) == 1
     assert illegal[0]["classification"] == "illegal_unexpected_crossing"
     assert illegal[0]["perpendicular"] is False
-    assert illegal[0]["reason"] == "crossing_footprint_contains_bend"
+    assert illegal[0]["reason"] == "not_perpendicular"
     assert info.ignored_endpoint_access_intersection_count == 0
 
 
@@ -648,7 +710,7 @@ def test_insertion_loss_report_uses_final_realized_intersections():
     assert by_net_id[1]["crossing_loss"] == 0.2
 
 
-# --- phase 4 slice B: the verifier reports the Rust verdicts under the switch ---
+# --- the verifier reports the Rust verdicts ---
 
 
 def _rust_verdict(**overrides: object) -> dict[str, object]:
@@ -703,7 +765,6 @@ def test_unified_verifier_reports_the_rust_verdict_instead_of_deciding():
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
         native_crossing_verdicts=[verdict],
-        unified_legality=True,
     )
 
     assert illegal == []
@@ -754,7 +815,6 @@ def test_unified_verifier_classification_equals_the_rust_verdict(reason, margin_
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
         native_crossing_verdicts=[verdict],
-        unified_legality=True,
     )
 
     assert len(illegal) == 1
@@ -780,30 +840,12 @@ def test_unified_verifier_does_not_retest_the_geometry():
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
         native_crossing_verdicts=[verdict],
-        unified_legality=True,
     )
 
     assert illegal == []
     crossing = info.realized_intersections[0]
     assert crossing["classification"] == "legal_expected_crossing"
     assert crossing["perpendicular"] is True
-
-    # Switch off: the same inputs are re-decided from the geometry, as before.
-    legacy_info = _unified_plan_info()
-    legacy_illegal = _verify_realized_route_intersections(
-        crossing_plan_info=legacy_info,
-        routed_records_by_net_id={
-            1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
-            2: _record("b", ((5.0, 0.0), (7.0, 10.0))),
-        },
-        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
-        native_crossing_verdicts=[verdict],
-        unified_legality=False,
-    )
-    assert len(legacy_illegal) == 1
-    legacy_crossing = legacy_info.realized_intersections[0]
-    assert legacy_crossing["reason"] == "not_perpendicular"
-    assert "legality_source" not in legacy_crossing
 
 
 def test_unified_verifier_calls_an_intersection_without_a_rust_verdict_missing_event():
@@ -817,7 +859,6 @@ def test_unified_verifier_calls_an_intersection_without_a_rust_verdict_missing_e
         },
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
         native_crossing_verdicts=[],
-        unified_legality=True,
     )
 
     assert len(illegal) == 1
@@ -860,7 +901,6 @@ def test_unified_native_events_path_reports_the_verdict_and_unmatched_verdicts()
         native_crossing_events=[event],
         realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
         native_crossing_verdicts=[_rust_verdict(), short],
-        unified_legality=True,
     )
 
     assert len(info.realized_intersections) == 2
@@ -876,17 +916,3 @@ def test_unified_native_events_path_reports_the_verdict_and_unmatched_verdicts()
     assert unmatched["segment_a_margin_um"] == 5.0  # net 3 is the route: 5 cells
     assert unmatched["segment_b_margin_um"] == 1.0  # net 1 is the partner: 1 cell
     assert illegal == [unmatched]
-
-    # Switch off: the events are trusted as before and the verdicts ignored.
-    legacy_info = _unified_plan_info()
-    legacy_illegal = _populate_realized_intersections_from_native_crossing_events(
-        crossing_plan_info=legacy_info,
-        routed_records_by_net_id={},
-        native_crossing_events=[event],
-        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
-        native_crossing_verdicts=[_rust_verdict(), short],
-        unified_legality=False,
-    )
-    assert legacy_illegal == []
-    assert len(legacy_info.realized_intersections) == 1
-    assert "legality_source" not in legacy_info.realized_intersections[0]

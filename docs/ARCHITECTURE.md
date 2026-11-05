@@ -378,9 +378,8 @@ correction and crossing metadata that realization and verification read.
 
 **Crossing events and verdicts.** A committed crossing is a `CrossingEvent`
 (`src/engine/crossing_reservation.rs`: the two net ids, the point, the two
-grid segments and headings, the reserved cells). Under the unified legality
-switch (section 9) every realized intersection also gets a
-`CrossingVerdictRecord` with the `CrossingCandidate` (the two directions,
+grid segments and headings, the reserved cells). Every realized intersection
+also gets a `CrossingVerdictRecord` with the `CrossingCandidate` (the two directions,
 the four straight runs, the point, the nearest other crossings), the
 `CrossingLegalityRule` (`half_size_cells`, `bend_runout_cells`) and the
 `CrossingVerdict`: `Legal`, `NotPerpendicular`, `MarginShort { side }`,
@@ -794,11 +793,10 @@ is the reference, not regenerated here.
 These exist to measure alternatives; all are off (or neutral) by default, so
 the defaults route the paper's numbers.
 
-* **Unified crossing legality**, `RouterConfig.crossing.unified_legality`
-  (`PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`, presence). On, the search
-  hook (`crossing_rules.rs`), the commit check and the post-commit validation
-  all decide a crossing with one predicate,
-  `crossing_geometry::crossing_legality(&CrossingCandidate,
+* **Crossing legality has no switch.** Since 2026-11-05 (owner decision
+  after the 27-cell ablation) the search hook (`crossing_rules.rs`), the
+  commit check and the post-commit validation all decide a crossing with the
+  one predicate `crossing_geometry::crossing_legality(&CrossingCandidate,
   &CrossingLegalityRule) -> CrossingVerdict`: one perpendicularity test
   (normalised dot product within 1e-6); one margin, `required_margin_cells =
   half_size + bend_runout`, on the grid route (where a bend contributes its
@@ -810,10 +808,10 @@ the defaults route the paper's numbers.
   footprint (no third net's dynamic cell in the window) and, post-commit,
   the registered event. The verdict records are committed state: a rip-up
   drops them and the braid rollback restores them with the events. Python
-  (`route_rust_crossing_verification.py`) then classifies realized crossings
-  from the verdicts instead of re-deciding them. Off, the three legacy paths
-  and the Python re-decision run as before. It is a switch until the 27-cell
-  ablation decides which side stays.
+  (`route_rust_crossing_verification.py`) classifies realized crossings from
+  the verdicts and never re-decides them. The paper's three legacy paths
+  live on at the tag `date2027-results`; the cells whose numbers moved carry
+  a `current` block in `docs/date2027_table_sources.json`.
 * **Negotiation switches** (`NegotiationConfig`, overlay
   `PHOTONIC_ROUTER_NEGOTIATED_*` and `PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR`):
   `disable_braid_repair`, `braid_escalation`, `crossing_free_unplanned`

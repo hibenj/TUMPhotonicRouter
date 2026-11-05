@@ -671,8 +671,8 @@ pub(crate) fn grid_angle_direction(angle: u8) -> (f64, f64) {
     (f64::from(dx), f64::from(dy))
 }
 
-/// THE crossing-legality predicate (do-over phase 4 slice B, behind
-/// `RouterConfig::crossing.unified_legality`). The search hook, the commit
+/// THE crossing-legality predicate (do-over phase 4 slice B; the only one
+/// since 2026-11-05). The search hook, the commit
 /// check and the post-commit validation all call it with the same rule, so
 /// the search never produces a crossing the commit rejects. Tests, in
 /// order: perpendicular; route before >= `required_margin_cells`; route

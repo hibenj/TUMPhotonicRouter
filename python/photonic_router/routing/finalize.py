@@ -582,9 +582,8 @@ def _current_crossing_points_by_net_id(settings, state) -> dict[int, list[tuple[
         return {}
     if not raw_events:
         return {}
-    unified_legality = bool(settings.router_config.crossing.unified_legality)
     raw_verdicts: list[Any] = []
-    if unified_legality and hasattr(state.router, "crossing_verdicts"):
+    if hasattr(state.router, "crossing_verdicts"):
         raw_verdicts = list(cast(Iterable[Any], state.router.crossing_verdicts()))
     _populate_realized_intersections_from_native_crossing_events(
         crossing_plan_info=state.crossing_plan_info,
@@ -592,7 +591,6 @@ def _current_crossing_points_by_net_id(settings, state) -> dict[int, list[tuple[
         native_crossing_events=raw_events,
         realization_grid_spec=state.realization_grid_spec,
         native_crossing_verdicts=raw_verdicts,
-        unified_legality=unified_legality,
     )
     return _legal_crossing_points_by_net_id(state.crossing_plan_info.to_dict())
 

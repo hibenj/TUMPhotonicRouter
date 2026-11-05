@@ -1297,7 +1297,6 @@ mod tests {
             }],
             crossing_half_size_cells: 0,
             bend_runout_cells: 0,
-            unified_legality: false,
             crossing_loss: 3.0,
             terminal_bump_guard: None,
         };

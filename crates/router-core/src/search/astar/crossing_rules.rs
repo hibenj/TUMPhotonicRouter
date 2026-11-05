@@ -48,13 +48,13 @@ pub struct CrossingSearchPartner {
     /// search key (`crossed_mask`, one bit per budgeted partner, at most 64
     /// -- partners beyond that stay unbudgeted).
     pub single_discounted_crossing: bool,
-    /// Phase 4 slice B-2 (`unified_legality` only; empty otherwise): the
+    /// Phase 4 slice B-2: the
     /// centres, in grid coordinates (the snapped cell the reservation is
     /// built around), of the crossing elements already registered on THIS
     /// partner with other nets. The unified predicate judges a candidate
     /// crossing's window against the nearest of them (`TooClose {
-    /// Registered }`); the legacy path meets the same elements as static
-    /// reservation cells in `crossing_reservation_window_is_clear`.
+    /// Registered }`); the same elements are also static reservation
+    /// cells for `crossing_reservation_window_is_clear`.
     pub registered_crossing_centres: Vec<(f64, f64)>,
 }
 
@@ -84,12 +84,6 @@ pub struct CrossingSearchConfig {
     pub bend_runout_cells: i32,
     pub crossing_loss: f64,
     pub terminal_bump_guard: Option<TerminalBumpGuard>,
-    /// `RouterConfig::crossing.unified_legality` (do-over phase 4 slice B):
-    /// decide every crossing candidate of the search with the one predicate
-    /// `crate::engine::crossing_geometry::crossing_legality`, built from the
-    /// same numbers the legacy checks below read. Off: the legacy checks
-    /// decide, exactly as before.
-    pub unified_legality: bool,
 }
 
 pub(crate) fn crossing_required_margin_cells(
@@ -1094,9 +1088,9 @@ pub(crate) fn record_perpendicular_crossing_reject(
 /// (0 for the others and for budgeted partners beyond the 64th). The budget
 /// bits are the only use of `crossed_mask` (the window mode's partner
 /// tracking that once shared the field is gone).
-/// Books a reject of the unified predicate on the legacy counters: the
-/// same counter the legacy check for that reason incremented, so the search
-/// statistics keep their meaning across the switch.
+/// Books a reject of the predicate on the search statistics: the counter
+/// the paper engine's check for that reason incremented, so the statistics
+/// keep their meaning.
 pub(crate) fn record_unified_crossing_reject(
     stats: &mut RouteSearchStats,
     crossing: &CrossingSearchConfig,
@@ -1439,138 +1433,51 @@ pub(crate) fn crossing_move_outcome_with_segments(
                     {
                         continue;
                     }
-                    if crossing.unified_legality {
-                        // Phase 4 slice B: the one predicate decides, from the
-                        // same numbers the legacy checks below read. A
-                        // crossing in the move's LAST segment owes its
-                        // straight-after cells to the following pure
-                        // straights (`pending_after_crossing_cells`), so only
-                        // an inner segment can be short after the point here.
-                        let rule = CrossingLegalityRule {
-                            half_size_cells: crossing.crossing_half_size_cells,
-                            bend_runout_cells: crossing.bend_runout_cells,
-                        };
-                        let segment_is_terminal = route_segment_idx + 1 == primitive_segments.len();
-                        // Slice B-2: the same-route neighbours the hook
-                        // knows are this move's earlier intersections (the
-                        // kernel's chain check keeps the windows of earlier
-                        // moves disjoint; the search state carries no
-                        // crossing positions); the registered neighbours
-                        // are the partner's committed crossing elements.
-                        let candidate = CrossingCandidate {
-                            route_direction: grid_angle_direction(route_segment.angle),
-                            partner_direction: grid_angle_direction(partner_segment.angle),
-                            route_before_cells: if route_segment.starts_after_kink {
-                                distance_on_segment
-                            } else {
-                                f64::from(current_key.straight_run_cells) + distance_on_segment
-                            },
-                            route_after_cells: if segment_is_terminal {
-                                f64::INFINITY
-                            } else {
-                                route_segment.length - distance_on_segment
-                            },
-                            partner_before_cells: u * partner_segment.length,
-                            partner_after_cells: (1.0 - u) * partner_segment.length,
-                            point: (x, y),
-                            nearest_same_route: nearest_crossing_neighbour(
-                                (x, y),
-                                crossing.crossing_half_size_cells,
-                                route_intersections.iter().map(
-                                    |existing: &CrossingRouteIntersection| (existing.x, existing.y),
-                                ),
+                    // The one predicate decides. A
+                    // crossing in the move's LAST segment owes its
+                    // straight-after cells to the following pure
+                    // straights (`pending_after_crossing_cells`), so only
+                    // an inner segment can be short after the point here.
+                    let rule = CrossingLegalityRule {
+                        half_size_cells: crossing.crossing_half_size_cells,
+                        bend_runout_cells: crossing.bend_runout_cells,
+                    };
+                    let segment_is_terminal = route_segment_idx + 1 == primitive_segments.len();
+                    // Slice B-2: the same-route neighbours the hook
+                    // knows are this move's earlier intersections (the
+                    // kernel's chain check keeps the windows of earlier
+                    // moves disjoint; the search state carries no
+                    // crossing positions); the registered neighbours
+                    // are the partner's committed crossing elements.
+                    let candidate = CrossingCandidate {
+                        route_direction: grid_angle_direction(route_segment.angle),
+                        partner_direction: grid_angle_direction(partner_segment.angle),
+                        route_before_cells: if route_segment.starts_after_kink {
+                            distance_on_segment
+                        } else {
+                            f64::from(current_key.straight_run_cells) + distance_on_segment
+                        },
+                        route_after_cells: if segment_is_terminal {
+                            f64::INFINITY
+                        } else {
+                            route_segment.length - distance_on_segment
+                        },
+                        partner_before_cells: u * partner_segment.length,
+                        partner_after_cells: (1.0 - u) * partner_segment.length,
+                        point: (x, y),
+                        nearest_same_route: nearest_crossing_neighbour(
+                            (x, y),
+                            crossing.crossing_half_size_cells,
+                            route_intersections.iter().map(
+                                |existing: &CrossingRouteIntersection| (existing.x, existing.y),
                             ),
-                            nearest_registered: nearest_crossing_neighbour(
-                                (x, y),
-                                crossing.crossing_half_size_cells,
-                                partner.registered_crossing_centres.iter().copied(),
-                            ),
-                            footprint_blocked: !crossing_reservation_window_is_clear(
-                                obstacle_map,
-                                crossing.net_id,
-                                partner.net_id,
-                                port_open_cells,
-                                x,
-                                y,
-                                reservation_margin,
-                            ),
-                            event_registered: None,
-                        };
-                        let verdict = crossing_legality(&candidate, &rule);
-                        if !verdict.is_legal() {
-                            record_unified_crossing_reject(
-                                stats,
-                                crossing,
-                                partner.net_id,
-                                verdict,
-                                search_start,
-                            );
-                            trace_crossing_candidate(
-                                crossing,
-                                partner.net_id,
-                                verdict.reason(),
-                                x,
-                                y,
-                                route_segment.angle,
-                                partner_segment.angle,
-                                required_margin,
-                                candidate
-                                    .partner_before_cells
-                                    .min(candidate.partner_after_cells),
-                                distance_from_primitive_start,
-                                route_segment.length - distance_on_segment,
-                            );
-                            return None;
-                        }
-                    }
-                    if !crossing.unified_legality
-                        && !grid_axes_are_perpendicular(route_segment.angle, partner_segment.angle)
-                    {
-                        trace_crossing_candidate(
-                            crossing,
-                            partner.net_id,
-                            "not_perpendicular",
-                            x,
-                            y,
-                            route_segment.angle,
-                            partner_segment.angle,
-                            required_margin,
-                            0.0,
-                            distance_from_primitive_start,
-                            route_segment.length - distance_on_segment,
-                        );
-                        stats.crossing_reject_not_perpendicular += 1;
-                        return None;
-                    }
-                    let partner_margin =
-                        (u * partner_segment.length).min((1.0 - u) * partner_segment.length);
-                    if !crossing.unified_legality
-                        && partner_margin + 1.0e-9 < f64::from(required_margin)
-                    {
-                        record_perpendicular_crossing_reject(
-                            stats,
-                            crossing,
-                            partner.net_id,
-                            search_start,
-                        );
-                        trace_crossing_candidate(
-                            crossing,
-                            partner.net_id,
-                            "partner_margin",
-                            x,
-                            y,
-                            route_segment.angle,
-                            partner_segment.angle,
-                            required_margin,
-                            partner_margin,
-                            distance_from_primitive_start,
-                            route_segment.length - distance_on_segment,
-                        );
-                        stats.crossing_reject_margin += 1;
-                        return None;
-                    }
-                    if !crossing.unified_legality
-                        && !crossing_reservation_window_is_clear(
+                        ),
+                        nearest_registered: nearest_crossing_neighbour(
+                            (x, y),
+                            crossing.crossing_half_size_cells,
+                            partner.registered_crossing_centres.iter().copied(),
+                        ),
+                        footprint_blocked: !crossing_reservation_window_is_clear(
                             obstacle_map,
                             crossing.net_id,
                             partner.net_id,
@@ -1578,30 +1485,37 @@ pub(crate) fn crossing_move_outcome_with_segments(
                             x,
                             y,
                             reservation_margin,
-                        )
-                    {
-                        record_perpendicular_crossing_reject(
+                        ),
+                        event_registered: None,
+                    };
+                    let verdict = crossing_legality(&candidate, &rule);
+                    if !verdict.is_legal() {
+                        record_unified_crossing_reject(
                             stats,
                             crossing,
                             partner.net_id,
+                            verdict,
                             search_start,
                         );
                         trace_crossing_candidate(
                             crossing,
                             partner.net_id,
-                            "reservation_footprint",
+                            verdict.reason(),
                             x,
                             y,
                             route_segment.angle,
                             partner_segment.angle,
                             required_margin,
-                            partner_margin,
+                            candidate
+                                .partner_before_cells
+                                .min(candidate.partner_after_cells),
                             distance_from_primitive_start,
                             route_segment.length - distance_on_segment,
                         );
-                        stats.crossing_reject_unmatched_footprint += 1;
                         return None;
                     }
+                    let partner_margin =
+                        (u * partner_segment.length).min((1.0 - u) * partner_segment.length);
                     if !terminal_bump_guard_satisfied(
                         crossing.terminal_bump_guard,
                         crossing.crossing_half_size_cells,
@@ -1766,27 +1680,6 @@ pub(crate) fn crossing_move_outcome_with_segments(
                 search_start,
             );
             stats.crossing_reject_pending_straight += 1;
-            return None;
-        }
-        if !crossing.unified_legality
-            && intersection.distance_before_on_segment + 1.0e-9 < f64::from(required_margin)
-        {
-            let partner = &crossing.partners[intersection.partner_idx];
-            record_perpendicular_crossing_reject(stats, crossing, partner.net_id, search_start);
-            trace_crossing_candidate(
-                crossing,
-                partner.net_id,
-                "route_before_margin",
-                intersection.x,
-                intersection.y,
-                255,
-                255,
-                required_margin,
-                0.0,
-                intersection.distance_before_on_segment,
-                intersection.distance_after_on_segment,
-            );
-            stats.crossing_reject_margin += 1;
             return None;
         }
         // Straight-after debt = what the crossing element needs (+-half_size

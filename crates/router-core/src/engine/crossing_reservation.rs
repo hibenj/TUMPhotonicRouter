@@ -36,7 +36,7 @@ pub(crate) struct InvalidCrossingIntersection {
 }
 
 /// One realized intersection as the unified predicate assessed it
-/// (do-over phase 4 slice B, `RouterConfig::crossing.unified_legality`):
+/// (do-over phase 4 slice B):
 /// the point in um, the two grid waypoint segments the margins were read
 /// from (`None` when the grid route had no segment there), the candidate
 /// the predicate saw, the rule, and the verdict. Kept on the router
@@ -778,26 +778,10 @@ impl Router {
         if route.compressed_waypoints.len() < 2 || partner_ids.is_empty() {
             return Vec::new();
         }
-        let config = self.crossing_context.config();
-        // Same rule as the search kernel (`crossing_move_outcome_with_segments`)
-        // and the realized validator: BEFORE the crossing point the counted
-        // straight run must reach `required_margin` (half_size + bend radius,
-        // compensating a preceding bend arm counted as straight); AFTER it
-        // only the crossing element's own `half_size` pure straight cells are
-        // required (Point 2, 2026-09-03) -- a bend may follow. Demanding
-        // `required_margin` on both sides discarded kernel-legal,
-        // realized-clean routes (benes_32x32 net 273).
-        let required_margin = f64::from(crossing_required_margin_cells(
-            config.crossing_half_size_cells,
-            self.primitive_cfg.bend_radius_cells,
-        ));
-        let required_after = f64::from(config.crossing_half_size_cells.max(0));
-        let unified_legality = self.router_config.crossing.unified_legality;
         let rule = self.crossing_legality_rule();
         let mut invalid = Vec::new();
         let mut seen_centers = FxHashSet::default();
-        // Slice B-2: under the switch every grid intersection is collected
-        // first, so each one is judged against the route's other crossings
+        // Every grid intersection is collected first, so each one is judged against the route's other crossings
         // (`nearest_same_route`) as well as the registered elements.
         let mut unified_candidates: Vec<(u64, CrossingCandidate)> = Vec::new();
         for route_segment in route.compressed_waypoints.windows(2) {
@@ -835,59 +819,33 @@ impl Router {
                     ) else {
                         continue;
                     };
-                    if unified_legality {
-                        // Phase 4 slice B: the one predicate decides, on the
-                        // same grid numbers the legacy check below reads;
-                        // the neighbours are filled in after the scan.
-                        unified_candidates.push((
-                            *partner_id,
-                            CrossingCandidate {
-                                route_direction: grid_angle_direction(route_angle),
-                                partner_direction: grid_angle_direction(partner_angle),
-                                route_before_cells: t * route_len,
-                                route_after_cells: (1.0 - t) * route_len,
-                                partner_before_cells: u * partner_len,
-                                partner_after_cells: (1.0 - u) * partner_len,
-                                point: (x, y),
-                                nearest_same_route: None,
-                                nearest_registered: None,
-                                footprint_blocked: self.footprint_blocked_at_grid_point(
-                                    net_id,
-                                    *partner_id,
-                                    x,
-                                    y,
-                                ),
-                                event_registered: None,
-                            },
-                        ));
-                        continue;
-                    }
-                    let route_before = t * route_len;
-                    let route_after = (1.0 - t) * route_len;
-                    let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
-                    if route_before + 1e-9 >= required_margin
-                        && route_after + 1e-9 >= required_after
-                        && partner_margin + 1e-9 >= required_margin
-                    {
-                        continue;
-                    }
-                    let rounded_center = (
-                        (x * 1_000_000.0).round() as i64,
-                        (y * 1_000_000.0).round() as i64,
-                    );
-                    if !seen_centers.insert(rounded_center) {
-                        continue;
-                    }
-                    invalid.push(InvalidCrossingIntersection {
-                        net_id,
-                        partner_net_id: *partner_id,
-                        point: (x, y),
-                        reason: "insufficient_straight_margin",
-                    });
+                    // The one predicate decides on the grid numbers; the
+                    // neighbours are filled in after the scan.
+                    unified_candidates.push((
+                        *partner_id,
+                        CrossingCandidate {
+                            route_direction: grid_angle_direction(route_angle),
+                            partner_direction: grid_angle_direction(partner_angle),
+                            route_before_cells: t * route_len,
+                            route_after_cells: (1.0 - t) * route_len,
+                            partner_before_cells: u * partner_len,
+                            partner_after_cells: (1.0 - u) * partner_len,
+                            point: (x, y),
+                            nearest_same_route: None,
+                            nearest_registered: None,
+                            footprint_blocked: self.footprint_blocked_at_grid_point(
+                                net_id,
+                                *partner_id,
+                                x,
+                                y,
+                            ),
+                            event_registered: None,
+                        },
+                    ));
                 }
             }
         }
-        if unified_legality && !unified_candidates.is_empty() {
+        if !unified_candidates.is_empty() {
             let registered = self.registered_crossing_centres_of_other_nets(net_id);
             let centres: Vec<(f64, f64)> = unified_candidates
                 .iter()
@@ -974,20 +932,12 @@ impl Router {
         let Ok(route_centerline) = route_centerline else {
             return Vec::new();
         };
-        let mut violations = if self.router_config.crossing.unified_legality {
-            Self::unified_violations(&self.unified_crossing_assessment(
-                net_id,
-                &route_centerline,
-                &route.compressed_waypoints,
-                require_registered_events,
-            ))
-        } else {
-            self.crossing_violations_for_realized_centerline(
-                net_id,
-                &route_centerline,
-                require_registered_events,
-            )
-        };
+        let mut violations = Self::unified_violations(&self.unified_crossing_assessment(
+            net_id,
+            &route_centerline,
+            &route.compressed_waypoints,
+            require_registered_events,
+        ));
         self.retain_violations_outside_endpoint_access(
             &route_centerline,
             opened_cell_keys,
@@ -1065,255 +1015,6 @@ impl Router {
             let dy = event.point.1 - point.1;
             (dx * dx + dy * dy).sqrt() <= tolerance_um
         })
-    }
-
-    /// `require_registered_events`: whether a geometrically legal
-    /// intersection with no registered [`CrossingEvent`] on record for the
-    /// pair is itself a violation (`missing_crossing_event`, B1 of
-    /// `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`).
-    ///
-    /// This must be `true` only in the post-commit context
-    /// (`validate_committed_crossings_for_route_with_ports`, called after
-    /// the route's own crossing events are already registered via
-    /// `register_geometric_crossing_events_for_route`/`add_crossing_events`)
-    /// and `false` in every pre-commit context (a search trying a candidate
-    /// route, or `probe_net_for_repair`'s diagnostic probe): a route that
-    /// has not committed yet has by definition not registered its events,
-    /// so `self.crossing_events` can never contain them regardless of
-    /// whether the crossing is legal -- checking there would misreport
-    /// every legal, not-yet-committed crossing as a violation. Pre-commit
-    /// callers already have their own view of which crossings a candidate
-    /// route would register (`crossing_events`/`probe_crossing_events`).
-    pub(crate) fn crossing_violations_for_realized_centerline(
-        &self,
-        net_id: u64,
-        route_centerline: &[(f64, f64)],
-        require_registered_events: bool,
-    ) -> Vec<InvalidCrossingIntersection> {
-        if !self.crossing_context.is_enabled() {
-            return Vec::new();
-        }
-        let config = self.crossing_context.config();
-        let required_margin =
-            realized_crossing_margin_um(config.crossing_half_size_cells, self.grid.grid_size_um);
-        if route_centerline.len() < 2 {
-            return Vec::new();
-        }
-        // Bounding-box prefilter (same idea as the photonic verifier's
-        // 2026-08-28 self-intersection prefilter): a partner whose whole
-        // centerline stays farther than the waveguide width from this
-        // route's bounding box can produce neither an intersection nor a
-        // parallel-overlap violation, so it is skipped before the O(n*m)
-        // segment-pair loop below ever sees it.
-        let Some((route_min_x, route_min_y, route_max_x, route_max_y)) =
-            polyline_bbox(route_centerline)
-        else {
-            return Vec::new();
-        };
-        let bbox_reach = self.route_width_um.max(1.0e-6);
-        let partner_centerlines: Vec<(u64, Vec<(f64, f64)>)> = self
-            .committed_center_routes
-            .iter()
-            .filter_map(|(partner_id, partner_grid_waypoints)| {
-                if *partner_id == net_id {
-                    return None;
-                }
-                let centerline = self
-                    .committed_realized_center_routes
-                    .get(partner_id)
-                    .cloned()
-                    .unwrap_or_else(|| self.grid_waypoints_to_centerline(partner_grid_waypoints));
-                if centerline.len() < 2 {
-                    return None;
-                }
-                let (p_min_x, p_min_y, p_max_x, p_max_y) = polyline_bbox(&centerline)?;
-                if p_min_x > route_max_x + bbox_reach
-                    || p_max_x < route_min_x - bbox_reach
-                    || p_min_y > route_max_y + bbox_reach
-                    || p_max_y < route_min_y - bbox_reach
-                {
-                    return None;
-                }
-                Some((*partner_id, centerline))
-            })
-            .collect();
-        if partner_centerlines.is_empty() {
-            return Vec::new();
-        }
-        let mut invalid = Vec::new();
-        let mut seen = FxHashSet::default();
-        for route_segment in route_centerline.windows(2) {
-            let route_len = physical_segment_length(route_segment[0], route_segment[1]);
-            if route_len <= 0.0 {
-                continue;
-            }
-            for (partner_id, partner_centerline) in &partner_centerlines {
-                for partner_segment in partner_centerline.windows(2) {
-                    let partner_len =
-                        physical_segment_length(partner_segment[0], partner_segment[1]);
-                    if partner_len <= 0.0 {
-                        continue;
-                    }
-                    if let Some((x, y)) = physical_collinear_segment_overlap_midpoint(
-                        route_segment[0],
-                        route_segment[1],
-                        partner_segment[0],
-                        partner_segment[1],
-                    ) {
-                        let pair_key = (
-                            net_id.min(*partner_id),
-                            net_id.max(*partner_id),
-                            (x * 1_000_000.0).round() as i64,
-                            (y * 1_000_000.0).round() as i64,
-                        );
-                        if !seen.insert(pair_key) {
-                            continue;
-                        }
-                        invalid.push(InvalidCrossingIntersection {
-                            net_id,
-                            partner_net_id: *partner_id,
-                            point: (x, y),
-                            reason: "collinear_route_overlap",
-                        });
-                        continue;
-                    }
-                    let Some((x, y, t, u)) = physical_segment_intersection_with_params(
-                        route_segment[0],
-                        route_segment[1],
-                        partner_segment[0],
-                        partner_segment[1],
-                    ) else {
-                        // No intersection. Near-parallel segments closer than
-                        // the waveguide width still overlap as polygons: two
-                        // routes on adjacent diagonal cells share no grid cell
-                        // and never intersect, but their realized waveguides
-                        // physically merge (multiportmmi_8x8 n_13/n_14 at
-                        // heuristic weight 1.0). Only near-parallel pairs are
-                        // tested so the chords around a legal perpendicular
-                        // crossing stay exempt. Cheap bbox reject first: most
-                        // pairs are nowhere near each other.
-                        let seg_reach = self.route_width_um;
-                        if route_segment[0].0.min(route_segment[1].0)
-                            > partner_segment[0].0.max(partner_segment[1].0) + seg_reach
-                            || route_segment[0].0.max(route_segment[1].0)
-                                < partner_segment[0].0.min(partner_segment[1].0) - seg_reach
-                            || route_segment[0].1.min(route_segment[1].1)
-                                > partner_segment[0].1.max(partner_segment[1].1) + seg_reach
-                            || route_segment[0].1.max(route_segment[1].1)
-                                < partner_segment[0].1.min(partner_segment[1].1) - seg_reach
-                        {
-                            continue;
-                        }
-                        let route_dir = (
-                            (route_segment[1].0 - route_segment[0].0) / route_len,
-                            (route_segment[1].1 - route_segment[0].1) / route_len,
-                        );
-                        let partner_dir = (
-                            (partner_segment[1].0 - partner_segment[0].0) / partner_len,
-                            (partner_segment[1].1 - partner_segment[0].1) / partner_len,
-                        );
-                        let cross_sin =
-                            (route_dir.0 * partner_dir.1 - route_dir.1 * partner_dir.0).abs();
-                        if cross_sin < 0.5 {
-                            let distance = segment_to_segment_distance(
-                                route_segment[0],
-                                route_segment[1],
-                                partner_segment[0],
-                                partner_segment[1],
-                            );
-                            if distance < self.route_width_um - 1.0e-6 {
-                                let mid_x = (route_segment[0].0 + route_segment[1].0) / 2.0;
-                                let mid_y = (route_segment[0].1 + route_segment[1].1) / 2.0;
-                                // Coarse (1 um) dedupe key: a long parallel run
-                                // yields one violation per micron, not one per
-                                // sampled chord pair.
-                                let pair_key = (
-                                    net_id.min(*partner_id),
-                                    net_id.max(*partner_id),
-                                    (mid_x.round() as i64) * 1_000_000,
-                                    (mid_y.round() as i64) * 1_000_000,
-                                );
-                                if seen.insert(pair_key) {
-                                    invalid.push(InvalidCrossingIntersection {
-                                        net_id,
-                                        partner_net_id: *partner_id,
-                                        point: (mid_x, mid_y),
-                                        reason: "parallel_route_overlap",
-                                    });
-                                }
-                            }
-                        }
-                        continue;
-                    };
-                    let pair_key = (
-                        net_id.min(*partner_id),
-                        net_id.max(*partner_id),
-                        (x * 1_000_000.0).round() as i64,
-                        (y * 1_000_000.0).round() as i64,
-                    );
-                    if !seen.insert(pair_key) {
-                        continue;
-                    }
-                    let perpendicular = physical_segments_are_perpendicular(
-                        route_segment[0],
-                        route_segment[1],
-                        partner_segment[0],
-                        partner_segment[1],
-                    );
-                    let route_margin = (t * route_len).min((1.0 - t) * route_len);
-                    let partner_margin = (u * partner_len).min((1.0 - u) * partner_len);
-                    if perpendicular
-                        && route_margin + 1e-9 >= required_margin
-                        && partner_margin + 1e-9 >= required_margin
-                    {
-                        // Geometrically legal is not enough in the
-                        // post-commit context: a crossing is only real
-                        // design intent when the two nets also registered a
-                        // CrossingEvent for it. Without this, two diagonals
-                        // that cross at a cell corner (no shared grid cell,
-                        // no crossing structure in the GDS) pass silently --
-                        // this is how try_commit_clean_probe committed 8
-                        // bare intersections on benes_16x16
-                        // (2026-09-14 13:10). Gated by
-                        // `require_registered_events` (see this function's
-                        // doc comment): a pre-commit caller's route has not
-                        // registered anything yet, so this check would
-                        // misfire on every legal crossing for it.
-                        if require_registered_events {
-                            let event_tolerance_um = 1.5 * self.grid.grid_size_um;
-                            if self.has_registered_crossing_event(
-                                net_id,
-                                *partner_id,
-                                (x, y),
-                                event_tolerance_um,
-                            ) {
-                                continue;
-                            }
-                            invalid.push(InvalidCrossingIntersection {
-                                net_id,
-                                partner_net_id: *partner_id,
-                                point: (x, y),
-                                reason: "missing_crossing_event",
-                            });
-                            continue;
-                        }
-                        continue;
-                    }
-                    let reason = if !perpendicular {
-                        "not_perpendicular"
-                    } else {
-                        "insufficient_straight_margin"
-                    };
-                    invalid.push(InvalidCrossingIntersection {
-                        net_id,
-                        partner_net_id: *partner_id,
-                        point: (x, y),
-                        reason,
-                    });
-                }
-            }
-        }
-        invalid
     }
 
     pub(crate) fn crossing_footprint_unrelated_dynamic_owner(
@@ -1396,16 +1097,12 @@ impl Router {
     /// Slice B-2, the search's view: the centres of the crossing elements
     /// registered on `partner_id` with nets other than `net_id` (the
     /// `nearest_registered` input of the unified predicate in the search
-    /// hook). Empty with the switch off, so the legacy search config is
-    /// unchanged.
+    /// hook).
     pub(crate) fn registered_crossing_centres_on_partner(
         &self,
         net_id: u64,
         partner_id: u64,
     ) -> Vec<(f64, f64)> {
-        if !self.router_config.crossing.unified_legality {
-            return Vec::new();
-        }
         self.crossing_events
             .iter()
             .filter(|event| {
@@ -1879,20 +1576,23 @@ impl Router {
         // registered before this call at every one of this function's
         // call sites, so a geometrically legal intersection with no
         // matching event is a real bug, not a pre-commit search artifact.
-        let violations = if self.router_config.crossing.unified_legality {
-            match self.routing_centerline_for_route(route, source_port_um, target_port_um) {
-                Ok(route_centerline) => {
-                    let assessment = self.unified_crossing_assessment(
-                        net_id,
-                        &route_centerline,
-                        &route.compressed_waypoints,
-                        true,
-                    );
-                    self.record_crossing_verdicts(net_id, &assessment);
-                    if self.router_config.diagnostics.crossing_mismatch_dump {
-                        for crossing in &assessment.crossings {
-                            if !crossing.record.verdict.is_legal() {
-                                eprintln!(
+        let violations = match self.routing_centerline_for_route(
+            route,
+            source_port_um,
+            target_port_um,
+        ) {
+            Ok(route_centerline) => {
+                let assessment = self.unified_crossing_assessment(
+                    net_id,
+                    &route_centerline,
+                    &route.compressed_waypoints,
+                    true,
+                );
+                self.record_crossing_verdicts(net_id, &assessment);
+                if self.router_config.diagnostics.crossing_mismatch_dump {
+                    for crossing in &assessment.crossings {
+                        if !crossing.record.verdict.is_legal() {
+                            eprintln!(
                                     "crossing-verdict net={} partner={} point=({:.3},{:.3}) {:?} {:?} route_segment={:?} partner_segment={:?} margins_from_grid={}",
                                     net_id,
                                     crossing.record.partner_net_id,
@@ -1904,28 +1604,18 @@ impl Router {
                                     crossing.record.partner_segment,
                                     crossing.record.margins_from_grid,
                                 );
-                            }
                         }
                     }
-                    let mut violations = Self::unified_violations(&assessment);
-                    self.retain_violations_outside_endpoint_access(
-                        &route_centerline,
-                        opened_cell_keys,
-                        &mut violations,
-                    );
-                    violations
                 }
-                Err(_) => Vec::new(),
+                let mut violations = Self::unified_violations(&assessment);
+                self.retain_violations_outside_endpoint_access(
+                    &route_centerline,
+                    opened_cell_keys,
+                    &mut violations,
+                );
+                violations
             }
-        } else {
-            self.crossing_violations_for_route_with_ports(
-                net_id,
-                route,
-                source_port_um,
-                target_port_um,
-                opened_cell_keys,
-                true,
-            )
+            Err(_) => Vec::new(),
         };
         if violations.is_empty() {
             return Ok(());
@@ -1965,47 +1655,25 @@ impl Router {
         if !self.crossing_context.is_enabled() {
             return;
         }
-        if self.router_config.crossing.unified_legality {
-            // Phase 4 slice B: the events are the legal assessments of the
-            // one predicate (pre-commit view: no event can be registered
-            // yet). The grid centerline stands in when the realized one
-            // cannot be built, as the legacy grid fallback did.
-            let route_centerline = self
-                .routing_centerline_for_route(route, source_port_um, target_port_um)
-                .unwrap_or_else(|_| self.grid_waypoints_to_centerline(&route.compressed_waypoints));
-            let assessment = self.unified_crossing_assessment(
-                net_id,
-                &route_centerline,
-                &route.compressed_waypoints,
-                false,
-            );
-            let events: Vec<CrossingEvent> = assessment
-                .crossings
-                .into_iter()
-                .filter(|crossing| crossing.record.verdict.is_legal())
-                .filter_map(|crossing| crossing.event)
-                .collect();
-            self.add_crossing_events(events);
-            return;
-        }
-        let partner_ids = self.crossing_partner_lookup_set_for_result(net_id, route);
-        if partner_ids.is_empty() {
-            return;
-        }
-        let mut crossing_events = self.realized_crossing_events_for_route(
+        // The events are the legal assessments of the one predicate
+        // (pre-commit view: no event can be registered yet). The grid
+        // centerline stands in when the realized one cannot be built.
+        let route_centerline = self
+            .routing_centerline_for_route(route, source_port_um, target_port_um)
+            .unwrap_or_else(|_| self.grid_waypoints_to_centerline(&route.compressed_waypoints));
+        let assessment = self.unified_crossing_assessment(
             net_id,
-            route,
-            &partner_ids,
-            source_port_um,
-            target_port_um,
+            &route_centerline,
+            &route.compressed_waypoints,
+            false,
         );
-        if crossing_events.is_empty() {
-            crossing_events = self.crossing_events_for_route(net_id, route, &partner_ids);
-        }
-        if crossing_events.is_empty() {
-            return;
-        }
-        self.add_crossing_events(crossing_events);
+        let events: Vec<CrossingEvent> = assessment
+            .crossings
+            .into_iter()
+            .filter(|crossing| crossing.record.verdict.is_legal())
+            .filter_map(|crossing| crossing.event)
+            .collect();
+        self.add_crossing_events(events);
     }
 
     pub(crate) fn crossing_reservation_keys_for_events(
@@ -2171,6 +1839,22 @@ mod tests {
             )
     }
 
+    /// The unified validator on a bare centerline (no grid route: the
+    /// margins are the realized straights), as the tests below call it.
+    fn violations_for_centerline(
+        router: &Router,
+        net_id: u64,
+        centerline: &[(f64, f64)],
+        require_registered_events: bool,
+    ) -> Vec<InvalidCrossingIntersection> {
+        Router::unified_violations(&router.unified_crossing_assessment(
+            net_id,
+            centerline,
+            &[],
+            require_registered_events,
+        ))
+    }
+
     #[test]
     fn crossing_conflict_fixture_blocks_the_vertical_net_with_a_non_perpendicular_crossing() {
         let (mut router, jobs) = crossing_conflict_fixture();
@@ -2255,11 +1939,9 @@ mod tests {
         install_diagonal_partner(&mut router, 1);
         let centerline = crossing_diagonal_centerline();
 
-        // require_registered_events = true: this is the post-commit
-        // context the check is meant for (coordinator decision,
-        // 2026-09-14 -- see the doc comment on
-        // `crossing_violations_for_realized_centerline`).
-        let violations = router.crossing_violations_for_realized_centerline(2, &centerline, true);
+        // require_registered_events = true: the post-commit context
+        // (coordinator decision, 2026-09-14).
+        let violations = violations_for_centerline(&router, 2, &centerline, true);
 
         assert_eq!(
             violations.len(),
@@ -2271,7 +1953,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let violation = &violations[0];
-        assert_eq!(violation.reason, "missing_crossing_event");
+        assert_eq!(violation.reason, "missing_event");
         assert_eq!(violation.partner_net_id, 1);
         assert!(
             (violation.point.0 - 30.0).abs() < 1.0e-6 && (violation.point.1 - 30.0).abs() < 1.0e-6,
@@ -2297,7 +1979,7 @@ mod tests {
             reservation_keys: FxHashSet::default(),
         }]);
 
-        let violations = router.crossing_violations_for_realized_centerline(2, &centerline, true);
+        let violations = violations_for_centerline(&router, 2, &centerline, true);
 
         assert!(
             violations.is_empty(),
@@ -2443,7 +2125,6 @@ mod tests {
     #[test]
     fn unified_assessment_reports_missing_event_until_the_event_is_registered() {
         let mut router = missing_crossing_event_fixture_router();
-        router.router_config.crossing.unified_legality = true;
         install_diagonal_partner(&mut router, 1);
         let centerline = crossing_diagonal_centerline();
         let waypoints = vec![(10, 50), (50, 10)];
@@ -2479,13 +2160,11 @@ mod tests {
         assert!(pre_commit.crossings[0].record.verdict.is_legal());
     }
 
-    /// Phase 4 slice B: under the switch, registration keeps the legal
-    /// assessment's event, the post-commit validation records the verdict
+    /// Registration keeps the legal assessment's event, the post-commit validation records the verdict
     /// for `crossing_verdicts()`, and a rip-up drops both.
     #[test]
     fn unified_registration_and_validation_share_one_verdict() {
         let mut router = missing_crossing_event_fixture_router();
-        router.router_config.crossing.unified_legality = true;
         install_diagonal_partner(&mut router, 1);
         let route = RouteResult {
             states: Vec::new(),
@@ -2535,12 +2214,10 @@ mod tests {
         );
     }
 
-    /// Phase 4 slice B: the commit-time grid check under the switch names
-    /// the short side; the legacy check rejects the same route under its
-    /// own name. Half size 2 and bend radius 1: margin 3 before and on the
-    /// partner, 2 after.
+    /// The commit-time grid check names the short side. Half size 2 and
+    /// bend radius 1: margin 3 before and on the partner, 2 after.
     #[test]
-    fn unified_grid_check_names_the_short_side_the_legacy_check_also_rejects() {
+    fn grid_check_names_the_short_side() {
         let grid = GridSpec::new(32, 32, 1.0, 0.0, 0.0).unwrap();
         let mut router = Router::new(
             grid,
@@ -2576,11 +2253,6 @@ mod tests {
             stats: RouteSearchStats::default(),
         };
 
-        let legacy = router.invalid_crossing_intersections_for_route(2, &route, &partner_ids);
-        assert_eq!(legacy.len(), 1);
-        assert_eq!(legacy[0].reason, "insufficient_straight_margin");
-
-        router.router_config.crossing.unified_legality = true;
         let unified = router.invalid_crossing_intersections_for_route(2, &route, &partner_ids);
         assert_eq!(unified.len(), 1);
         assert_eq!(unified[0].reason, "margin_short_route_before");
@@ -2621,7 +2293,6 @@ mod tests {
             crossing_half_size_cells: 2,
             ..CrossingConfig::default()
         });
-        router.router_config.crossing.unified_legality = true;
         router
             .committed_center_routes
             .insert(1, vec![(14, 5), (14, 34)]);
@@ -2691,7 +2362,6 @@ mod tests {
     #[test]
     fn unified_assessment_reports_a_registered_component_in_the_window() {
         let mut router = missing_crossing_event_fixture_router();
-        router.router_config.crossing.unified_legality = true;
         router.crossing_context.set_config(CrossingConfig {
             enabled: true,
             crossing_half_size_cells: 2,
@@ -2832,7 +2502,7 @@ mod tests {
             .validate_committed_crossings_for_route_with_ports(2, &route, None, None, None)
             .unwrap_err();
         assert!(error.contains("Illegal realized crossing"));
-        assert!(error.contains("insufficient_straight_margin"));
+        assert!(error.contains("margin_short_"), "{error}");
     }
 
     #[test]
@@ -2888,7 +2558,7 @@ mod tests {
 
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].partner_net_id, 1);
-        assert_eq!(violations[0].reason, "insufficient_straight_margin");
+        assert_eq!(violations[0].reason, "margin_short_route_before");
     }
 
     #[test]
@@ -2915,8 +2585,7 @@ mod tests {
             .committed_realized_center_routes
             .insert(1, vec![(0.0, 5.0), (12.0, 5.0)]);
 
-        let violations =
-            router.crossing_violations_for_realized_centerline(2, &[(4.0, 5.0), (16.0, 5.0)], true);
+        let violations = violations_for_centerline(&router, 2, &[(4.0, 5.0), (16.0, 5.0)], true);
 
         assert_eq!(violations.len(), 1);
         assert_eq!(violations[0].partner_net_id, 1);
@@ -2948,11 +2617,8 @@ mod tests {
             .committed_realized_center_routes
             .insert(1, vec![(0.0, 10.0), (20.0, 10.0)]);
 
-        let not_perpendicular = router.crossing_violations_for_realized_centerline(
-            2,
-            &[(0.0, 0.0), (20.0, 20.0)],
-            true,
-        );
+        let not_perpendicular =
+            violations_for_centerline(&router, 2, &[(0.0, 0.0), (20.0, 20.0)], true);
 
         assert_eq!(not_perpendicular.len(), 1);
         assert_eq!(not_perpendicular[0].partner_net_id, 1);
@@ -2964,18 +2630,12 @@ mod tests {
         router
             .committed_realized_center_routes
             .insert(1, vec![(10.0, 0.0), (10.0, 20.0)]);
-        let insufficient_margin = router.crossing_violations_for_realized_centerline(
-            2,
-            &[(9.0, 10.0), (20.0, 10.0)],
-            true,
-        );
+        let insufficient_margin =
+            violations_for_centerline(&router, 2, &[(9.0, 10.0), (20.0, 10.0)], true);
 
         assert_eq!(insufficient_margin.len(), 1);
         assert_eq!(insufficient_margin[0].partner_net_id, 1);
-        assert_eq!(
-            insufficient_margin[0].reason,
-            "insufficient_straight_margin"
-        );
+        assert_eq!(insufficient_margin[0].reason, "margin_short_route_before");
     }
 
     /// Owner-requested check (2026-09-03, .agent/execplans/2026-09-03-eager-diagonal-crossing-insertion.md):
@@ -3035,22 +2695,20 @@ mod tests {
         // missing-crossing-event check (B1 of
         // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`),
         // so no crossing event is registered here.
-        let valid =
-            router.crossing_violations_for_realized_centerline(2, &route_with_bend_after(2), false);
+        let valid = violations_for_centerline(&router, 2, &route_with_bend_after(2), false);
         assert!(
             valid.is_empty(),
             "two pure straight cells after the crossing point, then a bend, must realize a valid crossing; got {valid:?}"
         );
 
-        let invalid =
-            router.crossing_violations_for_realized_centerline(2, &route_with_bend_after(1), false);
+        let invalid = violations_for_centerline(&router, 2, &route_with_bend_after(1), false);
         assert_eq!(
             invalid.len(),
             1,
             "one straight cell after the crossing is inside the crossing element"
         );
         assert_eq!(invalid[0].partner_net_id, 1);
-        assert_eq!(invalid[0].reason, "insufficient_straight_margin");
+        assert_eq!(invalid[0].reason, "margin_short_route_after");
     }
 
     /// Post-search grid-level check (`invalid_crossing_intersections_for_route`)
@@ -3125,7 +2783,7 @@ mod tests {
             &partner_ids,
         );
         assert_eq!(invalid.len(), 1);
-        assert_eq!(invalid[0].reason, "insufficient_straight_margin");
+        assert_eq!(invalid[0].reason, "margin_short_route_after");
         // before the crossing the kernel still counts required_margin (5):
         // a route starting 3 cells before the partner is rejected there too
         let short_before = RouteResult {
@@ -3220,7 +2878,7 @@ mod tests {
     }
 
     #[test]
-    fn realized_crossing_validation_defers_lidar_pure_footprint_blocker() {
+    fn realized_crossing_validation_reports_a_lidar_pure_footprint_blocker() {
         let grid = GridSpec::new(32, 32, 1.0, 0.0, 0.0).unwrap();
         let mut router = Router::new(
             grid,
@@ -3245,17 +2903,13 @@ mod tests {
             .insert(1, vec![(10.0, 0.0), (10.0, 20.0)]);
         assert!(router.obstacle_map.commit_route(3, &[(10, 10)]));
 
-        // Pre-commit-style call (`require_registered_events = false`):
-        // this test exercises footprint-blocker deferral only, not B1's
-        // post-commit missing-crossing-event check, so no crossing event
-        // is registered here.
-        let violations = router.crossing_violations_for_realized_centerline(
-            2,
-            &[(0.0, 10.0), (20.0, 10.0)],
-            false,
-        );
+        // Pre-commit-style call (`require_registered_events = false`): a
+        // third net's cell inside the crossing window is the predicate's
+        // `FootprintBlocked` (the legacy validator deferred it to Python).
+        let violations = violations_for_centerline(&router, 2, &[(0.0, 10.0), (20.0, 10.0)], false);
 
-        assert!(violations.is_empty());
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].reason, "footprint_blocked");
     }
 
     #[test]

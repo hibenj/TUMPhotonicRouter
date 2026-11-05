@@ -428,7 +428,6 @@ def route_match_and_realize(
                 routed_records_by_net_id=final_records_by_net_id,
                 realization_grid_spec=debug_artifacts.realization_grid_spec,
                 native_crossing_verdicts=plan_info.native_crossing_verdicts,
-                unified_legality=bool(plan_info.unified_crossing_legality),
             )
             _augment_insertion_loss_report_from_realized_intersections(
                 crossing_plan_info=plan_info,

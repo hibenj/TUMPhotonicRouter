@@ -162,8 +162,7 @@ impl PyPhotonicRouter {
     }
 
     /// The unified predicate's verdict for every realized intersection the
-    /// post-commit validation assessed (do-over phase 4 slice B; empty unless
-    /// `RouterConfig.crossing_unified_legality`). One dict per
+    /// post-commit validation assessed (do-over phase 4 slice B). One dict per
     /// (net, partner, point): the point in um, the two grid segments, `legal`,
     /// `reason` (`legal`, `not_perpendicular`, `margin_short_<side>`,
     /// `too_close_<other>`, `footprint_blocked`, `missing_event`),

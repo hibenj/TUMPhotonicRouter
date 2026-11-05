@@ -84,6 +84,29 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Crossing legality is one predicate, without a switch (owner decision
+  2026-11-05 on the 27-cell ablation of phase 4 slice B: 20 cells identical,
+  crossings never increase, ADEPT 64x64 baseline 217 -> 211 crossings with the
+  paper's ladder). `RouterConfig.crossing.unified_legality`,
+  `PHOTONIC_ROUTER_UNIFIED_CROSSING_LEGALITY`, `PyRouterConfig.crossing_unified_legality`
+  and `CrossingPlanInfo.unified_crossing_legality` are gone; the search hook,
+  the commit check (`invalid_crossing_intersections_for_route`), the
+  pre-commit violation check and the post-commit validation call
+  `crossing_geometry::crossing_legality` only, registration keeps the legal
+  assessments' events, and `route_rust_crossing_verification.py` classifies
+  every realized intersection from `crossing_verdicts()` (an intersection
+  without a verdict is `missing_event`; the reasons are the predicate's:
+  `not_perpendicular`, `margin_short_<side>`, `too_close_<other>`,
+  `footprint_blocked`, `missing_event`). Deleted: the legacy search checks,
+  `crossing_violations_for_realized_centerline` and the event-reconstruction
+  fallback in `register_geometric_crossing_events_for_route`, the Python
+  geometric re-decision with its footprint-blocker scan (about 950 lines with
+  their tests; the kernel and engine tests that compared both paths now test
+  the predicate). The paper's engine is the tag `date2027-results`. Cells
+  that move carry a `current` block in `docs/date2027_table_sources.json`:
+  ADEPT 8x8 baseline 25160.335 -> 25171.624 um and contribution 1 25073.626 ->
+  25090.058 um (33 crossings each, unchanged) on the nine-cell gate; the
+  27-cell table of this commit is in `docs/DATE2027_REPRODUCTION.md`.
 - The window ladder's default is window 0 only (speed pass S4, owner decision
   2026-11-05): `routing_window_max_expansions` 3 -> 0 and
   `routing_window_fallback_full_grid` on -> off in the kernel defaults and the

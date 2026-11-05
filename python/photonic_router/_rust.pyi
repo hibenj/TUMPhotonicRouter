@@ -612,7 +612,6 @@ class RouterConfig:
         crossing_enable_guided_collision_crossing: Any = False,
         crossing_disable_guided_collision_crossing: Any = False,
         crossing_disable_rust_crossing_validation: Any = False,
-        crossing_unified_legality: Any = False,
         diag_native_progress: Any = False,
         diag_native_repair_diag: Any = False,
         diag_search_failure_diag: Any = False,
@@ -647,8 +646,6 @@ class RouterConfig:
     def crossing_disable_rust_crossing_validation(self) -> Any: ...
     @property
     def crossing_enable_guided_collision_crossing(self) -> Any: ...
-    @property
-    def crossing_unified_legality(self) -> Any: ...
     @property
     def diag_analysis_crossing_partner_counters(self) -> Any: ...
     @property

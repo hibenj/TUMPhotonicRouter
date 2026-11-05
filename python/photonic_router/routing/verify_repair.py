@@ -85,9 +85,8 @@ def _illegal_crossing_grid_cell(
     return _grid_cell_from_raw_point(settings, state, item.get("point_um"))
 
 
-#: How the repair loop reads the reasons of the Rust predicate
-#: (`RouterConfig.crossing.unified_legality`): each maps onto the legacy reason
-#: whose repair tactic fits -- a short straight run is a bend inside the
+#: How the repair loop reads the reasons of the Rust predicate: each maps onto
+#: the repair reason whose tactic fits -- a short straight run is a bend inside the
 #: footprint, a blocked footprint is route geometry inside it, a missing
 #: event has no special tactic (both nets of the pair are rerouted).
 _UNIFIED_REASON_TO_REPAIR_REASON: Mapping[str, str] = {
@@ -926,7 +925,6 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
     t_refresh_crossings_start = timing.pipeline_timer_start(settings, state)
     native_crossing_events: list[Any] = []
     native_crossing_verdicts: list[Any] = []
-    unified_legality = bool(settings.router_config.crossing.unified_legality)
     if hasattr(state.router, "crossing_events"):
         t_native_events_start = timing.pipeline_timer_start(settings, state)
         try:
@@ -935,13 +933,12 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
             native_crossing_events = []
         state.crossing_plan_info.native_crossing_events = native_crossing_events
         state.crossing_plan_info.native_crossing_event_count = len(native_crossing_events)
-        if unified_legality and hasattr(state.router, "crossing_verdicts"):
-            # Phase 4 slice B: the Rust predicate's verdicts, which the
-            # classification below reports instead of re-deciding.
+        if hasattr(state.router, "crossing_verdicts"):
+            # The Rust predicate's verdicts, which the classification below
+            # reports instead of re-deciding.
             native_crossing_verdicts = list(cast(Iterable[Any], state.router.crossing_verdicts()))
             state.crossing_plan_info.native_crossing_verdicts = native_crossing_verdicts
             state.crossing_plan_info.native_crossing_verdict_count = len(native_crossing_verdicts)
-            state.crossing_plan_info.unified_crossing_legality = True
         timing.record_pipeline_timing(
             settings,
             state,
@@ -967,7 +964,6 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
             routed_records_by_net_id=state.route_bookkeeping.records_by_id,
             realization_grid_spec=state.realization_grid_spec,
             native_crossing_verdicts=native_crossing_verdicts,
-            unified_legality=unified_legality,
         )
     else:
         illegal = _populate_realized_intersections_from_native_crossing_events(
@@ -976,7 +972,6 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
             native_crossing_events=native_crossing_events,
             realization_grid_spec=state.realization_grid_spec,
             native_crossing_verdicts=native_crossing_verdicts,
-            unified_legality=unified_legality,
         )
     timing.record_pipeline_timing(
         settings,
