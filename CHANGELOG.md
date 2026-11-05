@@ -84,6 +84,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Release decisions 20 and 21 (owner, 2026-11-05): the license is MIT
+  (`LICENSE`, `pyproject.toml` `license` and classifier, `CITATION.cff`
+  `license`; the copyright line names the authors collectively until the owner
+  sets the legal holder), and the agent-process layer (`.agent/`, `.claude/`,
+  `AGENTS.md`, 89 files of plans, roles and run logs) leaves the public tree;
+  it lives on privately with the owner and the three paths are git-ignored.
+  Comments that cited `.agent/...` plans now name the private layer.
 - Path-length matching, phase 6 slice D (owner decisions 10 to 13,
   2026-11-05). Decision 11: `--path-length-allow-residual BOOL` is replaced by
   `--path-length-declared-unmatched-groups NAMES`

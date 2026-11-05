@@ -4,9 +4,8 @@
 #   - every "TODO owner" author entry (software and paper);
 #   - the paper's final title, pages and DOI once the DATE 2027
 #     proceedings are out (the title stays a placeholder while the review is blind);
-#   - license: pending (owner decision: MIT, Apache-2.0 or the TUM default).
-#     There is no `license` key until that decision is made; add it together
-#     with the LICENSE file.
+#   - the copyright holder in LICENSE (MIT, owner decision 20 of 2026-11-05;
+#     the file names the authors collectively until the owner sets the holder).
 cff-version: 1.2.0
 message: "If you use this software, please cite the paper below."
 type: software
@@ -21,6 +20,7 @@ authors:
   - name: "TODO owner"
 repository-code: "https://github.com/hibenj/TUMPhotonicRouter"
 version: "0.1.0"
+license: MIT
 keywords:
   - photonics
   - photonic integrated circuits

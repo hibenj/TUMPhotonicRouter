@@ -164,5 +164,4 @@ Research code. It produced the results of the DATE 2027 paper and is being
 restructured (see [`CHANGELOG.md`](CHANGELOG.md)); the Python and Rust APIs
 are not stable and there is no versioned release yet.
 
-**License: pending** (owner decision; there is no `LICENSE` file yet, so no
-rights are granted until one is added). How to cite: [`CITATION.cff`](CITATION.cff).
+**License: MIT** ([`LICENSE`](LICENSE)). How to cite: [`CITATION.cff`](CITATION.cff).
