@@ -63,6 +63,22 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   +1.12 / +0.59 / +0.54 %, ADEPT 8x8 -0.04 / +0.23 / +0.69 %: the
   lidar-pure Benes cells lost the shortcut the collapsed footprints had
   given them. Benes 16x16 lidar-pure routes again (88 crossings, 0 errors).
+  Second table (b45479b): 26 of 27 cells route with 0 errors and the pinned
+  crossings except Benes 32x32 lidar-pure 416 -> 418; ADEPT 128x128
+  contribution 2 routed (311 crossing components) but failed verification
+  on two dead-straight nets (heater -> multiport MMI, 0.875 um residue on
+  both ports): the dense *target* stub is straight at the port's true
+  cross-axis coordinate and leaves its sub-cell shift to the checked target
+  correction, which had no free axis-aligned segment once the source side
+  carried a runway. With the switch on, the dense target stubs therefore
+  take the runway geometry too (`_port_runway_anchor(min_forward_cells=
+  <staggered length>)`: same anchor cell, same lane protection, lattice-
+  exact anchor, zero-length checked correction); switch off they stay as
+  they are (gate exact). Nine cells with the switch on: Benes unchanged,
+  ADEPT 8x8 lidar-pure 25166.341 (-0.02 %), contribution 1 25153.798
+  (+0.25 %), contribution 2 26479.705 (+0.61 %), crossings and errors as
+  before; ADEPT 128x128 contribution 2 verifies again (311 crossing
+  components, 0 errors).
 - `SearchTuning.routing_window_max_expansions` /
   `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS` and
   `SearchTuning.routing_window_fallback_full_grid` /

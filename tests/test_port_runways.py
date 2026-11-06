@@ -184,3 +184,19 @@ def test_runway_anchors_keep_the_ordinary_port_footprint_and_dense_semantics_off
     assert crossing_plan_stage._resolve_port_footprint_cells(
         settings, state, instance_name="b", port_name="o1", port=_port((2.5, 9.3), 0.0)
     ) == (0, 0)
+
+
+def test_min_forward_cells_puts_the_anchor_at_the_staggered_stub_length():
+    # a dense target stub of 7 cells under the switch: lattice-exact, same
+    # anchor cell as the straight stub it replaces
+    settings, state = _settings(), _state()
+    port = _port((2.5, 6.3), 0.0)
+    anchor = route_jobs._port_runway_anchor(settings, state, "a,o1", port, min_forward_cells=7)
+    assert anchor is not None
+    assert (anchor.state_x, anchor.state_y) == (2 + 7, 6)
+    assert anchor.center_um == (9.5, 6.5)
+    assert anchor.stub_centerline_um[0] == (2.5, 6.3)
+    assert anchor.stub_centerline_um[-1] == (9.5, 6.5)
+    assert anchor.stub_centerline_um[-2][1] == pytest_approx(6.5, abs=1e-9)
+    straight = route_jobs._straight_static_stub_centerline_um(settings, state, (2.5, 6.3), 0, 7)
+    assert straight is not None and straight[1] == (anchor.state_x, anchor.state_y)

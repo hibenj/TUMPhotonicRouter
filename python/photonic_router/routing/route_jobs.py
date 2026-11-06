@@ -1012,6 +1012,24 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnc
                 if real_center is None:
                     continue
                 length_cells = int(forward_cells) + int(spacing_cells) * (int(rank) - 1)
+                if settings.config.fanout.port_runways:
+                    # Phase 5 slice 5A: with the runways on, the target
+                    # stub is lattice-exact too (lead-in, two shallow
+                    # arcs onto the port's own cell row, straight to the
+                    # same staggered anchor cell), so the checked target
+                    # correction has nothing to move. The straight stub
+                    # below keeps the port's true cross-axis coordinate
+                    # and leaves a sub-cell shift to that correction,
+                    # which has no segment to bend on a dead-straight
+                    # net whose source already carries a runway (ADEPT
+                    # 128x128 contribution 2, nets n_468 / n_1364 in the
+                    # b45479b table).
+                    runway = _port_runway_anchor(
+                        settings, state, port_spec, port, min_forward_cells=length_cells
+                    )
+                    if runway is not None:
+                        anchors[port_spec] = runway
+                        continue
                 stub_result = _straight_static_stub_centerline_um(
                     settings,
                     state,
@@ -1048,6 +1066,7 @@ def _port_runway_anchor(
     state,
     port_spec: str,
     port: Any,
+    min_forward_cells: int = 1,
 ) -> _FanoutAnchor | None:
     """The runway of one cardinal port (phase 5 slice 5A).
 
@@ -1064,6 +1083,11 @@ def _port_runway_anchor(
     port's; the stub is committed static like a fan-out stub and the search
     starts (source) or ends (target) at the anchor. Diagonal ports return
     `None` and keep the old path, as they do for the fan-out stubs.
+
+    `min_forward_cells` (default 1, the plain snap's own start cell) puts the
+    anchor at least that many cells beyond the port's cell: the dense target
+    stubs use it with their staggered lengths, so a lattice-exact target stub
+    ends in the same anchor cell as the straight one it replaces.
     """
     angle = _orientation_to_angle(settings, state, getattr(port, "orientation", None))
     step_x, step_y = _angle_to_step(settings, state, angle)
@@ -1149,7 +1173,9 @@ def _port_runway_anchor(
     # the anchor: first cell centre at or beyond the arcs' end, at least one
     # cell outward of the port (the plain snap's own start cell)
     arcs_end_forward = port_forward + arcs_forward_um
-    min_index = math.floor((port_forward + grid_um - forward_origin * forward_sign) / grid_um)
+    min_index = math.floor((port_forward - forward_origin * forward_sign) / grid_um) + max(
+        1, int(min_forward_cells)
+    )
     anchor_index = max(
         math.ceil((arcs_end_forward - forward_origin * forward_sign) / grid_um - 0.5 - 1.0e-9),
         min_index,
