@@ -1441,7 +1441,7 @@ def _dense_target_port_runway_lengths(
         group_port_specs: list[str] = []
         for port_index, run_job in enumerate(lower_jobs):
             port_spec = f"{run_job.inst2},{run_job.port2}"
-            if port_spec in state.fanout_anchor_by_port_spec:
+            if state.fanout_stub_anchor(port_spec) is not None:
                 # A real, pre-committed static stub already exists for
                 # this port (see `_build_static_fanout_target_anchors`):
                 # the abstract reservation this function computes is
@@ -1456,7 +1456,7 @@ def _dense_target_port_runway_lengths(
         upper_count = len(upper_jobs)
         for port_index, run_job in enumerate(upper_jobs):
             port_spec = f"{run_job.inst2},{run_job.port2}"
-            if port_spec in state.fanout_anchor_by_port_spec:
+            if state.fanout_stub_anchor(port_spec) is not None:
                 lengths_by_spec[port_spec] = 0
                 continue
             lengths_by_spec[port_spec] = base_cells + spacing_cells * (
@@ -1580,6 +1580,12 @@ def build_route_jobs_and_fanout_clustering(
         if f"{job.inst1},{job.port1}" in state.fanout_anchor_by_port_spec
         or f"{job.inst2},{job.port2}" in state.fanout_anchor_by_port_spec
     }
+    state.fanout_stub_net_ids = {
+        int(job.net_id)
+        for job in route_jobs
+        if state.fanout_stub_anchor(f"{job.inst1},{job.port1}") is not None
+        or state.fanout_stub_anchor(f"{job.inst2},{job.port2}") is not None
+    }
     state.fanout_anchor_source_net_ids = {
         int(job.net_id)
         for job in route_jobs
@@ -1645,6 +1651,8 @@ def build_route_jobs_and_fanout_clustering(
     if state.fanout_anchor_by_port_spec:
         static_stub_groups: dict[tuple[str, int], set[str]] = {}
         for port_spec, anchor in state.fanout_anchor_by_port_spec.items():
+            if port_spec in state.port_runway_anchor_specs:
+                continue
             instance_name = port_spec.split(",", 1)[0]
             static_stub_groups.setdefault(
                 (instance_name, int(anchor.physical_angle) % 8),
@@ -1678,6 +1686,10 @@ def apply_long_straight_fanout_exemption(settings: SessionSettings, state: Sessi
         exempt_ids = sorted(
             set(state.fanout_anchor_source_net_ids) | set(state.fanout_anchor_target_net_ids)
         )
+        if state.port_runway_anchor_specs:
+            # runway anchors are not dense fan-out stubs (see
+            # `SessionState.fanout_stub_anchor`)
+            exempt_ids = sorted(state.fanout_stub_net_ids)
         if hasattr(state.router, "set_long_straight_exempt_net_ids"):
             state.router.set_long_straight_exempt_net_ids(exempt_ids)
             print(

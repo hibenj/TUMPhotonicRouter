@@ -43,7 +43,26 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   arcs (3 to 17 degrees at R = 10 um) per runway port. Decision (default or
   not, with the deletion of the correction machinery in 5B) by the 27-cell
   table and the owner's view of the arcs; `docs/CONFIGURATION.md`
-  regenerated.
+  regenerated. Correction after the first 27-cell table with the switch on
+  (b05bffd: six cells failed on crossing legality, ADEPT 32x32 lidar-pure
+  121 -> 123 crossings): the runway anchors had entered every consumer of
+  `fanout_anchor_by_port_spec`, including the five that carry dense fan-out
+  *semantics*, so each runway port's access footprint shrank to the stub
+  lane size 0, its siblings formed a dense cluster, its nets were exempt
+  from the long-straight penalty, the dense target reservations skipped it
+  and the footprint was laid from the anchor. `SessionState.fanout_stub_anchor`
+  now hides runway anchors from those five (`_resolve_port_footprint_cells`,
+  the port-opening centre, the dense lateral windows,
+  `_dense_target_port_runway_lengths`, the static stub clusters,
+  `apply_long_straight_fanout_exemption` via `fanout_stub_net_ids`, the
+  `topological-stub` order); the geometry consumers (search endpoints, stub
+  prepend, static cells, endpoint correction) still take every anchor.
+  Switch off exact (nine-cell gate); with the switch on the nine cells keep
+  their crossings and 0 errors, and the lengths now read Benes 4x4
+  lidar-pure +1.00 % (9579.669), contribution 1/2 +0.57 / +0.54 %, Benes 8x8
+  +1.12 / +0.59 / +0.54 %, ADEPT 8x8 -0.04 / +0.23 / +0.69 %: the
+  lidar-pure Benes cells lost the shortcut the collapsed footprints had
+  given them. Benes 16x16 lidar-pure routes again (88 crossings, 0 errors).
 - `SearchTuning.routing_window_max_expansions` /
   `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS` and
   `SearchTuning.routing_window_fallback_full_grid` /

@@ -280,7 +280,7 @@ def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[
         for job in jobs:
             lengths = []
             for spec in (f"{job.inst1},{job.port1}", f"{job.inst2},{job.port2}"):
-                anchor = state.fanout_anchor_by_port_spec.get(spec)
+                anchor = state.fanout_stub_anchor(spec)
                 if anchor is not None:
                     lengths.append(len(anchor.stub_center_cells))
             stub_by_net_id[int(job.net_id)] = max(lengths) if lengths else 0

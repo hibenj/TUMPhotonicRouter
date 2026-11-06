@@ -155,3 +155,32 @@ def pytest_approx(value, abs):  # small local helper, keeps the module free of p
     import pytest
 
     return pytest.approx(value, abs=abs)
+
+
+def test_runway_anchors_keep_the_ordinary_port_footprint_and_dense_semantics_off():
+    # A runway is the ordinary port's own approach: it must not inherit the
+    # dense fan-out stub semantics (stub lane sizing, dense clusters, the
+    # long-straight exemption). The first 27-cell table with runways
+    # (b05bffd) did, the port footprints collapsed to the stub lane size 0
+    # and six cells failed on crossing legality.
+    from photonic_router.routing import crossing_plan_stage
+
+    settings = _settings(True)
+    state = _state()
+    state.port_lane_length_cells = 12
+    state.port_lane_half_width_cells = 6
+    state.stub_port_lane_length_cells = 0
+    state.stub_port_lane_half_width_cells = 0
+    runway = route_jobs._port_runway_anchor(settings, state, "a,o1", _port((2.5, 6.3), 0.0))
+    stub = route_jobs._port_runway_anchor(settings, state, "b,o1", _port((2.5, 9.3), 0.0))
+    assert runway is not None and stub is not None
+    state.fanout_anchor_by_port_spec = {"a,o1": runway, "b,o1": stub}
+    state.port_runway_anchor_specs = frozenset({"a,o1"})
+    assert state.fanout_stub_anchor("a,o1") is None
+    assert state.fanout_stub_anchor("b,o1") is stub
+    assert crossing_plan_stage._resolve_port_footprint_cells(
+        settings, state, instance_name="a", port_name="o1", port=_port((2.5, 6.3), 0.0)
+    ) == (12, 6)
+    assert crossing_plan_stage._resolve_port_footprint_cells(
+        settings, state, instance_name="b", port_name="o1", port=_port((2.5, 9.3), 0.0)
+    ) == (0, 0)

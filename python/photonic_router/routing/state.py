@@ -203,8 +203,28 @@ class SessionState:
     port_runway_anchor_specs: frozenset[str] = frozenset()
     """Port specs whose anchor is a phase-5 runway, not a dense fan-out stub (w:2 r:2)."""
 
+    def fanout_stub_anchor(self, port_spec: str) -> _FanoutAnchor | None:
+        """The dense fan-out stub anchor of a port, `None` for a runway anchor.
+
+        The geometry consumers (search endpoints, stub prepend, static
+        cells, endpoint correction) take every anchor from
+        `fanout_anchor_by_port_spec`. The dense fan-out *semantics* (stub
+        lane sizing of the port footprint, dense clusters, staggered target
+        reservations, the long-straight exemption, the footprint centre)
+        belong to real fan-out stubs only: a runway is the ordinary port's
+        own approach and keeps the ordinary port's protection. The first
+        27-cell table with runways (b05bffd) lost that distinction, the
+        port footprints collapsed to the stub lane size 0 and six cells
+        failed on crossing legality."""
+        if port_spec in self.port_runway_anchor_specs:
+            return None
+        return self.fanout_anchor_by_port_spec.get(port_spec)
+
     fanout_anchor_net_ids: set[int] = field(default_factory=set)
-    """Nets with a static fan-out stub on either side. w:3 r:4,7"""
+    """Nets with a static fan-out stub or a runway on either side. w:3 r:4,7"""
+
+    fanout_stub_net_ids: set[int] = field(default_factory=set)
+    """Nets with a dense fan-out stub (no runways) on either side. w:3 r:3"""
 
     fanout_anchor_source_net_ids: set[int] = field(default_factory=set)
     """Nets with a static fan-out stub on the source side. w:3 r:4,7"""
