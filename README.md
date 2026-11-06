@@ -138,8 +138,9 @@ baseline improves from 217 to 213 crossings, three lengths move by at most
 0.02 %; the paper's ladder is the `paper_ladder` ablation variant), and
 crossing legality is one Rust predicate in the search, the commit check, the
 validation and the report (the paper's three legacy checks and the Python
-re-decision are deleted; crossings never increase, lengths move by
-micrometres on a few cells). The paper's engine lives on at the tag
+re-decision are deleted; seven cells move: ADEPT 64x64 baseline 213 to 211
+crossings, no cell gains a crossing, lengths move by at most 0.07 %). The
+paper's engine lives on at the tag
 `date2027-results`. Provenance, the engine
 commits behind each row and the archived runs (attached to the
 `date2027-results` release) are in

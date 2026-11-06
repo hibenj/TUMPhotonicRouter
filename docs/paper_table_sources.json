@@ -1,6 +1,6 @@
 {
   "definition": "t = routing_loop_s (net routing phase: obstacle map + search with rip-up and repair; contribution 2 plus preplaced_build_s, shown as t_build); LiDAR = lidar_routing_loop_s (Start Detailed Routing -> DrGridRoute succeed/fail); L = gds_length_um (routed polygons + crossing* instances on the WG layer of the routed GDS, area / 0.5 um)",
-  "current_note": "Cells with a `current` block: the engine's default changed on purpose after the paper and compare_paper.py checks against `current` instead of the paper's numbers. 2026-11-05 (speed pass S4): the window ladder is window 0 only (routing_window_max_expansions 0, no full-grid fallback); on the 27 paper cells every route ever found came from window 0, the three further expansions and the fallback only spent the budget tail of attempts already lost. 24 cells are unchanged; these three moved. The paper's ladder is restored with PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS=3 PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID=1 (ablation variant paper_ladder). 2026-11-05 (phase 4, decision 1): crossing legality is the one Rust predicate everywhere (search hook, commit check, post-commit validation, Python report); the paper's three legacy paths and the Python re-decision are deleted and live on at the tag date2027-results. Cells that moved carry `since` = one crossing legality.",
+  "current_note": "Cells with a `current` block: the engine's default changed on purpose after the paper and compare_paper.py checks against `current` instead of the paper's numbers. 2026-11-05 (speed pass S4): the window ladder is window 0 only (routing_window_max_expansions 0, no full-grid fallback); on the 27 paper cells every route ever found came from window 0, the three further expansions and the fallback only spent the budget tail of attempts already lost. 24 cells are unchanged; these three moved. The paper's ladder is restored with PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS=3 PHOTONIC_ROUTER_ROUTING_WINDOW_FALLBACK_FULL_GRID=1 (ablation variant paper_ladder). 2026-11-05 (phase 4, decision 1): crossing legality is the one Rust predicate everywhere (search hook, commit check, post-commit validation, Python report); the paper's three legacy paths and the Python re-decision are deleted and live on at the tag date2027-results. 27-cell table of 2026-11-05/06 on cda-server-4 (results_unified_default, switch on at 60f4957; the switch-free head ce06082 is exact against it on the nine gate cells): 20 cells unchanged, seven moved and carry `since` = one crossing legality: Benes 32 baseline and contribution 1 +7.706 um each (416 crossings), ADEPT 8x8 baseline +11.289 um and contribution 1 +16.432 um (33 crossings), ADEPT 32 contribution 1 334827.361 -> 334811.783 um, ADEPT 64 baseline 213 -> 211 crossings and 1305375.37 -> 1305454.237 um, ADEPT 64 contribution 1 1302768.792 -> 1302746.103 um. Crossings never increase, 0 verifier errors.",
   "benes_rows": "benes_<n>x<n>_flat archives (switches expanded into their primitives plus the internal nets, the netlist LiDAR routes) on the frozen engine 8ddde83",
   "means": {
     "n": 8,
@@ -116,14 +116,24 @@
         "config": "lidar-pure",
         "routing_loop_s": 1224.926,
         "gds_length_um": 270827.61,
-        "crossing_count": 416
+        "crossing_count": 416,
+        "current": {
+          "crossing_count": 416,
+          "gds_length_um": 270835.316,
+          "since": "2026-11-05 one crossing legality (phase 4 decision 1)"
+        }
       },
       "contribution1": {
         "archive": "results/benes_32x32_flat/contribution1/20260919-142307",
         "config": "contribution1",
         "routing_loop_s": 790.947,
         "gds_length_um": 270872.224,
-        "crossing_count": 416
+        "crossing_count": 416,
+        "current": {
+          "crossing_count": 416,
+          "gds_length_um": 270879.93,
+          "since": "2026-11-05 one crossing legality (phase 4 decision 1)"
+        }
       },
       "contribution2": {
         "archive": "results/benes_32x32_flat/contribution2/20260919-143726",
@@ -268,8 +278,8 @@
         "crossing_count": 121,
         "current": {
           "crossing_count": 121,
-          "gds_length_um": 334827.361,
-          "since": "2026-11-05 window-0 ladder (S4)"
+          "gds_length_um": 334811.783,
+          "since": "2026-11-05 window-0 ladder (S4), then one crossing legality (phase 4 decision 1)"
         }
       },
       "contribution2": {
@@ -297,9 +307,9 @@
         "gds_length_um": 1305628.208,
         "crossing_count": 217,
         "current": {
-          "crossing_count": 213,
-          "gds_length_um": 1305375.37,
-          "since": "2026-11-05 window-0 ladder (S4)"
+          "crossing_count": 211,
+          "gds_length_um": 1305454.237,
+          "since": "2026-11-05 window-0 ladder (S4), then one crossing legality (phase 4 decision 1)"
         }
       },
       "contribution1": {
@@ -310,8 +320,8 @@
         "crossing_count": 209,
         "current": {
           "crossing_count": 209,
-          "gds_length_um": 1302768.792,
-          "since": "2026-11-05 window-0 ladder (S4)"
+          "gds_length_um": 1302746.103,
+          "since": "2026-11-05 window-0 ladder (S4), then one crossing legality (phase 4 decision 1)"
         }
       },
       "contribution2": {

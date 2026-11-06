@@ -137,10 +137,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   geometric re-decision with its footprint-blocker scan (about 950 lines with
   their tests; the kernel and engine tests that compared both paths now test
   the predicate). The paper's engine is the tag `date2027-results`. Cells
-  that move carry a `current` block in `docs/paper_table_sources.json`:
-  ADEPT 8x8 baseline 25160.335 -> 25171.624 um and contribution 1 25073.626 ->
-  25090.058 um (33 crossings each, unchanged) on the nine-cell gate; the
-  27-cell table of this commit is in `docs/PAPER_REPRODUCTION.md`.
+  that move carry a `current` block in `docs/paper_table_sources.json`.
+  27-cell table (cda-server-4, 2026-11-05/06, switch on at 60f4957; this
+  switch-free head is exact against it on the nine gate cells): 20 cells
+  unchanged, seven moved, crossings never increase, 0 verifier errors. Benes
+  32 baseline and contribution 1 +7.706 um each (416 crossings), ADEPT 8x8
+  baseline 25160.335 -> 25171.624 um and contribution 1 25073.626 ->
+  25090.058 um (33 crossings), ADEPT 32 contribution 1 334827.361 ->
+  334811.783 um, ADEPT 64 baseline 213 -> 211 crossings and 1305375.37 ->
+  1305454.237 um, ADEPT 64 contribution 1 1302768.792 -> 1302746.103 um
+  (the last three against their window-0 `current`). Loop-time ratio
+  0.35-0.81 against the paper's archive. Details in
+  `docs/PAPER_REPRODUCTION.md`.
 - The window ladder's default is window 0 only (speed pass S4, owner decision
   2026-11-05): `routing_window_max_expansions` 3 -> 0 and
   `routing_window_fallback_full_grid` on -> off in the kernel defaults and the
