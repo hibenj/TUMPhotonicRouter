@@ -783,54 +783,32 @@ pub(crate) struct CrossingHookContext {
     pub(crate) capped_required_margin: i32,
 }
 
-/// `PHOTONIC_ROUTER_CROSSING_HOOK_KERNEL_GRID=1`: the crossing hook's dense
-/// grid is built like the kernel's search grid (port-open cells free, the
-/// dynamic expansion radius and its clearance-exempt cells) instead of the
-/// paper's bare grid (no opened cells, radius 0). Experiment switch for the
-/// 27-cell table (2026-11-05); read once per process.
-pub(crate) fn hook_kernel_grid_enabled() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("PHOTONIC_ROUTER_CROSSING_HOOK_KERNEL_GRID")
-            .map(|value| value == "1")
-            .unwrap_or(false)
-    })
-}
-
 impl CrossingHookContext {
-    /// `port_open_cells`, `dynamic_expansion_radius_cells` and
-    /// `dynamic_clearance_exempt_cells` are the kernel's grid inputs; the
-    /// hook's grid reads them only under `hook_kernel_grid_enabled()`.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn build(
         obstacle_map: &ObstacleMap,
         primitives: &PrimitiveLibrary,
         config: &AStarConfig,
         crossing: &CrossingSearchConfig,
         full_bounds: RoutingBounds,
-        port_open_cells: Option<&FxHashSet<CellKey>>,
-        dynamic_expansion_radius_cells: i32,
-        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
     ) -> Self {
-        let kernel_grid = hook_kernel_grid_enabled();
+        // The hook's grid is the physical occupancy only: no port-open cells,
+        // no dynamic clearance expansion and no exempt cells. Those three are
+        // search freedoms of the kernel's grid, not free silicon; a hook that
+        // read the kernel's grid instead (experiment of 2026-11-05/06, 27-cell
+        // table) placed crossing candidates over port-open cells: Benes 32x32
+        // contribution 1 failed with a self-intersecting route, ADEPT 64x64
+        // baseline lost a net, Benes 32x32 baseline gained six crossings, while
+        // eleven other cells got shorter by up to one percent.
         let dense_grid = DenseRoutingGrid::from_obstacle_map_with_dynamic_expansion(
             obstacle_map,
             full_bounds,
-            if kernel_grid { port_open_cells } else { None },
+            None,
             config.max_dense_obstacle_cells,
             config.ignore_dynamic_obstacles,
             config.history_weight > 0.0,
             config.long_straight_congestion_weight > 0.0,
-            if kernel_grid {
-                dynamic_expansion_radius_cells
-            } else {
-                0
-            },
-            if kernel_grid {
-                dynamic_clearance_exempt_cells
-            } else {
-                None
-            },
+            0,
+            None,
         )
         .expect("dense grid should build for a valid obstacle map");
         let primitive_buckets: [&[Primitive]; 8] =
