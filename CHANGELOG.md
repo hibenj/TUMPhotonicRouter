@@ -78,7 +78,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   ADEPT 8x8 lidar-pure 25166.341 (-0.02 %), contribution 1 25153.798
   (+0.25 %), contribution 2 26479.705 (+0.61 %), crossings and errors as
   before; ADEPT 128x128 contribution 2 verifies again (311 crossing
-  components, 0 errors).
+  components, 0 errors). Third table (d3a62fe, switch on): all 27 cells
+  route with 0 verifier errors; crossings equal the pins on 26 cells (Benes
+  32x32 lidar-pure 418 against 416); lengths against the pins Benes
+  lidar-pure +0.98 to +1.12 %, Benes contribution 1/2 +0.44 to +0.59 %,
+  Benes 64x64 / 128x128 contribution 2 +0.28 / +0.16 %, ADEPT -0.02 to
+  +0.61 % (8x8 pays most, 64x64 and 128x128 +0.07 to +0.12 %); ADEPT
+  64x64 needs 6 / 4 / 5 negotiation rounds against the pinned 3 / 3 / 1,
+  ADEPT 128x128 contribution 2 9 against 8. The switch stays off until the
+  owner decides on the price (four shallow arcs per net, the length and
+  the two Benes crossings) against deleting the correction machinery.
 - `SearchTuning.routing_window_max_expansions` /
   `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS` and
   `SearchTuning.routing_window_fallback_full_grid` /
