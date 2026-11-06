@@ -200,6 +200,8 @@ class SessionState:
 
     fanout_anchor_by_port_spec: dict[str, _FanoutAnchor] = field(default_factory=dict)
     """Static fan-out stub anchor per port spec. w:3 r:3,4,5,6,7"""
+    port_runway_anchor_specs: frozenset[str] = frozenset()
+    """Port specs whose anchor is a phase-5 runway, not a dense fan-out stub (w:2 r:2)."""
 
     fanout_anchor_net_ids: set[int] = field(default_factory=set)
     """Nets with a static fan-out stub on either side. w:3 r:4,7"""

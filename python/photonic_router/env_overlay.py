@@ -638,6 +638,11 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         nonnegative_int(_PREFIX + "STUB_PORT_LANE_HALF_WIDTH_CELLS"),
     ),
     EnvVar(
+        _PREFIX + "PORT_RUNWAYS",
+        ("fanout", "port_runways"),
+        zero_one_or_unset(_PREFIX + "PORT_RUNWAYS"),
+    ),
+    EnvVar(
         _PREFIX + "STUB_PORT_LANE_LENGTH_CELLS",
         ("fanout", "stub_port_lane_length_cells"),
         nonnegative_int(_PREFIX + "STUB_PORT_LANE_LENGTH_CELLS"),

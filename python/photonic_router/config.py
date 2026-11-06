@@ -201,6 +201,15 @@ class FanoutAccessConfig:
     #: `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS`: non-negative int, else
     #: raises. `None` = unset (site default 0).
     stub_port_lane_length_cells: int | None = None
+    #: `PHOTONIC_ROUTER_PORT_RUNWAYS`: `0` or `1`, `None` = unset = off.
+    #: Phase 5 slice 5A experiment switch: every cardinal port without a
+    #: fan-out stub gets a runway, a static stub from the port centre onto the
+    #: cell-centre lattice (two shallow arcs of the bend radius for the
+    #: sub-cell lateral residue, then straight to a cell-centre anchor with the
+    #: port's heading); the search starts and ends at the anchors, as it does
+    #: for the fan-out stubs, and the realized route is the stub plus the
+    #: search path, so endpoint correction has nothing to move.
+    port_runways: bool | None = None
 
 
 @dataclass(frozen=True)

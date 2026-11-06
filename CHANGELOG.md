@@ -14,6 +14,36 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- Phase 5 slice 5A, experiment switch `PHOTONIC_ROUTER_PORT_RUNWAYS=1`
+  (`FanoutAccessConfig.port_runways`, default off = exact): every cardinal
+  port without a fan-out stub gets a runway, a static stub from the port
+  centre onto the cell-centre lattice (`route_jobs._port_runway_anchor`: a
+  0.5 um straight lead-in, two shallow arcs of the bend radius that shift the
+  centerline by the port's sub-cell lateral residue, a straight run to the
+  first cell centre at or beyond the arcs, at least one cell outward). The
+  anchor is that cell centre with the port's heading; the search starts and
+  ends at the anchors exactly as it does for the fan-out stubs
+  (`fanout_anchor_by_port_spec`), the stub is committed static and the
+  realized route is stub + search path, so endpoint correction has nothing to
+  move. A net whose two ports are closer than their two runways (the
+  pre-placed crossing grids' tile links) keeps the old path on both ports,
+  and `static_fanout_anchors_um` (the crossing structures' entry-tile probe)
+  reports the fan-out anchors only: runways are lattice entries, not fan-out
+  lanes (with them in the probe the ADEPT 8x8 contribution-2 planner lost a
+  column grid and fell back to the guided router).
+  `_append_target_fanout_stubs_after_correction` now appends the reversed
+  stub (any shape) before the true port; for the straight fan-out stubs
+  that is the same two points as before. Nine-cell table with the switch on:
+  crossings identical on every cell, 0 verifier errors, Benes lengths
+  +0.5-0.6 % (4x4: 9484.511 -> 9537.623, 8x8 lidar-pure 31418.224 ->
+  31571.384), ADEPT 8x8 lidar-pure 25171.624 -> 25110.519 (-0.24 %),
+  contribution 1 25090.058 -> 25078.927, contribution 2 26319.97 ->
+  26457.472 (+0.52 %), and the number of arcs per net
+  rises from 2.2 to 6.6 (Benes 8x8) and 2.9 to 5.1 (ADEPT 8x8): two shallow
+  arcs (3 to 17 degrees at R = 10 um) per runway port. Decision (default or
+  not, with the deletion of the correction machinery in 5B) by the 27-cell
+  table and the owner's view of the arcs; `docs/CONFIGURATION.md`
+  regenerated.
 - `SearchTuning.routing_window_max_expansions` /
   `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS` and
   `SearchTuning.routing_window_fallback_full_grid` /

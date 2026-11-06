@@ -522,9 +522,12 @@ def static_fanout_anchors_um(
     context = build_static_obstacle_context(settings, state)
     configure_router_and_grid(settings, state, context.obstacle_map)
     build_route_jobs_and_fanout_clustering(settings, state, schematic.netlist.routes)
+    # Port runways (phase 5) are lattice entries, not fan-out lanes: the
+    # crossing structures plan their entry tiles on the dense fan-out rows only.
     return {
         spec: (float(anchor.center_um[0]), float(anchor.center_um[1]))
         for spec, anchor in state.fanout_anchor_by_port_spec.items()
+        if spec not in state.port_runway_anchor_specs
     }
 
 

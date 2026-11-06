@@ -1029,6 +1029,14 @@ def _append_target_fanout_stubs_after_correction(settings, state) -> None:
         if true_port_um is None:
             continue
         points = list(centerline)
+        # The stub runs port -> anchor; the route ends at the anchor, so the
+        # reversed stub continues it to the true port (its first point, the
+        # anchor, is dropped as a duplicate). A straight fan-out stub is the
+        # two points anchor -> port; a port runway (phase 5) carries its two
+        # arcs as well.
+        _append_centerline_points(
+            settings, state, points, list(reversed(anchor.stub_centerline_um))
+        )
         _append_centerline_points(settings, state, points, [true_port_um])
         new_centerline = _compress_centerline(tuple(points))
         if len(new_centerline) < 2:
