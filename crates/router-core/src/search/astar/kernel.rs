@@ -541,13 +541,20 @@ fn exp_f_profile_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("PHOTONIC_ROUTER_EXP_F_PROFILE").is_ok_and(|v| v == "1"))
 }
 
-fn exp_f_profile_report(f_pops: &[f64], h_start: f64, h2d: (f64, f64), c_star: f64) {
+fn exp_f_profile_report(
+    f_pops: &[f64],
+    h_start: f64,
+    h2d: (f64, f64, f64, f64, usize, usize),
+    c_star: f64,
+    length_um: f64,
+    bend_cost: f64,
+) {
     if c_star <= 0.0 {
         return;
     }
     let count = |limit: f64| f_pops.iter().filter(|&&f| f < limit).count();
     eprintln!(
-        "exp_f_profile pops={} below_cstar={} below_0999={} below_099={} below_095={} below_090={} h_start_ratio={:.4} h2d_len_ratio={:.4} h2d_priced_ratio={:.4} cstar={:.3}",
+        "exp_f_profile pops={} below_cstar={} below_0999={} below_099={} below_095={} below_090={} h_start_ratio={:.4} h2d_len_ratio={:.4} h2d_priced_ratio={:.4} h2d_walls_ratio={:.4} price={:.1} route_blocked_cells={} owned_cells={} cstar={:.3} length={:.3} bend_cost={:.1} other={:.1}",
         f_pops.len(),
         count(c_star * (1.0 - 1.0e-9)),
         count(c_star * 0.999),
@@ -557,7 +564,14 @@ fn exp_f_profile_report(f_pops: &[f64], h_start: f64, h2d: (f64, f64), c_star: f
         h_start / c_star,
         h2d.0 / c_star,
         h2d.1 / c_star,
-        c_star
+        h2d.2 / c_star,
+        h2d.3,
+        h2d.4,
+        h2d.5,
+        c_star,
+        length_um,
+        bend_cost,
+        c_star - length_um - bend_cost
     );
 }
 
@@ -576,10 +590,10 @@ fn exp_two_d_lower_bound<H: CrossingLegalityHook>(
     target: State,
     grid_size_um: f64,
     hook: &H,
-) -> (f64, f64) {
+) -> (f64, f64, f64, f64, usize, usize) {
     let bounds = dense_grid.bounds;
     if !bounds.contains(source.x, source.y) || !bounds.contains(target.x, target.y) {
-        return (0.0, 0.0);
+        return (0.0, 0.0, 0.0, 0.0, 0, 0);
     }
     let width = (bounds.max_x - bounds.min_x + 1) as usize;
     let height = (bounds.max_y - bounds.min_y + 1) as usize;
@@ -587,13 +601,28 @@ fn exp_two_d_lower_bound<H: CrossingLegalityHook>(
     let inputs = hook.exp_lower_bound_inputs();
     let owner = |x: i32, y: i32| inputs.and_then(|(owners, _)| owners.owner_at(x, y));
     let price = inputs.map_or(0.0, |(_, p)| p);
-    let passable =
-        |x: i32, y: i32| !dense_grid.is_blocked(x, y) || !obstacle_map.is_static_blocked(x, y);
+    // A zero-width walker would slip between a committed route's end and
+    // the component it ends on; a real route's footprint cannot, so cells
+    // touching a static obstacle are closed except around the terminals.
+    let near_terminal = |x: i32, y: i32| {
+        ((x - source.x).abs() <= 2 && (y - source.y).abs() <= 2)
+            || ((x - target.x).abs() <= 2 && (y - target.y).abs() <= 2)
+    };
+    let touches_static = |x: i32, y: i32| {
+        (-1..=1).any(|dy| (-1..=1).any(|dx| obstacle_map.is_static_blocked(x + dx, y + dy)))
+    };
+    let passable = |x: i32, y: i32| {
+        (!dense_grid.is_blocked(x, y) || !obstacle_map.is_static_blocked(x, y))
+            && (near_terminal(x, y) || !touches_static(x, y))
+    };
     // A cell blocked by committed routes only (a core or the clearance
     // around it): entering such a region from outside is a crossing.
     let route_blocked =
         |x: i32, y: i32| dense_grid.is_blocked(x, y) && !obstacle_map.is_static_blocked(x, y);
-    let run = |priced: bool| -> f64 {
+    // `mode`: 0 length only, 1 priced crossings, 2 route cells are walls
+    // (a finite result says the routes do not separate source and target
+    // in this 2D model).
+    let run = |mode: u8| -> f64 {
         #[derive(PartialEq)]
         struct Entry(f64, i32, i32);
         impl Eq for Entry {}
@@ -629,6 +658,18 @@ fn exp_two_d_lower_bound<H: CrossingLegalityHook>(
                     if !bounds.contains(nx, ny) || !passable(nx, ny) {
                         continue;
                     }
+                    let is_route = |x: i32, y: i32| route_blocked(x, y) || owner(x, y).is_some();
+                    if mode == 2 && is_route(nx, ny) {
+                        continue;
+                    }
+                    // No corner cutting through a diagonal chain of route cells:
+                    // a diagonal step whose two orthogonal neighbours are both
+                    // route cells crosses that route.
+                    let cuts_route =
+                        dx != 0 && dy != 0 && is_route(x + dx, y) && is_route(x, y + dy);
+                    if mode == 2 && cuts_route {
+                        continue;
+                    }
                     let step = if dx != 0 && dy != 0 {
                         std::f64::consts::SQRT_2 * grid_size_um
                     } else {
@@ -636,8 +677,13 @@ fn exp_two_d_lower_bound<H: CrossingLegalityHook>(
                     };
                     let there = owner(nx, ny);
                     let enters_route = (there.is_some() && there != here)
-                        || (route_blocked(nx, ny) && !here_blocked);
-                    let crossing = if priced && enters_route { price } else { 0.0 };
+                        || (route_blocked(nx, ny) && !here_blocked)
+                        || cuts_route;
+                    let crossing = if mode == 1 && enters_route {
+                        price
+                    } else {
+                        0.0
+                    };
                     let nd = d + step + crossing;
                     let i = idx(nx, ny);
                     if nd < dist[i] {
@@ -649,7 +695,22 @@ fn exp_two_d_lower_bound<H: CrossingLegalityHook>(
         }
         0.0
     };
-    (run(false), run(true))
+    let mut route_blocked_cells = 0usize;
+    let mut owned_cells = 0usize;
+    for y in bounds.min_y..=bounds.max_y {
+        for x in bounds.min_x..=bounds.max_x {
+            route_blocked_cells += usize::from(route_blocked(x, y));
+            owned_cells += usize::from(owner(x, y).is_some());
+        }
+    }
+    (
+        run(0),
+        run(1),
+        run(2),
+        price,
+        route_blocked_cells,
+        owned_cells,
+    )
 }
 
 pub(crate) fn run<H: CrossingLegalityHook>(
@@ -842,7 +903,7 @@ pub(crate) fn run<H: CrossingLegalityHook>(
             hook,
         )
     } else {
-        (0.0, 0.0)
+        (0.0, 0.0, 0.0, 0.0, 0, 0)
     };
     let search_loop_start = if config.collect_detailed_timing {
         Some(Instant::now())
@@ -997,28 +1058,11 @@ pub(crate) fn run<H: CrossingLegalityHook>(
             if let Some(search_loop_start) = search_loop_start.as_ref() {
                 stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
             }
-            if let Some(f_pops) = exp_f_pops.as_ref() {
-                exp_f_profile_report(f_pops, exp_h_start, exp_h2d, current_g);
-            }
             // Harness: probe cells report on SUCCESS too (where did the
             // search go / not go), not only on failure.
             print_probe_success_report(&mut std::io::stderr(), &failure_env, state, &probe_ring);
-            if config.collect_detailed_timing {
-                let reconstruction_start = Instant::now();
-                let mut route = reconstruct_route_unified(
-                    source_idx,
-                    current_ref,
-                    current_g,
-                    target,
-                    primitives,
-                    stats.clone(),
-                    &storage,
-                    &extended_nodes,
-                )?;
-                route.stats.reconstruction_time_us += reconstruction_start.elapsed().as_micros();
-                return Some(route);
-            }
-            return reconstruct_route_unified(
+            let reconstruction_start = Instant::now();
+            let mut route = reconstruct_route_unified(
                 source_idx,
                 current_ref,
                 current_g,
@@ -1027,7 +1071,29 @@ pub(crate) fn run<H: CrossingLegalityHook>(
                 stats.clone(),
                 &storage,
                 &extended_nodes,
-            );
+            )?;
+            if config.collect_detailed_timing {
+                route.stats.reconstruction_time_us += reconstruction_start.elapsed().as_micros();
+            }
+            if let Some(f_pops) = exp_f_pops.as_ref() {
+                let bend_units: u32 = route
+                    .states
+                    .windows(2)
+                    .map(|w| {
+                        let d = (i32::from(w[1].angle) - i32::from(w[0].angle)).rem_euclid(8);
+                        d.min(8 - d) as u32
+                    })
+                    .sum();
+                exp_f_profile_report(
+                    f_pops,
+                    exp_h_start,
+                    exp_h2d,
+                    current_g,
+                    route.total_length_um,
+                    f64::from(bend_units) * config.bend_weight,
+                );
+            }
+            return Some(route);
         }
 
         match current_ref {
