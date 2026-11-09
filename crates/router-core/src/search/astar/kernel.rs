@@ -541,13 +541,13 @@ fn exp_f_profile_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("PHOTONIC_ROUTER_EXP_F_PROFILE").is_ok_and(|v| v == "1"))
 }
 
-fn exp_f_profile_report(f_pops: &[f64], h_start: f64, c_star: f64) {
+fn exp_f_profile_report(f_pops: &[f64], h_start: f64, h2d: (f64, f64), c_star: f64) {
     if c_star <= 0.0 {
         return;
     }
     let count = |limit: f64| f_pops.iter().filter(|&&f| f < limit).count();
     eprintln!(
-        "exp_f_profile pops={} below_cstar={} below_0999={} below_099={} below_095={} below_090={} h_start_ratio={:.4} cstar={:.3}",
+        "exp_f_profile pops={} below_cstar={} below_0999={} below_099={} below_095={} below_090={} h_start_ratio={:.4} h2d_len_ratio={:.4} h2d_priced_ratio={:.4} cstar={:.3}",
         f_pops.len(),
         count(c_star * (1.0 - 1.0e-9)),
         count(c_star * 0.999),
@@ -555,8 +555,98 @@ fn exp_f_profile_report(f_pops: &[f64], h_start: f64, c_star: f64) {
         count(c_star * 0.95),
         count(c_star * 0.90),
         h_start / c_star,
+        h2d.0 / c_star,
+        h2d.1 / c_star,
         c_star
     );
+}
+
+/// Experiment-only 2D relaxation of the search (research item 2): an
+/// 8-connected Dijkstra over the window's cells from the source to the
+/// target cell. Static obstacles are walls; cells blocked only by committed
+/// routes (their cores and the clearance around them) are passable, and
+/// entering a core cell of a route the path was not already inside costs
+/// the cheapest crossing price. Moves cost the octile length. Returns
+/// (length-only bound, priced bound); either is `0.0` when the target is
+/// not reached (then the bound says nothing).
+fn exp_two_d_lower_bound<H: CrossingLegalityHook>(
+    dense_grid: &DenseRoutingGrid,
+    obstacle_map: &ObstacleMap,
+    source: State,
+    target: State,
+    grid_size_um: f64,
+    hook: &H,
+) -> (f64, f64) {
+    let bounds = dense_grid.bounds;
+    if !bounds.contains(source.x, source.y) || !bounds.contains(target.x, target.y) {
+        return (0.0, 0.0);
+    }
+    let width = (bounds.max_x - bounds.min_x + 1) as usize;
+    let height = (bounds.max_y - bounds.min_y + 1) as usize;
+    let idx = |x: i32, y: i32| (y - bounds.min_y) as usize * width + (x - bounds.min_x) as usize;
+    let inputs = hook.exp_lower_bound_inputs();
+    let owner = |x: i32, y: i32| inputs.and_then(|(owners, _)| owners.owner_at(x, y));
+    let price = inputs.map_or(0.0, |(_, p)| p);
+    let passable =
+        |x: i32, y: i32| !dense_grid.is_blocked(x, y) || !obstacle_map.is_static_blocked(x, y);
+    let run = |priced: bool| -> f64 {
+        #[derive(PartialEq)]
+        struct Entry(f64, i32, i32);
+        impl Eq for Entry {}
+        impl PartialOrd for Entry {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl Ord for Entry {
+            fn cmp(&self, other: &Self) -> Ordering {
+                other.0.partial_cmp(&self.0).unwrap_or(Ordering::Equal)
+            }
+        }
+        let mut dist = vec![f64::INFINITY; width * height];
+        let mut heap = BinaryHeap::new();
+        dist[idx(source.x, source.y)] = 0.0;
+        heap.push(Entry(0.0, source.x, source.y));
+        while let Some(Entry(d, x, y)) = heap.pop() {
+            if d > dist[idx(x, y)] {
+                continue;
+            }
+            if x == target.x && y == target.y {
+                return d;
+            }
+            let here = owner(x, y);
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let (nx, ny) = (x + dx, y + dy);
+                    if !bounds.contains(nx, ny) || !passable(nx, ny) {
+                        continue;
+                    }
+                    let step = if dx != 0 && dy != 0 {
+                        std::f64::consts::SQRT_2 * grid_size_um
+                    } else {
+                        grid_size_um
+                    };
+                    let there = owner(nx, ny);
+                    let crossing = if priced && there.is_some() && there != here {
+                        price
+                    } else {
+                        0.0
+                    };
+                    let nd = d + step + crossing;
+                    let i = idx(nx, ny);
+                    if nd < dist[i] {
+                        dist[i] = nd;
+                        heap.push(Entry(nd, nx, ny));
+                    }
+                }
+            }
+        }
+        0.0
+    };
+    (run(false), run(true))
 }
 
 pub(crate) fn run<H: CrossingLegalityHook>(
@@ -739,6 +829,18 @@ pub(crate) fn run<H: CrossingLegalityHook>(
     let mut iterations = 0usize;
     let mut exp_f_pops: Option<Vec<f64>> = exp_f_profile_enabled().then(Vec::new);
     let exp_h_start = cost::heuristic_estimate(&search_heuristic, source);
+    let exp_h2d = if exp_f_pops.is_some() {
+        exp_two_d_lower_bound(
+            &dense_grid,
+            obstacle_map,
+            source,
+            target,
+            search_heuristic.grid_size_um,
+            hook,
+        )
+    } else {
+        (0.0, 0.0)
+    };
     let search_loop_start = if config.collect_detailed_timing {
         Some(Instant::now())
     } else {
@@ -893,7 +995,7 @@ pub(crate) fn run<H: CrossingLegalityHook>(
                 stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
             }
             if let Some(f_pops) = exp_f_pops.as_ref() {
-                exp_f_profile_report(f_pops, exp_h_start, current_g);
+                exp_f_profile_report(f_pops, exp_h_start, exp_h2d, current_g);
             }
             // Harness: probe cells report on SUCCESS too (where did the
             // search go / not go), not only on failure.

@@ -590,6 +590,13 @@ pub(crate) trait CrossingLegalityHook {
         0
     }
 
+    /// Experiment-only (`PHOTONIC_ROUTER_EXP_F_PROFILE`): the committed
+    /// routes' core-owner grid and the cheapest crossing price, for the 2D
+    /// lower bound the profile reports. `None` when crossings are disabled.
+    fn exp_lower_bound_inputs(&self) -> Option<(&DenseDynamicCoreOwnerGrid, f64)> {
+        None
+    }
+
     /// Returns `None` to reject the step (no legal crossing here, and
     /// this is not an active post-crossing corridor state either -- the
     /// unified kernel rejects it exactly like the plain kernel rejects a
@@ -665,6 +672,16 @@ pub(crate) struct LiveCrossingHook<'a> {
 }
 
 impl CrossingLegalityHook for LiveCrossingHook<'_> {
+    fn exp_lower_bound_inputs(&self) -> Option<(&DenseDynamicCoreOwnerGrid, f64)> {
+        let min_price = self
+            .crossing
+            .partners
+            .iter()
+            .filter_map(|p| p.crossing_loss_override)
+            .fold(self.crossing.crossing_loss, f64::min);
+        Some((self.dynamic_core_owners, min_price))
+    }
+
     const TRACKS_STRAIGHT_RUN: bool = true;
 
     fn capped_required_margin(&self) -> i32 {
