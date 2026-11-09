@@ -145,10 +145,7 @@ def _resolve_port_footprint_cells(
     # `PHOTONIC_ROUTER_STUB_PORT_LANE_*` environment variables) rather
     # than introducing separate target-only ones -- see
     # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
-    if (
-        hasattr(state, "fanout_anchor_by_port_spec")
-        and state.fanout_stub_anchor(f"{instance_name},{port_name}") is not None
-    ):
+    if f"{instance_name},{port_name}" in getattr(state, "fanout_anchor_by_port_spec", {}):
         return int(state.stub_port_lane_length_cells), int(state.stub_port_lane_half_width_cells)
     return int(state.port_lane_length_cells), int(state.port_lane_half_width_cells)
 
@@ -406,7 +403,7 @@ def build_crossing_plan_and_port_footprints(
         tuple[str, float, float, float | None, str | None, float | None, float | None]
     ] = []
     for port_spec, (instance_name, port_name, port) in state.endpoint_ports_by_spec.items():
-        fanout_anchor = state.fanout_stub_anchor(port_spec)
+        fanout_anchor = state.fanout_anchor_by_port_spec.get(port_spec)
         center = fanout_anchor.center_um if fanout_anchor is not None else _port_center_um(port)
         if center is None:
             raise ValueError(f"Port {port_spec!r} has no finite center coordinate")
@@ -547,7 +544,7 @@ def build_crossing_plan_and_port_footprints(
         groups: dict[int, list[tuple[str, float]]] = {}
         for port_spec in port_specs:
             _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
-            fanout_anchor = state.fanout_stub_anchor(port_spec)
+            fanout_anchor = state.fanout_anchor_by_port_spec.get(port_spec)
             angle = (
                 int(fanout_anchor.physical_angle) % 8
                 if fanout_anchor is not None

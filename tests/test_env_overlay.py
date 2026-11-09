@@ -371,7 +371,6 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS",
         "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
         "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
-        "PHOTONIC_ROUTER_PORT_RUNWAYS",
         # Search tuning (python/photonic_router/routing/route_rust.py)
         "PHOTONIC_ROUTER_MIN_BEND_WEIGHT",
         "PHOTONIC_ROUTER_HEAP_TIE_BREAKER",

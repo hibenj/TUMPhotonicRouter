@@ -1,0 +1,215 @@
+From b45479b58bab3d95027dd364b143199cb96e7e8f Mon Sep 17 00:00:00 2001
+From: benjamin <benjamin.hien@web.de>
+Date: Fri, 6 Nov 2026 05:26:58 +0100
+Subject: [PATCH 2/3] Phase 5 slice 5A: runway anchors are not dense fan-out
+ stubs
+
+The first 27-cell table with PHOTONIC_ROUTER_PORT_RUNWAYS=1 (b05bffd) lost
+six cells on crossing legality and ADEPT 32x32 lidar-pure gained two
+crossings: the runway anchors had entered every consumer of
+fanout_anchor_by_port_spec, including the ones that carry the dense
+fan-out semantics, so each runway port's access footprint shrank to the
+stub lane size 0 (siblings cut in right in front of the ports), its ports
+formed a dense cluster, its nets were exempt from the long-straight
+penalty, the dense target reservations skipped it and the footprint was
+laid from the anchor.
+
+SessionState.fanout_stub_anchor hides runway anchors from those consumers
+(_resolve_port_footprint_cells, the port-opening centre, the dense lateral
+windows, _dense_target_port_runway_lengths, the static stub clusters,
+apply_long_straight_fanout_exemption via the new fanout_stub_net_ids, the
+topological-stub order). The geometry consumers (search endpoints, stub
+prepend, static cells, endpoint correction) still take every anchor.
+
+Switch off: nine-cell gate exact, 712 Python tests. Switch on: nine cells
+keep their crossings and 0 errors, Benes lidar-pure lengths +1.0/+1.1 %
+(were +0.5 % with the collapsed footprints), the other cells unchanged to
++0.7 %; Benes 16x16 lidar-pure routes again with 88 crossings. Regression
+test in tests/test_port_runways.py.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0152GWPQy8AyTgwk6GNvQ3qH
+---
+ .../routing/crossing_plan_stage.py            |  9 ++++--
+ python/photonic_router/routing/handoff.py     |  2 +-
+ python/photonic_router/routing/route_jobs.py  | 16 ++++++++--
+ python/photonic_router/routing/state.py       | 22 +++++++++++++-
+ tests/test_port_runways.py                    | 29 +++++++++++++++++++
+ 5 files changed, 71 insertions(+), 7 deletions(-)
+
+diff --git a/python/photonic_router/routing/crossing_plan_stage.py b/python/photonic_router/routing/crossing_plan_stage.py
+index eab2abf..fafe222 100644
+--- a/python/photonic_router/routing/crossing_plan_stage.py
++++ b/python/photonic_router/routing/crossing_plan_stage.py
+@@ -145,7 +145,10 @@ def _resolve_port_footprint_cells(
+     # `PHOTONIC_ROUTER_STUB_PORT_LANE_*` environment variables) rather
+     # than introducing separate target-only ones -- see
+     # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
+-    if f"{instance_name},{port_name}" in getattr(state, "fanout_anchor_by_port_spec", {}):
++    if (
++        hasattr(state, "fanout_anchor_by_port_spec")
++        and state.fanout_stub_anchor(f"{instance_name},{port_name}") is not None
++    ):
+         return int(state.stub_port_lane_length_cells), int(state.stub_port_lane_half_width_cells)
+     return int(state.port_lane_length_cells), int(state.port_lane_half_width_cells)
+ 
+@@ -403,7 +406,7 @@ def build_crossing_plan_and_port_footprints(
+         tuple[str, float, float, float | None, str | None, float | None, float | None]
+     ] = []
+     for port_spec, (instance_name, port_name, port) in state.endpoint_ports_by_spec.items():
+-        fanout_anchor = state.fanout_anchor_by_port_spec.get(port_spec)
++        fanout_anchor = state.fanout_stub_anchor(port_spec)
+         center = fanout_anchor.center_um if fanout_anchor is not None else _port_center_um(port)
+         if center is None:
+             raise ValueError(f"Port {port_spec!r} has no finite center coordinate")
+@@ -544,7 +547,7 @@ def build_crossing_plan_and_port_footprints(
+         groups: dict[int, list[tuple[str, float]]] = {}
+         for port_spec in port_specs:
+             _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+-            fanout_anchor = state.fanout_anchor_by_port_spec.get(port_spec)
++            fanout_anchor = state.fanout_stub_anchor(port_spec)
+             angle = (
+                 int(fanout_anchor.physical_angle) % 8
+                 if fanout_anchor is not None
+diff --git a/python/photonic_router/routing/handoff.py b/python/photonic_router/routing/handoff.py
+index 7403609..b556a1f 100644
+--- a/python/photonic_router/routing/handoff.py
++++ b/python/photonic_router/routing/handoff.py
+@@ -280,7 +280,7 @@ def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[
+         for job in jobs:
+             lengths = []
+             for spec in (f"{job.inst1},{job.port1}", f"{job.inst2},{job.port2}"):
+-                anchor = state.fanout_anchor_by_port_spec.get(spec)
++                anchor = state.fanout_stub_anchor(spec)
+                 if anchor is not None:
+                     lengths.append(len(anchor.stub_center_cells))
+             stub_by_net_id[int(job.net_id)] = max(lengths) if lengths else 0
+diff --git a/python/photonic_router/routing/route_jobs.py b/python/photonic_router/routing/route_jobs.py
+index 821b269..9e071d0 100644
+--- a/python/photonic_router/routing/route_jobs.py
++++ b/python/photonic_router/routing/route_jobs.py
+@@ -1441,7 +1441,7 @@ def _dense_target_port_runway_lengths(
+         group_port_specs: list[str] = []
+         for port_index, run_job in enumerate(lower_jobs):
+             port_spec = f"{run_job.inst2},{run_job.port2}"
+-            if port_spec in state.fanout_anchor_by_port_spec:
++            if state.fanout_stub_anchor(port_spec) is not None:
+                 # A real, pre-committed static stub already exists for
+                 # this port (see `_build_static_fanout_target_anchors`):
+                 # the abstract reservation this function computes is
+@@ -1456,7 +1456,7 @@ def _dense_target_port_runway_lengths(
+         upper_count = len(upper_jobs)
+         for port_index, run_job in enumerate(upper_jobs):
+             port_spec = f"{run_job.inst2},{run_job.port2}"
+-            if port_spec in state.fanout_anchor_by_port_spec:
++            if state.fanout_stub_anchor(port_spec) is not None:
+                 lengths_by_spec[port_spec] = 0
+                 continue
+             lengths_by_spec[port_spec] = base_cells + spacing_cells * (
+@@ -1580,6 +1580,12 @@ def build_route_jobs_and_fanout_clustering(
+         if f"{job.inst1},{job.port1}" in state.fanout_anchor_by_port_spec
+         or f"{job.inst2},{job.port2}" in state.fanout_anchor_by_port_spec
+     }
++    state.fanout_stub_net_ids = {
++        int(job.net_id)
++        for job in route_jobs
++        if state.fanout_stub_anchor(f"{job.inst1},{job.port1}") is not None
++        or state.fanout_stub_anchor(f"{job.inst2},{job.port2}") is not None
++    }
+     state.fanout_anchor_source_net_ids = {
+         int(job.net_id)
+         for job in route_jobs
+@@ -1645,6 +1651,8 @@ def build_route_jobs_and_fanout_clustering(
+     if state.fanout_anchor_by_port_spec:
+         static_stub_groups: dict[tuple[str, int], set[str]] = {}
+         for port_spec, anchor in state.fanout_anchor_by_port_spec.items():
++            if port_spec in state.port_runway_anchor_specs:
++                continue
+             instance_name = port_spec.split(",", 1)[0]
+             static_stub_groups.setdefault(
+                 (instance_name, int(anchor.physical_angle) % 8),
+@@ -1678,6 +1686,10 @@ def apply_long_straight_fanout_exemption(settings: SessionSettings, state: Sessi
+         exempt_ids = sorted(
+             set(state.fanout_anchor_source_net_ids) | set(state.fanout_anchor_target_net_ids)
+         )
++        if state.port_runway_anchor_specs:
++            # runway anchors are not dense fan-out stubs (see
++            # `SessionState.fanout_stub_anchor`)
++            exempt_ids = sorted(state.fanout_stub_net_ids)
+         if hasattr(state.router, "set_long_straight_exempt_net_ids"):
+             state.router.set_long_straight_exempt_net_ids(exempt_ids)
+             print(
+diff --git a/python/photonic_router/routing/state.py b/python/photonic_router/routing/state.py
+index 1b9aee5..6b6bbc4 100644
+--- a/python/photonic_router/routing/state.py
++++ b/python/photonic_router/routing/state.py
+@@ -203,8 +203,28 @@ class SessionState:
+     port_runway_anchor_specs: frozenset[str] = frozenset()
+     """Port specs whose anchor is a phase-5 runway, not a dense fan-out stub (w:2 r:2)."""
+ 
++    def fanout_stub_anchor(self, port_spec: str) -> _FanoutAnchor | None:
++        """The dense fan-out stub anchor of a port, `None` for a runway anchor.
++
++        The geometry consumers (search endpoints, stub prepend, static
++        cells, endpoint correction) take every anchor from
++        `fanout_anchor_by_port_spec`. The dense fan-out *semantics* (stub
++        lane sizing of the port footprint, dense clusters, staggered target
++        reservations, the long-straight exemption, the footprint centre)
++        belong to real fan-out stubs only: a runway is the ordinary port's
++        own approach and keeps the ordinary port's protection. The first
++        27-cell table with runways (b05bffd) lost that distinction, the
++        port footprints collapsed to the stub lane size 0 and six cells
++        failed on crossing legality."""
++        if port_spec in self.port_runway_anchor_specs:
++            return None
++        return self.fanout_anchor_by_port_spec.get(port_spec)
++
+     fanout_anchor_net_ids: set[int] = field(default_factory=set)
+-    """Nets with a static fan-out stub on either side. w:3 r:4,7"""
++    """Nets with a static fan-out stub or a runway on either side. w:3 r:4,7"""
++
++    fanout_stub_net_ids: set[int] = field(default_factory=set)
++    """Nets with a dense fan-out stub (no runways) on either side. w:3 r:3"""
+ 
+     fanout_anchor_source_net_ids: set[int] = field(default_factory=set)
+     """Nets with a static fan-out stub on the source side. w:3 r:4,7"""
+diff --git a/tests/test_port_runways.py b/tests/test_port_runways.py
+index 286004c..2e0c671 100644
+--- a/tests/test_port_runways.py
++++ b/tests/test_port_runways.py
+@@ -155,3 +155,32 @@ def pytest_approx(value, abs):  # small local helper, keeps the module free of p
+     import pytest
+ 
+     return pytest.approx(value, abs=abs)
++
++
++def test_runway_anchors_keep_the_ordinary_port_footprint_and_dense_semantics_off():
++    # A runway is the ordinary port's own approach: it must not inherit the
++    # dense fan-out stub semantics (stub lane sizing, dense clusters, the
++    # long-straight exemption). The first 27-cell table with runways
++    # (b05bffd) did, the port footprints collapsed to the stub lane size 0
++    # and six cells failed on crossing legality.
++    from photonic_router.routing import crossing_plan_stage
++
++    settings = _settings(True)
++    state = _state()
++    state.port_lane_length_cells = 12
++    state.port_lane_half_width_cells = 6
++    state.stub_port_lane_length_cells = 0
++    state.stub_port_lane_half_width_cells = 0
++    runway = route_jobs._port_runway_anchor(settings, state, "a,o1", _port((2.5, 6.3), 0.0))
++    stub = route_jobs._port_runway_anchor(settings, state, "b,o1", _port((2.5, 9.3), 0.0))
++    assert runway is not None and stub is not None
++    state.fanout_anchor_by_port_spec = {"a,o1": runway, "b,o1": stub}
++    state.port_runway_anchor_specs = frozenset({"a,o1"})
++    assert state.fanout_stub_anchor("a,o1") is None
++    assert state.fanout_stub_anchor("b,o1") is stub
++    assert crossing_plan_stage._resolve_port_footprint_cells(
++        settings, state, instance_name="a", port_name="o1", port=_port((2.5, 6.3), 0.0)
++    ) == (12, 6)
++    assert crossing_plan_stage._resolve_port_footprint_cells(
++        settings, state, instance_name="b", port_name="o1", port=_port((2.5, 9.3), 0.0)
++    ) == (0, 0)
+-- 
+2.43.0
+

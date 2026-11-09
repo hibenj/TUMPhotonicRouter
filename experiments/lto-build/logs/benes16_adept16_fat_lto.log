@@ -1,0 +1,42 @@
+== gate 1 uptime:  10:37:06 up 85 days, 18:36,  9 users,  load average: 2,94, 3,01, 1,83
+| benchmark | config | crossings paper/repro | GDS length um paper/repro | errors | t_loop ratio | status |
+|---|---|---|---|---|---|---|
+| benes_4x4_flat | lidar-pure | 2 / 2 | 9484.511 / 9484.511 | 0 | 0.76 | ok |
+| benes_4x4_flat | contribution1 | 2 / 2 | 9475.187 / 9475.187 | 0 | 0.80 | ok |
+| benes_4x4_flat | contribution2 | 2 / 2 | 9475.255 / 9475.255 | 0 | 0.69 | ok |
+| benes_8x8_flat | lidar-pure | 16 / 16 | 31418.224 / 31418.224 | 0 | 0.77 | ok |
+| benes_8x8_flat | contribution1 | 16 / 16 | 31312.203 / 31312.203 | 0 | 0.83 | ok |
+| benes_8x8_flat | contribution2 | 16 / 16 | 31348.89 / 31348.89 | 0 | 0.78 | ok |
+| multiportmmi_8x8 | lidar-pure | 33 / 33 | 25160.335 / 25160.335 | 0 | 0.78 | ok |
+| multiportmmi_8x8 | contribution1 | 33 / 33 | 25073.626 / 25073.626 | 0 | 0.84 | ok |
+| multiportmmi_8x8 | contribution2 | 33 / 33 | 26319.97 / 26319.97 | 0 | 0.78 | ok |
+
+all reproduced cells match
+kept: /tmp/gate_short_Ohel
+gate rc=0
+== gate 2 uptime:  10:38:00 up 85 days, 18:37,  9 users,  load average: 2,98, 3,00, 1,90
+| benchmark | config | crossings paper/repro | GDS length um paper/repro | errors | t_loop ratio | status |
+|---|---|---|---|---|---|---|
+| benes_4x4_flat | lidar-pure | 2 / 2 | 9484.511 / 9484.511 | 0 | 0.78 | ok |
+| benes_4x4_flat | contribution1 | 2 / 2 | 9475.187 / 9475.187 | 0 | 0.79 | ok |
+| benes_4x4_flat | contribution2 | 2 / 2 | 9475.255 / 9475.255 | 0 | 0.69 | ok |
+| benes_8x8_flat | lidar-pure | 16 / 16 | 31418.224 / 31418.224 | 0 | 0.78 | ok |
+| benes_8x8_flat | contribution1 | 16 / 16 | 31312.203 / 31312.203 | 0 | 0.84 | ok |
+| benes_8x8_flat | contribution2 | 16 / 16 | 31348.89 / 31348.89 | 0 | 0.78 | ok |
+| multiportmmi_8x8 | lidar-pure | 33 / 33 | 25160.335 / 25160.335 | 0 | 0.77 | ok |
+| multiportmmi_8x8 | contribution1 | 33 / 33 | 25073.626 / 25073.626 | 0 | 0.83 | ok |
+| multiportmmi_8x8 | contribution2 | 33 / 33 | 26319.97 / 26319.97 | 0 | 0.76 | ok |
+
+all reproduced cells match
+kept: /tmp/gate_short_bw3u
+gate rc=0
+== uptime:  10:38:53 up 85 days, 18:38,  9 users,  load average: 2,99, 3,00, 1,96
+config=lidar-pure benchmark=benes_16x16_flat args=--crossing-mode lidar-pure start=2026-11-05T10:38:53+01:00 commit=104d0a0
+rc=0 wall=132s end=2026-11-05T10:41:05+01:00
+metrics crossing_count=88 crossing_error_count=0 expected_route_count=352 gds_crossing_length_um=2288.0 gds_length_um=92323.991 gds_routed_length_um=90035.991 illegal_crossing_count=0 max_crossings_per_net=7 max_length_um=1110.63 mean_length_um=259.804 net_routing_phase_s=128.655 nets_with_crossings=68 photonic_error_count=0 route_cost_count=352 routed_record_count=352 routing_loop_s=128.655 routing_stage_s=128.741 routing_time_s=128.741 search_astar_loop_s=126.504 search_attempts=364 search_failures=12 search_repairs=0 search_simple_routes=195 total_length_um=91450.863 total_physical_insertion_loss=0.0
+== uptime:  10:41:05 up 85 days, 18:40,  9 users,  load average: 3,08, 3,04, 2,12
+config=lidar-pure benchmark=multiportmmi_16x16 args=--crossing-mode lidar-pure start=2026-11-05T10:41:05+01:00 commit=104d0a0
+rc=0 wall=29s end=2026-11-05T10:41:34+01:00
+metrics crossing_count=63 crossing_error_count=0 expected_route_count=223 gds_crossing_length_um=1638.0 gds_length_um=90200.066 gds_routed_length_um=88562.066 illegal_crossing_count=0 max_crossings_per_net=8 max_length_um=1158.651 mean_length_um=401.496 net_routing_phase_s=25.667 nets_with_crossings=38 photonic_error_count=0 route_cost_count=223 routed_record_count=223 routing_loop_s=25.667 routing_stage_s=25.726 routing_time_s=25.726 search_astar_loop_s=23.472 search_attempts=231 search_failures=3 search_repairs=2 search_simple_routes=122 total_length_um=89533.579 total_physical_insertion_loss=0.0
+== uptime:  10:41:34 up 85 days, 18:41,  9 users,  load average: 3,05, 3,03, 2,15
+DONE

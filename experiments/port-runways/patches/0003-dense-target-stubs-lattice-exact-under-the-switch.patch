@@ -1,0 +1,119 @@
+From d3a62fe249d33eb3e21e874aaa3e01b197ca985f Mon Sep 17 00:00:00 2001
+From: benjamin <benjamin.hien@web.de>
+Date: Fri, 6 Nov 2026 07:18:16 +0100
+Subject: [PATCH 3/3] Phase 5 slice 5A: dense target stubs are lattice-exact
+ under the switch
+
+Second 27-cell table with PHOTONIC_ROUTER_PORT_RUNWAYS=1 (b45479b): 26 of
+27 cells route with 0 errors and the pinned crossings except Benes 32x32
+lidar-pure 416 -> 418. ADEPT 128x128 contribution 2 routed (311 crossing
+components) but failed verification on two dead-straight heater ->
+multiport-MMI nets: the dense target stub is straight at the port's true
+cross-axis coordinate (0.875 um residue) and leaves the shift to the
+checked target correction, which had no free axis-aligned segment once the
+source carried a runway (one 1,912 um segment attached to the pre-stitched
+source stub).
+
+With the switch on, _build_static_fanout_target_anchors now builds the
+dense target stubs with the runway geometry (_port_runway_anchor with
+min_forward_cells = the staggered length): same anchor cell, same lane
+protection, lattice-exact anchor, zero-length checked correction. Switch
+off unchanged (nine-cell gate exact, 713 Python tests). Switch on: Benes
+cells unchanged, ADEPT 8x8 lidar-pure -0.02 %, contribution 1 +0.25 %,
+contribution 2 +0.61 %, crossings and errors as before; ADEPT 128x128
+contribution 2 verifies again (311 components, 0 errors).
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0152GWPQy8AyTgwk6GNvQ3qH
+---
+ python/photonic_router/routing/route_jobs.py | 28 +++++++++++++++++++-
+ tests/test_port_runways.py                   | 16 +++++++++++
+ 2 files changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/python/photonic_router/routing/route_jobs.py b/python/photonic_router/routing/route_jobs.py
+index 9e071d0..09045ad 100644
+--- a/python/photonic_router/routing/route_jobs.py
++++ b/python/photonic_router/routing/route_jobs.py
+@@ -1012,6 +1012,24 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnc
+                 if real_center is None:
+                     continue
+                 length_cells = int(forward_cells) + int(spacing_cells) * (int(rank) - 1)
++                if settings.config.fanout.port_runways:
++                    # Phase 5 slice 5A: with the runways on, the target
++                    # stub is lattice-exact too (lead-in, two shallow
++                    # arcs onto the port's own cell row, straight to the
++                    # same staggered anchor cell), so the checked target
++                    # correction has nothing to move. The straight stub
++                    # below keeps the port's true cross-axis coordinate
++                    # and leaves a sub-cell shift to that correction,
++                    # which has no segment to bend on a dead-straight
++                    # net whose source already carries a runway (ADEPT
++                    # 128x128 contribution 2, nets n_468 / n_1364 in the
++                    # b45479b table).
++                    runway = _port_runway_anchor(
++                        settings, state, port_spec, port, min_forward_cells=length_cells
++                    )
++                    if runway is not None:
++                        anchors[port_spec] = runway
++                        continue
+                 stub_result = _straight_static_stub_centerline_um(
+                     settings,
+                     state,
+@@ -1048,6 +1066,7 @@ def _port_runway_anchor(
+     state,
+     port_spec: str,
+     port: Any,
++    min_forward_cells: int = 1,
+ ) -> _FanoutAnchor | None:
+     """The runway of one cardinal port (phase 5 slice 5A).
+ 
+@@ -1064,6 +1083,11 @@ def _port_runway_anchor(
+     port's; the stub is committed static like a fan-out stub and the search
+     starts (source) or ends (target) at the anchor. Diagonal ports return
+     `None` and keep the old path, as they do for the fan-out stubs.
++
++    `min_forward_cells` (default 1, the plain snap's own start cell) puts the
++    anchor at least that many cells beyond the port's cell: the dense target
++    stubs use it with their staggered lengths, so a lattice-exact target stub
++    ends in the same anchor cell as the straight one it replaces.
+     """
+     angle = _orientation_to_angle(settings, state, getattr(port, "orientation", None))
+     step_x, step_y = _angle_to_step(settings, state, angle)
+@@ -1149,7 +1173,9 @@ def _port_runway_anchor(
+     # the anchor: first cell centre at or beyond the arcs' end, at least one
+     # cell outward of the port (the plain snap's own start cell)
+     arcs_end_forward = port_forward + arcs_forward_um
+-    min_index = math.floor((port_forward + grid_um - forward_origin * forward_sign) / grid_um)
++    min_index = math.floor((port_forward - forward_origin * forward_sign) / grid_um) + max(
++        1, int(min_forward_cells)
++    )
+     anchor_index = max(
+         math.ceil((arcs_end_forward - forward_origin * forward_sign) / grid_um - 0.5 - 1.0e-9),
+         min_index,
+diff --git a/tests/test_port_runways.py b/tests/test_port_runways.py
+index 2e0c671..a9f77db 100644
+--- a/tests/test_port_runways.py
++++ b/tests/test_port_runways.py
+@@ -184,3 +184,19 @@ def test_runway_anchors_keep_the_ordinary_port_footprint_and_dense_semantics_off
+     assert crossing_plan_stage._resolve_port_footprint_cells(
+         settings, state, instance_name="b", port_name="o1", port=_port((2.5, 9.3), 0.0)
+     ) == (0, 0)
++
++
++def test_min_forward_cells_puts_the_anchor_at_the_staggered_stub_length():
++    # a dense target stub of 7 cells under the switch: lattice-exact, same
++    # anchor cell as the straight stub it replaces
++    settings, state = _settings(), _state()
++    port = _port((2.5, 6.3), 0.0)
++    anchor = route_jobs._port_runway_anchor(settings, state, "a,o1", port, min_forward_cells=7)
++    assert anchor is not None
++    assert (anchor.state_x, anchor.state_y) == (2 + 7, 6)
++    assert anchor.center_um == (9.5, 6.5)
++    assert anchor.stub_centerline_um[0] == (2.5, 6.3)
++    assert anchor.stub_centerline_um[-1] == (9.5, 6.5)
++    assert anchor.stub_centerline_um[-2][1] == pytest_approx(6.5, abs=1e-9)
++    straight = route_jobs._straight_static_stub_centerline_um(settings, state, (2.5, 6.3), 0, 7)
++    assert straight is not None and straight[1] == (anchor.state_x, anchor.state_y)
+-- 
+2.43.0
+

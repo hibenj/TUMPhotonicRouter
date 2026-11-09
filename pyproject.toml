@@ -114,6 +114,10 @@ ignore = [
 "scripts/path_investigation/*" = ["E741", "B007", "F841", "F821", "SIM115", "E731"]
 # Test fakes use plain class attributes as fixtures on purpose.
 "tests/**" = ["RUF012"]
+# Measurement scripts of closed experiments (experiments/README.md) are kept
+# as written for their record; they patch the flow in place after inserting
+# the repository root into sys.path.
+"experiments/*/scripts/*" = ["E402", "C401", "C408", "SIM105", "E741"]
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]

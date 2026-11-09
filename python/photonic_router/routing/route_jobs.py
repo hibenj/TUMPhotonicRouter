@@ -1012,24 +1012,6 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnc
                 if real_center is None:
                     continue
                 length_cells = int(forward_cells) + int(spacing_cells) * (int(rank) - 1)
-                if settings.config.fanout.port_runways:
-                    # Phase 5 slice 5A: with the runways on, the target
-                    # stub is lattice-exact too (lead-in, two shallow
-                    # arcs onto the port's own cell row, straight to the
-                    # same staggered anchor cell), so the checked target
-                    # correction has nothing to move. The straight stub
-                    # below keeps the port's true cross-axis coordinate
-                    # and leaves a sub-cell shift to that correction,
-                    # which has no segment to bend on a dead-straight
-                    # net whose source already carries a runway (ADEPT
-                    # 128x128 contribution 2, nets n_468 / n_1364 in the
-                    # b45479b table).
-                    runway = _port_runway_anchor(
-                        settings, state, port_spec, port, min_forward_cells=length_cells
-                    )
-                    if runway is not None:
-                        anchors[port_spec] = runway
-                        continue
                 stub_result = _straight_static_stub_centerline_um(
                     settings,
                     state,
@@ -1057,200 +1039,6 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnc
     return anchors
 
 
-#: Straight lead-in of a port runway before its arcs (micrometres).
-_PORT_RUNWAY_LEAD_IN_UM = 0.5
-
-
-def _port_runway_anchor(
-    settings,
-    state,
-    port_spec: str,
-    port: Any,
-    min_forward_cells: int = 1,
-) -> _FanoutAnchor | None:
-    """The runway of one cardinal port (phase 5 slice 5A).
-
-    A port centre is in general not on the cell-centre lattice: on the paper
-    benchmarks no port is, the lateral residue is 0.03 to 0.9 um. Today the
-    search starts one cell outward of the port on the lattice and the
-    endpoint correction moves the realized route back onto the port after the
-    fact. The runway does it before the search: from the port centre two
-    shallow arcs of the bend radius (each turning `theta` with
-    `R (1 - cos theta) = |d| / 2`) shift the centerline by the residue `d`
-    onto the lattice axis, then a straight run reaches the first cell centre
-    at or beyond the arcs' end (and at least one cell outward, where the plain
-    snap would have started). The anchor is that cell centre, heading = the
-    port's; the stub is committed static like a fan-out stub and the search
-    starts (source) or ends (target) at the anchor. Diagonal ports return
-    `None` and keep the old path, as they do for the fan-out stubs.
-
-    `min_forward_cells` (default 1, the plain snap's own start cell) puts the
-    anchor at least that many cells beyond the port's cell: the dense target
-    stubs use it with their staggered lengths, so a lattice-exact target stub
-    ends in the same anchor cell as the straight one it replaces.
-    """
-    angle = _orientation_to_angle(settings, state, getattr(port, "orientation", None))
-    step_x, step_y = _angle_to_step(settings, state, angle)
-    if abs(step_x) + abs(step_y) != 1:
-        return None
-    center = _port_center_um(port)
-    if center is None:
-        return None
-    grid_um = float(state.grid.grid_size_um)
-    heading = (float(step_x), float(step_y))
-    lateral = (-heading[1], heading[0])
-    # forward / lateral scalar coordinates and their lattice origins
-    if step_x != 0:
-        forward_origin, lateral_origin = float(state.origin_x_um), float(state.origin_y_um)
-        port_forward, port_lateral = float(center[0]) * step_x, float(center[1])
-        forward_sign = step_x
-    else:
-        forward_origin, lateral_origin = float(state.origin_y_um), float(state.origin_x_um)
-        port_forward, port_lateral = float(center[1]) * step_y, float(center[0])
-        forward_sign = step_y
-    lateral_index = round((port_lateral - lateral_origin) / grid_um - 0.5)
-    lattice_lateral = lateral_origin + (float(lateral_index) + 0.5) * grid_um
-    residue = lattice_lateral - port_lateral
-    radius_um = float(state.bend_radius_cells) * grid_um
-    points: list[tuple[float, float]] = [(float(center[0]), float(center[1]))]
-    # A straight lead-in along the port heading: the realization checks the
-    # terminal tangent on the first segment, so the arcs start after it.
-    lead_in_um = _PORT_RUNWAY_LEAD_IN_UM
-    arcs_start = (
-        float(center[0]) + heading[0] * lead_in_um,
-        float(center[1]) + heading[1] * lead_in_um,
-    )
-    _append_stub_point(settings, state, points, arcs_start)
-    arcs_forward_um = lead_in_um
-    if abs(residue) > 1.0e-9 and radius_um > 0.0:
-        half = abs(residue) / 2.0
-        if half > 2.0 * radius_um:
-            return None
-        theta = math.acos(1.0 - half / radius_um)
-        sign = 1.0 if residue > 0.0 else -1.0
-        steps = max(2, math.ceil((theta / (math.pi / 2.0)) * 16.0))
-        c1 = (
-            arcs_start[0] + sign * lateral[0] * radius_um,
-            arcs_start[1] + sign * lateral[1] * radius_um,
-        )
-        for index in range(1, steps + 1):
-            phi = theta * float(index) / float(steps)
-            _append_stub_point(
-                settings,
-                state,
-                points,
-                (
-                    c1[0]
-                    + radius_um * (-sign * lateral[0] * math.cos(phi) + heading[0] * math.sin(phi)),
-                    c1[1]
-                    + radius_um * (-sign * lateral[1] * math.cos(phi) + heading[1] * math.sin(phi)),
-                ),
-            )
-        arcs_forward_um = lead_in_um + 2.0 * radius_um * math.sin(theta)
-        arcs_end = (
-            float(center[0]) + heading[0] * arcs_forward_um + lateral[0] * residue,
-            float(center[1]) + heading[1] * arcs_forward_um + lateral[1] * residue,
-        )
-        c2 = (
-            arcs_end[0] - sign * lateral[0] * radius_um,
-            arcs_end[1] - sign * lateral[1] * radius_um,
-        )
-        for index in range(steps - 1, -1, -1):
-            phi = theta * float(index) / float(steps)
-            _append_stub_point(
-                settings,
-                state,
-                points,
-                (
-                    c2[0]
-                    + radius_um * (sign * lateral[0] * math.cos(phi) - heading[0] * math.sin(phi)),
-                    c2[1]
-                    + radius_um * (sign * lateral[1] * math.cos(phi) - heading[1] * math.sin(phi)),
-                ),
-            )
-    elif abs(residue) > 1.0e-9:
-        return None
-    # the anchor: first cell centre at or beyond the arcs' end, at least one
-    # cell outward of the port (the plain snap's own start cell)
-    arcs_end_forward = port_forward + arcs_forward_um
-    min_index = math.floor((port_forward - forward_origin * forward_sign) / grid_um) + max(
-        1, int(min_forward_cells)
-    )
-    anchor_index = max(
-        math.ceil((arcs_end_forward - forward_origin * forward_sign) / grid_um - 0.5 - 1.0e-9),
-        min_index,
-    )
-    anchor_forward = forward_origin * forward_sign + (float(anchor_index) + 0.5) * grid_um
-    if anchor_forward < arcs_end_forward - 1.0e-9:
-        return None
-    if step_x != 0:
-        anchor_point = (anchor_forward * step_x, lattice_lateral)
-    else:
-        anchor_point = (lattice_lateral, anchor_forward * step_y)
-    _append_stub_point(settings, state, points, anchor_point)
-    anchor_x = round((anchor_point[0] - float(state.origin_x_um)) / grid_um - 0.5)
-    anchor_y = round((anchor_point[1] - float(state.origin_y_um)) / grid_um - 0.5)
-    snapped = _grid_cell_center_um(settings, state, anchor_x, anchor_y)
-    if math.hypot(snapped[0] - anchor_point[0], snapped[1] - anchor_point[1]) > 1.0e-6:
-        return None
-    if not _in_bounds(settings, state, anchor_x, anchor_y):
-        return None
-    centerline = _compress_centerline(tuple(points))
-    if len(centerline) < 2:
-        return None
-    return _FanoutAnchor(
-        port_spec=port_spec,
-        state_x=int(anchor_x),
-        state_y=int(anchor_y),
-        physical_angle=int(angle),
-        center_um=(float(snapped[0]), float(snapped[1])),
-        stub_center_cells=_centerline_grid_cells(settings, state, centerline),
-        stub_centerline_um=centerline,
-    )
-
-
-def _build_port_runway_anchors(
-    settings,
-    state,
-    existing: Mapping[str, _FanoutAnchor],
-    route_jobs: Iterable[RouteJob],
-) -> dict[str, _FanoutAnchor]:
-    """Runways for every endpoint port that has no fan-out stub
-    (`PHOTONIC_ROUTER_PORT_RUNWAYS=1`, phase 5 slice 5A).
-
-    A net whose two ports are closer than their two runways (the pre-placed
-    crossing grids' tile-to-tile links, ports facing each other a cell apart)
-    keeps the old path on both ports: two runways would meet in one cell."""
-    if not settings.config.fanout.port_runways:
-        return {}
-    anchors: dict[str, _FanoutAnchor] = {}
-    for port_spec, (_inst, _port_name, port) in sorted(state.endpoint_ports_by_spec.items()):
-        if port_spec in existing:
-            continue
-        anchor = _port_runway_anchor(settings, state, port_spec, port)
-        if anchor is not None:
-            anchors[port_spec] = anchor
-    grid_um = float(state.grid.grid_size_um)
-    too_close: set[str] = set()
-    for job in route_jobs:
-        source_spec = f"{job.inst1},{job.port1}"
-        target_spec = f"{job.inst2},{job.port2}"
-        source_center = _port_center_um(job.source_port)
-        target_center = _port_center_um(job.target_port)
-        if source_center is None or target_center is None:
-            continue
-        reach = grid_um
-        for spec, center in ((source_spec, source_center), (target_spec, target_center)):
-            anchor = anchors.get(spec)
-            if anchor is not None:
-                reach += math.dist(center, anchor.center_um)
-        if math.dist(source_center, target_center) < reach:
-            too_close.update((source_spec, target_spec))
-    for spec in too_close:
-        anchors.pop(spec, None)
-    return anchors
-
-
 def _dense_source_port_runway_lengths(
     settings,
     state,
@@ -1264,7 +1052,6 @@ def _dense_source_port_runway_lengths(
             f"{run_job.inst1},{run_job.port1}"
             for run_job in jobs
             if f"{run_job.inst1},{run_job.port1}" in state.fanout_anchor_by_port_spec
-            and f"{run_job.inst1},{run_job.port1}" not in state.port_runway_anchor_specs
         }
         for port_spec in source_specs:
             anchor = state.fanout_anchor_by_port_spec[port_spec]
@@ -1467,7 +1254,7 @@ def _dense_target_port_runway_lengths(
         group_port_specs: list[str] = []
         for port_index, run_job in enumerate(lower_jobs):
             port_spec = f"{run_job.inst2},{run_job.port2}"
-            if state.fanout_stub_anchor(port_spec) is not None:
+            if port_spec in state.fanout_anchor_by_port_spec:
                 # A real, pre-committed static stub already exists for
                 # this port (see `_build_static_fanout_target_anchors`):
                 # the abstract reservation this function computes is
@@ -1482,7 +1269,7 @@ def _dense_target_port_runway_lengths(
         upper_count = len(upper_jobs)
         for port_index, run_job in enumerate(upper_jobs):
             port_spec = f"{run_job.inst2},{run_job.port2}"
-            if state.fanout_stub_anchor(port_spec) is not None:
+            if port_spec in state.fanout_anchor_by_port_spec:
                 lengths_by_spec[port_spec] = 0
                 continue
             lengths_by_spec[port_spec] = base_cells + spacing_cells * (
@@ -1574,11 +1361,6 @@ def build_route_jobs_and_fanout_clustering(
         **_build_static_fanout_anchors(settings, state),
         **_build_static_fanout_target_anchors(settings, state),
     }
-    port_runway_anchors = _build_port_runway_anchors(
-        settings, state, state.fanout_anchor_by_port_spec, route_jobs
-    )
-    state.port_runway_anchor_specs = frozenset(port_runway_anchors)
-    state.fanout_anchor_by_port_spec.update(port_runway_anchors)
     traced_instance = settings.config.diagnostics.trace_runway_instance
     if traced_instance:
         for port_spec, anchor in sorted(state.fanout_anchor_by_port_spec.items()):
@@ -1605,12 +1387,6 @@ def build_route_jobs_and_fanout_clustering(
         for job in route_jobs
         if f"{job.inst1},{job.port1}" in state.fanout_anchor_by_port_spec
         or f"{job.inst2},{job.port2}" in state.fanout_anchor_by_port_spec
-    }
-    state.fanout_stub_net_ids = {
-        int(job.net_id)
-        for job in route_jobs
-        if state.fanout_stub_anchor(f"{job.inst1},{job.port1}") is not None
-        or state.fanout_stub_anchor(f"{job.inst2},{job.port2}") is not None
     }
     state.fanout_anchor_source_net_ids = {
         int(job.net_id)
@@ -1677,8 +1453,6 @@ def build_route_jobs_and_fanout_clustering(
     if state.fanout_anchor_by_port_spec:
         static_stub_groups: dict[tuple[str, int], set[str]] = {}
         for port_spec, anchor in state.fanout_anchor_by_port_spec.items():
-            if port_spec in state.port_runway_anchor_specs:
-                continue
             instance_name = port_spec.split(",", 1)[0]
             static_stub_groups.setdefault(
                 (instance_name, int(anchor.physical_angle) % 8),
@@ -1712,10 +1486,6 @@ def apply_long_straight_fanout_exemption(settings: SessionSettings, state: Sessi
         exempt_ids = sorted(
             set(state.fanout_anchor_source_net_ids) | set(state.fanout_anchor_target_net_ids)
         )
-        if state.port_runway_anchor_specs:
-            # runway anchors are not dense fan-out stubs (see
-            # `SessionState.fanout_stub_anchor`)
-            exempt_ids = sorted(state.fanout_stub_net_ids)
         if hasattr(state.router, "set_long_straight_exempt_net_ids"):
             state.router.set_long_straight_exempt_net_ids(exempt_ids)
             print(

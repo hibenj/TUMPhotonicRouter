@@ -1,9 +1,10 @@
 #!/bin/bash
-# Phase 1 of the do-over (working/.agent/TUMPhotonicRouter/DO_OVER_ANALYSIS.md,
-# section 5): route the paper's cells with one negotiation tactic switched
-# off per variant, each into its own root, so that ablation_table.py can
-# show what every tactic contributes. The reference variant is the engine as
-# shipped. Every variant runs the same reproduce_paper.sh selection.
+# Ablation of the negotiation tactics (phase 1 of the 2026-10 do-over, see
+# CHANGELOG.md): route the paper's cells with one tactic switched off per
+# variant, each into its own root, so that ablation_table.py can show what
+# every tactic contributes. The reference variant is the engine as shipped;
+# `paper_ladder` is the paper's window ladder (experiments/window-ladder/).
+# Every variant runs the same reproduce_paper.sh selection.
 #
 # Usage: scripts/results/ablation.sh <variant>|all [what]
 #   variant  one of the names below, or `all` (sequential)

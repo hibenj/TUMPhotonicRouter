@@ -798,7 +798,8 @@ impl CrossingHookContext {
         // table) placed crossing candidates over port-open cells: Benes 32x32
         // contribution 1 failed with a self-intersecting route, ADEPT 64x64
         // baseline lost a net, Benes 32x32 baseline gained six crossings, while
-        // eleven other cells got shorter by up to one percent.
+        // eleven other cells got shorter by up to one percent
+        // (experiments/crossing-hook-kernel-grid/).
         let dense_grid = DenseRoutingGrid::from_obstacle_map_with_dynamic_expansion(
             obstacle_map,
             full_bounds,

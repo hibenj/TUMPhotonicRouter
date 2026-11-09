@@ -1,0 +1,538 @@
+From b05bffd8f2a6d6cca21522041214794c1ea588e8 Mon Sep 17 00:00:00 2001
+From: benjamin <benjamin.hien@web.de>
+Date: Fri, 6 Nov 2026 03:35:32 +0100
+Subject: [PATCH 1/3] Phase 5 slice 5A: port runways behind
+ PHOTONIC_ROUTER_PORT_RUNWAYS=1
+
+Every cardinal port without a fan-out stub gets a runway: a static stub
+from the port centre onto the cell-centre lattice (0.5 um straight
+lead-in, two shallow arcs of the bend radius for the sub-cell lateral
+residue, straight to the first cell centre at or beyond the arcs). The
+anchor is that cell centre with the port's heading; the search starts and
+ends there as it does for the fan-out stubs, and the realized route is
+stub + search path, so endpoint correction has nothing to move. Nets whose
+ports are closer than their two runways (the pre-placed crossing grids'
+tile links) keep the old path; the crossing structures' entry-tile probe
+(static_fanout_anchors_um) reports fan-out anchors only.
+
+Switch off: gate exact, 711 Python tests. Switch on, nine cells: crossings
+identical, 0 verifier errors, Benes +0.5-0.6 % length, ADEPT 8x8 baseline
+-0.24 %, c1 -0.04 %, c2 +0.52 %; arcs per net 2.2 -> 6.6 (Benes 8x8) and
+2.9 -> 5.1 (ADEPT 8x8). Decision by the 27-cell table and the owner.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0152GWPQy8AyTgwk6GNvQ3qH
+---
+ docs/CONFIGURATION.md                        |   3 +-
+ python/photonic_router/config.py             |   9 +
+ python/photonic_router/env_overlay.py        |   5 +
+ python/photonic_router/routing/api.py        |   3 +
+ python/photonic_router/routing/finalize.py   |   8 +
+ python/photonic_router/routing/route_jobs.py | 192 +++++++++++++++++++
+ python/photonic_router/routing/state.py      |   2 +
+ tests/test_env_overlay.py                    |   1 +
+ tests/test_port_runways.py                   | 157 +++++++++++++++
+ 9 files changed, 379 insertions(+), 1 deletion(-)
+ create mode 100644 tests/test_port_runways.py
+
+diff --git a/docs/CONFIGURATION.md b/docs/CONFIGURATION.md
+index 7734d63..6840c12 100644
+--- a/docs/CONFIGURATION.md
++++ b/docs/CONFIGURATION.md
+@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
+ section below has a command-line column only, like `FlowOptions`.
+ See `docs/ARCHITECTURE.md` for how the trees reach the stages.
+ 
+-Totals: 80 `RoutingConfig` fields (80 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 166 in total.
++Totals: 81 `RoutingConfig` fields (81 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 167 in total.
+ 
+ ## `RoutingConfig` -- the router's settings
+ 
+@@ -166,6 +166,7 @@ Mirrors the fan-out-related env reads of `python/photonic_router/routing/route_r
+ | `fanout_stub_x_offset_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS` | `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS`: non-negative int, else raises. `None` = unset (site default 1). |
+ | `stub_port_lane_half_width_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS` | `PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS`: non-negative int, else raises. `None` = unset (site default 0). |
+ | `stub_port_lane_length_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS` | `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS`: non-negative int, else raises. `None` = unset (site default 0). |
++| `port_runways` | `bool \| None` | `None` | `PHOTONIC_ROUTER_PORT_RUNWAYS` | `PHOTONIC_ROUTER_PORT_RUNWAYS`: `0` or `1`, `None` = unset = off. Phase 5 slice 5A experiment switch: every cardinal port without a fan-out stub gets a runway, a static stub from the port centre onto the cell-centre lattice (two shallow arcs of the bend radius for the sub-cell lateral residue, then straight to a cell-centre anchor with the port's heading); the search starts and ends at the anchors, as it does for the fan-out stubs, and the realized route is the stub plus the search path, so endpoint correction has nothing to move. |
+ 
+ ### `search` -- `SearchTuning`
+ 
+diff --git a/python/photonic_router/config.py b/python/photonic_router/config.py
+index 5e929f0..60d373c 100644
+--- a/python/photonic_router/config.py
++++ b/python/photonic_router/config.py
+@@ -201,6 +201,15 @@ class FanoutAccessConfig:
+     #: `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS`: non-negative int, else
+     #: raises. `None` = unset (site default 0).
+     stub_port_lane_length_cells: int | None = None
++    #: `PHOTONIC_ROUTER_PORT_RUNWAYS`: `0` or `1`, `None` = unset = off.
++    #: Phase 5 slice 5A experiment switch: every cardinal port without a
++    #: fan-out stub gets a runway, a static stub from the port centre onto the
++    #: cell-centre lattice (two shallow arcs of the bend radius for the
++    #: sub-cell lateral residue, then straight to a cell-centre anchor with the
++    #: port's heading); the search starts and ends at the anchors, as it does
++    #: for the fan-out stubs, and the realized route is the stub plus the
++    #: search path, so endpoint correction has nothing to move.
++    port_runways: bool | None = None
+ 
+ 
+ @dataclass(frozen=True)
+diff --git a/python/photonic_router/env_overlay.py b/python/photonic_router/env_overlay.py
+index 10c572a..f054382 100644
+--- a/python/photonic_router/env_overlay.py
++++ b/python/photonic_router/env_overlay.py
+@@ -637,6 +637,11 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
+         ("fanout", "stub_port_lane_half_width_cells"),
+         nonnegative_int(_PREFIX + "STUB_PORT_LANE_HALF_WIDTH_CELLS"),
+     ),
++    EnvVar(
++        _PREFIX + "PORT_RUNWAYS",
++        ("fanout", "port_runways"),
++        zero_one_or_unset(_PREFIX + "PORT_RUNWAYS"),
++    ),
+     EnvVar(
+         _PREFIX + "STUB_PORT_LANE_LENGTH_CELLS",
+         ("fanout", "stub_port_lane_length_cells"),
+diff --git a/python/photonic_router/routing/api.py b/python/photonic_router/routing/api.py
+index f6d7c83..019d720 100644
+--- a/python/photonic_router/routing/api.py
++++ b/python/photonic_router/routing/api.py
+@@ -522,9 +522,12 @@ def static_fanout_anchors_um(
+     context = build_static_obstacle_context(settings, state)
+     configure_router_and_grid(settings, state, context.obstacle_map)
+     build_route_jobs_and_fanout_clustering(settings, state, schematic.netlist.routes)
++    # Port runways (phase 5) are lattice entries, not fan-out lanes: the
++    # crossing structures plan their entry tiles on the dense fan-out rows only.
+     return {
+         spec: (float(anchor.center_um[0]), float(anchor.center_um[1]))
+         for spec, anchor in state.fanout_anchor_by_port_spec.items()
++        if spec not in state.port_runway_anchor_specs
+     }
+ 
+ 
+diff --git a/python/photonic_router/routing/finalize.py b/python/photonic_router/routing/finalize.py
+index 1e120db..88e79fa 100644
+--- a/python/photonic_router/routing/finalize.py
++++ b/python/photonic_router/routing/finalize.py
+@@ -1029,6 +1029,14 @@ def _append_target_fanout_stubs_after_correction(settings, state) -> None:
+         if true_port_um is None:
+             continue
+         points = list(centerline)
++        # The stub runs port -> anchor; the route ends at the anchor, so the
++        # reversed stub continues it to the true port (its first point, the
++        # anchor, is dropped as a duplicate). A straight fan-out stub is the
++        # two points anchor -> port; a port runway (phase 5) carries its two
++        # arcs as well.
++        _append_centerline_points(
++            settings, state, points, list(reversed(anchor.stub_centerline_um))
++        )
+         _append_centerline_points(settings, state, points, [true_port_um])
+         new_centerline = _compress_centerline(tuple(points))
+         if len(new_centerline) < 2:
+diff --git a/python/photonic_router/routing/route_jobs.py b/python/photonic_router/routing/route_jobs.py
+index 12ee25d..821b269 100644
+--- a/python/photonic_router/routing/route_jobs.py
++++ b/python/photonic_router/routing/route_jobs.py
+@@ -1039,6 +1039,192 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnc
+     return anchors
+ 
+ 
++#: Straight lead-in of a port runway before its arcs (micrometres).
++_PORT_RUNWAY_LEAD_IN_UM = 0.5
++
++
++def _port_runway_anchor(
++    settings,
++    state,
++    port_spec: str,
++    port: Any,
++) -> _FanoutAnchor | None:
++    """The runway of one cardinal port (phase 5 slice 5A).
++
++    A port centre is in general not on the cell-centre lattice: on the paper
++    benchmarks no port is, the lateral residue is 0.03 to 0.9 um. Today the
++    search starts one cell outward of the port on the lattice and the
++    endpoint correction moves the realized route back onto the port after the
++    fact. The runway does it before the search: from the port centre two
++    shallow arcs of the bend radius (each turning `theta` with
++    `R (1 - cos theta) = |d| / 2`) shift the centerline by the residue `d`
++    onto the lattice axis, then a straight run reaches the first cell centre
++    at or beyond the arcs' end (and at least one cell outward, where the plain
++    snap would have started). The anchor is that cell centre, heading = the
++    port's; the stub is committed static like a fan-out stub and the search
++    starts (source) or ends (target) at the anchor. Diagonal ports return
++    `None` and keep the old path, as they do for the fan-out stubs.
++    """
++    angle = _orientation_to_angle(settings, state, getattr(port, "orientation", None))
++    step_x, step_y = _angle_to_step(settings, state, angle)
++    if abs(step_x) + abs(step_y) != 1:
++        return None
++    center = _port_center_um(port)
++    if center is None:
++        return None
++    grid_um = float(state.grid.grid_size_um)
++    heading = (float(step_x), float(step_y))
++    lateral = (-heading[1], heading[0])
++    # forward / lateral scalar coordinates and their lattice origins
++    if step_x != 0:
++        forward_origin, lateral_origin = float(state.origin_x_um), float(state.origin_y_um)
++        port_forward, port_lateral = float(center[0]) * step_x, float(center[1])
++        forward_sign = step_x
++    else:
++        forward_origin, lateral_origin = float(state.origin_y_um), float(state.origin_x_um)
++        port_forward, port_lateral = float(center[1]) * step_y, float(center[0])
++        forward_sign = step_y
++    lateral_index = round((port_lateral - lateral_origin) / grid_um - 0.5)
++    lattice_lateral = lateral_origin + (float(lateral_index) + 0.5) * grid_um
++    residue = lattice_lateral - port_lateral
++    radius_um = float(state.bend_radius_cells) * grid_um
++    points: list[tuple[float, float]] = [(float(center[0]), float(center[1]))]
++    # A straight lead-in along the port heading: the realization checks the
++    # terminal tangent on the first segment, so the arcs start after it.
++    lead_in_um = _PORT_RUNWAY_LEAD_IN_UM
++    arcs_start = (
++        float(center[0]) + heading[0] * lead_in_um,
++        float(center[1]) + heading[1] * lead_in_um,
++    )
++    _append_stub_point(settings, state, points, arcs_start)
++    arcs_forward_um = lead_in_um
++    if abs(residue) > 1.0e-9 and radius_um > 0.0:
++        half = abs(residue) / 2.0
++        if half > 2.0 * radius_um:
++            return None
++        theta = math.acos(1.0 - half / radius_um)
++        sign = 1.0 if residue > 0.0 else -1.0
++        steps = max(2, math.ceil((theta / (math.pi / 2.0)) * 16.0))
++        c1 = (
++            arcs_start[0] + sign * lateral[0] * radius_um,
++            arcs_start[1] + sign * lateral[1] * radius_um,
++        )
++        for index in range(1, steps + 1):
++            phi = theta * float(index) / float(steps)
++            _append_stub_point(
++                settings,
++                state,
++                points,
++                (
++                    c1[0]
++                    + radius_um * (-sign * lateral[0] * math.cos(phi) + heading[0] * math.sin(phi)),
++                    c1[1]
++                    + radius_um * (-sign * lateral[1] * math.cos(phi) + heading[1] * math.sin(phi)),
++                ),
++            )
++        arcs_forward_um = lead_in_um + 2.0 * radius_um * math.sin(theta)
++        arcs_end = (
++            float(center[0]) + heading[0] * arcs_forward_um + lateral[0] * residue,
++            float(center[1]) + heading[1] * arcs_forward_um + lateral[1] * residue,
++        )
++        c2 = (
++            arcs_end[0] - sign * lateral[0] * radius_um,
++            arcs_end[1] - sign * lateral[1] * radius_um,
++        )
++        for index in range(steps - 1, -1, -1):
++            phi = theta * float(index) / float(steps)
++            _append_stub_point(
++                settings,
++                state,
++                points,
++                (
++                    c2[0]
++                    + radius_um * (sign * lateral[0] * math.cos(phi) - heading[0] * math.sin(phi)),
++                    c2[1]
++                    + radius_um * (sign * lateral[1] * math.cos(phi) - heading[1] * math.sin(phi)),
++                ),
++            )
++    elif abs(residue) > 1.0e-9:
++        return None
++    # the anchor: first cell centre at or beyond the arcs' end, at least one
++    # cell outward of the port (the plain snap's own start cell)
++    arcs_end_forward = port_forward + arcs_forward_um
++    min_index = math.floor((port_forward + grid_um - forward_origin * forward_sign) / grid_um)
++    anchor_index = max(
++        math.ceil((arcs_end_forward - forward_origin * forward_sign) / grid_um - 0.5 - 1.0e-9),
++        min_index,
++    )
++    anchor_forward = forward_origin * forward_sign + (float(anchor_index) + 0.5) * grid_um
++    if anchor_forward < arcs_end_forward - 1.0e-9:
++        return None
++    if step_x != 0:
++        anchor_point = (anchor_forward * step_x, lattice_lateral)
++    else:
++        anchor_point = (lattice_lateral, anchor_forward * step_y)
++    _append_stub_point(settings, state, points, anchor_point)
++    anchor_x = round((anchor_point[0] - float(state.origin_x_um)) / grid_um - 0.5)
++    anchor_y = round((anchor_point[1] - float(state.origin_y_um)) / grid_um - 0.5)
++    snapped = _grid_cell_center_um(settings, state, anchor_x, anchor_y)
++    if math.hypot(snapped[0] - anchor_point[0], snapped[1] - anchor_point[1]) > 1.0e-6:
++        return None
++    if not _in_bounds(settings, state, anchor_x, anchor_y):
++        return None
++    centerline = _compress_centerline(tuple(points))
++    if len(centerline) < 2:
++        return None
++    return _FanoutAnchor(
++        port_spec=port_spec,
++        state_x=int(anchor_x),
++        state_y=int(anchor_y),
++        physical_angle=int(angle),
++        center_um=(float(snapped[0]), float(snapped[1])),
++        stub_center_cells=_centerline_grid_cells(settings, state, centerline),
++        stub_centerline_um=centerline,
++    )
++
++
++def _build_port_runway_anchors(
++    settings,
++    state,
++    existing: Mapping[str, _FanoutAnchor],
++    route_jobs: Iterable[RouteJob],
++) -> dict[str, _FanoutAnchor]:
++    """Runways for every endpoint port that has no fan-out stub
++    (`PHOTONIC_ROUTER_PORT_RUNWAYS=1`, phase 5 slice 5A).
++
++    A net whose two ports are closer than their two runways (the pre-placed
++    crossing grids' tile-to-tile links, ports facing each other a cell apart)
++    keeps the old path on both ports: two runways would meet in one cell."""
++    if not settings.config.fanout.port_runways:
++        return {}
++    anchors: dict[str, _FanoutAnchor] = {}
++    for port_spec, (_inst, _port_name, port) in sorted(state.endpoint_ports_by_spec.items()):
++        if port_spec in existing:
++            continue
++        anchor = _port_runway_anchor(settings, state, port_spec, port)
++        if anchor is not None:
++            anchors[port_spec] = anchor
++    grid_um = float(state.grid.grid_size_um)
++    too_close: set[str] = set()
++    for job in route_jobs:
++        source_spec = f"{job.inst1},{job.port1}"
++        target_spec = f"{job.inst2},{job.port2}"
++        source_center = _port_center_um(job.source_port)
++        target_center = _port_center_um(job.target_port)
++        if source_center is None or target_center is None:
++            continue
++        reach = grid_um
++        for spec, center in ((source_spec, source_center), (target_spec, target_center)):
++            anchor = anchors.get(spec)
++            if anchor is not None:
++                reach += math.dist(center, anchor.center_um)
++        if math.dist(source_center, target_center) < reach:
++            too_close.update((source_spec, target_spec))
++    for spec in too_close:
++        anchors.pop(spec, None)
++    return anchors
++
++
+ def _dense_source_port_runway_lengths(
+     settings,
+     state,
+@@ -1052,6 +1238,7 @@ def _dense_source_port_runway_lengths(
+             f"{run_job.inst1},{run_job.port1}"
+             for run_job in jobs
+             if f"{run_job.inst1},{run_job.port1}" in state.fanout_anchor_by_port_spec
++            and f"{run_job.inst1},{run_job.port1}" not in state.port_runway_anchor_specs
+         }
+         for port_spec in source_specs:
+             anchor = state.fanout_anchor_by_port_spec[port_spec]
+@@ -1361,6 +1548,11 @@ def build_route_jobs_and_fanout_clustering(
+         **_build_static_fanout_anchors(settings, state),
+         **_build_static_fanout_target_anchors(settings, state),
+     }
++    port_runway_anchors = _build_port_runway_anchors(
++        settings, state, state.fanout_anchor_by_port_spec, route_jobs
++    )
++    state.port_runway_anchor_specs = frozenset(port_runway_anchors)
++    state.fanout_anchor_by_port_spec.update(port_runway_anchors)
+     traced_instance = settings.config.diagnostics.trace_runway_instance
+     if traced_instance:
+         for port_spec, anchor in sorted(state.fanout_anchor_by_port_spec.items()):
+diff --git a/python/photonic_router/routing/state.py b/python/photonic_router/routing/state.py
+index eb1018d..1b9aee5 100644
+--- a/python/photonic_router/routing/state.py
++++ b/python/photonic_router/routing/state.py
+@@ -200,6 +200,8 @@ class SessionState:
+ 
+     fanout_anchor_by_port_spec: dict[str, _FanoutAnchor] = field(default_factory=dict)
+     """Static fan-out stub anchor per port spec. w:3 r:3,4,5,6,7"""
++    port_runway_anchor_specs: frozenset[str] = frozenset()
++    """Port specs whose anchor is a phase-5 runway, not a dense fan-out stub (w:2 r:2)."""
+ 
+     fanout_anchor_net_ids: set[int] = field(default_factory=set)
+     """Nets with a static fan-out stub on either side. w:3 r:4,7"""
+diff --git a/tests/test_env_overlay.py b/tests/test_env_overlay.py
+index ddf4a7a..153c302 100644
+--- a/tests/test_env_overlay.py
++++ b/tests/test_env_overlay.py
+@@ -371,6 +371,7 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
+         "PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS",
+         "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
+         "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
++        "PHOTONIC_ROUTER_PORT_RUNWAYS",
+         # Search tuning (python/photonic_router/routing/route_rust.py)
+         "PHOTONIC_ROUTER_MIN_BEND_WEIGHT",
+         "PHOTONIC_ROUTER_HEAP_TIE_BREAKER",
+diff --git a/tests/test_port_runways.py b/tests/test_port_runways.py
+new file mode 100644
+index 0000000..286004c
+--- /dev/null
++++ b/tests/test_port_runways.py
+@@ -0,0 +1,157 @@
++"""Phase 5 slice 5A: port runways (`PHOTONIC_ROUTER_PORT_RUNWAYS=1`).
++
++A runway is a static stub from a port centre onto the cell-centre lattice:
++two shallow arcs of the bend radius absorb the sub-cell lateral residue, a
++straight run reaches a cell-centre anchor with the port's heading.
++"""
++
++from __future__ import annotations
++
++import math
++from types import SimpleNamespace
++
++from photonic_router.config import FanoutAccessConfig, RoutingConfig
++from photonic_router.routing import route_jobs
++from photonic_router.static_obstacle_builder import GridSpec
++
++from tests.fixtures.sessions import settings_for_test, state_for_test
++
++
++def _state(width: int = 40, height: int = 20, bend_radius_cells: int = 2):
++    return state_for_test(
++        grid=GridSpec(
++            width=width,
++            height=height,
++            grid_size_um=1.0,
++            origin=(0.0, 0.0),
++            die_bbox=(0.0, 0.0, float(width), float(height)),
++        ),
++        grid_width=width,
++        grid_height=height,
++        origin_x_um=0.0,
++        origin_y_um=0.0,
++        bend_radius_cells=bend_radius_cells,
++    )
++
++
++def _settings(port_runways: bool | None = True):
++    return settings_for_test(
++        config=RoutingConfig(fanout=FanoutAccessConfig(port_runways=port_runways))
++    )
++
++
++def _port(center, orientation):
++    return SimpleNamespace(center=center, orientation=float(orientation))
++
++
++def _heading(points, index_a, index_b):
++    dx = points[index_b][0] - points[index_a][0]
++    dy = points[index_b][1] - points[index_a][1]
++    norm = math.hypot(dx, dy)
++    return (dx / norm, dy / norm)
++
++
++def test_on_axis_port_gets_a_straight_runway_to_the_first_outward_cell_centre():
++    anchor = route_jobs._port_runway_anchor(_settings(), _state(), "a,o1", _port((2.5, 6.5), 0.0))
++    assert anchor is not None
++    assert anchor.stub_centerline_um == ((2.5, 6.5), (3.5, 6.5))
++    assert (anchor.state_x, anchor.state_y) == (3, 6)
++    assert anchor.center_um == (3.5, 6.5)
++    assert anchor.physical_angle == 0
++
++
++def test_off_axis_port_gets_two_arcs_onto_the_lattice_and_a_cell_centre_anchor():
++    anchor = route_jobs._port_runway_anchor(_settings(), _state(), "a,o1", _port((2.5, 6.3), 0.0))
++    assert anchor is not None
++    points = anchor.stub_centerline_um
++    assert points[0] == (2.5, 6.3)
++    assert points[-1] == anchor.center_um
++    # the anchor is a cell centre with the port's heading, on the lattice axis y = 6.5
++    assert anchor.center_um == (anchor.state_x + 0.5, anchor.state_y + 0.5)
++    assert anchor.center_um[1] == 6.5
++    # tangent along +x at both ends, monotone forward, lateral shift = the residue
++    assert _heading(points, 0, 1)[1] == pytest_approx(0.0, abs=0.05)
++    assert _heading(points, -2, -1) == (1.0, 0.0)
++    xs = [p[0] for p in points]
++    assert xs == sorted(xs)
++    ys = [p[1] for p in points]
++    assert min(ys) >= 6.3 - 1e-9 and max(ys) <= 6.5 + 1e-9
++    # the arcs' forward extent: 2 R sin(acos(1 - d / (2 R))) with R = 2, d = 0.2
++    theta = math.acos(1.0 - 0.1 / 2.0)
++    assert points[-1][0] >= 2.5 + 2 * 2.0 * math.sin(theta) - 1e-9
++    assert anchor.stub_center_cells  # committed static like a fan-out stub
++
++
++def test_west_facing_port_runs_westward():
++    anchor = route_jobs._port_runway_anchor(
++        _settings(), _state(), "b,o1", _port((35.5, 8.8), 180.0)
++    )
++    assert anchor is not None
++    assert anchor.stub_centerline_um[0] == (35.5, 8.8)
++    assert anchor.center_um[0] < 35.5
++    assert anchor.center_um == (anchor.state_x + 0.5, anchor.state_y + 0.5)
++    assert anchor.center_um[1] == 8.5
++    assert anchor.physical_angle == 4
++
++
++def test_north_facing_port_shifts_in_x():
++    anchor = route_jobs._port_runway_anchor(_settings(), _state(), "c,o1", _port((10.2, 3.5), 90.0))
++    assert anchor is not None
++    assert anchor.center_um == (10.5, anchor.state_y + 0.5)
++    assert anchor.center_um[1] >= 4.5
++    assert anchor.physical_angle == 2
++
++
++def test_diagonal_ports_keep_the_old_path():
++    assert (
++        route_jobs._port_runway_anchor(_settings(), _state(), "d,o1", _port((5.5, 5.5), 45.0))
++        is None
++    )
++
++
++def _job(net_id, spec1, port1, spec2, port2):
++    inst1, name1 = spec1.split(",")
++    inst2, name2 = spec2.split(",")
++    return SimpleNamespace(
++        net_id=net_id,
++        inst1=inst1,
++        port1=name1,
++        inst2=inst2,
++        port2=name2,
++        source_port=port1,
++        target_port=port2,
++    )
++
++
++def test_builder_is_off_by_default_and_skips_fan_out_anchored_ports():
++    state = _state()
++    a = _port((2.5, 6.3), 0.0)
++    b = _port((35.5, 8.8), 180.0)
++    state.endpoint_ports_by_spec = {"a,o1": ("a", "o1", a), "b,o1": ("b", "o1", b)}
++    jobs = [_job(1, "a,o1", a, "b,o1", b)]
++    assert route_jobs._build_port_runway_anchors(_settings(None), state, {}, jobs) == {}
++    built = route_jobs._build_port_runway_anchors(_settings(True), state, {"a,o1": object()}, jobs)
++    assert set(built) == {"b,o1"}
++
++
++def test_ports_closer_than_their_runways_keep_the_old_path():
++    # two tile ports facing each other one cell apart (a pre-placed crossing
++    # grid link): no runway on either side
++    state = _state()
++    a = _port((10.5, 6.3), 0.0)
++    b = _port((11.5, 6.3), 180.0)
++    far = _port((35.5, 8.8), 180.0)
++    state.endpoint_ports_by_spec = {
++        "a,o1": ("a", "o1", a),
++        "b,o1": ("b", "o1", b),
++        "c,o1": ("c", "o1", far),
++    }
++    jobs = [_job(1, "a,o1", a, "b,o1", b), _job(2, "a,o2", a, "c,o1", far)]
++    built = route_jobs._build_port_runway_anchors(_settings(True), state, {}, jobs)
++    assert set(built) == {"c,o1"}
++
++
++def pytest_approx(value, abs):  # small local helper, keeps the module free of pytest at import
++    import pytest
++
++    return pytest.approx(value, abs=abs)
+-- 
+2.43.0
+

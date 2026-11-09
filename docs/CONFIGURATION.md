@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 81 `RoutingConfig` fields (81 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 167 in total.
+Totals: 80 `RoutingConfig` fields (80 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 166 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -166,7 +166,6 @@ Mirrors the fan-out-related env reads of `python/photonic_router/routing/route_r
 | `fanout_stub_x_offset_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS` | `PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS`: non-negative int, else raises. `None` = unset (site default 1). |
 | `stub_port_lane_half_width_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS` | `PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS`: non-negative int, else raises. `None` = unset (site default 0). |
 | `stub_port_lane_length_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS` | `PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS`: non-negative int, else raises. `None` = unset (site default 0). |
-| `port_runways` | `bool \| None` | `None` | `PHOTONIC_ROUTER_PORT_RUNWAYS` | `PHOTONIC_ROUTER_PORT_RUNWAYS`: `0` or `1`, `None` = unset = off. Phase 5 slice 5A experiment switch: every cardinal port without a fan-out stub gets a runway, a static stub from the port centre onto the cell-centre lattice (two shallow arcs of the bend radius for the sub-cell lateral residue, then straight to a cell-centre anchor with the port's heading); the search starts and ends at the anchors, as it does for the fan-out stubs, and the realized route is the stub plus the search path, so endpoint correction has nothing to move. |
 
 ### `search` -- `SearchTuning`
 

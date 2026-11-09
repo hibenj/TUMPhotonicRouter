@@ -146,7 +146,10 @@ commits behind each row and the archived runs (attached to the
 `date2027-results` release) are in
 [`docs/PAPER_REPRODUCTION.md`](docs/PAPER_REPRODUCTION.md); the
 path-length-matching baseline is in
-[`docs/PLM_REPRODUCTION.md`](docs/PLM_REPRODUCTION.md).
+[`docs/PLM_REPRODUCTION.md`](docs/PLM_REPRODUCTION.md). Ideas that were
+tried against the table and not adopted, with their patches, scripts and
+tables, and the records of the adopted strategy switches are in
+[`experiments/`](experiments/README.md).
 
 ## How it is built
 

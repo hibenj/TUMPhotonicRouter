@@ -14,6 +14,22 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `experiments/`: the ideas tried against the paper table that did not
+  become part of the main code, and the records of the strategy switches
+  that did (`experiments/README.md` has the convention). One folder per
+  experiment with the idea, what was built, the measurement, the decision
+  and how to reproduce it; the code of a closed experiment as
+  `git format-patch` output against its base commit, its measurement
+  scripts, and compact records of its 27-cell tables (`tables/*.json`,
+  rendered by `experiments/table.py` against another record or against the
+  pinned table). Entries: `port-runways` (phase 5, not adopted),
+  `crossing-hook-kernel-grid` (fd70232 / 89fe1b1, not adopted),
+  `negotiation-first-attempt-full-budget` (speed pass B1, not adopted),
+  `window-ladder` (speed pass S4, adopted), `window-reachability-pruning`
+  (speed pass B2/B3, not adopted), `lto-build` (speed pass A1, not adopted).
+  Rule from here on: an experiment that is not adopted leaves no switch in
+  the main code; its commits become patches in its folder and the gate shows
+  the tree without them exact (`CONTRIBUTING.md`, "Experiments").
 - Phase 5 slice 5A, experiment switch `PHOTONIC_ROUTER_PORT_RUNWAYS=1`
   (`FanoutAccessConfig.port_runways`, default off = exact): every cardinal
   port without a fan-out stub gets a runway, a static stub from the port
@@ -85,9 +101,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   Benes 64x64 / 128x128 contribution 2 +0.28 / +0.16 %, ADEPT -0.02 to
   +0.61 % (8x8 pays most, 64x64 and 128x128 +0.07 to +0.12 %); ADEPT
   64x64 needs 6 / 4 / 5 negotiation rounds against the pinned 3 / 3 / 1,
-  ADEPT 128x128 contribution 2 9 against 8. The switch stays off until the
-  owner decides on the price (four shallow arcs per net, the length and
-  the two Benes crossings) against deleting the correction machinery.
+  ADEPT 128x128 contribution 2 9 against 8. Decision (owner, 2026-11-09):
+  not adopted; the paper numbers would carry a measurable percent of length
+  and four more arcs per net for code simplicity. The three slices live on
+  as `experiments/port-runways/` (patches, measurement scripts, the three
+  tables); the main tree is without them (see "Removed"), the nine-cell
+  gate exact, 552 fast tests.
 - `SearchTuning.routing_window_max_expansions` /
   `PHOTONIC_ROUTER_ROUTING_WINDOW_MAX_EXPANSIONS` and
   `SearchTuning.routing_window_fallback_full_grid` /
@@ -650,6 +669,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- The port-runway switch `PHOTONIC_ROUTER_PORT_RUNWAYS` /
+  `FanoutAccessConfig.port_runways` and its code (`route_jobs.
+  _port_runway_anchor`, `_build_port_runway_anchors`, the runway branch of
+  `_build_static_fanout_target_anchors`, `SessionState.fanout_stub_anchor`,
+  `port_runway_anchor_specs`, `fanout_stub_net_ids`, the generalized target
+  stub append in `finalize.py`, `tests/test_port_runways.py`; 492 lines):
+  the experiment closed not adopted and moved to
+  `experiments/port-runways/` as three patches against `89fe1b1`. The tree
+  without it is the tree before `b05bffd` in these files; nine-cell gate
+  exact.
 - The dead meander generations and their bindings (phase 6 slice A; the
   production PLM path -- `route_rust_meanders.py` -> the `plan_*` wrappers of
   `src/plm.rs` -> `src/auto_meander.rs` -> `src/meander.rs`, realised through

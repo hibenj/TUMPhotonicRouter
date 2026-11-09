@@ -92,6 +92,22 @@ gate the commit re-runs `plm_baseline.sh` and re-pins `docs/plm_baseline.json`
 (`plm_table.py results_plm --json docs/plm_baseline.json`). The same rule
 applies to `tests/baselines/`. A commit never moves a number silently.
 
+## Experiments
+
+An idea that may move a routed result is built behind a switch, measured
+on the nine-cell gate with the switch off (exact) and on the 27-cell table
+with it on, and decided by that table. What happens then is recorded in
+[`experiments/`](experiments/README.md): an adopted switch keeps its code
+in the main tree and leaves its tables and the re-pin in its folder; a
+switch that is not adopted leaves the main tree, its commits become
+`git format-patch` files in its folder together with the measurement
+scripts and the compact table records, and the gate shows the tree without
+it exact. The folder's `README.md` says what the idea was, what was built,
+what was measured, why it closed and how to reproduce it, so that a later
+attempt starts from the record and not from scratch. Switches that stay
+in the tree are the configuration fields of `docs/CONFIGURATION.md` and the
+ablation variants of `scripts/results/ablation.sh`.
+
 ## Generated files
 
 Edit the generator or its sources, never the output; CI and the tests fail
@@ -152,3 +168,4 @@ extraction scripts work on files read in place. Results roots
 | A routing phase | `python/photonic_router/routing/`, typed by a Protocol in `stages.py` |
 | An electrical stage | `python/photonic_router/electrical/`, typed by a Protocol in `stages.py` |
 | A configuration field | both config trees, the overlay table, then regenerate `docs/CONFIGURATION.md` |
+| An experiment and its record | `experiments/<name>/` (`experiments/README.md`) |

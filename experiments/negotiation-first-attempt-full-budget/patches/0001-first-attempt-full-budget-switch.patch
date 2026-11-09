@@ -1,0 +1,261 @@
+From bc2c0d8c98f51d316baeb03ce00a36e5714b731e Mon Sep 17 00:00:00 2001
+From: benjamin <benjamin.hien@web.de>
+Date: Thu, 5 Nov 2026 10:49:57 +0100
+Subject: [PATCH] Speed pass B1: first_attempt_full_budget switch (default off)
+
+The heavy cells spend 20 to 60 % of all expansions on first attempts that
+die at the 2 M budget and are then redone at 10 M (Benes 32 lidar-pure: 51 of
+51 retries succeed). Running the first attempt at the retry budget saves that
+time but is not exact: the per-window iteration cap is min(max_iterations,
+remaining budget), so a larger budget can let an earlier window succeed with
+a different route (gate: Benes 4x4 lidar-pure +11.7 um). Hence a switch,
+measured on the 27 cells before any default changes.
+
+Checks: fmt, clippy -D warnings, 508 core tests, 4 router-py tests, stub and
+config reference regenerated, 552 Python tests, both gates exact with the
+switch off.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0152GWPQy8AyTgwk6GNvQ3qH
+---
+ crates/router-core/src/config.rs              |  8 ++++++++
+ .../src/engine/negotiation/loop_.rs           | 19 +++++++++++++++----
+ crates/router-py/src/tests.rs                 |  1 +
+ crates/router-py/src/types.rs                 |  6 ++++++
+ docs/CONFIGURATION.md                         |  3 ++-
+ python/photonic_router/_rust.pyi              |  3 +++
+ python/photonic_router/config.py              |  5 +++++
+ python/photonic_router/env_overlay.py         |  5 +++++
+ scripts/results/ablation.sh                   |  1 +
+ tests/test_env_overlay.py                     |  1 +
+ 10 files changed, 47 insertions(+), 5 deletions(-)
+
+diff --git a/crates/router-core/src/config.rs b/crates/router-core/src/config.rs
+index a4ad452..059cc0b 100644
+--- a/crates/router-core/src/config.rs
++++ b/crates/router-core/src/config.rs
+@@ -38,6 +38,12 @@ pub struct NegotiationConfig {
+     /// for the next ablation): run the post-rip-up search unguided even when the probe reported legal
+     /// partners, so the mixed-case guidance can be measured like the two tactics slice A removed.
+     pub disable_post_ripup_guidance: bool,
++    /// `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET`: presence. Strategy
++    /// switch (speed pass B1, 2026-11-05): a never-failed net's first attempt
++    /// runs at `budget_first_retry` and the separate retry is skipped. Not
++    /// exact (the per-window cap follows the budget), so off by default
++    /// until the 27-cell table decides.
++    pub first_attempt_full_budget: bool,
+     /// `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE`: presence. Ablation switch (do-over phase 1):
+     /// skip the engine's straight/L/Z probe before the A* search.
+     pub disable_simple_route_probe: bool,
+@@ -57,6 +63,7 @@ impl Default for NegotiationConfig {
+             disable_braid_repair: false,
+             disable_source_column_widening: false,
+             disable_post_ripup_guidance: false,
++            first_attempt_full_budget: false,
+             disable_simple_route_probe: false,
+             history_on_first_attempt: false,
+         }
+@@ -300,6 +307,7 @@ mod tests {
+         assert!(!cfg.disable_braid_repair);
+         assert!(!cfg.disable_source_column_widening);
+         assert!(!cfg.disable_post_ripup_guidance);
++        assert!(!cfg.first_attempt_full_budget);
+     }
+ 
+     #[test]
+diff --git a/crates/router-core/src/engine/negotiation/loop_.rs b/crates/router-core/src/engine/negotiation/loop_.rs
+index 2606f9e..80be765 100644
+--- a/crates/router-core/src/engine/negotiation/loop_.rs
++++ b/crates/router-core/src/engine/negotiation/loop_.rs
+@@ -304,11 +304,22 @@ impl Router {
+         // outside the last round -- one retry at the larger first-retry
+         // budget before probe and rip-up run at all (owner decision
+         // 2026-09-15 01:30).
+-        let first = PlainAttempt::first(budget(AttemptKind::First), crossing_free);
++        // Speed pass B1 (switch `first_attempt_full_budget`, default off): the
++        // never-failed net's single attempt runs at the retry budget and the
++        // retry below is skipped. The heavy cells spent 20 to 60 % of all
++        // expansions on 2 M first attempts that then failed (experiment 1);
++        // not exact (the per-window cap follows the budget), so the 27-cell
++        // table decides whether it becomes the default.
++        let retry_eligible = failed_count == 0 && round != max_rounds;
++        let full_budget_first = ctx.negotiation.first_attempt_full_budget && retry_eligible;
++        let first_budget = if full_budget_first {
++            budget(AttemptKind::FirstRetry)
++        } else {
++            budget(AttemptKind::First)
++        };
++        let first = PlainAttempt::first(first_budget, crossing_free);
+         let mut outcome = self.run_plain_attempt(state.batch, job, &args, first);
+-        if matches!(outcome, PlainRouteOutcome::NotResolved)
+-            && failed_count == 0
+-            && round != max_rounds
++        if matches!(outcome, PlainRouteOutcome::NotResolved) && retry_eligible && !full_budget_first
+         {
+             let retry = PlainAttempt::first_retry(budget(AttemptKind::FirstRetry), crossing_free);
+             outcome = self.run_plain_attempt(state.batch, job, &args, retry);
+diff --git a/crates/router-py/src/tests.rs b/crates/router-py/src/tests.rs
+index bce3371..633236b 100644
+--- a/crates/router-py/src/tests.rs
++++ b/crates/router-py/src/tests.rs
+@@ -23,6 +23,7 @@ fn test_router_config(search_engine: &str) -> PyResult<PyRouterConfig> {
+         false,
+         false,
+         false,
++        false, // negotiation_first_attempt_full_budget
+         false,
+         false,
+         None,
+diff --git a/crates/router-py/src/types.rs b/crates/router-py/src/types.rs
+index 78a110b..9b3e78c 100644
+--- a/crates/router-py/src/types.rs
++++ b/crates/router-py/src/types.rs
+@@ -642,6 +642,8 @@ pub struct PyRouterConfig {
+     pub negotiation_disable_source_column_widening: bool,
+     #[pyo3(get)]
+     pub negotiation_disable_post_ripup_guidance: bool,
++    #[pyo3(get, set)]
++    pub negotiation_first_attempt_full_budget: bool,
+     #[pyo3(get)]
+     pub negotiation_disable_simple_route_probe: bool,
+     #[pyo3(get)]
+@@ -732,6 +734,7 @@ impl PyRouterConfig {
+         negotiation_disable_braid_repair=false,
+         negotiation_disable_source_column_widening=false,
+         negotiation_disable_post_ripup_guidance=false,
++        negotiation_first_attempt_full_budget=false,
+         negotiation_disable_simple_route_probe=false,
+         negotiation_history_on_first_attempt=false,
+         search_astar_timeout_ms=None,
+@@ -780,6 +783,7 @@ impl PyRouterConfig {
+         negotiation_disable_braid_repair: bool,
+         negotiation_disable_source_column_widening: bool,
+         negotiation_disable_post_ripup_guidance: bool,
++        negotiation_first_attempt_full_budget: bool,
+         negotiation_disable_simple_route_probe: bool,
+         negotiation_history_on_first_attempt: bool,
+         search_astar_timeout_ms: Option<u64>,
+@@ -832,6 +836,7 @@ impl PyRouterConfig {
+             negotiation_disable_braid_repair,
+             negotiation_disable_source_column_widening,
+             negotiation_disable_post_ripup_guidance,
++            negotiation_first_attempt_full_budget,
+             negotiation_disable_simple_route_probe,
+             negotiation_history_on_first_attempt,
+             search_astar_timeout_ms,
+@@ -892,6 +897,7 @@ impl From<&PyRouterConfig> for RouterConfig {
+                 disable_braid_repair: cfg.negotiation_disable_braid_repair,
+                 disable_source_column_widening: cfg.negotiation_disable_source_column_widening,
+                 disable_post_ripup_guidance: cfg.negotiation_disable_post_ripup_guidance,
++                first_attempt_full_budget: cfg.negotiation_first_attempt_full_budget,
+                 disable_simple_route_probe: cfg.negotiation_disable_simple_route_probe,
+                 history_on_first_attempt: cfg.negotiation_history_on_first_attempt,
+             },
+diff --git a/docs/CONFIGURATION.md b/docs/CONFIGURATION.md
+index 6d88a11..a321216 100644
+--- a/docs/CONFIGURATION.md
++++ b/docs/CONFIGURATION.md
+@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
+ section below has a command-line column only, like `FlowOptions`.
+ See `docs/ARCHITECTURE.md` for how the trees reach the stages.
+ 
+-Totals: 78 `RoutingConfig` fields (78 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 164 in total.
++Totals: 79 `RoutingConfig` fields (79 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 165 in total.
+ 
+ ## `RoutingConfig` -- the router's settings
+ 
+@@ -66,6 +66,7 @@ Mirrors Rust `NegotiationConfig`.
+ | `disable_braid_repair` | `bool` | `False` | `PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR` | -- |
+ | `disable_source_column_widening` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING`: presence. Ablation switch (do-over phase 1): in the post-rip-up guided search (the mixed case: the probe reported legal and illegal partners) price only the legal partners the probe named, without the source-column widening. |
+ | `disable_post_ripup_guidance` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE`: presence. Ablation switch (do-over phase 3, for the next ablation): run the post-rip-up search unguided even when the probe reported legal partners. |
++| `first_attempt_full_budget` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET` | `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET`: presence. Strategy switch (speed pass B1): the first attempt runs at the retry budget and the retry is skipped; off until the 27-cell table decides. |
+ | `disable_simple_route_probe` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE`: presence. Ablation switch (do-over phase 1): skip the engine's straight/L/Z probe before the A* search. |
+ | `history_on_first_attempt` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT` | `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT`: presence. Ablation switch (do-over phase 1): weight the history cost on every attempt, not only after a net has failed once. |
+ 
+diff --git a/python/photonic_router/_rust.pyi b/python/photonic_router/_rust.pyi
+index ec065c0..5e13aa9 100644
+--- a/python/photonic_router/_rust.pyi
++++ b/python/photonic_router/_rust.pyi
+@@ -602,6 +602,7 @@ class RouterConfig:
+         negotiation_disable_braid_repair: Any = False,
+         negotiation_disable_source_column_widening: Any = False,
+         negotiation_disable_post_ripup_guidance: Any = False,
++        negotiation_first_attempt_full_budget: Any = False,
+         negotiation_disable_simple_route_probe: Any = False,
+         negotiation_history_on_first_attempt: Any = False,
+         search_astar_timeout_ms: Any = None,
+@@ -721,6 +722,8 @@ class RouterConfig:
+     @property
+     def negotiation_disable_source_column_widening(self) -> Any: ...
+     @property
++    def negotiation_first_attempt_full_budget(self) -> Any: ...
++    @property
+     def negotiation_history_on_first_attempt(self) -> Any: ...
+     @property
+     def search_astar_timeout_ms(self) -> Any: ...
+diff --git a/python/photonic_router/config.py b/python/photonic_router/config.py
+index e475eeb..c325900 100644
+--- a/python/photonic_router/config.py
++++ b/python/photonic_router/config.py
+@@ -39,6 +39,10 @@ class NegotiationConfig:
+     disable_source_column_widening: bool = False
+     #: `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE`: presence. Ablation switch (do-over phase 3, for the next ablation): run the post-rip-up search unguided even when the probe reported legal partners.
+     disable_post_ripup_guidance: bool = False
++    #: `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET`: presence. Strategy
++    #: switch (speed pass B1): the first attempt runs at the retry budget and
++    #: the retry is skipped; off until the 27-cell table decides.
++    first_attempt_full_budget: bool = False
+     #: `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE`: presence. Ablation switch (do-over phase 1): skip the engine's straight/L/Z probe before the A* search.
+     disable_simple_route_probe: bool = False
+     #: `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT`: presence. Ablation switch (do-over phase 1): weight the history cost on every attempt, not only after a net has failed once.
+@@ -284,6 +288,7 @@ class RouterConfig:
+             negotiation_disable_braid_repair=n.disable_braid_repair,
+             negotiation_disable_source_column_widening=n.disable_source_column_widening,
+             negotiation_disable_post_ripup_guidance=n.disable_post_ripup_guidance,
++            negotiation_first_attempt_full_budget=n.first_attempt_full_budget,
+             negotiation_disable_simple_route_probe=n.disable_simple_route_probe,
+             negotiation_history_on_first_attempt=n.history_on_first_attempt,
+             search_astar_timeout_ms=s.astar_timeout_ms,
+diff --git a/python/photonic_router/env_overlay.py b/python/photonic_router/env_overlay.py
+index 8be8d25..824bf17 100644
+--- a/python/photonic_router/env_overlay.py
++++ b/python/photonic_router/env_overlay.py
+@@ -391,6 +391,11 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
+         ("router", "negotiation", "disable_post_ripup_guidance"),
+         presence,
+     ),
++    EnvVar(
++        _PREFIX + "NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET",
++        ("router", "negotiation", "first_attempt_full_budget"),
++        presence,
++    ),
+     EnvVar(
+         _PREFIX + "NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE",
+         ("router", "negotiation", "disable_simple_route_probe"),
+diff --git a/scripts/results/ablation.sh b/scripts/results/ablation.sh
+index 20471c9..009f4f1 100755
+--- a/scripts/results/ablation.sh
++++ b/scripts/results/ablation.sh
+@@ -19,6 +19,7 @@ SWITCH[reference]=""
+ SWITCH[no_braid]="PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR=1"
+ SWITCH[no_widening]="PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING=1"
+ SWITCH[no_post_ripup_guidance]="PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE=1"
++SWITCH[first_attempt_full_budget]="PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET=1"
+ SWITCH[no_simple_probe]="PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE=1"
+ SWITCH[history_first]="PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT=1"
+ SWITCH[no_long_straight]="PHOTONIC_ROUTER_LONG_STRAIGHT_CONGESTION_WEIGHT=0"
+diff --git a/tests/test_env_overlay.py b/tests/test_env_overlay.py
+index 04c8d5e..ad4a81f 100644
+--- a/tests/test_env_overlay.py
++++ b/tests/test_env_overlay.py
+@@ -293,6 +293,7 @@ RUST_SIDE_NAMES: frozenset[str] = frozenset(
+         "PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR",
+         "PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING",
+         "PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE",
++        "PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET",
+         "PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE",
+         "PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT",
+         # Search overrides (src/py_router.rs)
+-- 
+2.43.0
+
