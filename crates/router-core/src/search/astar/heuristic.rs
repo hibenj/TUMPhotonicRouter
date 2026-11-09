@@ -84,6 +84,22 @@ pub(crate) struct SearchHeuristic {
     pub(crate) weight: f64,
 }
 
+/// `PHOTONIC_ROUTER_EXP_HEURISTIC_WEIGHT`: inflation factor of the admissible
+/// heuristic (weighted A*, bounded-suboptimal by that factor). Unset = 1.0,
+/// which multiplies every estimate by exactly 1.0 and changes nothing.
+/// Experiment switch for the nine-cell gate (algorithm pass, research item
+/// 6, 2026-11-09); read once per process.
+pub(crate) fn experiment_heuristic_weight() -> f64 {
+    static WEIGHT: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *WEIGHT.get_or_init(|| {
+        std::env::var("PHOTONIC_ROUTER_EXP_HEURISTIC_WEIGHT")
+            .ok()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|weight| weight.is_finite() && *weight >= 1.0)
+            .unwrap_or(1.0)
+    })
+}
+
 impl SearchHeuristic {
     pub(crate) fn new(target: State, primitives: &PrimitiveLibrary, config: &AStarConfig) -> Self {
         let target_angle_ok = target_angle_acceptance(target, config);
@@ -116,7 +132,7 @@ impl SearchHeuristic {
             target,
             grid_size_um: primitives.grid_size_um(),
             mode,
-            weight: 1.0,
+            weight: experiment_heuristic_weight(),
         }
     }
 
