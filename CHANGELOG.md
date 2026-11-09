@@ -189,7 +189,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   half of the final cost because the crossing price is invisible to it, and
   an obstacle- and crossing-aware 2D Dijkstra bound reaches 0.86 to 0.91 of
   the final cost; research item 2 becomes a proposed item with that
-  measurement.
+  measurement. `experiments/weighted-astar/` closes research item 6: two
+  27-cell tables at heuristic weights 1.05 and 1.10 (branch
+  `exp/weighted-astar`) fail four paper cells at either weight (ADEPT
+  16x16 lidar-pure verifier errors, ADEPT 64x64 lidar-pure and
+  contribution 2 and ADEPT 128x128 contribution 2 without convergence),
+  move lengths by up to 0.7 % and run at total wall 0.94 and 1.13; not
+  adopted, the main tree carries no weight.
 - Negotiation budget schedule (algorithm pass, item 1, 2026-11-09): a fresh
   net's first plain attempt runs at `budget_first_retry` (10 M) right away,
   and the retry at that budget runs only when the first attempt failed with
