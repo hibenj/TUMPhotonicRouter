@@ -589,6 +589,10 @@ fn exp_two_d_lower_bound<H: CrossingLegalityHook>(
     let price = inputs.map_or(0.0, |(_, p)| p);
     let passable =
         |x: i32, y: i32| !dense_grid.is_blocked(x, y) || !obstacle_map.is_static_blocked(x, y);
+    // A cell blocked by committed routes only (a core or the clearance
+    // around it): entering such a region from outside is a crossing.
+    let route_blocked =
+        |x: i32, y: i32| dense_grid.is_blocked(x, y) && !obstacle_map.is_static_blocked(x, y);
     let run = |priced: bool| -> f64 {
         #[derive(PartialEq)]
         struct Entry(f64, i32, i32);
@@ -615,6 +619,7 @@ fn exp_two_d_lower_bound<H: CrossingLegalityHook>(
                 return d;
             }
             let here = owner(x, y);
+            let here_blocked = route_blocked(x, y);
             for dy in -1..=1 {
                 for dx in -1..=1 {
                     if dx == 0 && dy == 0 {
@@ -630,11 +635,9 @@ fn exp_two_d_lower_bound<H: CrossingLegalityHook>(
                         grid_size_um
                     };
                     let there = owner(nx, ny);
-                    let crossing = if priced && there.is_some() && there != here {
-                        price
-                    } else {
-                        0.0
-                    };
+                    let enters_route = (there.is_some() && there != here)
+                        || (route_blocked(nx, ny) && !here_blocked);
+                    let crossing = if priced && enters_route { price } else { 0.0 };
                     let nd = d + step + crossing;
                     let i = idx(nx, ny);
                     if nd < dist[i] {
