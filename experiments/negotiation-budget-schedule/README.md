@@ -105,6 +105,21 @@ the search-time counter sums per-attempt elapsed seconds, and the merged
 first attempt of a net that used to need the retry now carries the retry's
 whole expansion count under one trace line.
 
+## What remains of the failed-attempt time
+
+Of the 325 s still spent in failed attempts, 255 s are 18 first attempts
+that exhaust the 10 M budget (15 on ADEPT 64x64 lidar-pure, 224 s; 3 on
+ADEPT 64x64 contribution 1). On ADEPT 64x64 lidar-pure every one of them
+is followed by a local rip-up search that routes the net in 0 to 4 s
+(`anatomy_merged_1377ad6.md`, trace of that cell): the exhausted search is
+a search for a route that does not exist without moving a neighbour. A
+smaller retry budget is not an exact answer: 15 successful attempts in the
+table take more than 6 M expansions and 4 more than 10 M (nets with a
+failed round before them run at the 30 M budget). The exact lever is a
+heuristic that makes these searches fail or succeed sooner
+(`../heuristic-tightness/`), or a predictor that hands a stalling search to
+the rip-up earlier; both are open.
+
 ## Reproduce
 
 ```bash
