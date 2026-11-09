@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 80 `RoutingConfig` fields (80 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 166 in total.
+Totals: 79 `RoutingConfig` fields (79 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 165 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -66,7 +66,6 @@ Mirrors Rust `NegotiationConfig`.
 | `disable_braid_repair` | `bool` | `False` | `PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR` | -- |
 | `disable_source_column_widening` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SOURCE_COLUMN_WIDENING`: presence. Ablation switch (do-over phase 1): in the post-rip-up guided search (the mixed case: the probe reported legal and illegal partners) price only the legal partners the probe named, without the source-column widening. |
 | `disable_post_ripup_guidance` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE`: presence. Ablation switch (do-over phase 3, for the next ablation): run the post-rip-up search unguided even when the probe reported legal partners. |
-| `first_attempt_full_budget` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET` | `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET`: presence. Strategy switch (speed pass B1): the first attempt runs at the retry budget and the retry is skipped; off until the 27-cell table decides. |
 | `disable_simple_route_probe` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE` | `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE`: presence. Ablation switch (do-over phase 1): skip the engine's straight/L/Z probe before the A* search. |
 | `history_on_first_attempt` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT` | `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT`: presence. Ablation switch (do-over phase 1): weight the history cost on every attempt, not only after a net has failed once. |
 

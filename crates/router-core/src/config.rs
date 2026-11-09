@@ -38,12 +38,6 @@ pub struct NegotiationConfig {
     /// for the next ablation): run the post-rip-up search unguided even when the probe reported legal
     /// partners, so the mixed-case guidance can be measured like the two tactics slice A removed.
     pub disable_post_ripup_guidance: bool,
-    /// `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET`: presence. Strategy
-    /// switch (speed pass B1, 2026-11-05): a never-failed net's first attempt
-    /// runs at `budget_first_retry` and the separate retry is skipped. Not
-    /// exact (the per-window cap follows the budget), so off by default
-    /// until the 27-cell table decides.
-    pub first_attempt_full_budget: bool,
     /// `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE`: presence. Ablation switch (do-over phase 1):
     /// skip the engine's straight/L/Z probe before the A* search.
     pub disable_simple_route_probe: bool,
@@ -63,7 +57,6 @@ impl Default for NegotiationConfig {
             disable_braid_repair: false,
             disable_source_column_widening: false,
             disable_post_ripup_guidance: false,
-            first_attempt_full_budget: false,
             disable_simple_route_probe: false,
             history_on_first_attempt: false,
         }
@@ -300,7 +293,6 @@ mod tests {
         assert!(!cfg.disable_braid_repair);
         assert!(!cfg.disable_source_column_widening);
         assert!(!cfg.disable_post_ripup_guidance);
-        assert!(!cfg.first_attempt_full_budget);
     }
 
     #[test]

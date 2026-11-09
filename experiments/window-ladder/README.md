@@ -38,8 +38,8 @@ crossings and 1,305,628 to 1,305,375 um (-0.02 %), ADEPT 32x32 contribution 1
 +0.003 % length, ADEPT 64x64 contribution 1 -0.0001 %; 0 verifier errors
 everywhere. Wall against the reference: ADEPT 64x64 lidar-pure 1809 to
 1584 s (0.88), ADEPT 64x64 contribution 1 0.84, ADEPT 32x32 contribution 1
-148 to 69 s (0.47), ADEPT 128x128 contribution 2 0.91, Benes cells 0.96 to
-1.05, total 0.91.
+148 to 69 s (0.47), ADEPT 128x128 contribution 2 0.91, Benes 16x16 to
+128x128 0.96 to 1.05 (the cells under 10 s are noise), total 0.91.
 
 `window0_full_budget`: total 0.88, but Benes 16x16 contribution 1 doubles
 (25 to 49 s) and seven cells move (the six length moves of the full-budget

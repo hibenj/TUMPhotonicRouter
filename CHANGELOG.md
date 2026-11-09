@@ -124,7 +124,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   and the retry is skipped. Experiment 1 showed the heavy cells spending 20
   to 60 % of all expansions on 2 M first attempts that then failed; the
   change is not exact (the per-window cap follows the budget), so the 27-cell
-  table decides.
+  table decides. Not adopted (owner, 2026-11-05: a wash, total wall 0.99,
+  six lengths move, Benes 16x16 contribution 1 twice as slow); the switch
+  left the tree 2026-11-09 and the record is
+  `experiments/negotiation-first-attempt-full-budget/` (patch, both tables).
 - The path-length-matching baseline and gate (phase 6 slice 0): `scripts/results/plm_baseline.sh`
   routes `heater_s_mod` and the twelve `cascade_{8,12,16}_{compact,diagonal,folded,
   folded_compact}` under their stable flags into `results_plm/` (config label `plm`,
@@ -669,6 +672,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- The speed-pass B1 switch `NegotiationConfig.first_attempt_full_budget` /
+  `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET`, its binding field,
+  overlay entry and ablation variant: not adopted on the 27-cell table
+  (owner, 2026-11-05), moved to
+  `experiments/negotiation-first-attempt-full-budget/` as a patch against
+  `45c9aa2`. The negotiation loop is the pre-`bc2c0d8` loop again; `_rust.pyi`
+  and `docs/CONFIGURATION.md` regenerated; nine-cell gate and PLM gate exact.
 - The port-runway switch `PHOTONIC_ROUTER_PORT_RUNWAYS` /
   `FanoutAccessConfig.port_runways` and its code (`route_jobs.
   _port_runway_anchor`, `_build_port_runway_anchors`, the runway branch of

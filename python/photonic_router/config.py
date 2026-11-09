@@ -39,10 +39,6 @@ class NegotiationConfig:
     disable_source_column_widening: bool = False
     #: `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_POST_RIPUP_GUIDANCE`: presence. Ablation switch (do-over phase 3, for the next ablation): run the post-rip-up search unguided even when the probe reported legal partners.
     disable_post_ripup_guidance: bool = False
-    #: `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET`: presence. Strategy
-    #: switch (speed pass B1): the first attempt runs at the retry budget and
-    #: the retry is skipped; off until the 27-cell table decides.
-    first_attempt_full_budget: bool = False
     #: `PHOTONIC_ROUTER_NEGOTIATED_DISABLE_SIMPLE_ROUTE_PROBE`: presence. Ablation switch (do-over phase 1): skip the engine's straight/L/Z probe before the A* search.
     disable_simple_route_probe: bool = False
     #: `PHOTONIC_ROUTER_NEGOTIATED_HISTORY_ON_FIRST_ATTEMPT`: presence. Ablation switch (do-over phase 1): weight the history cost on every attempt, not only after a net has failed once.
@@ -295,7 +291,6 @@ class RouterConfig:
             negotiation_disable_braid_repair=n.disable_braid_repair,
             negotiation_disable_source_column_widening=n.disable_source_column_widening,
             negotiation_disable_post_ripup_guidance=n.disable_post_ripup_guidance,
-            negotiation_first_attempt_full_budget=n.first_attempt_full_budget,
             negotiation_disable_simple_route_probe=n.disable_simple_route_probe,
             negotiation_history_on_first_attempt=n.history_on_first_attempt,
             search_astar_timeout_ms=s.astar_timeout_ms,
