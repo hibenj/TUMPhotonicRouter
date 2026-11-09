@@ -8,7 +8,7 @@ reproducible, instead of in a scratch directory or a private notebook.
 | experiment | status | one line |
 | --- | --- | --- |
 | [`port-runways/`](port-runways/) | not adopted (2026-11-09) | a static stub from every port onto the cell-centre lattice, so the search starts lattice-exact and the endpoint correction has nothing to move; costs +0.5 to +1.1 % length on Benes and four shallow arcs per net |
-| [`crossing-hook-kernel-grid/`](crossing-hook-kernel-grid/) | not adopted (2026-11-06) | the live crossing hook reads the kernel's search grid instead of its own occupancy grid; eleven cells shorter, two cells fail |
+| [`crossing-hook-kernel-grid/`](crossing-hook-kernel-grid/) | not adopted (2026-11-06, follow-up 2026-11-09) | the live crossing hook reads the kernel's search grid instead of its own occupancy grid; eleven cells shorter, two cells fail; the dynamic expansion radius alone changes nothing |
 | [`negotiation-first-attempt-full-budget/`](negotiation-first-attempt-full-budget/) | not adopted (2026-11-05) | the first search attempt runs at the retry budget; wall 0.99 in total, six lengths move |
 | [`window-ladder/`](window-ladder/) | adopted (2026-11-05) | window 0 only, no full-grid fallback: every route ever found came from window 0; wall 0.91, three cells re-pinned |
 | [`window-reachability-pruning/`](window-reachability-pruning/) | not adopted (2026-11-05) | a cell-level reachability test per search window to skip windows that cannot succeed; every failing window is cell-reachable |

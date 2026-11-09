@@ -44,12 +44,34 @@ points here. The shorter lengths on eleven cells are real and say the hook's
 grid is conservative; a hook that reads a third grid (kernel freedoms minus
 the port-open cells) would be the next experiment.
 
+## Follow-up: the radius alone (2026-11-09, not adopted)
+
+The proposed split of the three inputs: a switch that gives the hook's grid
+only the kernel's dynamic clearance expansion radius (`radius`), or the
+radius with its clearance-exempt cells (`radius-exempt`), never the
+port-open cells (`patches/0002-hook-grid-radius-only-switch.patch`, against
+`1377ad6`, env `PHOTONIC_ROUTER_CROSSING_HOOK_GRID`). The paper cells run
+with a block radius of one cell, so the switch changes the hook's grid.
+Nine-cell gate with either mode: every cell identical to the pins in
+crossings, length and errors (`tables/gate_radius_variants.md`), where the
+full kernel grid had moved three of the nine. So the shorter lengths of the
+kernel-grid table came from the port-open cells, the same input that made
+two cells fail; the dynamic expansion contributes nothing on these cells.
+Closed without a 27-cell table (the rule set at launch: the table only if
+the nine-cell lengths move); the switch left the tree with the record.
+
 ## Reproduce
 
 ```bash
+# the kernel-grid table
 git checkout 418558f
-git am experiments/crossing-hook-kernel-grid/patches/*.patch
+git am experiments/crossing-hook-kernel-grid/patches/0001-crossing-hook-on-the-kernel-grid.patch
 .venv/bin/maturin develop --release
 PHOTONIC_ROUTER_CROSSING_HOOK_KERNEL_GRID=1 RESULTS_ROOT=$PWD/results_hook scripts/results/reproduce_paper.sh all
 .venv/bin/python scripts/results/compare_paper.py results_hook docs/paper_table_sources.json
+# the radius-only follow-up (a plain diff, not a mail patch)
+git checkout 1377ad6
+git apply experiments/crossing-hook-kernel-grid/patches/0002-hook-grid-radius-only-switch.patch
+.venv/bin/maturin develop --release
+PHOTONIC_ROUTER_CROSSING_HOOK_GRID=radius scripts/results/gate_short.sh
 ```

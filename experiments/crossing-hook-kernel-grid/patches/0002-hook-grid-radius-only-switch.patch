@@ -1,0 +1,169 @@
+diff --git a/crates/router-core/src/search/astar/crossing_rules.rs b/crates/router-core/src/search/astar/crossing_rules.rs
+index 07bb107..397f8ec 100644
+--- a/crates/router-core/src/search/astar/crossing_rules.rs
++++ b/crates/router-core/src/search/astar/crossing_rules.rs
+@@ -783,14 +783,48 @@ pub(crate) struct CrossingHookContext {
+     pub(crate) capped_required_margin: i32,
+ }
+ 
++/// `PHOTONIC_ROUTER_CROSSING_HOOK_GRID`: which of the kernel grid's three
++/// search freedoms the crossing hook's dense grid takes. Unset or `paper`:
++/// none (the physical occupancy, as shipped). `radius`: the dynamic
++/// clearance expansion radius only. `radius-exempt`: the radius and its
++/// clearance-exempt cells. The port-open cells never (they are what broke
++/// `experiments/crossing-hook-kernel-grid/`). Experiment switch for the
++/// nine-cell gate and the 27-cell table (2026-11-09); read once per process.
++#[derive(Clone, Copy, PartialEq, Eq, Debug)]
++pub(crate) enum HookGridMode {
++    Paper,
++    Radius,
++    RadiusExempt,
++}
++
++pub(crate) fn hook_grid_mode() -> HookGridMode {
++    static MODE: std::sync::OnceLock<HookGridMode> = std::sync::OnceLock::new();
++    *MODE.get_or_init(
++        || match std::env::var("PHOTONIC_ROUTER_CROSSING_HOOK_GRID") {
++            Ok(value) if value == "radius" => HookGridMode::Radius,
++            Ok(value) if value == "radius-exempt" => HookGridMode::RadiusExempt,
++            _ => HookGridMode::Paper,
++        },
++    )
++}
++
+ impl CrossingHookContext {
++    /// `dynamic_expansion_radius_cells` and `dynamic_clearance_exempt_cells`
++    /// are the kernel grid's inputs; the hook's grid reads them only under
++    /// `hook_grid_mode()`. `_port_open_cells` is accepted for the call site's
++    /// symmetry and never used (see `HookGridMode`).
++    #[allow(clippy::too_many_arguments)]
+     pub(super) fn build(
+         obstacle_map: &ObstacleMap,
+         primitives: &PrimitiveLibrary,
+         config: &AStarConfig,
+         crossing: &CrossingSearchConfig,
+         full_bounds: RoutingBounds,
++        _port_open_cells: Option<&FxHashSet<CellKey>>,
++        dynamic_expansion_radius_cells: i32,
++        dynamic_clearance_exempt_cells: Option<&FxHashSet<CellKey>>,
+     ) -> Self {
++        let mode = hook_grid_mode();
+         // The hook's grid is the physical occupancy only: no port-open cells,
+         // no dynamic clearance expansion and no exempt cells. Those three are
+         // search freedoms of the kernel's grid, not free silicon; a hook that
+@@ -808,8 +842,14 @@ impl CrossingHookContext {
+             config.ignore_dynamic_obstacles,
+             config.history_weight > 0.0,
+             config.long_straight_congestion_weight > 0.0,
+-            0,
+-            None,
++            match mode {
++                HookGridMode::Paper => 0,
++                HookGridMode::Radius | HookGridMode::RadiusExempt => dynamic_expansion_radius_cells,
++            },
++            match mode {
++                HookGridMode::RadiusExempt => dynamic_clearance_exempt_cells,
++                HookGridMode::Paper | HookGridMode::Radius => None,
++            },
+         )
+         .expect("dense grid should build for a valid obstacle map");
+         let primitive_buckets: [&[Primitive]; 8] =
+diff --git a/crates/router-core/src/search/astar/crossing_rules/tests.rs b/crates/router-core/src/search/astar/crossing_rules/tests.rs
+index 27e9e72..d3ad45f 100644
+--- a/crates/router-core/src/search/astar/crossing_rules/tests.rs
++++ b/crates/router-core/src/search/astar/crossing_rules/tests.rs
+@@ -2814,6 +2814,9 @@ mod kernel_hook_dispatch {
+                     config,
+                     crossing,
+                     full_bounds,
++                    None,
++                    0,
++                    None,
+                 );
+                 let hook = context.hook(obstacle_map, crossing, config, None, None);
+                 kernel::run(
+@@ -2999,6 +3002,9 @@ mod kernel_hook_dispatch {
+             &config,
+             &far_crossing,
+             full_bounds,
++            None,
++            0,
++            None,
+         );
+         let hook = context.hook(&empty_map, &far_crossing, &config, None, None);
+         let counting = CountingHook {
+@@ -3032,8 +3038,16 @@ mod kernel_hook_dispatch {
+         // primitives the search actually generates.
+         let (map, primitives, source, target, config, crossing) = crossing_fixture();
+         let full_bounds = full_bounds_of(&map);
+-        let context =
+-            CrossingHookContext::build(&map, &primitives, &config, &crossing, full_bounds);
++        let context = CrossingHookContext::build(
++            &map,
++            &primitives,
++            &config,
++            &crossing,
++            full_bounds,
++            None,
++            0,
++            None,
++        );
+         let hook = context.hook(&map, &crossing, &config, None, None);
+         let counting = CountingHook {
+             inner: &hook,
+diff --git a/crates/router-core/src/search/astar/expansion.rs b/crates/router-core/src/search/astar/expansion.rs
+index e198534..de5b757 100644
+--- a/crates/router-core/src/search/astar/expansion.rs
++++ b/crates/router-core/src/search/astar/expansion.rs
+@@ -2258,8 +2258,16 @@ mod tests {
+                 min_y: window_min_y,
+                 ..full_bounds
+             };
+-            let hook_context =
+-                CrossingHookContext::build(&map, &primitives, &config, &crossing, full_bounds);
++            let hook_context = CrossingHookContext::build(
++                &map,
++                &primitives,
++                &config,
++                &crossing,
++                full_bounds,
++                None,
++                0,
++                None,
++            );
+             let hook = hook_context.hook(&map, &crossing, &config, None, None);
+             let source = State::new(20, 50, 6);
+             let target = State::new(20, 4, 6);
+@@ -2341,8 +2349,16 @@ mod tests {
+     fn push_or_improve_extended_keeps_the_better_g_and_ignores_a_worse_one() {
+         let (map, primitives, config, crossing) = crossing_corridor_fixture();
+         let bounds = full_map_bounds(&map);
+-        let hook_context =
+-            CrossingHookContext::build(&map, &primitives, &config, &crossing, bounds);
++        let hook_context = CrossingHookContext::build(
++            &map,
++            &primitives,
++            &config,
++            &crossing,
++            bounds,
++            None,
++            0,
++            None,
++        );
+         let hook = hook_context.hook(&map, &crossing, &config, None, None);
+         let source = State::new(20, 50, 6);
+         let target = State::new(20, 4, 6);
+diff --git a/crates/router-core/src/search/astar/mod.rs b/crates/router-core/src/search/astar/mod.rs
+index ac47a4d..962eef6 100644
+--- a/crates/router-core/src/search/astar/mod.rs
++++ b/crates/router-core/src/search/astar/mod.rs
+@@ -231,6 +231,9 @@ fn run_search(env: &SearchEnvironment, request: &SearchRequest) -> SearchOutcome
+                         config,
+                         crossing,
+                         resolved_bounds,
++                        Some(&anchor_open_cells),
++                        dynamic_expansion_radius_cells,
++                        dynamic_clearance_exempt_cells,
+                     );
+                     let hook = context.hook(
+                         obstacle_map,
