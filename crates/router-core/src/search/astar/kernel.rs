@@ -531,6 +531,34 @@ pub(crate) fn reservation_nodes(
 /// push or improve the resulting entry. The timeout and iteration-budget
 /// checks sit at the top of the iteration; every diagnostic mechanism is
 /// behind its own `KernelDiagnostics` flag.
+/// Experiment-only f-value profile (`PHOTONIC_ROUTER_EXP_F_PROFILE=1`): the
+/// f-score of every pop is kept and, on success, compared with the final
+/// cost, so the share of pops below the optimum (the work any admissible
+/// heuristic must do) is separated from the pops on the f = C* plateau
+/// (tie-breaking work). One stderr line per successful search.
+fn exp_f_profile_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("PHOTONIC_ROUTER_EXP_F_PROFILE").is_ok_and(|v| v == "1"))
+}
+
+fn exp_f_profile_report(f_pops: &[f64], h_start: f64, c_star: f64) {
+    if c_star <= 0.0 {
+        return;
+    }
+    let count = |limit: f64| f_pops.iter().filter(|&&f| f < limit).count();
+    eprintln!(
+        "exp_f_profile pops={} below_cstar={} below_0999={} below_099={} below_095={} below_090={} h_start_ratio={:.4} cstar={:.3}",
+        f_pops.len(),
+        count(c_star * (1.0 - 1.0e-9)),
+        count(c_star * 0.999),
+        count(c_star * 0.99),
+        count(c_star * 0.95),
+        count(c_star * 0.90),
+        h_start / c_star,
+        c_star
+    );
+}
+
 pub(crate) fn run<H: CrossingLegalityHook>(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
@@ -709,6 +737,8 @@ pub(crate) fn run<H: CrossingLegalityHook>(
     )?;
 
     let mut iterations = 0usize;
+    let mut exp_f_pops: Option<Vec<f64>> = exp_f_profile_enabled().then(Vec::new);
+    let exp_h_start = cost::heuristic_estimate(&search_heuristic, source);
     let search_loop_start = if config.collect_detailed_timing {
         Some(Instant::now())
     } else {
@@ -733,6 +763,9 @@ pub(crate) fn run<H: CrossingLegalityHook>(
             (entry, UnifiedOpenRef::Extended(idx))
         };
         stats.heap_pops += 1;
+        if let Some(f_pops) = exp_f_pops.as_mut() {
+            f_pops.push(entry.f_score);
+        }
         iterations += 1;
         if iterations > config.max_iterations {
             if let Some(search_loop_start) = search_loop_start.as_ref() {
@@ -858,6 +891,9 @@ pub(crate) fn run<H: CrossingLegalityHook>(
         if at_goal {
             if let Some(search_loop_start) = search_loop_start.as_ref() {
                 stats.search_loop_time_us += search_loop_start.elapsed().as_micros();
+            }
+            if let Some(f_pops) = exp_f_pops.as_ref() {
+                exp_f_profile_report(f_pops, exp_h_start, current_g);
             }
             // Harness: probe cells report on SUCCESS too (where did the
             // search go / not go), not only on failure.
