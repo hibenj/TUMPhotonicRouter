@@ -299,6 +299,7 @@ impl Router {
             config: &crossing_search_cfg,
         };
         let outcome = self.search_engine.search(&env, &request);
+        self.note_kernel_search(&outcome.stats);
         let Some(result) = outcome.route else {
             return Ok(None);
         };
@@ -955,6 +956,7 @@ impl Router {
             };
             self.search_engine.search(&env, &request)
         };
+        self.note_kernel_search(&outcome.stats);
         let fallback_search_stats = outcome.stats;
         let search_option = outcome.route;
         let mut result = if call.is_repair() {
@@ -1147,10 +1149,18 @@ impl Router {
             crossing: None,
             config: &cfg,
         };
-        self.search_engine
-            .search(&env, &request)
-            .route
-            .ok_or_else(|| "No route found".to_string())
+        let outcome = self.search_engine.search(&env, &request);
+        self.note_kernel_search(&outcome.stats);
+        outcome.route.ok_or_else(|| "No route found".to_string())
+    }
+
+    /// Records a kernel search's iteration count for the negotiated loop's
+    /// first-attempt rule (`Router::attempt_max_heap_pops`). `heap_pops` is
+    /// the kernel's iteration counter: a search succeeds under an iteration
+    /// cap exactly when its goal pop is at or below the cap.
+    pub(crate) fn note_kernel_search(&self, stats: &crate::search::state::RouteSearchStats) {
+        self.attempt_max_heap_pops
+            .fetch_max(stats.heap_pops as u64, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The baseline attempt: routes the net directly via `route_and_commit`

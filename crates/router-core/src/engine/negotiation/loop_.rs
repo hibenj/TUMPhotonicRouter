@@ -20,6 +20,8 @@ use crate::error::RouterError;
 
 use crate::engine::*;
 
+use super::budget::{first_attempt_runs_at_retry_budget, retry_after_failed_first};
+
 /// The batch's jobs plus the three lookup tables the loop's steps read:
 /// the caller's net order (`route_rust.py`'s `_topological_net_route_order`),
 /// the jobs by id, and the job indices by source column (the source-column
@@ -303,14 +305,39 @@ impl Router {
         // The plain search, and -- for a net that has not failed yet,
         // outside the last round -- one retry at the larger first-retry
         // budget before probe and rip-up run at all (owner decision
-        // 2026-09-15 01:30).
-        let first = PlainAttempt::first(budget(AttemptKind::First), crossing_free);
+        // 2026-09-15 01:30). Since 2026-11-09 the first attempt of a
+        // retry-eligible net runs at the retry budget right away: the retry
+        // is the identical search call with a larger iteration cap, so a
+        // first attempt that fails by exhausting `budget_first` only
+        // recomputes those iterations in the retry. The retry still runs
+        // when the first attempt failed within `budget_first` iterations
+        // (a route found and rejected at commit, an open set exhausted),
+        // because that is the case in which today's retry ran a search the
+        // first attempt had not (`retry_after_failed_first`). Routes and
+        // failures are identical to the two-step sequence
+        // (experiments/negotiation-budget-schedule/).
+        let retry_eligible = failed_count == 0 && round != max_rounds;
+        let small_budget = budget(AttemptKind::First);
+        let retry_budget = budget(AttemptKind::FirstRetry);
+        let merged_first =
+            retry_eligible && first_attempt_runs_at_retry_budget(small_budget, retry_budget);
+        let first_budget = if merged_first {
+            retry_budget
+        } else {
+            small_budget
+        };
+        let first = PlainAttempt::first(first_budget, crossing_free);
         let mut outcome = self.run_plain_attempt(state.batch, job, &args, first);
         if matches!(outcome, PlainRouteOutcome::NotResolved)
-            && failed_count == 0
-            && round != max_rounds
+            && retry_eligible
+            && (!merged_first
+                || retry_after_failed_first(
+                    small_budget,
+                    self.attempt_max_heap_pops
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                ))
         {
-            let retry = PlainAttempt::first_retry(budget(AttemptKind::FirstRetry), crossing_free);
+            let retry = PlainAttempt::first_retry(retry_budget, crossing_free);
             outcome = self.run_plain_attempt(state.batch, job, &args, retry);
         }
         if matches!(outcome, PlainRouteOutcome::Routed) {

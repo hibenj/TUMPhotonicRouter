@@ -162,6 +162,8 @@ impl Router {
         } = attempt;
         let net_id = job.net_id;
         let started = Instant::now();
+        self.attempt_max_heap_pops
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         let call = SearchCall::plain(job, args.radii)
             .budget(budget)
             .history_weight(args.history_weight)

@@ -29,8 +29,17 @@ ALL_NETS: str = "*"
 class NegotiationConfig:
     """Mirrors Rust `NegotiationConfig`."""
 
+    #: `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST`: the iteration cap of a fresh net's first attempt in the
+    #: two-step sequence (first attempt, then one retry at `budget_first_retry`). Since 2026-11-09 the
+    #: first attempt runs at the retry budget right away and this cap decides whether a failed first
+    #: attempt still gets the retry: only when every search of the attempt stayed within it. Routes are
+    #: identical to the two-step sequence.
     budget_first: int = 2_000_000
+    #: `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY`: expansion budget of a fresh net's merged first
+    #: attempt and of its retry.
     budget_first_retry: int = 10_000_000
+    #: `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY`: expansion budget of every attempt of a net that has
+    #: already failed a round; the last round is unbounded.
     budget_retry: int = 30_000_000
     braid_escalation: bool = False
     crossing_free_unplanned: bool = True

@@ -157,6 +157,12 @@ pub struct Router {
     // `.agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md`
     // Milestone 5.
     pub last_search_expanded_states: u64,
+    /// The largest `heap_pops` (= kernel iterations) of any kernel search run
+    /// since `run_plain_attempt` last reset it. The negotiated loop's first
+    /// attempt runs at the retry budget and reads this to decide whether the
+    /// attempt would also have failed at `budget_first`, i.e. whether today's
+    /// retry would be the identical search again (`budget::retry_after_failed_first`).
+    pub attempt_max_heap_pops: std::sync::atomic::AtomicU64,
     // The single-net search algorithm every production call site now
     // reaches through `NetSearch::search` instead of the deleted
     // four-method single-net-search trait. Set once at construction from
@@ -234,6 +240,7 @@ impl Router {
             negotiated_batch_start: None,
             long_straight_exempt_net_ids: FxHashSet::default(),
             last_search_expanded_states: 0,
+            attempt_max_heap_pops: std::sync::atomic::AtomicU64::new(0),
             search_engine,
         }
     }

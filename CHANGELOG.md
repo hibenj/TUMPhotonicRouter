@@ -180,6 +180,24 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Negotiation budget schedule (algorithm pass, item 1, 2026-11-09): a fresh
+  net's first plain attempt runs at `budget_first_retry` (10 M) right away,
+  and the retry at that budget runs only when the first attempt failed with
+  every kernel search within `budget_first` (2 M iterations:
+  `Router::attempt_max_heap_pops`, `budget::retry_after_failed_first`). With
+  window 0 only the retry was the identical search call with a larger
+  iteration cap, so a first attempt that exhausted 2 M iterations only had
+  them recomputed by the retry; the anatomy of the pinned table
+  (`experiments/negotiation-budget-schedule/`) counted 147 such attempts and
+  485 s of 3,210 s of search time across the 27 cells (ADEPT 64x64
+  lidar-pure 185 of 1,462 s, Benes 32x32 lidar-pure 106 of 432 s). The
+  retry still runs after an instant commit rejection of the straight probe
+  route or an exhausted open set, the cases in which the two-step sequence
+  ran a search the first attempt had not (speed pass B1 skipped it and
+  moved six cells). Routes and failures are identical to the two-step
+  sequence; `search_attempts` / `search_failures` in the reports drop by the
+  skipped retries. Nine-cell gate and PLM gate exact; 27-cell table exact
+  against the pins (see the experiment folder for the wall times).
 - Release decision 24 (owner, 2026-11-05): the paper's venue leaves file names
   and texts while the review is double-blind. `reproduce_date2027.sh` ->
   `reproduce_paper.sh`, `compare_date2027.py` -> `compare_paper.py`,

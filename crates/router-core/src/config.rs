@@ -15,11 +15,16 @@ use crate::error::RouterError;
 /// read in `src/engine/negotiation/`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NegotiationConfig {
-    /// `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST`: expansion budget for the
-    /// first negotiated attempt of a net.
+    /// `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST`: the iteration cap of a fresh net's first negotiated
+    /// attempt in the two-step sequence (first attempt, then one retry at `budget_first_retry`).
+    /// Since 2026-11-09 the first attempt runs at the retry budget right away and this cap decides
+    /// whether a failed first attempt still gets the retry: only when every search of the attempt
+    /// stayed within it (the retry is the identical search with the larger cap, so a first attempt
+    /// that went beyond this cap and failed is the retry's own failure). Routes are identical to
+    /// the two-step sequence; see `engine/negotiation/budget.rs`.
     pub budget_first: u64,
-    /// `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY`: expansion budget for
-    /// the first retry.
+    /// `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY`: expansion budget of a fresh net's merged first
+    /// attempt and of its retry (see `budget_first`).
     pub budget_first_retry: u64,
     /// `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY`: expansion budget for every
     /// retry after the first.

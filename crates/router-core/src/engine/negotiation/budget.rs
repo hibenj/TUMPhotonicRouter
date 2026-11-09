@@ -91,9 +91,75 @@ impl BudgetSchedule for LadderBudgets<'_> {
     }
 }
 
+/// Whether a retry-eligible net's first attempt runs at the retry budget
+/// straight away (2026-11-09). The retry is the same search call with a
+/// larger iteration cap, so running the first attempt at the larger cap
+/// changes no route: a search that succeeds within the small cap succeeds
+/// identically under the large one, and one that would have exhausted the
+/// small cap is exactly what the retry recomputed. Only when the retry
+/// budget is not larger than the first budget is there nothing to merge,
+/// and the two-step sequence runs as configured.
+pub(crate) fn first_attempt_runs_at_retry_budget(
+    small_budget: Option<u64>,
+    retry_budget: Option<u64>,
+) -> bool {
+    match (small_budget, retry_budget) {
+        (Some(small), Some(retry)) => retry > small,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
+/// After a merged first attempt failed: does the retry still run? Yes when
+/// every kernel search of the attempt stayed within the small cap
+/// (`max_heap_pops <= budget_first`): the two-step sequence would have
+/// failed its first attempt the same way (a route found and rejected at
+/// commit, an open set exhausted) and then run the retry, which may see
+/// state the failure changed. No when a search went beyond the small cap:
+/// the two-step sequence's first attempt would have been cut off there and
+/// its retry would have been this very search, which has just failed.
+pub(crate) fn retry_after_failed_first(small_budget: Option<u64>, max_heap_pops: u64) -> bool {
+    match small_budget {
+        Some(small) => max_heap_pops <= small,
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The merged first attempt runs at the retry budget whenever that is
+    /// the larger cap; equal or smaller retry budgets keep the two steps.
+    #[test]
+    fn first_attempt_merges_into_the_retry_budget_only_when_it_is_larger() {
+        assert!(first_attempt_runs_at_retry_budget(
+            Some(2_000_000),
+            Some(10_000_000)
+        ));
+        assert!(first_attempt_runs_at_retry_budget(Some(2_000_000), None));
+        assert!(!first_attempt_runs_at_retry_budget(
+            Some(2_000_000),
+            Some(2_000_000)
+        ));
+        assert!(!first_attempt_runs_at_retry_budget(
+            Some(10_000_000),
+            Some(2_000_000)
+        ));
+        assert!(!first_attempt_runs_at_retry_budget(None, Some(10_000_000)));
+        assert!(!first_attempt_runs_at_retry_budget(None, None));
+    }
+
+    /// A failed merged attempt earns the retry exactly when it stayed within
+    /// the small cap (the kernel fails at `iterations > cap`, so a goal pop
+    /// at the cap itself still succeeds there).
+    #[test]
+    fn retry_follows_a_failed_first_attempt_only_within_the_small_cap() {
+        assert!(retry_after_failed_first(Some(2_000_000), 0));
+        assert!(retry_after_failed_first(Some(2_000_000), 2_000_000));
+        assert!(!retry_after_failed_first(Some(2_000_000), 2_000_001));
+        assert!(!retry_after_failed_first(None, 0));
+    }
 
     /// The defaults of the three configured budgets are the numbers the
     /// paper ran (2 M / 10 M / 30 M); every other test here reads the

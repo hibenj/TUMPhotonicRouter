@@ -13,6 +13,7 @@ reproducible, instead of in a scratch directory or a private notebook.
 | [`window-ladder/`](window-ladder/) | adopted (2026-11-05) | window 0 only, no full-grid fallback: every route ever found came from window 0; wall 0.91, three cells re-pinned |
 | [`window-reachability-pruning/`](window-reachability-pruning/) | not adopted (2026-11-05) | a cell-level reachability test per search window to skip windows that cannot succeed; every failing window is cell-reachable |
 | [`lto-build/`](lto-build/) | not adopted (2026-11-05) | fat link-time optimisation of the extension; no faster |
+| [`negotiation-budget-schedule/`](negotiation-budget-schedule/) | adopted, exact (2026-11-09) | a fresh net's first attempt runs at the retry budget and the retry runs only when the first attempt stayed within the old first budget; same routes, the 2 M iterations of every budget-exhausted first attempt are no longer computed twice |
 
 ## What an entry holds
 

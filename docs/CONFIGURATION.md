@@ -58,9 +58,9 @@ Mirrors Rust `NegotiationConfig`.
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
-| `budget_first` | `int` | `2000000` | `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST` | -- |
-| `budget_first_retry` | `int` | `10000000` | `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY` | -- |
-| `budget_retry` | `int` | `30000000` | `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY` | -- |
+| `budget_first` | `int` | `2000000` | `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST` | `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST`: the iteration cap of a fresh net's first attempt in the two-step sequence (first attempt, then one retry at `budget_first_retry`). Since 2026-11-09 the first attempt runs at the retry budget right away and this cap decides whether a failed first attempt still gets the retry: only when every search of the attempt stayed within it. Routes are identical to the two-step sequence. |
+| `budget_first_retry` | `int` | `10000000` | `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY` | `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_FIRST_RETRY`: expansion budget of a fresh net's merged first attempt and of its retry. |
+| `budget_retry` | `int` | `30000000` | `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY` | `PHOTONIC_ROUTER_NEGOTIATED_BUDGET_RETRY`: expansion budget of every attempt of a net that has already failed a round; the last round is unbounded. |
 | `braid_escalation` | `bool` | `False` | `PHOTONIC_ROUTER_NEGOTIATED_BRAID_ESCALATION` | -- |
 | `crossing_free_unplanned` | `bool` | `True` | `PHOTONIC_ROUTER_NEGOTIATED_CROSSING_FREE_UNPLANNED` | -- |
 | `disable_braid_repair` | `bool` | `False` | `PHOTONIC_ROUTER_DISABLE_BRAID_REPAIR` | -- |
