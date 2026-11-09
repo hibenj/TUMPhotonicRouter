@@ -14,6 +14,8 @@ reproducible, instead of in a scratch directory or a private notebook.
 | [`window-reachability-pruning/`](window-reachability-pruning/) | not adopted (2026-11-05) | a cell-level reachability test per search window to skip windows that cannot succeed; every failing window is cell-reachable |
 | [`lto-build/`](lto-build/) | not adopted (2026-11-05) | fat link-time optimisation of the extension; no faster |
 | [`weighted-astar/`](weighted-astar/) | measured, decision open (2026-11-09) | the kernel's heuristic inflated by a factor (bounded-suboptimal search); nine cells: -8 % loop time for +0.1 to +0.7 % length at 1.10, 27-cell table pending |
+| [`pattern-pass/`](pattern-pass/) | not pursued (2026-11-09) | pattern routes (L, Z, U) in front of the kernel; the searches a pattern could replace hold 3.6 % of the table's search time, 85 % is in 1,572 searches above 100 k expansions |
+| [`heuristic-tightness/`](heuristic-tightness/) | measured, proposal (2026-11-09) | f-value profile of the kernel: no tie plateau, the heavy searches' heuristic sees half the final cost because the crossing price (200 per crossing) is invisible to it; a crossing-aware 2D Dijkstra bound reaches 0.86 to 0.91 of the final cost |
 | [`negotiation-budget-schedule/`](negotiation-budget-schedule/) | adopted, exact (2026-11-09) | a fresh net's first attempt runs at the retry budget and the retry runs only when the first attempt stayed within the old first budget; 27 of 27 cells identical, wall 0.89, the 2 M iterations of every budget-exhausted first attempt are no longer computed twice |
 
 ## What an entry holds

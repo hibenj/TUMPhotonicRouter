@@ -180,6 +180,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Algorithm pass measurements (2026-11-09, records only, no code in the
+  main tree): `experiments/pattern-pass/` closes research item 8 on the
+  attempt anatomy of the archived table (the searches a pattern route could
+  replace hold 3.6 % of the search time); `experiments/heuristic-tightness/`
+  profiles the kernel's f-values (branch `exp/f-profile`): the heavy
+  searches have no tie plateau, their heuristic at the start sees about
+  half of the final cost because the crossing price is invisible to it, and
+  an obstacle- and crossing-aware 2D Dijkstra bound reaches 0.86 to 0.91 of
+  the final cost; research item 2 becomes a proposed item with that
+  measurement.
 - Negotiation budget schedule (algorithm pass, item 1, 2026-11-09): a fresh
   net's first plain attempt runs at `budget_first_retry` (10 M) right away,
   and the retry at that budget runs only when the first attempt failed with
