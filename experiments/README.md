@@ -14,7 +14,7 @@ reproducible, instead of in a scratch directory or a private notebook.
 | [`window-reachability-pruning/`](window-reachability-pruning/) | not adopted (2026-11-05) | a cell-level reachability test per search window to skip windows that cannot succeed; every failing window is cell-reachable |
 | [`lto-build/`](lto-build/) | not adopted (2026-11-05) | fat link-time optimisation of the extension; no faster |
 | [`weighted-astar/`](weighted-astar/) | measured, decision open (2026-11-09) | the kernel's heuristic inflated by a factor (bounded-suboptimal search); nine cells: -8 % loop time for +0.1 to +0.7 % length at 1.10, 27-cell table pending |
-| [`negotiation-budget-schedule/`](negotiation-budget-schedule/) | adopted, exact (2026-11-09) | a fresh net's first attempt runs at the retry budget and the retry runs only when the first attempt stayed within the old first budget; same routes, the 2 M iterations of every budget-exhausted first attempt are no longer computed twice |
+| [`negotiation-budget-schedule/`](negotiation-budget-schedule/) | adopted, exact (2026-11-09) | a fresh net's first attempt runs at the retry budget and the retry runs only when the first attempt stayed within the old first budget; 27 of 27 cells identical, wall 0.89, the 2 M iterations of every budget-exhausted first attempt are no longer computed twice |
 
 ## What an entry holds
 
@@ -30,10 +30,12 @@ reproducible, instead of in a scratch directory or a private notebook.
 A table record (`tables/<variant>.json`) holds, per paper cell, the
 benchmark, the configuration, the exit code, the wall seconds and the
 `metrics.json` of the run that `scripts/results/reproduce_paper.sh` archived.
+`experiments/record_table.py` builds one from a results root, and
 `experiments/table.py` renders one or more records against a reference
 record or against the pinned table:
 
 ```bash
+.venv/bin/python experiments/record_table.py results_variant experiments/<name>/tables/variant.json --commit <sha> --machine "cda-server-4 (shared)"
 .venv/bin/python experiments/table.py --pins docs/paper_table_sources.json experiments/port-runways/tables/d3a62fe.json
 .venv/bin/python experiments/table.py experiments/window-ladder/tables/reference.json experiments/window-ladder/tables/window0_only.json
 ```

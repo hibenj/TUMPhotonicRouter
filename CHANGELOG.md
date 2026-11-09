@@ -197,7 +197,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   moved six cells). Routes and failures are identical to the two-step
   sequence; `search_attempts` / `search_failures` in the reports drop by the
   skipped retries. Nine-cell gate and PLM gate exact; 27-cell table exact
-  against the pins (see the experiment folder for the wall times).
+  against the pins, total wall 0.89 of a reference table run concurrently on
+  the same server (Benes 32x32 lidar-pure 0.78, ADEPT 64x64 contribution 1
+  0.84, ADEPT 64x64 lidar-pure 0.90), time in failed attempts 807 s to
+  325 s over the table.
 - Release decision 24 (owner, 2026-11-05): the paper's venue leaves file names
   and texts while the review is double-blind. `reproduce_date2027.sh` ->
   `reproduce_paper.sh`, `compare_date2027.py` -> `compare_paper.py`,

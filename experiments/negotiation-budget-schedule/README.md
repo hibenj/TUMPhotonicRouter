@@ -73,7 +73,37 @@ the previous head on the same machine for the wall times
 
 ## Result
 
-(filled in from the table)
+27 of 27 cells identical to the reference and to the pins in crossings,
+length and errors (`tables/table.md`, `compare_paper.py` "all reproduced
+cells match" for both tables). Total wall 0.89 of the reference, all of it
+on the cells with budget-exhausted first attempts; every other cell is
+within the shared-server noise:
+
+| cell | reference wall s | merged wall s | ratio |
+| --- | --- | --- | --- |
+| ADEPT 64x64 lidar-pure | 1,621 | 1,457 | 0.90 |
+| ADEPT 64x64 contribution 1 | 540 | 452 | 0.84 |
+| Benes 32x32 lidar-pure | 490 | 380 | 0.78 |
+| Benes 32x32 contribution 1 | 368 | 299 | 0.81 |
+| ADEPT 32x32 lidar-pure | 189 | 158 | 0.84 |
+| Benes 16x16 lidar-pure | 75 | 63 | 0.84 |
+
+The anatomy of the two tables (`tables/anatomy_reference_b478dac.md`,
+`tables/anatomy_merged_1377ad6.md`) shows the mechanism: search time over
+all cells 3,228 s to 2,746 s, time in failed attempts 807 s (25 %) to 325 s
+(12 %). The 148 attempts that disappeared are the budget-exhausted first
+attempts (every cell's "plain, failed" row at 2 M is gone; the remaining
+first-attempt failures are the instant commit rejections at 0 s and the
+ADEPT 64x64 nets that fail at 10 M, whose retry never routed). On Benes
+32x32 lidar-pure the 52 retries of the reference became 17 (the commit
+rejections) and the failed-attempt time 107 s became 0 s; on ADEPT 64x64
+lidar-pure the 59 failed first attempts at 2 M became 18 at 10 M, which are
+the nets the reference's retry also failed on.
+
+The loop and search-time deltas are smaller than the attempt-time delta:
+the search-time counter sums per-attempt elapsed seconds, and the merged
+first attempt of a net that used to need the retry now carries the retry's
+whole expansion count under one trace line.
 
 ## Reproduce
 
