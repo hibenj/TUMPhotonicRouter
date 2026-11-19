@@ -83,6 +83,27 @@ def test_private_imports_counts_underscore_names_but_not_the_extension(tmp_path:
     assert ratchet.private_imports([source]) == 2
 
 
+def test_upward_imports_counts_only_imports_into_a_higher_layer(tmp_path: Path) -> None:
+    ratchet = _load_ratchet()
+    package = tmp_path / "photonic_router"
+    (package / "records").mkdir(parents=True)
+    (package / "routing").mkdir()
+    (package / "records" / "types.py").write_text(
+        "from photonic_router.routing.session import run\n"  # up: counts
+        "from photonic_router.config import RoutingConfig\n"  # same layer
+        "from photonic_router.static_obstacle_builder import GridSpec\n",  # not judged
+        encoding="utf-8",
+    )
+    (package / "routing" / "session.py").write_text(
+        "from photonic_router.records.types import Job\n"  # down
+        "from photonic_router.flow_options import FlowOptions\n"  # up: counts
+        "from photonic_router import cli\n",  # up: counts
+        encoding="utf-8",
+    )
+
+    assert ratchet.upward_imports(package) == 3
+
+
 def test_rust_exceptions_counts_allow_and_expect(tmp_path: Path) -> None:
     ratchet = _load_ratchet()
     (tmp_path / "lib.rs").write_text(

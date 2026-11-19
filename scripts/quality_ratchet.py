@@ -150,6 +150,52 @@ def private_imports(sources: Iterable[Path]) -> int:
     return count
 
 
+#: Rule 3.4: the layer of each unit of the package the rule names, lowest
+#: first. A unit is a sub-package or a top-level module; `flow` stands for
+#: every `flow*.py`. Units the rule does not name are not judged.
+LAYERS: dict[str, int] = {
+    "records": 0,
+    "config": 0,
+    "routing": 1,
+    "crossings": 1,
+    "plm": 1,
+    "electrical": 1,
+    "verify": 1,
+    "gds": 1,
+    "flow": 2,
+    "cli": 3,
+}
+
+
+def _unit(module_parts: Sequence[str]) -> str:
+    """Return the unit of rule 3.4 that a module path below the package belongs to."""
+    name = module_parts[0].removesuffix(".py")
+    return "flow" if name.startswith("flow") else name
+
+
+def upward_imports(package: Path = PACKAGE) -> int:
+    """Count import statements from a lower layer of rule 3.4 into a higher one.
+
+    `records` importing from `routing` counts; so does a stage package
+    importing from `flow`. Imports within one layer are not counted here.
+    """
+    count = 0
+    for path in _python_sources(package):
+        source_layer = LAYERS.get(_unit(path.relative_to(package).parts))
+        if source_layer is None:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or not node.module:
+                continue
+            parts = node.module.split(".")
+            if parts[0] != package.name:
+                continue
+            targets = [parts[1:]] if len(parts) > 1 else [[alias.name] for alias in node.names]
+            count += sum(LAYERS.get(_unit(target), -1) > source_layer for target in targets)
+    return count
+
+
 def untyped_dict_annotations(sources: Iterable[Path]) -> int:
     """Count `dict[str, object]` and `dict[str, Any]` in the sources (rule 4.3)."""
     return sum(len(_UNTYPED_DICT.findall(path.read_text(encoding="utf-8"))) for path in sources)
@@ -228,6 +274,7 @@ def measure() -> dict[str, int]:
     counts = ruff_counts()
     counts["mypy_errors"] = mypy_errors()
     counts["private_imports"] = private_imports(sources)
+    counts["upward_imports"] = upward_imports()
     counts["untyped_dict_annotations"] = untyped_dict_annotations(sources)
     counts["session_state_fields"] = class_field_count(
         PACKAGE / "routing" / "state.py", "SessionState"

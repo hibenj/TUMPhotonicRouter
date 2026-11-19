@@ -14,6 +14,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The quality ratchet measures rule 3.4 (dependencies point one way):
+  `upward_imports` counts the import statements from a lower layer of the
+  package into a higher one (`records`, `config` < the stage packages <
+  `flow*` < `cli`). Three exist, all out of `records/`: two of
+  `plm.path_length_graph` (`PortRef`, `RoutedEdgeKey`) and one of
+  `routing.crossing_plan_info`. The ratchet holds 23 counts.
 - The quality ratchet: `scripts/quality_ratchet.py` measures 23 counts of
   what does not meet the proposed rules of `docs/CODING_STANDARDS.md` yet
   (ruff rules that are not selected, mypy's errors on the whole package,

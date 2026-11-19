@@ -20,5 +20,6 @@
   "rust_too_many_lines": 23,
   "rust_workspace_debt_allows": 2,
   "session_state_fields": 14,
-  "untyped_dict_annotations": 216
+  "untyped_dict_annotations": 216,
+  "upward_imports": 3
 }

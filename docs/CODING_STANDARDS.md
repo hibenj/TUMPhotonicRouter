@@ -127,7 +127,10 @@ like the violation counts: a commit that adds one says why in its message.
    (`routing`, `crossings`, `plm`, `electrical`, `verify`, `gds`) ->
    `records`, `config`. No package imports from one to its left.
    `router-core` has no Python dependency. *Test for the Rust side (`cargo
-   test -p router-core` needs no Python), proposed as a test for Python.*
+   test -p router-core` needs no Python); Tool for Python, proposed: the
+   ratchet counts the imports from a lower layer into a higher one.* The
+   rule does not order the stage packages among themselves, and several of
+   them import each other.
 5. **Names starting with an underscore stay in their module.** Another
    module imports only public names. *Test, proposed.*
 6. **Configuration has one path.** Nothing below `config_loading.py` reads
@@ -228,6 +231,7 @@ table when their counts reached zero and the lint sets took them over.
 | Rule | Measure (name in the pin) | at the first measurement | after S1 and S2 slice 3 |
 | --- | --- | --- | --- |
 | 3.2 | fields of the shared session state (`session_state_fields`) | 82 | 14 |
+| 3.4 | imports from a lower layer into a higher one (`upward_imports`) | not measured | 3 |
 | 3.5 | underscore names imported from another module (`private_imports`) | 247 | 27 |
 | 4.2 | parameters without an annotation (`ruff_ANN001`) | 230 | 218 |
 | 4.2 | functions without a return annotation (`ruff_ANN201`, `ruff_ANN202`) | 3, 6 | 3, 6 |
