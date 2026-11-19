@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import itertools
 import json
 import math
@@ -21,7 +20,7 @@ from photonic_router.electrical import (
     DEFAULT_WIRE_WIDTH_UM,
     ElectricalRoutingConfig,
 )
-from photonic_router.flow import load_benchmark, run_routing_flow
+from photonic_router.flow import load_benchmark
 from photonic_router.flow_config import (
     SCRIPT_ELECTRICAL_BUS_WIDTH_UM,
     SCRIPT_ELECTRICAL_PAD_PITCH_UM,
@@ -31,6 +30,7 @@ from photonic_router.flow_config import (
 from photonic_router.flow_config import (
     parse_debug_svg_selector as _parse_debug_svg_selector,
 )
+from photonic_router.flow_options import FlowOptions
 from photonic_router.flow_reporting import _format_debug_route_indices
 from photonic_router.flow_stats import RoutingFlowStats
 from photonic_router.flow_verification import _verification_status_metadata
@@ -59,6 +59,7 @@ from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from photonic_router.verify.photonic_verification import verify_photonic_routing
 
+from tests.fixtures.flows import run_flow
 from tests.fixtures.sessions import route_electrical_benchmark_result, session_options
 from tests.fixtures.synthetic_layouts import path_length_schematic
 
@@ -74,10 +75,7 @@ def test_path_length_meander_height_defaults_are_centralized():
     assert DEFAULT_MEANDER_MAX_HEIGHT_UM == 80.0
     assert MeanderInsertionConfig().max_meander_height_um == DEFAULT_MEANDER_MAX_HEIGHT_UM
     assert SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM == DEFAULT_MEANDER_MAX_HEIGHT_UM
-    assert (
-        inspect.signature(run_routing_flow).parameters["path_length_meander_height_um"].default
-        == DEFAULT_MEANDER_MAX_HEIGHT_UM
-    )
+    assert FlowOptions().path_length.path_length_meander_height_um == DEFAULT_MEANDER_MAX_HEIGHT_UM
     assert MatchingOptions().path_length_meander_height_um == DEFAULT_MEANDER_MAX_HEIGHT_UM
 
 
@@ -169,7 +167,7 @@ def test_routing_flow_populates_stats():
     # shortage at one MMI input, documented 2026-08-18, and never routes).
     stats = RoutingFlowStats()
 
-    run_routing_flow(
+    run_flow(
         "heater_s_mod",
         show_unrouted=False,
         show_routed=False,
@@ -221,7 +219,7 @@ def test_detour_pass_is_a_no_op_on_the_cascade_and_reports_in_the_summary():
     from photonic_router.flow_stats import format_flow_summary_line
 
     with_pass = RoutingFlowStats()
-    run_routing_flow(
+    run_flow(
         "heater_s_mod",
         show_unrouted=False,
         show_routed=False,
@@ -236,7 +234,7 @@ def test_detour_pass_is_a_no_op_on_the_cascade_and_reports_in_the_summary():
     assert with_pass.as_dict()["detour_pass_reroutes"] == 0
 
     without = RoutingFlowStats()
-    run_routing_flow(
+    run_flow(
         "heater_s_mod",
         show_unrouted=False,
         show_routed=False,
@@ -292,7 +290,7 @@ def test_route_match_uses_rust_batch_path_when_repair_disabled():
 def test_benchmarks_route_with_astar_only(benchmark_name):
     stats = RoutingFlowStats()
 
-    run_routing_flow(
+    run_flow(
         benchmark_name,
         show_unrouted=False,
         show_routed=False,
@@ -493,7 +491,7 @@ def test_heater_s_mod_stable_configuration_routes_matches_and_wires():
     """The `[flags]` of `benchmarks/heater_s_mod.toml` end to end: 90-degree
     routing, 10 um bends, path-length matching, heater electrical routing."""
     stats = RoutingFlowStats()
-    routed = run_routing_flow(
+    routed = run_flow(
         "heater_s_mod",
         show_unrouted=False,
         show_routed=False,
@@ -506,7 +504,7 @@ def test_heater_s_mod_stable_configuration_routes_matches_and_wires():
         enable_electrical_routing=True,
         waveguide_clearance_um=3.0,
         enable_crossings=False,
-        # CLI defaults that `run_routing_flow` does not share (the 1500-cell
+        # CLI defaults that `FlowOptions()` does not share (the 1500-cell
         # net 37 exhausts the API default of 500k iterations).
         max_iterations=5_000_000,
         routing_window_scale=0.05,
@@ -529,7 +527,7 @@ def test_routing_flow_routes_heater_electrical_metal_end_to_end():
     # heater_s_mod (21 heater terminal groups) replaced the unroutable
     # single-heater mmi_heater on 2026-09-22 (D3); the electrical stage's
     # behaviour under test is the same.
-    routed = run_routing_flow(
+    routed = run_flow(
         "heater_s_mod",
         show_unrouted=False,
         show_routed=False,
@@ -829,7 +827,7 @@ def test_component_internal_delay_reads_kfactory_info_attributes():
     assert benchmark_metadata.component_internal_delay_um("straight_heater_metal") == 320.0
 
 
-def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
+def test_the_flow_uses_strict_default_obstacle_config(monkeypatch):
     captured = {}
 
     def fake_load_benchmark(_benchmark_name: str):
@@ -908,7 +906,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
     monkeypatch.setattr(flow_optical, "route_match_and_realize", fake_route_match_and_realize)
 
     ripup_config = RipupRerouteConfig(enabled=True)
-    run_routing_flow(
+    run_flow(
         "MMI8x4",
         debug_timing=False,
         show_klayout=False,
@@ -926,7 +924,7 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
     assert captured.get("bend_radius_um") == 3.0
 
 
-def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_path):
+def test_the_flow_writes_crossing_verification_report(monkeypatch, tmp_path):
     def fake_load_benchmark(_benchmark_name: str):
         return SimpleNamespace(
             netlist=SimpleNamespace(instances={"a": object()}, routes={"n0": object()}),
@@ -1015,7 +1013,7 @@ def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_p
     monkeypatch.setattr(flow_optical, "load_benchmark_metadata", fake_load_metadata)
     monkeypatch.setattr(flow_optical, "route_match_and_realize", fake_route_match_and_realize)
 
-    routed = run_routing_flow(
+    routed = run_flow(
         "FAKE",
         debug_timing=False,
         show_klayout=False,
@@ -1039,7 +1037,7 @@ def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_p
     assert payload["route_costs"][0]["total_physical_insertion_loss"] == pytest.approx(0.17)
 
 
-def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_path):
+def test_the_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_path):
     captured: dict[str, object] = {"write_gds_called": False}
 
     def fake_load_benchmark(_benchmark_name: str):
@@ -1122,7 +1120,7 @@ def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_pa
     monkeypatch.setattr(flow_optical, "route_match_and_realize", fake_route_match_and_realize)
 
     with pytest.raises(RuntimeError, match="Crossing verification failed"):
-        run_routing_flow(
+        run_flow(
             "FAKE",
             debug_timing=False,
             show_klayout=False,
@@ -1156,7 +1154,7 @@ def test_verification_status_metadata_marks_debug_stop_partial():
     }
 
 
-def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_path):
+def test_the_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_path):
     captured: dict[str, object] = {"write_gds_called": False}
 
     def fake_load_benchmark(_benchmark_name: str):
@@ -1249,7 +1247,7 @@ def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_
     )
 
     with pytest.raises(RuntimeError, match="Photonic geometry verification failed"):
-        run_routing_flow(
+        run_flow(
             "FAKE",
             debug_timing=False,
             show_klayout=False,
@@ -1263,7 +1261,7 @@ def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_
     assert payload["issues"][0]["code"] == "cross_net_waveguide_overlap"
 
 
-def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatch):
+def test_the_flow_collects_route_summary_when_stats_requested(monkeypatch):
     captured = {}
 
     def fake_load_benchmark(_benchmark_name: str):
@@ -1372,7 +1370,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
     monkeypatch.setattr(flow_optical, "route_match_and_realize", fake_route_match_and_realize)
 
     stats = RoutingFlowStats()
-    run_routing_flow(
+    run_flow(
         "FAKE",
         debug_timing=False,
         show_klayout=False,
@@ -1505,7 +1503,7 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
     ]
 
 
-def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
+def test_the_flow_can_append_electrical_routing(monkeypatch):
     captured = {}
 
     schematic = SimpleNamespace(
@@ -1613,7 +1611,7 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
     )
 
     stats = RoutingFlowStats()
-    result = run_routing_flow(
+    result = run_flow(
         "FAKE",
         debug_timing=False,
         debug_svgs=True,
@@ -1868,7 +1866,7 @@ def test_flow_rejects_guided_search_combined_with_preplaced_crossing_grids():
     contribution 2 (preplaced crossing structures) are alternatives; exactly
     one runs at a time."""
     with pytest.raises(ValueError, match="lidar-guided"):
-        run_routing_flow(
+        run_flow(
             "benes_4x4",
             show_unrouted=False,
             show_routed=False,
@@ -1886,7 +1884,7 @@ def test_plan_crossing_net_order_needs_the_guided_mode():
     lidar-guided builds; under lidar-pure (plan withheld) the flow must fail
     loudly instead of silently falling back to declaration order."""
     with pytest.raises(ValueError, match="topology plan"):
-        run_routing_flow(
+        run_flow(
             "benes_4x4",
             show_unrouted=False,
             show_routed=False,
@@ -1931,7 +1929,7 @@ def test_flow_net_order_default_follows_the_configuration(
 
     monkeypatch.setattr(routing_flow, "run_photonic_routing_stage", capture)
     with pytest.raises(_StopAtRoutingStage):
-        run_routing_flow(
+        run_flow(
             "benes_4x4",
             show_unrouted=False,
             show_routed=False,

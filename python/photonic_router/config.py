@@ -169,7 +169,7 @@ class FanoutAccessConfig:
     #: `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES`: comma-separated instance
     #: names. Unset (`None`) means no override. Also SELF-SET: the
     #: pre-placed crossing-grid stage computes this set and
-    #: `run_routing_flow` folds it into the routing-stage config (see
+    #: the flow folds it into the routing-stage config (see
     #: `python/photonic_router/crossings/preplaced_crossing_grids.py`'s `_derive_crossing_tiles`).
     dense_fanout_instances: frozenset[str] | None = None
     #: `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS`: int >= 2, else raises.
@@ -358,7 +358,7 @@ class RoutingConfig:
     """Milestone 1, Slice 2: the top-level Python-side configuration tree.
     Every `PHOTONIC_ROUTER_*` variable read by the Python
     modules of this package (outside `env_overlay.py` itself) is a typed field
-    somewhere under this tree, threaded explicitly from `run_routing_flow`
+    somewhere under this tree, threaded explicitly from `route_benchmark`
     down to `_RouteNetsRustSession` (whose `.router` field is `RouterConfig`,
     the Rust-boundary configuration Milestone 1 Slice 1 introduced)."""
 

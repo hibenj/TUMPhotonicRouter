@@ -19,7 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from photonic_router.flow import load_benchmark, run_routing_flow
+from photonic_router.config import RoutingConfig
+from photonic_router.flow import load_benchmark, route_benchmark
 from photonic_router.flow_config import (
     SCRIPT_BEND_RADIUS_UM,
     SCRIPT_CHIP_ADD_X_UM,
@@ -29,6 +30,7 @@ from photonic_router.flow_config import (
     SCRIPT_RIPUP_HISTORY_INCREMENT,
     SCRIPT_RIPUP_HISTORY_WEIGHT,
 )
+from photonic_router.flow_options import FlowOptions
 from photonic_router.flow_stats import RoutingFlowStats
 from photonic_router.routing.route_rust import RipupRerouteConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
@@ -561,45 +563,49 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
     error = ""
     routed_layout = None
     try:
-        routed_layout = run_routing_flow(
-            benchmark,
-            debug_svgs=False,
-            debug_timing=False,
-            show_klayout=False,
-            enable_path_length_matching=args.path_length_matching,
-            path_length_match_outputs=args.path_length_match_outputs,
-            enable_crossings=args.crossings,
-            crossing_half_size_cells=args.crossing_half_size_cells,
-            allow_45_degree_turns=args.allow_45_degree_turns,
-            bend_radius_um=args.bend_radius_um,
-            use_indexed_heap=args.use_indexed_heap,
-            enable_simple_routes=args.enable_simple_routes,
-            primitive_ordering=args.primitive_ordering,
-            heuristic_mode=args.heuristic_mode,
-            heap_tie_breaker=args.heap_tie_breaker,
-            max_iterations=args.max_iterations,
-            routing_window_scale=args.routing_window_scale,
-            include_heater_obstacles=args.include_heater_obstacles,
-            grid_size_um=args.grid_size_um,
-            chip_add_x_um=args.chip_add_x_um,
-            chip_add_y_um=args.chip_add_y_um,
-            path_length_meander_height_um=args.path_length_meander_height_um,
-            ripup_reroute_config=RipupRerouteConfig(
-                enabled=args.ripup_reroute,
-                history_weight=args.ripup_history_weight,
-                history_increment=args.ripup_history_increment,
-            ),
-            collect_attempt_diagnostics=getattr(args, "attempt_diagnostics", False),
-            static_obstacle_config=StaticObstacleMapConfig(
+        routed_layout = route_benchmark(
+            RoutingConfig.from_environment(),
+            FlowOptions.from_names(
+                benchmark_name=benchmark,
+                debug_svgs=False,
+                debug_timing=False,
+                show_klayout=False,
+                enable_path_length_matching=args.path_length_matching,
+                path_length_match_outputs=args.path_length_match_outputs,
+                enable_crossings=args.crossings,
+                crossing_half_size_cells=args.crossing_half_size_cells,
+                allow_45_degree_turns=args.allow_45_degree_turns,
+                bend_radius_um=args.bend_radius_um,
+                use_indexed_heap=args.use_indexed_heap,
+                enable_simple_routes=args.enable_simple_routes,
+                primitive_ordering=args.primitive_ordering,
+                heuristic_mode=args.heuristic_mode,
+                heap_tie_breaker=args.heap_tie_breaker,
+                max_iterations=args.max_iterations,
+                routing_window_scale=args.routing_window_scale,
+                include_heater_obstacles=args.include_heater_obstacles,
                 grid_size_um=args.grid_size_um,
-                obstacle_mode=args.obstacle_mode,
-                clearance_um=args.waveguide_clearance_um,
-                heater_clearance_um=args.heater_clearance_um,
                 chip_add_x_um=args.chip_add_x_um,
                 chip_add_y_um=args.chip_add_y_um,
-                clear_port_open_cells_from_static=args.clear_port_open_cells_from_static,
+                path_length_meander_height_um=args.path_length_meander_height_um,
+                ripup_reroute_config=RipupRerouteConfig(
+                    enabled=args.ripup_reroute,
+                    history_weight=args.ripup_history_weight,
+                    history_increment=args.ripup_history_increment,
+                ),
+                collect_attempt_diagnostics=getattr(args, "attempt_diagnostics", False),
+                static_obstacle_config=StaticObstacleMapConfig(
+                    grid_size_um=args.grid_size_um,
+                    obstacle_mode=args.obstacle_mode,
+                    clearance_um=args.waveguide_clearance_um,
+                    heater_clearance_um=args.heater_clearance_um,
+                    chip_add_x_um=args.chip_add_x_um,
+                    chip_add_y_um=args.chip_add_y_um,
+                    clear_port_open_cells_from_static=args.clear_port_open_cells_from_static,
+                ),
+                collect_route_stats=True,
+                stats=stats,
             ),
-            stats=stats,
         )
     except Exception as exc:
         if not getattr(args, "continue_on_failure", False):

@@ -10,7 +10,8 @@ import dataclasses
 
 import pytest
 from photonic_router.config import RouterConfig, RoutingConfig, SearchOverrides
-from photonic_router.flow import run_routing_flow
+
+from tests.fixtures.flows import run_flow
 
 
 def _config_with_engine(engine: str) -> RoutingConfig:
@@ -28,7 +29,7 @@ def test_grid_dijkstra_engine_routes_benes_4x4_flat_end_to_end():
     crossing-free, so the Dijkstra engine -- which serves no crossing
     request -- sees only requests it can answer, and the flow's own
     verifier has to accept the result."""
-    routed = run_routing_flow(
+    routed = run_flow(
         "benes_4x4_flat",
         config=_config_with_engine("grid-dijkstra"),
         preplaced_crossing_grids=True,

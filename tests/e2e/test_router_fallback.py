@@ -8,12 +8,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from photonic_router.flow import run_routing_flow
+from tests.fixtures.flows import run_flow
 
 
 def test_mixed_run_routes_a_forced_fallback_layer_with_the_guided_search(monkeypatch):
     monkeypatch.setenv("PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS", "6")
-    run_routing_flow(
+    run_flow(
         "multiportmmi_8x8",
         show_unrouted=False,
         show_routed=False,

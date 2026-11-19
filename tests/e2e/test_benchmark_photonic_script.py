@@ -531,7 +531,7 @@ def test_continue_on_failure_records_failed_worker_row(monkeypatch):
     def fail_route(*_args, **_kwargs):
         raise RuntimeError("synthetic route failure")
 
-    monkeypatch.setattr(module, "run_routing_flow", fail_route)
+    monkeypatch.setattr(module, "route_benchmark", fail_route)
 
     row = module._run_single_benchmark("benes_16x16", args)
 

@@ -1,30 +1,23 @@
 """The entry points of Milestone 5, Slice 3: `FlowOptions`, `route_benchmark`,
 `photonic_router.cli` and `python -m photonic_router`.
 
-The flow itself is covered by tests/test_routing_flow_stats.py through
-`run_routing_flow`; these tests cover the boundary the CLI and the option tree
-add on top of it.
+The flow itself is covered by tests/e2e/test_routing_flow_stats.py; these
+tests cover the boundary the CLI and the option tree add on top of it.
 """
 
 from __future__ import annotations
 
-import inspect
 import subprocess
 import sys
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
 from photonic_router import cli
-from photonic_router.flow import route_benchmark, run_routing_flow
+from photonic_router.flow import route_benchmark
 from photonic_router.flow_options import FlowOptions, LoadingOptions
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-# `run_routing_flow`'s two parameters that are not FlowOptions fields: the
-# benchmark is `loading.benchmark_name` (positional, so it has no signature
-# default to compare against) and the configuration is `route_benchmark`'s own
-# first argument.
-_NOT_FLOW_OPTIONS = frozenset({"benchmark_name", "config"})
 
 
 def _flow_option_defaults() -> dict[str, object]:
@@ -39,24 +32,31 @@ def _flow_option_defaults() -> dict[str, object]:
     return defaults
 
 
-def test_flow_options_defaults_equal_the_run_routing_flow_signature():
-    """`FlowOptions()` is today's default flow: every default is the one
-    `run_routing_flow` declares, so the wrapper and the option tree cannot
-    drift apart."""
-    signature = inspect.signature(run_routing_flow)
-    defaults = _flow_option_defaults()
-    for name, parameter in signature.parameters.items():
-        if name in _NOT_FLOW_OPTIONS:
-            continue
-        assert name in defaults, f"{name} is a run_routing_flow keyword with no FlowOptions field"
-        assert defaults[name] == parameter.default, f"{name} default differs"
+def test_from_names_puts_each_name_into_the_group_that_declares_it():
+    options = FlowOptions.from_names(
+        benchmark_name="heater_s_mod", debug_timing=True, max_iterations=7, show_klayout=True
+    )
+
+    assert options.loading.benchmark_name == "heater_s_mod"
+    assert options.debug.debug_timing is True
+    assert options.optical.max_iterations == 7
+    assert options.output.show_klayout is True
+    # what is not named keeps the default
+    assert options.path_length == FlowOptions().path_length
 
 
-def test_every_flow_option_field_is_a_run_routing_flow_keyword():
-    """The other direction: no field was invented that the wrapper cannot set."""
-    keywords = set(inspect.signature(run_routing_flow).parameters) - _NOT_FLOW_OPTIONS
-    fields_by_name = set(_flow_option_defaults()) - {"benchmark_name"}
-    assert fields_by_name == keywords
+def test_from_names_without_names_is_the_default_flow():
+    assert FlowOptions.from_names() == FlowOptions()
+
+
+def test_from_names_refuses_a_name_no_group_declares():
+    with pytest.raises(TypeError, match="not_an_option"):
+        FlowOptions.from_names(not_an_option=1)
+
+
+def test_every_leaf_name_is_declared_by_one_group():
+    """`from_names` relies on it; `_flow_option_defaults` asserts it."""
+    assert "benchmark_name" in _flow_option_defaults()
 
 
 def test_flow_options_groups_are_frozen():
@@ -122,11 +122,11 @@ def test_module_without_a_subcommand_prints_the_usage():
     assert "route" in completed.stderr
 
 
-def test_route_benchmark_matches_run_routing_flow_on_heater_s_mod():
-    """`run_routing_flow` is a wrapper over `route_benchmark`, so the two route
-    the same benchmark to the same layout."""
+def test_route_benchmark_routes_heater_s_mod_from_named_options():
+    """The explicit option tree and `from_names` are the same flow."""
     options = FlowOptions(loading=LoadingOptions(benchmark_name="heater_s_mod"))
-    through_entry_point = route_benchmark(cli.build_config(None), options)
-    through_wrapper = run_routing_flow("heater_s_mod")
-    assert len(through_entry_point.insts) == len(through_wrapper.insts)
-    assert through_entry_point.name == through_wrapper.name
+    assert FlowOptions.from_names(benchmark_name="heater_s_mod") == options
+
+    routed = route_benchmark(cli.build_config(None), options)
+
+    assert routed.insts

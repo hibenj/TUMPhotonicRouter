@@ -13,7 +13,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from photonic_router.flow import load_benchmark, run_routing_flow
+from photonic_router.config import RoutingConfig
+from photonic_router.flow import load_benchmark, route_benchmark
+from photonic_router.flow_options import FlowOptions
 from photonic_router.flow_stats import RoutingFlowStats
 
 DEFAULT_BENCHMARKS = ("benes_4x4", "benes_8x8", "benes_16x16", "benes_32x32")
@@ -61,16 +63,19 @@ def run_benchmark(
     crossing_path.unlink(missing_ok=True)
     crossing_path.with_suffix(".txt").unlink(missing_ok=True)
     try:
-        run_routing_flow(
-            benchmark,
-            debug_svgs=str(net_count),
-            show_klayout=False,
-            enable_crossings=True,
-            crossing_half_size_cells=int(crossing_half_size_cells),
-            allow_45_degree_turns=True,
-            collect_route_stats=True,
-            max_iterations=max_iterations,
-            stats=stats,
+        route_benchmark(
+            RoutingConfig.from_environment(),
+            FlowOptions.from_names(
+                benchmark_name=benchmark,
+                debug_svgs=str(net_count),
+                show_klayout=False,
+                enable_crossings=True,
+                crossing_half_size_cells=int(crossing_half_size_cells),
+                allow_45_degree_turns=True,
+                collect_route_stats=True,
+                max_iterations=max_iterations,
+                stats=stats,
+            ),
         )
     except Exception as exc:  # pragma: no cover - exercised manually for failures.
         status = "failed"

@@ -1,25 +1,21 @@
-"""Flow options: the 48 keyword arguments of `run_routing_flow` as one frozen
-tree, grouped by the stage that consumes them (Milestone 5, Slice 3).
+"""Flow options: every flow-level choice as one frozen tree, grouped by the
+stage that consumes it.
 
 `FlowOptions` is the second argument of `photonic_router.flow.route_benchmark`
 and `route_schematic`; the first is the `RoutingConfig` built by
 `photonic_router.config_loading.build_config`. The split is deliberate:
-`RoutingConfig` carries the router's own settings (the former
-`PHOTONIC_ROUTER_*` overlay, Milestone 1), `FlowOptions` carries the flow-level
-choices that used to be `run_routing_flow`'s keywords - which benchmark, which
-stages run, which artifacts are written.
+`RoutingConfig` carries the router's own settings, `FlowOptions` carries the
+flow-level choices - which benchmark, which stages run, which artifacts are
+written.
 
-Every default below is copied from `run_routing_flow`'s signature, so
-`FlowOptions()` is exactly today's default flow (see
-`tests/test_flow_entry_points.py`, which introspects the wrapper's signature so
-the two cannot drift apart). The single exception is `loading.benchmark_name`:
-`run_routing_flow` takes it positionally without a default, so the group uses
-the command line's own default (`SCRIPT_BENCHMARK`).
+`FlowOptions()` is the default flow. `FlowOptions.from_names` builds the tree
+from leaf field names for a caller that sets a few of them, such as a script
+or a test.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 
 from photonic_router.electrical import ElectricalRoutingConfig
 from photonic_router.flow_config import (
@@ -204,3 +200,29 @@ class FlowOptions:
     debug: DebugArtifactOptions = field(default_factory=DebugArtifactOptions)
     output: OutputOptions = field(default_factory=OutputOptions)
     stats: StatsOptions = field(default_factory=StatsOptions)
+
+    @classmethod
+    def from_names(cls, **values: object) -> FlowOptions:
+        """Build the options from leaf field names, each put into its group.
+
+        `FlowOptions.from_names(benchmark_name="heater_s_mod", debug_timing=True)`
+        is the default flow with those two values. A leaf name is declared by
+        exactly one group.
+
+        Raises:
+            TypeError: a name is not a field of any group.
+        """
+        options = cls()
+        remaining = dict(values)
+        for group in fields(cls):
+            group_value = getattr(options, group.name)
+            own = {
+                leaf.name: remaining.pop(leaf.name)
+                for leaf in fields(group_value)
+                if leaf.name in remaining
+            }
+            if own:
+                options = replace(options, **{group.name: replace(group_value, **own)})
+        if remaining:
+            raise TypeError(f"{sorted(remaining)} is not a flow option")
+        return options

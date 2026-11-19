@@ -6,8 +6,8 @@ Precedence, lowest to highest: the dataclass defaults, the benchmark's
 the CLI did before through ``os.environ.setdefault`` (a variable already in
 the environment beat the benchmark's block); the block is now applied through
 the same overlay table as the environment, and the process environment is
-never written. Command-line flags are separate: they remain keyword
-arguments of ``run_routing_flow`` until Milestone 5 folds them in.
+never written. Command-line flags are separate: ``cli.py`` turns them into
+the ``FlowOptions`` of ``flow_options.py``.
 """
 
 from __future__ import annotations

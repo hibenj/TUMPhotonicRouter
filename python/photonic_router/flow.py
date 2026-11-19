@@ -15,8 +15,7 @@ Both take the two objects the flow is configured with and nothing else: the
 (the flow-level choices, `photonic_router.flow_options`). Neither reads the
 process environment and neither knows about a command line - the command line
 is `photonic_router.cli`, which builds both objects and calls
-`route_benchmark`. `run_routing_flow` at the bottom of this module is the
-compatibility wrapper that keeps the old keyword API working.
+`route_benchmark`.
 """
 
 from __future__ import annotations
@@ -31,19 +30,8 @@ from gdsfactory.schematic import Schematic
 
 from photonic_router.config import RoutingConfig
 from photonic_router.crossings.crossing_modes import is_guided_mode
-from photonic_router.electrical import ElectricalRoutingConfig, ElectricalRoutingResult
+from photonic_router.electrical import ElectricalRoutingResult
 from photonic_router.flow_config import (
-    SCRIPT_ALLOW_45_DEGREE_TURNS,
-    SCRIPT_BEND_RADIUS_UM,
-    SCRIPT_CHIP_ADD_X_UM,
-    SCRIPT_CHIP_ADD_Y_UM,
-    SCRIPT_FANOUT_ACCESS_MODE,
-    SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
-    SCRIPT_GRID_SIZE_UM,
-    SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
-    SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
-    SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
-    DebugSvgSelector,
     build_static_obstacle_config,
     debug_artifact_routing_options,
     parse_debug_svg_selector,
@@ -56,17 +44,7 @@ from photonic_router.flow_optical import (
     run_photonic_routing_stage,
 )
 from photonic_router.flow_options import (
-    DebugArtifactOptions,
-    ElectricalOptions,
     FlowOptions,
-    LayoutOptions,
-    LoadingOptions,
-    ObstacleOptions,
-    OpticalStageOptions,
-    OutputOptions,
-    PathLengthMatchingOptions,
-    PreplacedCrossingGridOptions,
-    StatsOptions,
 )
 from photonic_router.flow_plm import attach_and_report_path_length_matching
 from photonic_router.flow_reporting import (
@@ -95,8 +73,6 @@ from photonic_router.routing.options import (
     RealizationOptions,
     SessionOptions,
 )
-from photonic_router.routing.route_rust import RipupRerouteConfig
-from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 
 def _depth_by_node_from_schematic(schematic: Schematic) -> dict[str, int]:
@@ -261,7 +237,7 @@ def _preplaced_crossing_grids_stage(
     The fourth element names the nets of layers without a feasible pre-placed
     structure; the flow routes them with the guided crossing search. The
     fifth element is the dense-fanout-instance set the stage computed for its
-    own static-fanout probe (`None` when none), which `run_routing_flow`
+    own static-fanout probe (`None` when none), which `route_schematic`
     folds into the routing-stage config so the actual routing run's fan-out
     access agrees with the probe's.
 
@@ -666,247 +642,3 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
         print(f"      - GDS write time: {time.perf_counter() - t_write_start:.4f} s")
 
     return routed_layout
-
-
-def run_routing_flow(
-    benchmark_name: str,
-    *,
-    debug_svgs: DebugSvgSelector = False,
-    show_unrouted: bool | None = None,
-    show_routed: bool | None = None,
-    show_debug_svgs: DebugSvgSelector | None = None,
-    show_static_obstacles_svg: bool | None = None,
-    debug_timing: bool = False,
-    debug_stop_after_route_index: int | None = None,
-    debug_meanders: bool = False,
-    verbose_routes: bool = False,
-    show_klayout: bool = False,
-    enable_path_length_matching: bool = False,
-    path_length_match_outputs: bool = False,
-    path_length_declared_unmatched_groups: tuple[str, ...] = (),
-    path_length_output_scope: str = "all",
-    path_length_meander_height_um: float = SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM,
-    enable_crossings: bool = False,
-    crossing_mode: str = "lidar-pure",
-    preplaced_crossing_grids: bool = False,
-    crossing_half_size_cells: int = 0,
-    foreign_port_keepout_cells: int = SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
-    fanout_access_mode: str | None = SCRIPT_FANOUT_ACCESS_MODE,
-    proactive_congestion_weight: float = SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
-    proactive_congestion_radius_cells: int = SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
-    allow_45_degree_turns: bool = SCRIPT_ALLOW_45_DEGREE_TURNS,
-    bend_radius_um: float = SCRIPT_BEND_RADIUS_UM,
-    use_indexed_heap: bool = False,
-    enable_simple_routes: bool = True,
-    primitive_ordering: str = "library",
-    heuristic_mode: str = "heading_aware",
-    net_order: str | None = None,
-    detour_pass_factor: float = 0.0,
-    heap_tie_breaker: str = "smaller_g",
-    max_iterations: int = 500_000,
-    routing_window_scale: float | None = None,
-    include_heater_obstacles: bool = False,
-    grid_size_um: float = SCRIPT_GRID_SIZE_UM,
-    waveguide_clearance_um: float | None = None,
-    heater_clearance_um: float | None = None,
-    obstacle_clearance_um: float | None = None,
-    chip_add_x_um: float = SCRIPT_CHIP_ADD_X_UM,
-    chip_add_y_um: float = SCRIPT_CHIP_ADD_Y_UM,
-    ripup_reroute_config: RipupRerouteConfig | None = None,
-    static_obstacle_config: StaticObstacleMapConfig | None = None,
-    enable_electrical_routing: bool = False,
-    electrical_config: ElectricalRoutingConfig | None = None,
-    collect_route_stats: bool = False,
-    collect_attempt_diagnostics: bool = False,
-    stats: RoutingFlowStats | None = None,
-    config: RoutingConfig | None = None,
-) -> Component:
-    """Execute the routing flow for a given benchmark.
-
-    Parameters:
-        benchmark_name: Name of the benchmark to run (e.g., 'heater_s_mod').
-        debug_svgs: If True or "all", generate all debug SVGs into build/.
-                    If a selector such as "5-10", "5", or "2,5-10" is
-                    provided, generate only matching per-route SVGs by
-                    1-based net order. Static obstacle SVGs are still
-                    generated when debug SVGs are enabled.
-        debug_timing: If True, print timing information for each stage.
-        debug_meanders: If True, print verbose path-length and meander
-                      insertion details when path-length matching is enabled.
-        verbose_routes: If True, print per-net routing progress and whether
-                      each route used the simple router or A*.
-        show_klayout: If True, open the final routed layout in KLayout via
-                      `Component.show()`.
-        show_unrouted: Legacy alias. Currently unused (kept for compatibility).
-        show_routed: Legacy alias for `show_klayout`.
-        show_debug_svgs: Legacy alias for `debug_svgs`.
-        show_static_obstacles_svg: Legacy alias for enabling debug SVG output.
-        stats: Optional legacy stats collector. If provided, step metrics are
-               populated in-place.
-        enable_path_length_matching: If True, run post-route path-length
-                      analysis and compute per-edge missing lengths.
-        path_length_match_outputs: If True, add output-arrival equalization
-                      requirements after local path-length matching.
-        path_length_meander_height_um: Maximum meander height used when
-                      inserting path-length matching meanders.
-        crossing_half_size_cells: Crossing keepout half-size in grid cells.
-                      The default 0 derives it from the crossing component bbox.
-        crossing_mode: Crossing routing mode. "lidar-pure" uses dynamic
-                      DRC-style crossing permission against any committed route
-                      (the baseline); "lidar-guided" is contribution 1:
-                      lidar-pure mechanics plus the precomputed topology
-                      crossings as soft search guidance.
-                      Exactly one of lidar-pure / lidar-guided /
-                      preplaced_crossing_grids (contribution 2) runs at a time.
-        preplaced_crossing_grids: If True, derive every interstage layer's
-                      crossings from the benchmark topology, place one
-                      pre-wired crossing grid per layer into the layout before
-                      routing, split each interstage net into two crossing-free
-                      stubs to/from the grid, and route with crossings disabled.
-                      Mutually exclusive with enable_crossings. See
-                      python/photonic_router/crossings/preplaced_crossing_grids.py.
-        net_order: Net routing order within the topological layers (see
-                      python/photonic_router/records/route_order.py). None selects the
-                      configuration's default: "topological-span" with
-                      preplaced_crossing_grids (planar stubs), "topological"
-                      otherwise.
-        fanout_access_mode: Dense multi-port access strategy passed to the Rust
-                      routing bridge. Use "static-stubs" to pre-spread
-                      same-element fanout ports as fixed static breakout
-                      geometry and route from virtual anchor ports.
-        proactive_congestion_weight: Soft A* cost per blocked side-neighbor
-                      cell beside straight moves.
-        proactive_congestion_radius_cells: Sideways grid radius used for
-                      proactive congestion counting.
-        allow_45_degree_turns: If False, omit ±45-degree turn primitives.
-        bend_radius_um: Minimum optical waveguide bend radius. Rounded up to
-                      the active routing grid before primitive generation.
-        use_indexed_heap: Benchmark-only indexed-heap experiment. Pass 8E
-            measured it slower than duplicate-entry BinaryHeap queueing, so
-            the default remains False.
-        enable_simple_routes: If False, force optical nets through A* by
-            disabling straight/L/Z simple-route candidates.
-        primitive_ordering: Benchmark-only dense A* primitive ordering
-            experiment. Pass 8F keeps "library" as the default.
-        heuristic_mode: Dense A* heuristic experiment.
-        heap_tie_breaker: Benchmark-only dense A* heap tie-breaker experiment.
-            "smaller_g" preserves historical behavior; "larger_g" favors
-            deeper states on equal f-score plateaus.
-        max_iterations: Maximum A* state expansions per route attempt.
-        routing_window_scale: Optional A* routing-window margin scale. If None,
-                      the Rust AStarConfig default is used.
-        include_heater_obstacles: If True, include configured heater/metal
-                      layers as static optical-routing obstacles. Component-
-                      specific optical port openings still apply when their
-                      component rules match.
-        grid_size_um: Optical routing grid resolution in micrometers.
-        waveguide_clearance_um: Static clearance in micrometers for existing
-                      optical/waveguide obstacles.
-        heater_clearance_um: Static clearance in micrometers for heater/metal
-                      obstacles. Defaults to the waveguide clearance.
-        obstacle_clearance_um: Deprecated alias for waveguide_clearance_um.
-        chip_add_x_um: Extra horizontal chip margin added to both left and
-                      right when the die bbox is computed automatically.
-        chip_add_y_um: Extra vertical chip margin added to both bottom and top
-                      when the die bbox is computed automatically.
-        static_obstacle_config: Optional obstacle builder config. If omitted,
-            strict bounding-box static obstacles are used.
-        enable_electrical_routing: If True, run the electrical heater-metal
-            routing stage after optical routing and return/write/show the
-            electrically routed component.
-        electrical_config: Optional electrical routing configuration. If
-            omitted, `ElectricalRoutingConfig()` defaults are used.
-        collect_route_stats: If True, collect route-search counters without
-            printing debug timing. This is enabled automatically when stats is
-            provided.
-        collect_attempt_diagnostics: If True, collect extra per-attempt window,
-            obstacle-density, and ripup diagnostics for slow/failed attempts.
-        config: Milestone 1's typed Python-side configuration tree
-            (`photonic_router.config.RoutingConfig`), replacing every
-            `PHOTONIC_ROUTER_*` variable the routing modules and this module used
-            to read directly. When omitted, `RoutingConfig.from_environment()`
-            is used, so every caller that passes nothing keeps today's
-            behavior.
-
-    Returns:
-        The routed layout component.
-    """
-    # Compatibility wrapper (Milestone 5, Slice 3): group the keywords into the
-    # option tree and call the entry point. The one piece of behaviour that
-    # lives here and not in `route_benchmark` is the historical default for a
-    # caller that passes no configuration at all, which still comes from the
-    # environment overlay (D4); `route_benchmark` itself is handed a built one.
-    return route_benchmark(
-        config if config is not None else RoutingConfig.from_environment(),
-        FlowOptions(
-            loading=LoadingOptions(benchmark_name=benchmark_name),
-            layout=LayoutOptions(
-                allow_45_degree_turns=allow_45_degree_turns,
-                bend_radius_um=bend_radius_um,
-            ),
-            obstacles=ObstacleOptions(
-                static_obstacle_config=static_obstacle_config,
-                grid_size_um=grid_size_um,
-                waveguide_clearance_um=waveguide_clearance_um,
-                heater_clearance_um=heater_clearance_um,
-                obstacle_clearance_um=obstacle_clearance_um,
-                chip_add_x_um=chip_add_x_um,
-                chip_add_y_um=chip_add_y_um,
-                include_heater_obstacles=include_heater_obstacles,
-            ),
-            preplaced_grids=PreplacedCrossingGridOptions(
-                preplaced_crossing_grids=preplaced_crossing_grids,
-            ),
-            optical=OpticalStageOptions(
-                enable_crossings=enable_crossings,
-                crossing_mode=crossing_mode,
-                crossing_half_size_cells=crossing_half_size_cells,
-                foreign_port_keepout_cells=foreign_port_keepout_cells,
-                fanout_access_mode=fanout_access_mode,
-                proactive_congestion_weight=proactive_congestion_weight,
-                proactive_congestion_radius_cells=proactive_congestion_radius_cells,
-                use_indexed_heap=use_indexed_heap,
-                enable_simple_routes=enable_simple_routes,
-                primitive_ordering=primitive_ordering,
-                heuristic_mode=heuristic_mode,
-                net_order=net_order,
-                detour_pass_factor=detour_pass_factor,
-                heap_tie_breaker=heap_tie_breaker,
-                max_iterations=max_iterations,
-                routing_window_scale=routing_window_scale,
-                ripup_reroute_config=ripup_reroute_config,
-            ),
-            path_length=PathLengthMatchingOptions(
-                enable_path_length_matching=enable_path_length_matching,
-                path_length_match_outputs=path_length_match_outputs,
-                path_length_declared_unmatched_groups=path_length_declared_unmatched_groups,
-                path_length_output_scope=path_length_output_scope,
-                path_length_meander_height_um=path_length_meander_height_um,
-            ),
-            electrical=ElectricalOptions(
-                enable_electrical_routing=enable_electrical_routing,
-                electrical_config=electrical_config,
-            ),
-            debug=DebugArtifactOptions(
-                debug_svgs=debug_svgs,
-                show_debug_svgs=show_debug_svgs,
-                show_static_obstacles_svg=show_static_obstacles_svg,
-                debug_timing=debug_timing,
-                debug_stop_after_route_index=debug_stop_after_route_index,
-                debug_meanders=debug_meanders,
-                verbose_routes=verbose_routes,
-                collect_attempt_diagnostics=collect_attempt_diagnostics,
-            ),
-            output=OutputOptions(
-                show_klayout=show_klayout,
-                show_routed=show_routed,
-                show_unrouted=show_unrouted,
-            ),
-            # A caller who hands in a stats record wants it filled, so the
-            # legacy entry implies per-route collection; `route_benchmark`'s
-            # own record (for the SUMMARY line) does not.
-            stats=StatsOptions(
-                collect_route_stats=collect_route_stats or stats is not None, stats=stats
-            ),
-        ),
-    )

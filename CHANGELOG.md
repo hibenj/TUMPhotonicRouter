@@ -258,6 +258,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `run_routing_flow` is gone (S1, slice 7). It was the compatibility wrapper
+  that turned 50 keywords into the `FlowOptions` of `route_benchmark`, kept
+  for 25 calls in tests and two scripts. **API change**: call
+  `route_benchmark(config, options)`. For a caller that sets a few options,
+  `FlowOptions.from_names(benchmark_name=..., debug_timing=True)` puts each
+  leaf name into the group that declares it and refuses an unknown name.
+  Two differences to the wrapper for whoever ports a call: the
+  configuration is an argument (`RoutingConfig.from_environment()` is what
+  the wrapper used when none was given), and a `stats` record no longer
+  implies `collect_route_stats`. `scripts/benchmark_photonic.py` and
+  `scripts/crossing_benchmark_report.py` are ported; the tests use
+  `tests/fixtures/flows.run_flow`.
 - The session state names what is still mutable (S1, slice 6; a
   restructuring). The seven fields the search writes while it runs (route
   bookkeeping, attempt records, repair trace, timing buckets, three

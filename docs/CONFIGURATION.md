@@ -40,7 +40,7 @@ Totals: 79 `RoutingConfig` fields (79 with an overlay variable), 49 `FlowOptions
 
 ### `RoutingConfig` -- `RoutingConfig`
 
-Milestone 1, Slice 2: the top-level Python-side configuration tree. Every `PHOTONIC_ROUTER_*` variable read by the Python modules of this package (outside `env_overlay.py` itself) is a typed field somewhere under this tree, threaded explicitly from `run_routing_flow` down to `_RouteNetsRustSession` (whose `.router` field is `RouterConfig`, the Rust-boundary configuration Milestone 1 Slice 1 introduced).
+Milestone 1, Slice 2: the top-level Python-side configuration tree. Every `PHOTONIC_ROUTER_*` variable read by the Python modules of this package (outside `env_overlay.py` itself) is a typed field somewhere under this tree, threaded explicitly from `route_benchmark` down to `_RouteNetsRustSession` (whose `.router` field is `RouterConfig`, the Rust-boundary configuration Milestone 1 Slice 1 introduced).
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
@@ -154,7 +154,7 @@ Mirrors the fan-out-related env reads of `python/photonic_router/routing/route_r
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
-| `dense_fanout_instances` | `frozenset[str] \| None` | `None` | `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES` | `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES`: comma-separated instance names. Unset (`None`) means no override. Also SELF-SET: the pre-placed crossing-grid stage computes this set and `run_routing_flow` folds it into the routing-stage config (see `python/photonic_router/crossings/preplaced_crossing_grids.py`'s `_derive_crossing_tiles`). |
+| `dense_fanout_instances` | `frozenset[str] \| None` | `None` | `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES` | `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES`: comma-separated instance names. Unset (`None`) means no override. Also SELF-SET: the pre-placed crossing-grid stage computes this set and the flow folds it into the routing-stage config (see `python/photonic_router/crossings/preplaced_crossing_grids.py`'s `_derive_crossing_tiles`). |
 | `dense_fanout_min_ports` | `int \| None` | `None` | `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS` | `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS`: int >= 2, else raises. `None` = unset (site default 3). |
 | `fanout_access_mode` | `str \| None` | `None` | `PHOTONIC_ROUTER_FANOUT_ACCESS_MODE` | `PHOTONIC_ROUTER_FANOUT_ACCESS_MODE`: today this OVERRIDES the constructor argument (`os.environ.get(NAME, default_or_ctor_arg)`, then alias-normalized). `None` = unset -> the constructor argument/default is used. |
 | `fanout_lane_spacing_cells` | `int \| None` | `None` | `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS` | `PHOTONIC_ROUTER_FANOUT_LANE_SPACING_CELLS`: non-negative int, else raises. `None` = unset (site defaults: 11 at `_build_static_fanout_anchors`, 3 at the three other sites). |

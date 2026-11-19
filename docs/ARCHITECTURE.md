@@ -724,7 +724,7 @@ Top-level modules (23 files, 7,300 lines):
 | module | lines | responsibility |
 | --- | ---: | --- |
 | `__main__.py`, `cli.py` | 50, 850 | `python -m photonic_router route`; the parser, benchmark defaults, `--configuration`, `_flow_options` |
-| `flow.py` | 870 | `route_benchmark`, `route_schematic` (the stage outline) and the `run_routing_flow` keyword wrapper |
+| `flow.py` | 640 | `route_benchmark`, `route_schematic` (the stage outline) |
 | `flow_options.py`, `flow_config.py` | 210, 270 | `FlowOptions`; the `SCRIPT_*` defaults and option resolution |
 | `flow_optical.py`, `flow_verification.py`, `flow_plm.py`, `flow_electrical.py` | 180, 400, 230, 200 | the flow's stage helpers |
 | `flow_reporting.py`, `flow_stats.py`, `flow_component_info.py` | 550, 300, 30 | console output, GDS write; `RoutingFlowStats` and the SUMMARY line; component info |

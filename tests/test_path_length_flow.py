@@ -27,6 +27,7 @@ from photonic_router.routing.route_rust import (
     RustRouteDebugArtifacts,
 )
 
+from tests.fixtures.flows import run_flow
 from tests.fixtures.path_length import (
     FakeLayout,
     meander_report,
@@ -434,7 +435,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
         _fake_route_match_and_realize,
     )
 
-    layout = routing_flow.run_routing_flow(
+    layout = run_flow(
         "DUMMY",
         enable_path_length_matching=True,
         path_length_match_outputs=True,
@@ -479,6 +480,6 @@ def test_main_flow_matching_uses_record_lengths(monkeypatch):
         ),
     )
 
-    layout = routing_flow.run_routing_flow("DUMMY", enable_path_length_matching=True)
+    layout = run_flow("DUMMY", enable_path_length_matching=True)
     assert len(layout.info["meander_requirements"]) == 1
     assert layout.info["meander_requirements"][0]["edge"]["net_name"] == "n0"

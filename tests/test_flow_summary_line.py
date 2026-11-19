@@ -8,6 +8,8 @@ import pytest
 from photonic_router import flow as routing_flow
 from photonic_router.flow_stats import RoutingFlowStats, format_flow_summary_line
 
+from tests.fixtures.flows import run_flow
+
 
 def test_summary_line_lists_every_field_and_marks_skipped_stages():
     stats = RoutingFlowStats()
@@ -145,7 +147,7 @@ def test_a_failing_run_still_ends_with_the_summary_line(monkeypatch, capsys):
 
     monkeypatch.setattr(routing_flow, "route_schematic", explode)
     with pytest.raises(RuntimeError, match="stage failed"):
-        routing_flow.run_routing_flow("FAKE_FAILING")
+        run_flow("FAKE_FAILING")
     out = capsys.readouterr().out
     assert "SUMMARY benchmark=FAKE_FAILING" in out
     assert "route_failures=- " in out

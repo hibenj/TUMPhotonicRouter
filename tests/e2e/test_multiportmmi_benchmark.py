@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import pytest
-from photonic_router.flow import run_routing_flow
 from photonic_router.flow_stats import RoutingFlowStats
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from benchmarks.multiportmmi_8x8 import build_schematic
+from tests.fixtures.flows import run_flow
 
 
 def test_multiportmmi_8x8_builds_from_lidar_netlist():
@@ -116,7 +116,7 @@ def test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary(
 ):
     stats = RoutingFlowStats()
 
-    routed = run_routing_flow(
+    routed = run_flow(
         "multiportmmi_8x8",
         debug_svgs=False,
         show_unrouted=False,
