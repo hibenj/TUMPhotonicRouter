@@ -42,6 +42,7 @@ from photonic_router.routing.products import (
     GridFrame,
     KernelSetup,
     ObstacleContext,
+    PortFootprints,
     PortLanes,
     RawStaticGeometry,
 )
@@ -114,11 +115,12 @@ _PRODUCT_GROUPS: dict[str, type] = {
 }
 
 
-#: the slots of phase 3's step records (`products.py`)
+#: the slots of the records of phases 3 and 4 (`products.py`)
 _STEP_RECORDS: dict[str, Any] = {
     "endpoints": EndpointIndex,
     "fanout": FanoutStubs,
     "runways": DenseRunways,
+    "ports": PortFootprints,
 }
 
 
@@ -271,8 +273,6 @@ class Pipeline:
                 jobs.route_jobs,
                 jobs.endpoint_port_specs_by_instance,
                 jobs.dense_port_runway_length_by_spec,
-                self.through(1).obstacle_map,
-                self.through(1).crossing_device_info,
             )
         if phase == 5:
             planned = self.through(4)

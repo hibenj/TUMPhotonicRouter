@@ -13,6 +13,9 @@ earlier records through the state, so the phase stores each one in its slot
 returned. A slot is assigned once and as a whole; until then it holds the
 record's `empty()` value.
 
+Phase 4 (`crossing_plan_stage.py`) returns the crossing plan and one
+`PortFootprints`, which it stores as `state.ports`.
+
 Nothing rebinds a field of these records after its step returned.
 
 The records are frozen, their members are not all immutable: the kernel
@@ -22,7 +25,9 @@ plain sets because their consumers take sets.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -112,6 +117,33 @@ class RawStaticGeometry:
     heater_opening_rects_for_openings: list[tuple[int, int, int, int]]
 
 
+def _rect_ranges_by_y(
+    rects: Iterable[tuple[int, int, int, int]], grid_width: int, grid_height: int
+) -> dict[int, list[tuple[int, int]]]:
+    """Index rectangles by row: per y the merged, sorted x ranges inside the grid."""
+    ranges_by_y: dict[int, list[tuple[int, int]]] = {}
+    for rect_min_x, rect_min_y, rect_max_x, rect_max_y in rects:
+        min_x = max(0, rect_min_x)
+        max_x = min(grid_width - 1, rect_max_x)
+        min_y = max(0, rect_min_y)
+        max_y = min(grid_height - 1, rect_max_y)
+        if min_x > max_x or min_y > max_y:
+            continue
+        for y in range(min_y, max_y + 1):
+            ranges_by_y.setdefault(y, []).append((min_x, max_x))
+    for y, ranges in list(ranges_by_y.items()):
+        ranges.sort()
+        merged_ranges: list[tuple[int, int]] = []
+        for min_x, max_x in ranges:
+            if not merged_ranges or min_x > merged_ranges[-1][1] + 1:
+                merged_ranges.append((min_x, max_x))
+            else:
+                prev_min_x, prev_max_x = merged_ranges[-1]
+                merged_ranges[-1] = (prev_min_x, max(prev_max_x, max_x))
+        ranges_by_y[y] = merged_ranges
+    return ranges_by_y
+
+
 @dataclass(frozen=True)
 class KernelSetup:
     """Phase 2's product: the kernel's router and everything derived for it."""
@@ -126,6 +158,35 @@ class KernelSetup:
     radii: ClearanceRadii
     lanes: PortLanes
     static: RawStaticGeometry
+
+    # The three row indexes below are derived from `static` and `frame` alone.
+    # Phase 4 needs them for some designs only, so each is built on first use.
+
+    @cached_property
+    def raw_static_cells_by_y(self) -> dict[int, set[int]]:
+        """The raw static cells as the set of x per row."""
+        cells_by_y: dict[int, set[int]] = {}
+        for cell_x, cell_y in self.static.raw_static_cells:
+            cells_by_y.setdefault(int(cell_y), set()).add(int(cell_x))
+        return cells_by_y
+
+    @cached_property
+    def raw_static_rect_ranges_by_y(self) -> dict[int, list[tuple[int, int]]]:
+        """The raw static rectangles as merged x ranges per row."""
+        return _rect_ranges_by_y(
+            self.static.raw_static_rects_for_openings,
+            self.frame.grid_width,
+            self.frame.grid_height,
+        )
+
+    @cached_property
+    def heater_opening_rect_ranges_by_y(self) -> dict[int, list[tuple[int, int]]]:
+        """The raw and heater-layer rectangles as merged x ranges per row."""
+        return _rect_ranges_by_y(
+            self.static.heater_opening_rects_for_openings,
+            self.frame.grid_width,
+            self.frame.grid_height,
+        )
 
 
 @dataclass(frozen=True)
@@ -185,3 +246,32 @@ class DenseRunways:
     def empty(cls) -> DenseRunways:
         """The runways of a session whose phase 3 has not run."""
         return cls({}, {}, {})
+
+
+@dataclass(frozen=True)
+class PortFootprints:
+    """Phase 4's record: what every port opens, keeps clear and is offset by."""
+
+    #: cells opened for each port's access (the footprint minus static geometry)
+    access_cells_by_spec: dict[str, set[tuple[int, int]]]
+    #: cells a port's access rule may open (the whole footprint)
+    access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]]
+    #: the name of the access rule applied per port spec; None for the default
+    access_rule_by_spec: dict[str, str | None]
+    #: the approach lane of each port
+    runway_cells_by_spec: dict[str, set[tuple[int, int]]]
+    #: the union of all runways
+    normal_runway_cells: set[tuple[int, int]]
+    #: cells kept clear of foreign nets per port; empty when the keep-out is off
+    foreign_keepout_cells_by_spec: dict[str, set[tuple[int, int]]]
+    #: per dense port: (lateral x, lateral y, lower, upper, lane margin in um)
+    dense_lateral_windows: dict[str, tuple[float, float, float, float, float]]
+    #: per dense port: the lateral direction and the ports sharing its window
+    dense_lateral_owner_groups: dict[str, tuple[float, float, tuple[tuple[str, float], ...]]]
+    #: the lane offset of each (port spec, as_target) that shares a grid state
+    state_lane_offsets: dict[tuple[str, bool], tuple[int, int]]
+
+    @classmethod
+    def empty(cls) -> PortFootprints:
+        """The footprints of a session whose phase 4 has not run."""
+        return cls({}, {}, {}, {}, set(), {}, {}, {}, {})

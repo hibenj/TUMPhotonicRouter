@@ -129,8 +129,6 @@ class CrossingPlanner(Protocol):
         route_jobs: list[RouteJob],
         endpoint_port_specs_by_instance: dict[str, set[str]],
         dense_port_runway_length_by_spec: dict[str, int],
-        obstacle_map: Any,
-        crossing_device_info: dict[str, Any],
     ) -> PlannedJobs: ...
 
 

@@ -25,8 +25,10 @@ def _state(windows: dict | None = None) -> SimpleNamespace:
             grid=GridSpec(width=400, height=600, grid_size_um=1.0, origin=(0.0, 0.0), die_bbox=None)
         ),
         rust_backend=_rust,
-        dense_port_lateral_windows=windows or {},
-        dense_port_lateral_owner_groups={},
+        ports=SimpleNamespace(
+            dense_lateral_windows=windows or {},
+            dense_lateral_owner_groups={},
+        ),
     )
 
 

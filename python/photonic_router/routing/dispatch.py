@@ -52,10 +52,10 @@ NEGOTIATED_MAX_ROUNDS = 10
 def _foreign_keepout_cleanup_cells_for_spec(
     settings, state, port_spec: str
 ) -> set[tuple[int, int]]:
-    cells = set(state.foreign_port_keepout_cells_by_spec.get(port_spec, set()))
+    cells = set(state.ports.foreign_keepout_cells_by_spec.get(port_spec, set()))
     if not cells:
         return set()
-    cells.difference_update(state.normal_port_runway_cells)
+    cells.difference_update(state.ports.normal_runway_cells)
     cells.difference_update(state.fanout.stub_static_cells)
     cells.difference_update(_cells_in_raw_static_geometry(settings, state, cells))
     return cells

@@ -194,7 +194,7 @@ def _filter_dense_port_opening(
     port_spec: str,
     cells: set[tuple[int, int]],
 ) -> set[tuple[int, int]]:
-    owner_group = state.dense_port_lateral_owner_groups.get(port_spec)
+    owner_group = state.ports.dense_lateral_owner_groups.get(port_spec)
     if owner_group is not None and cells:
         lateral_x, lateral_y, owners = owner_group
         grid_size = float(state.obstacles.grid.grid_size_um)
@@ -210,7 +210,7 @@ def _filter_dense_port_opening(
                 filtered.add((cell_x, cell_y))
         return filtered
 
-    window = state.dense_port_lateral_windows.get(port_spec)
+    window = state.ports.dense_lateral_windows.get(port_spec)
     if window is None or not cells:
         return set(cells)
     lateral_x, lateral_y, lower, upper, lane_margin_um = window
@@ -246,11 +246,13 @@ def _foreign_keepout_open_cells_for_spec(settings, state, port_spec: str) -> set
     if cluster_specs:
         cells: set[tuple[int, int]] = set()
         for cluster_port_spec in cluster_specs:
-            cells.update(state.foreign_port_keepout_cells_by_spec.get(cluster_port_spec, set()))
-        return cells - state.normal_port_runway_cells
+            cells.update(state.ports.foreign_keepout_cells_by_spec.get(cluster_port_spec, set()))
+        return cells - state.ports.normal_runway_cells
     return (
-        _opened_cells_for_spec(settings, state, state.foreign_port_keepout_cells_by_spec, port_spec)
-        - state.normal_port_runway_cells
+        _opened_cells_for_spec(
+            settings, state, state.ports.foreign_keepout_cells_by_spec, port_spec
+        )
+        - state.ports.normal_runway_cells
     )
 
 
@@ -442,14 +444,14 @@ def _states_and_openings(
             int(target_fanout_anchor.state_y),
             (int(target_fanout_anchor.physical_angle) + 4) % 8,
         )
-    source_lane_offset = state.port_state_lane_offsets.get((f"{job.inst1},{job.port1}", False))
+    source_lane_offset = state.ports.state_lane_offsets.get((f"{job.inst1},{job.port1}", False))
     if source_lane_offset is not None and source_fanout_anchor is None:
         source_state = state.rust_backend.State(
             int(source_state.x) + int(source_lane_offset[0]),
             int(source_state.y) + int(source_lane_offset[1]),
             int(source_state.angle),
         )
-    target_lane_offset = state.port_state_lane_offsets.get((f"{job.inst2},{job.port2}", True))
+    target_lane_offset = state.ports.state_lane_offsets.get((f"{job.inst2},{job.port2}", True))
     if target_lane_offset is not None and target_fanout_anchor is None:
         target_state = state.rust_backend.State(
             int(target_state.x) + int(target_lane_offset[0]),
@@ -486,12 +488,12 @@ def _states_and_openings(
     )
     opened_candidate_cells = set(
         _opened_cells_for_spec(
-            settings, state, state.port_access_candidate_cells_by_spec, port1_spec
+            settings, state, state.ports.access_candidate_cells_by_spec, port1_spec
         )
     )
     opened_candidate_cells.update(
         _opened_cells_for_spec(
-            settings, state, state.port_access_candidate_cells_by_spec, port2_spec
+            settings, state, state.ports.access_candidate_cells_by_spec, port2_spec
         )
     )
     opened_candidate_cells.update(endpoint_foreign_keepout_open_cells)
@@ -499,10 +501,10 @@ def _states_and_openings(
     opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
 
     opened_cells_set = set(
-        _opened_cells_for_spec(settings, state, state.port_access_cells_by_spec, port1_spec)
+        _opened_cells_for_spec(settings, state, state.ports.access_cells_by_spec, port1_spec)
     )
     opened_cells_set.update(
-        _opened_cells_for_spec(settings, state, state.port_access_cells_by_spec, port2_spec)
+        _opened_cells_for_spec(settings, state, state.ports.access_cells_by_spec, port2_spec)
     )
     opened_cells_set.update(endpoint_foreign_keepout_open_cells)
     opened_cells_set.update(original_anchor_cells)
@@ -604,7 +606,7 @@ def finalize_route_jobs_and_static_handoff(
         ]
 
     port_runway_static_cells: set[tuple[int, int]] = set()
-    for cells in state.port_runway_cells_by_spec.values():
+    for cells in state.ports.runway_cells_by_spec.values():
         port_runway_static_cells.update(cells)
     state.foreign_port_keepout_static_cells: set[tuple[int, int]] = set()
     for cells in foreign_port_keepout_cells_by_instance.values():

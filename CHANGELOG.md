@@ -258,6 +258,19 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Routing phase 4 runs in five steps with one frozen result (S1, slice 4; a
+  restructuring). `build_crossing_plan_and_port_footprints` was one function
+  of 330 lines. It is now `_build_crossing_plan`, `_build_port_access`,
+  `_build_foreign_keepouts`, `_build_dense_lateral_windows` and
+  `_assign_lane_offsets`; the nine port tables they produce are one
+  `PortFootprints` (`routing/products.py`, `state.ports`) instead of nine
+  fields of the shared state. The three row indexes of the raw static
+  geometry are cached properties of phase 2's `KernelSetup` instead of three
+  lazily filled state fields. The phase loses two parameters it did not use
+  (`obstacle_map`) or can read from phase 1's product
+  (`crossing_device_info`), and a per-instance map of non-static keep-out
+  cells that was computed and never read is gone. The state has 36 fields
+  (47 before). Behaviour is unchanged.
 - Routing phase 3 runs in three steps with frozen results (S1, slice 3; a
   restructuring). `build_route_jobs_and_fanout_clustering` was one function
   of 190 lines that filled 19 fields of the shared state as it went. It is

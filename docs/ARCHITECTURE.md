@@ -201,10 +201,13 @@ sequencing of the two wall orders (`crossings/crossing_plan.py`,
 `--crossing-mode lidar-guided` (contribution 1) the planned pairs guide the
 search (costs, the crossing-free policy, net order); under `lidar-pure`
 (baseline) crossings are discovered during search and the plan is reported
-only. The stage also computes the port footprints and the foreign-port
-keep-outs. Its typed record is `CrossingPlanInfo`
+only. The phase runs in five steps: the crossing plan, one footprint per
+port and what the port's own net may open of it, the foreign-port keep-outs,
+the lateral windows of dense port groups, and the lane offsets of endpoints
+that share a grid state. The plan's typed record is `CrossingPlanInfo`
 (`routing/crossing_plan_info.py`), which later phases extend with the
-realized crossings. `crossings/topology_analysis.py` (graph depth and port
+realized crossings; everything about the ports is one frozen
+`PortFootprints` (`routing/products.py`, `state.ports`). `crossings/topology_analysis.py` (graph depth and port
 rank) is the older plan, kept as the test oracle
 (`tests/e2e/test_crossing_demand_equality.py` holds both equal on the 17
 paper benchmarks); the flow does not read it.
@@ -458,9 +461,10 @@ negotiated crossing setup with the placement analysis, the net order, the
 obstacle configuration). `SessionSettings` (`routing/settings.py`,
 `from_options`) validates the options and holds the resolved,
 frozen inputs of the session. Phases 1 and 2 return frozen products
-(`routing/products.py`: `ObstacleContext`, `KernelSetup`), and phase 3
-stores three frozen step records. `SessionState` (`routing/state.py`) holds
-those five and what the phases from 4 on still write into a shared record, one documented field per value with its
+(`routing/products.py`: `ObstacleContext`, `KernelSetup`), phase 3 stores
+three frozen step records and phase 4 one. `SessionState`
+(`routing/state.py`) holds those six, the crossing plan, and what the
+phases from 5 on still write into a shared record, one documented field per value with its
 writing, mutating and reading phases (`w:`, `m:`, `r:`). Ten fields are
 written by more than one phase and carry a `# shared writer` marker (the
 crossing plan, the search counters and timing

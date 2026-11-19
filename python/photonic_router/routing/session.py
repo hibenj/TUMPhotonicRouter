@@ -119,8 +119,6 @@ class _RouteNetsRustSession:
             jobs.route_jobs,
             jobs.endpoint_port_specs_by_instance,
             jobs.dense_port_runway_length_by_spec,
-            context.obstacle_map,
-            context.crossing_device_info,
         )
         final = handoff.finalize_route_jobs_and_static_handoff(
             settings,

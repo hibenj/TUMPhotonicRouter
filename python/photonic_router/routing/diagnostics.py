@@ -471,21 +471,21 @@ def _write_route_diagnostics(
         _foreign_keepout_open_cells_for_spec(settings, state, port2_spec)
     )
     foreign_keepout_open_cells = current_endpoint_foreign_keepout_cells & opened_cells_set
-    current_port_runway_cells = set(state.port_runway_cells_by_spec.get(port1_spec, set()))
-    current_port_runway_cells.update(state.port_runway_cells_by_spec.get(port2_spec, set()))
+    current_port_runway_cells = set(state.ports.runway_cells_by_spec.get(port1_spec, set()))
+    current_port_runway_cells.update(state.ports.runway_cells_by_spec.get(port2_spec, set()))
     source_sibling_port_runway_cells: set[tuple[int, int]] = set()
     for cluster_port_spec in state.runways.source_cluster_specs_by_port_spec.get(port1_spec, set()):
         if cluster_port_spec == port1_spec:
             continue
         source_sibling_port_runway_cells.update(
-            state.port_runway_cells_by_spec.get(cluster_port_spec, set())
+            state.ports.runway_cells_by_spec.get(cluster_port_spec, set())
         )
     target_sibling_port_runway_cells: set[tuple[int, int]] = set()
     for cluster_port_spec in state.runways.source_cluster_specs_by_port_spec.get(port2_spec, set()):
         if cluster_port_spec == port2_spec:
             continue
         target_sibling_port_runway_cells.update(
-            state.port_runway_cells_by_spec.get(cluster_port_spec, set())
+            state.ports.runway_cells_by_spec.get(cluster_port_spec, set())
         )
     sibling_port_runway_cells = source_sibling_port_runway_cells | target_sibling_port_runway_cells
     current_port_runway_dynamic_overlap = current_port_runway_cells & committed_dynamic_cells
@@ -796,8 +796,8 @@ def _write_route_diagnostics(
         f"target_spec={port2_spec}",
         f"source_component={_schematic_instance_component_name(settings.schematic, job.inst1)}",
         f"target_component={_schematic_instance_component_name(settings.schematic, job.inst2)}",
-        f"source_access_rule={state.port_access_rule_by_spec.get(port1_spec)}",
-        f"target_access_rule={state.port_access_rule_by_spec.get(port2_spec)}",
+        f"source_access_rule={state.ports.access_rule_by_spec.get(port1_spec)}",
+        f"target_access_rule={state.ports.access_rule_by_spec.get(port2_spec)}",
         f"foreign_port_keepout_cells={int(settings.foreign_port_keepout_cells)}",
         f"fanout_access_mode={settings.fanout_access_mode_normalized}",
         f"fanout_stub_bend_degrees={45 * int(_fanout_stub_bend_steps(settings, state))}",

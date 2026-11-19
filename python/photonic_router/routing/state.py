@@ -47,6 +47,7 @@ from photonic_router.routing.products import (
     FanoutStubs,
     KernelSetup,
     ObstacleContext,
+    PortFootprints,
 )
 
 if TYPE_CHECKING:  # `route_jobs` imports this module, so keep the edge annotation-only
@@ -76,16 +77,6 @@ class SessionState:
     route_svgs: list[Path] = field(default_factory=list)
     """Per-route debug SVGs. m:6 r:6,9"""
 
-    # ---- indexes of phase 2's raw static geometry, built on demand ----------
-    raw_static_cells_by_y: dict[int, set[int]] | None = None
-    """Row index of `kernel.static.raw_static_cells`, built on demand. w:4 r:4"""
-
-    raw_static_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
-    """Row index of the raw static rectangles, built on demand. w:4 r:4"""
-
-    heater_opening_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
-    """Row index of the heater opening rectangles, on demand. w:4 r:4"""
-
     static_blocked_cells_before_port_reservations: set[tuple[int, int]] = field(default_factory=set)
     """Static blockers as of before port reservations; starts as the raw static cells. w:0,5 m:5 r:5,6  # shared writer"""
 
@@ -99,45 +90,12 @@ class SessionState:
     runways: DenseRunways = field(default_factory=DenseRunways.empty)
     """Step 3's record: dense runway lengths and clusters. w:3 r:5,6"""
 
-    # ---- the port-access tables phase 4 fills ---------------------------------
-    port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = field(default_factory=dict)
-    """Cells opened for each port's access. w:4 r:4,5"""
-
-    port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = field(
-        default_factory=dict
-    )
-    """Cells a port's access rule may open. w:4 r:4,5"""
-
-    port_access_rule_by_spec: dict[str, str | None] = field(default_factory=dict)
-    """Name of the access rule applied per port spec. w:4 r:4,6"""
-
-    port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = field(default_factory=dict)
-    """Runway (approach lane) cells per port spec. w:4 r:4,5,6"""
-
     # ---- phase 4, crossing_plan_stage -------------------------------------
+    ports: PortFootprints = field(default_factory=PortFootprints.empty)
+    """Phase 4's record: what every port opens and keeps clear. w:4 r:5,6"""
+
     crossing_plan_info: CrossingPlanInfo = field(default_factory=CrossingPlanInfo)
     """The crossing plan and its realized crossings. w:4 m:4,7,8,9 r:4,5,7,8,9  # shared writer"""
-
-    foreign_port_keepout_cells_by_spec: dict[str, set[tuple[int, int]]] = field(
-        default_factory=dict
-    )
-    """Cells kept clear around foreign ports, per spec. w:4 r:4,5,6"""
-
-    normal_port_runway_cells: set[tuple[int, int]] = field(default_factory=set)
-    """Runway cells of the non-dense ports. w:4 r:4,5,6"""
-
-    dense_port_lateral_windows: dict[str, tuple[float, float, float, float, float]] = field(
-        default_factory=dict
-    )
-    """Lateral window each dense port may use. w:4 r:4,5"""
-
-    dense_port_lateral_owner_groups: dict[
-        str, tuple[float, float, tuple[tuple[str, float], ...]]
-    ] = field(default_factory=dict)
-    """Owner group sharing one dense lateral window. w:4 r:4,5"""
-
-    port_state_lane_offsets: dict[tuple[str, bool], tuple[int, int]] = field(default_factory=dict)
-    """Lane offset assigned to each (port spec, as_target). w:4 r:4,5"""
 
     # ---- phase 5, handoff --------------------------------------------------
     route_order: list[int] = field(default_factory=list)
