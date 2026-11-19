@@ -8,13 +8,13 @@ from photonic_router.crossings.crossing_verification_report import (
     build_crossing_verification_report,
 )
 from photonic_router.crossings.route_rust_crossing_components import (
-    _place_realized_crossing_components,
+    place_realized_crossing_components,
 )
 from photonic_router.crossings.route_rust_crossing_plan import (
-    _augment_insertion_loss_report_from_realized_intersections,
+    augment_insertion_loss_report_from_realized_intersections,
 )
 from photonic_router.crossings.route_rust_crossing_verification import (
-    _verify_realized_route_intersections,
+    verify_realized_route_intersections,
 )
 from photonic_router.plm.path_length_graph import PortRef
 from photonic_router.records.route_rust_types import RoutedNetRecord
@@ -62,7 +62,7 @@ def _plan_info() -> CrossingPlanInfo:
 
 def test_realized_crossing_verifier_accepts_straight_expected_crossing():
     info = _plan_info()
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
@@ -82,7 +82,7 @@ def test_realized_crossing_verifier_allows_lidar_pure_unexpected_crossing():
     info.crossing_mode = "lidar-pure"
     info.events = []
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 10.0), (20.0, 10.0))),
@@ -103,7 +103,7 @@ def test_realized_crossing_verifier_rejects_lidar_pure_non_perpendicular_crossin
     info.crossing_mode = "lidar-pure"
     info.events = []
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 10.0), (20.0, 10.0))),
@@ -136,7 +136,7 @@ def test_realized_crossing_verifier_uses_route_waypoint_fallback():
         corrected_centerline_um=(),
     )
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: chord_only,
@@ -157,7 +157,7 @@ def test_realized_crossing_verifier_rejects_collinear_route_overlap():
     info.crossing_mode = "lidar-pure"
     info.events = []
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 5.0), (12.0, 5.0))),
@@ -175,7 +175,7 @@ def test_realized_crossing_verifier_rejects_collinear_route_overlap():
 
 def test_realized_crossing_verifier_compresses_collinear_points():
     info = _plan_info()
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 5.0), (2.0, 5.0), (5.0, 5.0), (10.0, 5.0))),
@@ -193,7 +193,7 @@ def test_realized_crossing_verifier_compresses_collinear_points():
 
 def test_realized_crossing_verifier_rejects_expected_bend_crossing():
     info = _plan_info()
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 5.0), (5.0, 5.0), (5.0, 10.0))),
@@ -222,7 +222,7 @@ def test_realized_crossing_verifier_reports_the_one_margin_from_half_size_and_ru
     info.bend_runout_cells_per_crossing = 3
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((1.0, 5.0), (9.0, 5.0))),
@@ -276,7 +276,7 @@ def test_realized_crossing_verifier_rejects_overlapping_crossing_footprints():
         }
     )
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((-8.0, 0.0), (8.0, 0.0))),
@@ -306,7 +306,7 @@ def test_realized_crossing_verifier_rejects_lidar_pure_overlapping_crossing_foot
         }
     )
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((-8.0, 0.0), (8.0, 0.0))),
@@ -330,7 +330,7 @@ def test_realized_crossing_verifier_rejects_route_inside_crossing_footprint():
     info = _plan_info()
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((-5.0, 5.0), (15.0, 5.0))),
@@ -354,7 +354,7 @@ def test_realized_crossing_verifier_rejects_lidar_pure_footprint_blocker():
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
     info.events = []
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((-5.0, 5.0), (15.0, 5.0))),
@@ -380,7 +380,7 @@ def test_realized_crossing_verifier_ignores_route_endpoint_access():
     info.crossing_mode = "lidar-pure"
     info.events = []
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 0.0), (10.0, 10.0))),
@@ -404,7 +404,7 @@ def test_realized_crossing_verifier_does_not_treat_a_midroute_opened_cell_as_end
     info = _plan_info()
     info.events = []
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record(
@@ -431,7 +431,7 @@ def test_realized_crossing_verifier_rejects_opened_cell_crossing_near_endpoint()
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
     info.events = []
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record(
@@ -465,7 +465,7 @@ def test_realized_crossing_verifier_rejects_opened_cell_crossing_near_internal_b
     info.crossing_device = {"component_bbox_um": [8.0, 8.0]}
     info.events = []
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record(
@@ -499,7 +499,7 @@ def test_realized_crossing_verifier_ignores_port_center_access():
     info.crossing_mode = "lidar-pure"
     info.events = []
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 0.0), (10.0, 10.0))),
@@ -536,7 +536,7 @@ def test_places_active_crossing_components_for_legal_realized_intersections():
         }
     )
 
-    placements = _place_realized_crossing_components(layout, info)
+    placements = place_realized_crossing_components(layout, info)
 
     assert len(layout.insts) == 1
     assert len(placements) == 1
@@ -613,7 +613,7 @@ def test_places_one_component_for_allowed_degraded_overlap_cluster():
         }
     )
 
-    placements = _place_realized_crossing_components(layout, info)
+    placements = place_realized_crossing_components(layout, info)
 
     assert len(layout.insts) == 1
     assert len(placements) == 1
@@ -669,7 +669,7 @@ def test_places_one_component_for_transitive_degraded_overlap_cluster():
         }
     )
 
-    placements = _place_realized_crossing_components(layout, info)
+    placements = place_realized_crossing_components(layout, info)
 
     assert len(layout.insts) == 1
     assert len(placements) == 1
@@ -696,7 +696,7 @@ def test_insertion_loss_report_uses_final_realized_intersections():
         }
     )
 
-    _augment_insertion_loss_report_from_realized_intersections(
+    augment_insertion_loss_report_from_realized_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
@@ -761,7 +761,7 @@ def test_unified_verifier_reports_the_rust_verdict_instead_of_deciding():
     info = _unified_plan_info()
     verdict = _rust_verdict()
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
@@ -811,7 +811,7 @@ def test_unified_verifier_classification_equals_the_rust_verdict(reason, margin_
     info = _unified_plan_info()
     verdict = _rust_verdict(legal=False, reason=reason, margin_side=margin_side)
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
@@ -836,7 +836,7 @@ def test_unified_verifier_does_not_retest_the_geometry():
     info = _unified_plan_info()
     verdict = _rust_verdict(point=(5.4, 5.0))
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
@@ -855,7 +855,7 @@ def test_unified_verifier_does_not_retest_the_geometry():
 def test_unified_verifier_calls_an_intersection_without_a_rust_verdict_missing_event():
     info = _unified_plan_info()
 
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=info,
         routed_records_by_net_id={
             1: _record("a", ((0.0, 5.0), (10.0, 5.0))),
@@ -874,7 +874,7 @@ def test_unified_verifier_calls_an_intersection_without_a_rust_verdict_missing_e
 
 def test_unified_native_events_path_reports_the_verdict_and_unmatched_verdicts():
     from photonic_router.crossings.route_rust_crossing_verification import (
-        _populate_realized_intersections_from_native_crossing_events,
+        populate_realized_intersections_from_native_crossing_events,
     )
 
     info = _unified_plan_info()
@@ -899,7 +899,7 @@ def test_unified_native_events_path_reports_the_verdict_and_unmatched_verdicts()
         event_registered=False,
     )
 
-    illegal = _populate_realized_intersections_from_native_crossing_events(
+    illegal = populate_realized_intersections_from_native_crossing_events(
         crossing_plan_info=info,
         routed_records_by_net_id={},
         native_crossing_events=[event],

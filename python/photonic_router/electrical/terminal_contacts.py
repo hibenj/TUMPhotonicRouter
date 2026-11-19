@@ -54,7 +54,7 @@ def select_terminal_port_for_side(
     return min(
         terminal.ports,
         key=lambda port: (
-            _orientation_distance(port.orientation, target_orientation),
+            orientation_distance(port.orientation, target_orientation),
             port.name,
         ),
     )
@@ -364,7 +364,7 @@ def _contact_access_width(
     return max(float(port.width), fallback_width_um)
 
 
-def _orientation_distance(left: float | None, right: float) -> float:
+def orientation_distance(left: float | None, right: float) -> float:
     if left is None:
         return 360.0
     delta = abs((float(left) - right) % 360.0)

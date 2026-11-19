@@ -10,20 +10,20 @@ from dataclasses import replace
 
 from photonic_router.config import FlowDiagnostics
 from photonic_router.crossings.route_rust_crossing_components import (
-    _crossing_footprint_polygon_metadata,
-    _point_um_from_mapping,
+    crossing_footprint_polygon_metadata,
+    point_um_from_mapping,
 )
 from photonic_router.records.route_rust_geometry import (
-    _point_distance_um,
-    _segment_intersects_crossing_footprint_interior,
-    _segment_length_um,
-    _segment_unit_vector,
+    point_distance_um,
+    segment_intersects_crossing_footprint_interior,
+    segment_length_um,
+    segment_unit_vector,
 )
 from photonic_router.records.route_rust_records import (
     EndpointCorrectionRouter,
-    _centerline_tuple,
     apply_port_endpoint_corrections,
     build_port_alignment_diagnostics,
+    centerline_tuple,
     format_port_endpoint_correction_error,
     routed_edge_lengths_from_records,
 )
@@ -97,7 +97,7 @@ def _centerline_length_um(points: tuple[tuple[float, float], ...]) -> float:
     return total
 
 
-def _dedupe_centerline(
+def dedupe_centerline(
     points: tuple[tuple[float, float], ...],
 ) -> tuple[tuple[float, float], ...]:
     out: list[tuple[float, float]] = []
@@ -136,7 +136,7 @@ def _insert_centerline_cut_point(
 ) -> tuple[tuple[float, float], ...]:
     if len(centerline) < 2:
         return centerline
-    if any(_point_distance_um(existing, point) <= 1.0e-6 for existing in centerline):
+    if any(point_distance_um(existing, point) <= 1.0e-6 for existing in centerline):
         return centerline
     projection = _closest_centerline_projection(centerline, point)
     if projection is None:
@@ -145,7 +145,7 @@ def _insert_centerline_cut_point(
     out = list(centerline[: segment_index + 1])
     out.append((float(point[0]), float(point[1])))
     out.extend(centerline[segment_index + 1 :])
-    return _dedupe_centerline(tuple(out))
+    return dedupe_centerline(tuple(out))
 
 
 def _centerline_index_near_point(
@@ -157,7 +157,7 @@ def _centerline_index_near_point(
     best_index: int | None = None
     best_dist = float("inf")
     for index, existing in enumerate(centerline):
-        dist = _point_distance_um(existing, point)
+        dist = point_distance_um(existing, point)
         if dist < best_dist:
             best_dist = dist
             best_index = index
@@ -177,7 +177,7 @@ def _centerline_between_cut_points(
         return ()
     if end_index < start_index:
         start_index, end_index = end_index, start_index
-    return _dedupe_centerline(tuple(line[start_index : end_index + 1]))
+    return dedupe_centerline(tuple(line[start_index : end_index + 1]))
 
 
 def _crossing_endpoint_splice_parts(
@@ -260,8 +260,8 @@ def _crossing_endpoint_splice_parts(
     if first_cut_index is None or last_cut_index is None:
         return None
 
-    prefix = _dedupe_centerline(tuple(baseline_with_first_cut[: first_cut_index + 1]))
-    suffix = _dedupe_centerline(tuple(baseline_with_last_cut[last_cut_index:]))
+    prefix = dedupe_centerline(tuple(baseline_with_first_cut[: first_cut_index + 1]))
+    suffix = dedupe_centerline(tuple(baseline_with_last_cut[last_cut_index:]))
     if len(prefix) < 2 or len(suffix) < 2:
         return None
     return prefix, middle, suffix, first_cut, last_cut
@@ -278,10 +278,10 @@ def _terminal_anchor_matches(
     if not centerline:
         return False
     point = centerline[0] if at_start else centerline[-1]
-    return _point_distance_um(point, anchor) <= 1.0e-6
+    return point_distance_um(point, anchor) <= 1.0e-6
 
 
-def _legal_crossing_points_by_net_id(
+def legal_crossing_points_by_net_id(
     crossing_plan_info: Mapping[str, object] | None,
 ) -> dict[int, list[tuple[float, float]]]:
     if not isinstance(crossing_plan_info, Mapping) or not crossing_plan_info.get(
@@ -302,7 +302,7 @@ def _legal_crossing_points_by_net_id(
         classification = str(raw_crossing.get("classification", "") or "")
         if not classification.startswith("legal_"):
             continue
-        point = _point_um_from_mapping(raw_crossing.get("point_um"))
+        point = point_um_from_mapping(raw_crossing.get("point_um"))
         if point is None:
             continue
         for key in ("net_id_a", "net_id_b"):
@@ -341,7 +341,7 @@ def _foreign_crossing_footprint_specs(
             net_id_a = net_id_b = -1
         if net_id is not None and int(net_id) in (net_id_a, net_id_b):
             continue
-        polygon_raw = _crossing_footprint_polygon_metadata(raw_crossing)
+        polygon_raw = crossing_footprint_polygon_metadata(raw_crossing)
         if polygon_raw is None or len(polygon_raw) < 4:
             continue
         polygon = [(float(point[0]), float(point[1])) for point in polygon_raw[:4]]
@@ -349,11 +349,11 @@ def _foreign_crossing_footprint_specs(
             sum(point[0] for point in polygon) / float(len(polygon)),
             sum(point[1] for point in polygon) / float(len(polygon)),
         )
-        axis_u = _segment_unit_vector((polygon[0], polygon[1]))
-        axis_v = _segment_unit_vector((polygon[0], polygon[3]))
+        axis_u = segment_unit_vector((polygon[0], polygon[1]))
+        axis_v = segment_unit_vector((polygon[0], polygon[3]))
         if axis_u is None or axis_v is None:
             continue
-        half_extent_um = 0.5 * _point_distance_um(polygon[0], polygon[1])
+        half_extent_um = 0.5 * point_distance_um(polygon[0], polygon[1])
         if half_extent_um <= 0.0:
             continue
         specs.append(
@@ -378,10 +378,10 @@ def _centerline_intersects_crossing_footprint_specs(
         return False
     for start, end in itertools.pairwise(centerline):
         segment = ((float(start[0]), float(start[1])), (float(end[0]), float(end[1])))
-        if _segment_length_um(segment) <= 1.0e-9:
+        if segment_length_um(segment) <= 1.0e-9:
             continue
         for center, axis_u, axis_v, half_extent_um in specs:
-            if _segment_intersects_crossing_footprint_interior(
+            if segment_intersects_crossing_footprint_interior(
                 segment,
                 center=center,
                 axis_u=axis_u,
@@ -392,28 +392,28 @@ def _centerline_intersects_crossing_footprint_specs(
     return False
 
 
-def _primitive_centerline_for_record(
+def primitive_centerline_for_record(
     record: RoutedNetRecord,
     *,
     router: EndpointCorrectionRouter,
     prefer_corrected_baseline: bool = False,
 ) -> tuple[tuple[float, float], ...]:
     if prefer_corrected_baseline and record.corrected_centerline_um:
-        return _dedupe_centerline(record.corrected_centerline_um)
+        return dedupe_centerline(record.corrected_centerline_um)
     route_primitive_centerline = getattr(router, "route_primitive_centerline", None)
     if route_primitive_centerline is not None:
         try:
-            centerline = _centerline_tuple(route_primitive_centerline(record.route_obj))
+            centerline = centerline_tuple(route_primitive_centerline(record.route_obj))
         except Exception:
             centerline = ()
         if centerline:
-            return _dedupe_centerline(centerline)
+            return dedupe_centerline(centerline)
     if record.corrected_centerline_um:
-        return _dedupe_centerline(record.corrected_centerline_um)
+        return dedupe_centerline(record.corrected_centerline_um)
     return ()
 
 
-def _merge_terminal_corrected_route_centerline(
+def merge_terminal_corrected_route_centerline(
     *,
     existing_baseline: tuple[tuple[float, float], ...],
     route_baseline: tuple[tuple[float, float], ...],
@@ -469,7 +469,7 @@ def _merge_terminal_corrected_route_centerline(
         merged.extend(existing_baseline[: source_index + 1])
         corrected_start_index = (
             1
-            if _point_distance_um(corrected_route_centerline[0], source_anchor)
+            if point_distance_um(corrected_route_centerline[0], source_anchor)
             <= stitch_tolerance_um
             else 0
         )
@@ -490,16 +490,16 @@ def _merge_terminal_corrected_route_centerline(
         )
         if target_index is None:
             return ()
-        if merged and _point_distance_um(merged[-1], target_anchor) <= 1.0e-6:
+        if merged and point_distance_um(merged[-1], target_anchor) <= 1.0e-6:
             suffix_start = target_index + 1
         else:
             suffix_start = target_index
         merged.extend(existing_baseline[suffix_start:])
 
-    return _dedupe_centerline(tuple(merged))
+    return dedupe_centerline(tuple(merged))
 
 
-def _apply_crossing_aware_endpoint_correction_to_record(
+def apply_crossing_aware_endpoint_correction_to_record(
     record: RoutedNetRecord,
     *,
     router: EndpointCorrectionRouter,
@@ -530,12 +530,12 @@ def _apply_crossing_aware_endpoint_correction_to_record(
         if record.corrected_centerline_um and not correct_source and not correct_target:
             return record
         if record.corrected_centerline_um and (not correct_source or not correct_target):
-            route_baseline = _primitive_centerline_for_record(
+            route_baseline = primitive_centerline_for_record(
                 record,
                 router=router,
                 prefer_corrected_baseline=False,
             )
-            baseline = _primitive_centerline_for_record(
+            baseline = primitive_centerline_for_record(
                 record,
                 router=router,
                 prefer_corrected_baseline=True,
@@ -551,7 +551,7 @@ def _apply_crossing_aware_endpoint_correction_to_record(
                 and route_port_corrected_centerline is not None
             ):
                 try:
-                    corrected_route = _centerline_tuple(
+                    corrected_route = centerline_tuple(
                         route_port_corrected_centerline(
                             record.route_obj,
                             source_port_um=(
@@ -565,10 +565,10 @@ def _apply_crossing_aware_endpoint_correction_to_record(
                     )
                 except Exception:
                     corrected_route = ()
-                centerline = _merge_terminal_corrected_route_centerline(
+                centerline = merge_terminal_corrected_route_centerline(
                     existing_baseline=baseline,
                     route_baseline=route_baseline,
-                    corrected_route_centerline=_dedupe_centerline(corrected_route),
+                    corrected_route_centerline=dedupe_centerline(corrected_route),
                     freeze_source=not correct_source,
                     freeze_target=not correct_target,
                 )
@@ -614,14 +614,14 @@ def _apply_crossing_aware_endpoint_correction_to_record(
             normal_record.corrected_centerline_um
             and normal_record.endpoint_correction_error is None
             and _centerline_intersects_crossing_footprint_specs(
-                _dedupe_centerline(normal_record.corrected_centerline_um),
+                dedupe_centerline(normal_record.corrected_centerline_um),
                 foreign_footprints,
             )
         ):
             return record
         return normal_record
 
-    baseline = _primitive_centerline_for_record(
+    baseline = primitive_centerline_for_record(
         record,
         router=router,
         prefer_corrected_baseline=prefer_corrected_baseline,
@@ -662,7 +662,7 @@ def _apply_crossing_aware_endpoint_correction_to_record(
             for point in segment:
                 if not pieces or pieces[-1] != point:
                     pieces.append(point)
-        return _dedupe_centerline(tuple(pieces))
+        return dedupe_centerline(tuple(pieces))
 
     def _checked_terminal_segment(
         segment: tuple[tuple[float, float], ...],
@@ -719,7 +719,7 @@ def _apply_crossing_aware_endpoint_correction_to_record(
                     "status=reject error=invalid_result"
                 )
             return ()
-        centerline = _dedupe_centerline(_centerline_tuple(correction.get("centerline")))
+        centerline = dedupe_centerline(centerline_tuple(correction.get("centerline")))
         if trace_endpoint:
             print(
                 "endpoint_trace "
@@ -845,7 +845,7 @@ def _apply_crossing_aware_endpoint_corrections_to_debug_artifacts(
         allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
         bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
     )
-    crossing_points_by_net_id = _legal_crossing_points_by_net_id(crossing_plan_info)
+    crossing_points_by_net_id = legal_crossing_points_by_net_id(crossing_plan_info)
     fanout_anchor_net_ids = {
         int(net_id)
         for net_id in (
@@ -878,7 +878,7 @@ def _apply_crossing_aware_endpoint_corrections_to_debug_artifacts(
         record_has_fanout_stub = net_id is not None and net_id in fanout_anchor_net_ids
         crossing_points = crossing_points_by_net_id.get(net_id, []) if net_id is not None else []
         records.append(
-            _apply_crossing_aware_endpoint_correction_to_record(
+            apply_crossing_aware_endpoint_correction_to_record(
                 record,
                 router=router,
                 crossing_points=crossing_points,

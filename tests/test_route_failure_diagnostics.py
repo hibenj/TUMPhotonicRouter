@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 
 from photonic_router.records.route_rust_geometry import (
-    _format_illegal_crossing_root_causes_line,
-    _format_native_repair_trace_lines,
+    format_illegal_crossing_root_causes_line,
+    format_native_repair_trace_lines,
 )
 
 
@@ -23,7 +23,7 @@ def test_failed_route_log_extracts_illegal_crossing_root_causes() -> None:
         "(1488.470, 562.095) (not_perpendicular)"
     )
 
-    line = _format_illegal_crossing_root_causes_line([terminal_error, later_attempt_error])
+    line = format_illegal_crossing_root_causes_line([terminal_error, later_attempt_error])
 
     assert line is not None
     key, raw_payload = line.split("=", 1)
@@ -48,7 +48,7 @@ def test_failed_route_log_extracts_illegal_crossing_root_causes() -> None:
 
 def test_failed_route_log_omits_root_cause_line_without_illegal_crossing() -> None:
     assert (
-        _format_illegal_crossing_root_causes_line(
+        format_illegal_crossing_root_causes_line(
             ["No repair route found; candidate_blockers=[36, 31]"]
         )
         is None
@@ -56,7 +56,7 @@ def test_failed_route_log_omits_root_cause_line_without_illegal_crossing() -> No
 
 
 def test_failed_route_log_formats_native_repair_trace_tail() -> None:
-    lines = _format_native_repair_trace_lines(
+    lines = format_native_repair_trace_lines(
         [
             {
                 "event": "repair_mode_start",

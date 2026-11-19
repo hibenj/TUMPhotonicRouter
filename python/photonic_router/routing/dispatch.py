@@ -13,24 +13,24 @@ from photonic_router.gds.route_rust_debug_artifacts import (
     _ensure_dir,
 )
 from photonic_router.records.route_rust_geometry import (
-    _compress_centerline,
+    compress_centerline,
 )
-from photonic_router.records.route_rust_records import _centerline_tuple
+from photonic_router.records.route_rust_records import centerline_tuple
 from photonic_router.records.route_rust_types import (
     RouteJob,
     RouteTimingBucket,
     route_attempt_record_from_route,
 )
 from photonic_router.routing import timing
-from photonic_router.routing.crossing_plan_stage import _cells_in_raw_static_geometry
+from photonic_router.routing.crossing_plan_stage import cells_in_raw_static_geometry
 from photonic_router.routing.diagnostics import (
-    _export_route_svg,
-    _route_attempt_diagnostics,
-    _route_cells_from_router,
-    _route_engine_summary,
-    _state_openings_for_job,
-    _write_failed_log,
-    _write_route_diagnostics,
+    export_route_svg,
+    route_attempt_diagnostics,
+    route_cells_from_router,
+    route_engine_summary,
+    state_openings_for_job,
+    write_failed_log,
+    write_route_diagnostics,
 )
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SessionState
@@ -57,7 +57,7 @@ def _foreign_keepout_cleanup_cells_for_spec(
         return set()
     cells.difference_update(state.ports.normal_runway_cells)
     cells.difference_update(state.fanout.stub_static_cells)
-    cells.difference_update(_cells_in_raw_static_geometry(settings, state, cells))
+    cells.difference_update(cells_in_raw_static_geometry(settings, state, cells))
     return cells
 
 
@@ -69,7 +69,7 @@ def _foreign_keepout_cleanup_cells_for_job(settings, state, job: RouteJob) -> li
     return sorted(cells)
 
 
-def _timing_start(settings, state) -> float:
+def timing_start(settings, state) -> float:
     return time.perf_counter() if state.run.collect_timing else 0.0
 
 
@@ -123,7 +123,7 @@ def _report_long_straight_congestion(settings, state, batch_result: dict[str, An
         )
 
 
-def _append_centerline_points(
+def append_centerline_points(
     settings,
     state,
     out: list[tuple[float, float]],
@@ -152,7 +152,7 @@ def _fanout_stubbed_centerline(
     the lateral one -- see `_straight_static_stub_centerline_um`), so
     stitching it in eagerly here would mark the record "already fully
     corrected" and skip the real endpoint-correction pass needed to
-    close that gap. Instead, `_record_route` points this net's own
+    close that gap. Instead, `record_route` points this net's own
     effective target port at the anchor's exact position
     (`target_port_center_um_override`), letting ordinary endpoint
     correction resolve it the same way it would for any ordinary port,
@@ -167,7 +167,7 @@ def _fanout_stubbed_centerline(
     route_primitive_centerline = getattr(state.kernel.router, "route_primitive_centerline", None)
     try:
         if route_primitive_centerline is not None:
-            route_centerline = _centerline_tuple(route_primitive_centerline(route_obj))
+            route_centerline = centerline_tuple(route_primitive_centerline(route_obj))
         else:
             route_centerline = ()
     except Exception:
@@ -175,13 +175,13 @@ def _fanout_stubbed_centerline(
     if len(route_centerline) < 2:
         return ()
     points: list[tuple[float, float]] = []
-    _append_centerline_points(settings, state, points, source_anchor.stub_centerline_um)
-    _append_centerline_points(settings, state, points, route_centerline)
-    centerline = _compress_centerline(tuple(points))
+    append_centerline_points(settings, state, points, source_anchor.stub_centerline_um)
+    append_centerline_points(settings, state, points, route_centerline)
+    centerline = compress_centerline(tuple(points))
     return centerline if len(centerline) >= 2 else ()
 
 
-def _routing_endpoint_center_um(
+def routing_endpoint_center_um(
     settings,
     state,
     job: RouteJob,
@@ -197,12 +197,12 @@ def _routing_endpoint_center_um(
     return anchor.center_um if anchor is not None else _port_center_um(job.target_port)
 
 
-def _clearance_exempt_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
+def clearance_exempt_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
     return state.run.clearance_exempt_cells_by_id.get(int(job.net_id), [])
 
 
 def _clearance_exempt_cell_set_for_job(settings, state, job: RouteJob) -> set[tuple[int, int]]:
-    return set(_clearance_exempt_cells_for_job(settings, state, job))
+    return set(clearance_exempt_cells_for_job(settings, state, job))
 
 
 def native_route_jobs(settings, state, jobs: Iterable[RouteJob]) -> list[Any]:
@@ -220,7 +220,7 @@ def native_route_jobs(settings, state, jobs: Iterable[RouteJob]) -> list[Any]:
     rust_route_job = state.rust_backend.RouteJob
     native_jobs: list[Any] = []
     for job in jobs:
-        source_state, target_state, _, _, opened_cells = _state_openings_for_job(
+        source_state, target_state, _, _, opened_cells = state_openings_for_job(
             settings, state, job
         )
         native_jobs.append(
@@ -229,18 +229,18 @@ def native_route_jobs(settings, state, jobs: Iterable[RouteJob]) -> list[Any]:
                 source=source_state,
                 target=target_state,
                 opened_cells=opened_cells,
-                clearance_exempt_cells=_clearance_exempt_cells_for_job(settings, state, job),
+                clearance_exempt_cells=clearance_exempt_cells_for_job(settings, state, job),
                 foreign_keepout_cleanup_cells=_foreign_keepout_cleanup_cells_for_job(
                     settings, state, job
                 ),
-                source_port_um=_routing_endpoint_center_um(settings, state, job, source=True),
-                target_port_um=_routing_endpoint_center_um(settings, state, job, source=False),
+                source_port_um=routing_endpoint_center_um(settings, state, job, source=True),
+                target_port_um=routing_endpoint_center_um(settings, state, job, source=False),
             )
         )
     return native_jobs
 
 
-def _record_route(
+def record_route(
     settings,
     state,
     job: RouteJob,
@@ -258,7 +258,7 @@ def _record_route(
         and hasattr(state.kernel.router, "route_primitive_centerline")
     ):
         try:
-            corrected_centerline_um = _centerline_tuple(
+            corrected_centerline_um = centerline_tuple(
                 state.kernel.router.route_primitive_centerline(route_obj)
             )
         except Exception:
@@ -276,7 +276,7 @@ def _record_route(
         job,
         route_obj,
         opened_cells,
-        route_cells=_route_cells_from_router(settings, state, job.net_id)
+        route_cells=route_cells_from_router(settings, state, job.net_id)
         if state.run.track_dynamic_cells
         else None,
         corrected_centerline_um=corrected_centerline_um,
@@ -303,12 +303,12 @@ def _finalize_committed_route(
 
     if state.obstacles.diagnostics_enabled:
         source_state, target_state, opened_candidate_cells, opened_cells_set, _ = (
-            _state_openings_for_job(settings, state, job)
+            state_openings_for_job(settings, state, job)
         )
         route_cells = {
             (int(cell[0]), int(cell[1])) for cell in (getattr(route_obj, "cells", None) or [])
         }
-        _write_route_diagnostics(
+        write_route_diagnostics(
             settings,
             state,
             job=job,
@@ -323,7 +323,7 @@ def _finalize_committed_route(
             route_obj=route_obj,
         )
 
-    _export_route_svg(
+    export_route_svg(
         settings,
         state,
         job,
@@ -333,7 +333,7 @@ def _finalize_committed_route(
     )
 
     if should_print_route:
-        print(f"ok {_route_engine_summary(settings, state, route_obj)}")
+        print(f"ok {route_engine_summary(settings, state, route_obj)}")
 
 
 def dispatch_native_routing(
@@ -388,7 +388,7 @@ def dispatch_native_routing(
         batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
     timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
 
-    batch_start = _timing_start(settings, state)
+    batch_start = timing_start(settings, state)
     # The LiDAR-style negotiated rip-up loop of
     # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
     # (the only engine that routes the 64x64 mesh), the default since
@@ -448,7 +448,7 @@ def dispatch_native_routing(
                 or job.route_index in settings.debug_route_indices
             )
         ):
-            _export_route_svg(
+            export_route_svg(
                 settings,
                 state,
                 job,
@@ -484,7 +484,7 @@ def dispatch_native_routing(
                     failed=failed,
                     repair_round=repair_round,
                     error=error_text,
-                    diagnostics=_route_attempt_diagnostics(
+                    diagnostics=route_attempt_diagnostics(
                         settings,
                         state,
                         job,
@@ -505,7 +505,7 @@ def dispatch_native_routing(
         route_obj = entry["route"]
         job = state.run.route_jobs_by_id[net_id]
         opened_cells = batch_opened_cells_by_id[net_id]
-        _record_route(settings, state, job, route_obj, opened_cells)
+        record_route(settings, state, job, route_obj, opened_cells)
         should_print_route, diag_txt = batch_debug_by_id[net_id]
         _finalize_committed_route(
             settings,
@@ -535,7 +535,7 @@ def dispatch_native_routing(
             opened_candidate_cells,
             opened_cells_set,
             opened_cells,
-        ) = _state_openings_for_job(settings, state, failed_job)
+        ) = state_openings_for_job(settings, state, failed_job)
         should_print_route, diag_txt = batch_debug_by_id.get(
             failed_net_id,
             (False, None),
@@ -546,7 +546,7 @@ def dispatch_native_routing(
                 f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
                 f"{failed_job.inst2},{failed_job.port2}... failed"
             )
-        _write_route_diagnostics(
+        write_route_diagnostics(
             settings,
             state,
             job=failed_job,
@@ -561,7 +561,7 @@ def dispatch_native_routing(
             status="failed",
             error_text=error_text,
         )
-        _write_failed_log(
+        write_failed_log(
             settings,
             state,
             failed_job,

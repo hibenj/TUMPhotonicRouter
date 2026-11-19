@@ -7,25 +7,25 @@ from typing import Any, NamedTuple
 
 from gdsfactory.typings import Port
 
-from photonic_router.crossings.route_rust_crossing_components import _bbox_bounds_um
+from photonic_router.crossings.route_rust_crossing_components import bbox_bounds_um
 from photonic_router.crossings.route_rust_crossing_plan import (
-    _build_crossing_plan_info,
     _port_center_um,
+    build_crossing_plan_info,
 )
-from photonic_router.records.route_rust_obstacle_config import _port_type_name
+from photonic_router.records.route_rust_obstacle_config import port_type_name
 from photonic_router.records.route_rust_types import RouteJob
 from photonic_router.routing import timing
 from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 from photonic_router.routing.products import PortFootprints
 from photonic_router.routing.route_jobs import (
-    _angle_to_step,
-    _dense_fanout_min_ports,
-    _fanout_stub_bend_steps,
     _grid_cell_center_um,
     _in_bounds,
-    _is_dense_source_fanout_instance,
-    _orientation_to_angle,
-    _port_access_rule_for,
+    angle_to_step,
+    dense_fanout_min_ports,
+    fanout_stub_bend_steps,
+    is_dense_source_fanout_instance,
+    orientation_to_angle,
+    port_access_rule_for,
     port_to_grid_state,
 )
 from photonic_router.routing.settings import SessionSettings
@@ -44,7 +44,7 @@ def _cell_in_raw_static(settings, state, cell: tuple[int, int]) -> bool:
     )
 
 
-def _cells_in_raw_static_geometry(
+def cells_in_raw_static_geometry(
     settings,
     state,
     cells: set[tuple[int, int]],
@@ -61,7 +61,7 @@ def _resolve_port_footprint_cells(
     port: object,
 ) -> tuple[int, int]:
     """Return (length_cells, half_width_cells) sizing this port's access/keepout region."""
-    rule = _port_access_rule_for(
+    rule = port_access_rule_for(
         settings,
         state,
         instance_name=instance_name,
@@ -80,7 +80,7 @@ def _resolve_port_footprint_cells(
         )
         return length_cells, half_width_cells
 
-    if _is_dense_source_fanout_instance(settings, state, instance_name):
+    if is_dense_source_fanout_instance(settings, state, instance_name):
         return int(state.kernel.lanes.stub_port_lane_length_cells), int(
             state.kernel.lanes.stub_port_lane_half_width_cells
         )
@@ -138,7 +138,7 @@ def _instance_static_geometry_open_cells(
     ref = _instance_ref_by_name(settings, state, instance_name)
     if ref is None:
         return set()
-    bounds = _bbox_bounds_um(ref)
+    bounds = bbox_bounds_um(ref)
     if bounds is None:
         return set()
     left, bottom, right, top = bounds
@@ -270,7 +270,7 @@ def _build_crossing_plan(
     """
     t_crossing_context_start = timing.pipeline_timer_start(settings, state)
     plan = CrossingPlanInfo.from_dict(
-        _build_crossing_plan_info(
+        build_crossing_plan_info(
             rust_backend=state.rust_backend,
             router=state.kernel.router,
             schematic=settings.schematic,
@@ -304,7 +304,7 @@ def _build_crossing_plan(
             f"{guidance_text}"
         )
     plan.bend_runout_cells_per_crossing = int(state.kernel.radii.bend_radius_cells)
-    plan.fanout_stub_bend_degrees = 45 * int(_fanout_stub_bend_steps(settings, state))
+    plan.fanout_stub_bend_degrees = 45 * int(fanout_stub_bend_steps(settings, state))
     plan.required_straight_margin_cells_per_crossing = int(
         state.obstacles.resolved_crossing_half_size_cells
     ) + int(state.kernel.radii.bend_radius_cells)
@@ -373,8 +373,8 @@ def _build_port_access(
             raise ValueError(f"Port {port_spec!r} has no finite center coordinate")
         orientation_value = getattr(port, "orientation", None)
         orientation = None if orientation_value is None else float(orientation_value)
-        port_type = _port_type_name(port)
-        rule = _port_access_rule_for(
+        port_type = port_type_name(port)
+        rule = port_access_rule_for(
             settings,
             state,
             instance_name=instance_name,
@@ -456,7 +456,7 @@ def _build_port_access(
         }
 
     for port_spec, raw_footprint_cells in raw_footprint_cells_by_spec.items():
-        open_cells = raw_footprint_cells - _cells_in_raw_static_geometry(
+        open_cells = raw_footprint_cells - cells_in_raw_static_geometry(
             settings, state, raw_footprint_cells
         )
         access_cells_by_spec[port_spec] = set(open_cells)
@@ -521,11 +521,11 @@ def _lateral_positions_by_angle(
         angle = (
             int(fanout_anchor.physical_angle) % 8
             if fanout_anchor is not None
-            else _orientation_to_angle(
+            else orientation_to_angle(
                 settings, state, getattr(port, "orientation", None), flip=False
             )
         )
-        step_x, step_y = _angle_to_step(settings, state, angle)
+        step_x, step_y = angle_to_step(settings, state, angle)
         lateral_x, lateral_y = -step_y, step_x
         center = fanout_anchor.center_um if fanout_anchor is not None else _port_center_um(port)
         if center is None or (lateral_x == 0 and lateral_y == 0):
@@ -572,13 +572,13 @@ def _build_dense_lateral_windows(
         tuple[float, float, tuple[tuple[str, float], ...]],
     ] = {}
     for _instance_name, port_specs in endpoint_port_specs_by_instance.items():
-        if len(port_specs) < _dense_fanout_min_ports(settings, state):
+        if len(port_specs) < dense_fanout_min_ports(settings, state):
             continue
         groups = _lateral_positions_by_angle(settings, state, port_specs)
         for angle, group in groups.items():
             if len(group) <= 1:
                 continue
-            step_x, step_y = _angle_to_step(settings, state, angle)
+            step_x, step_y = angle_to_step(settings, state, angle)
             lateral_x, lateral_y = -step_y, step_x
             ordered = sorted(group, key=lambda item: item[1])
             owner_group = tuple(ordered)
@@ -632,7 +632,7 @@ def _assign_lane_offsets(
         )
         if len(unique_endpoints) <= 1:
             continue
-        step_x, step_y = _angle_to_step(settings, state, angle)
+        step_x, step_y = angle_to_step(settings, state, angle)
         lateral_x, lateral_y = -step_y, step_x
         if lateral_x == 0 and lateral_y == 0:
             continue

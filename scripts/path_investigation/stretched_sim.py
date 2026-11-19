@@ -39,7 +39,7 @@ def run(name, svg_stage=None, outdir="."):
     for key, st in sorted(plan.stages.items()):
         if not st.events:
             continue
-        movement, crossings = pcg._lane_movement(st)
+        movement, crossings = pcg.lane_movement(st)
         levels = max(l for l, *_ in crossings) + 1
         lanes = [e.net_name for e in st.initial_edge_order]
         # slot rows: natural source rows, siblings spread

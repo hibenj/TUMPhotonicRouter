@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from photonic_router.crossings import route_rust_crossing_plan
-from photonic_router.crossings.route_rust_crossing_plan import _build_crossing_plan_info
+from photonic_router.crossings.route_rust_crossing_plan import build_crossing_plan_info
 from photonic_router.placement_analysis import PlacementAnalysis, analyze_placement
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 
@@ -31,7 +31,7 @@ _BACKEND = SimpleNamespace(CrossingConfig=lambda **kwargs: kwargs)
 
 def _plan_info(crossing_mode: str, analysis: PlacementAnalysis | None, design: tuple) -> dict:
     schematic, layout = design
-    return _build_crossing_plan_info(
+    return build_crossing_plan_info(
         rust_backend=_BACKEND,
         router=_Router(),
         schematic=schematic,

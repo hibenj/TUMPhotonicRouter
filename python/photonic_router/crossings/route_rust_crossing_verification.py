@@ -7,28 +7,28 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from photonic_router.records.route_rust_geometry import (
-    _collinear_segment_overlap_with_params,
-    _convex_polygons_overlap_with_area,
-    _crossing_footprint_half_extent_um,
-    _crossing_footprint_polygon,
-    _grid_cell_neighborhood,
-    _grid_point_to_physical_um,
-    _physical_point_to_grid_cell,
-    _point_distance_um,
-    _point_near_record_port_endpoint,
-    _point_near_route_endpoint,
-    _point_record_port_endpoint_distance_um,
-    _point_route_endpoint_distance_um,
-    _record_centerline_um,
-    _rounded_point,
-    _rounded_segment,
-    _route_segments_from_waypoints,
-    _route_waypoints_from_obj,
-    _segment_bbox_um,
-    _segment_intersection_with_params,
-    _segment_length_um,
-    _segment_unit_vector,
-    _um_bboxes_overlap,
+    collinear_segment_overlap_with_params,
+    convex_polygons_overlap_with_area,
+    crossing_footprint_half_extent_um,
+    crossing_footprint_polygon,
+    grid_cell_neighborhood,
+    grid_point_to_physical_um,
+    physical_point_to_grid_cell,
+    point_distance_um,
+    point_near_record_port_endpoint,
+    point_near_route_endpoint,
+    point_record_port_endpoint_distance_um,
+    point_route_endpoint_distance_um,
+    record_centerline_um,
+    rounded_point,
+    rounded_segment,
+    route_segments_from_waypoints,
+    route_waypoints_from_obj,
+    segment_bbox_um,
+    segment_intersection_with_params,
+    segment_length_um,
+    segment_unit_vector,
+    um_bboxes_overlap,
 )
 from photonic_router.records.route_rust_types import RoutedNetRecord
 
@@ -120,7 +120,7 @@ def _nearest_rust_verdict(
     best: dict[str, object] | None = None
     best_distance = float("inf")
     for verdict in verdicts_by_pair.get(frozenset((net_id_a, net_id_b)), ()):
-        distance = _point_distance_um(point_um, cast(tuple[float, float], verdict["point"]))
+        distance = point_distance_um(point_um, cast(tuple[float, float], verdict["point"]))
         if distance <= tolerance_um and distance < best_distance:
             best = verdict
             best_distance = distance
@@ -212,7 +212,7 @@ def _unified_required_margin_um(
     return float(half_size_cells + runout_cells) * float(grid_size_um)
 
 
-def _verify_realized_route_intersections(
+def verify_realized_route_intersections(
     *,
     crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
@@ -235,7 +235,7 @@ def _verify_realized_route_intersections(
         return []
 
     _width, _height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
-    footprint_half_um = _crossing_footprint_half_extent_um(
+    footprint_half_um = crossing_footprint_half_extent_um(
         crossing_plan_info=crossing_plan_info,
         grid_size_um=float(grid_size_um),
     )
@@ -261,7 +261,7 @@ def _verify_realized_route_intersections(
     centerlines_by_id: dict[int, tuple[tuple[float, float], ...]] = {}
     missing_centerline_illegal: list[dict[str, object]] = []
     for net_id, record in records:
-        centerline = _record_centerline_um(
+        centerline = record_centerline_um(
             record,
             grid_size_um=float(grid_size_um),
             origin_x_um=float(origin_x_um),
@@ -295,7 +295,7 @@ def _verify_realized_route_intersections(
                     )
                 ),
                 "route_waypoint_fallback_available": bool(
-                    _route_waypoints_from_obj(record.route_obj)
+                    route_waypoints_from_obj(record.route_obj)
                 ),
             }
         )
@@ -306,15 +306,15 @@ def _verify_realized_route_intersections(
         net_id: {(int(x), int(y)) for x, y in record.opened_cells} for net_id, record in records
     }
     segments_by_net_id = {
-        net_id: _route_segments_from_waypoints(centerline)
+        net_id: route_segments_from_waypoints(centerline)
         for net_id, centerline in centerlines_by_id.items()
         if len(centerline) >= 2
     }
     segment_entries_by_net_id = {
         net_id: tuple(
-            (segment, _segment_length_um(segment), _segment_bbox_um(segment))
+            (segment, segment_length_um(segment), segment_bbox_um(segment))
             for segment in segments
-            if _segment_length_um(segment) > 0.0
+            if segment_length_um(segment) > 0.0
         )
         for net_id, segments in segments_by_net_id.items()
     }
@@ -336,9 +336,9 @@ def _verify_realized_route_intersections(
             pair_expected = pair in allowed_pairs
             for segment_a, len_a, bbox_a in segment_entries_a:
                 for segment_b, len_b, bbox_b in segment_entries_b:
-                    if not _um_bboxes_overlap(bbox_a, bbox_b, eps=eps):
+                    if not um_bboxes_overlap(bbox_a, bbox_b, eps=eps):
                         continue
-                    overlap = _collinear_segment_overlap_with_params(
+                    overlap = collinear_segment_overlap_with_params(
                         segment_a[0],
                         segment_a[1],
                         segment_b[0],
@@ -353,7 +353,7 @@ def _verify_realized_route_intersections(
                             u_start,
                             u_end,
                         ) = overlap
-                        overlap_length_um = _segment_length_um((overlap_start, overlap_end))
+                        overlap_length_um = segment_length_um((overlap_start, overlap_end))
                         if overlap_length_um <= eps:
                             continue
                         start_key = (
@@ -378,7 +378,7 @@ def _verify_realized_route_intersections(
                             0.5 * (overlap_start[0] + overlap_end[0]),
                             0.5 * (overlap_start[1] + overlap_end[1]),
                         )
-                        grid_cell = _physical_point_to_grid_cell(
+                        grid_cell = physical_point_to_grid_cell(
                             midpoint,
                             grid_size_um=float(grid_size_um),
                             origin_x_um=float(origin_x_um),
@@ -401,17 +401,17 @@ def _verify_realized_route_intersections(
                             "net_id_b": int(net_id_b),
                             "net_name_a": record_a.net_name,
                             "net_name_b": record_b.net_name,
-                            "point_um": _rounded_point(midpoint),
+                            "point_um": rounded_point(midpoint),
                             "grid_cell": (
                                 [int(grid_cell[0]), int(grid_cell[1])]
                                 if grid_cell is not None
                                 else None
                             ),
-                            "overlap_start_um": _rounded_point(overlap_start),
-                            "overlap_end_um": _rounded_point(overlap_end),
+                            "overlap_start_um": rounded_point(overlap_start),
+                            "overlap_end_um": rounded_point(overlap_end),
                             "overlap_length_um": round(float(overlap_length_um), 6),
-                            "segment_a_um": _rounded_segment(segment_a),
-                            "segment_b_um": _rounded_segment(segment_b),
+                            "segment_a_um": rounded_segment(segment_a),
+                            "segment_b_um": rounded_segment(segment_b),
                             "segment_a_margin_um": round(float(margin_a), 6),
                             "segment_b_margin_um": round(float(margin_b), 6),
                             "required_margin_um": round(float(required_margin_um), 6),
@@ -434,7 +434,7 @@ def _verify_realized_route_intersections(
                         realized.append(record)
                         illegal.append(record)
                         continue
-                    intersection = _segment_intersection_with_params(
+                    intersection = segment_intersection_with_params(
                         segment_a[0],
                         segment_a[1],
                         segment_b[0],
@@ -452,7 +452,7 @@ def _verify_realized_route_intersections(
                     if key in seen:
                         continue
                     seen.add(key)
-                    grid_cell = _physical_point_to_grid_cell(
+                    grid_cell = physical_point_to_grid_cell(
                         (point_x, point_y),
                         grid_size_um=float(grid_size_um),
                         origin_x_um=float(origin_x_um),
@@ -468,22 +468,22 @@ def _verify_realized_route_intersections(
                     ):
                         point = (point_x, point_y)
                         if (
-                            _point_near_route_endpoint(
+                            point_near_route_endpoint(
                                 point,
                                 centerlines_by_id.get(net_id_a, ()),
                                 tolerance_um=port_access_tolerance_um,
                             )
-                            or _point_near_route_endpoint(
+                            or point_near_route_endpoint(
                                 point,
                                 centerlines_by_id.get(net_id_b, ()),
                                 tolerance_um=port_access_tolerance_um,
                             )
-                            or _point_near_record_port_endpoint(
+                            or point_near_record_port_endpoint(
                                 point,
                                 record_a,
                                 tolerance_um=port_access_tolerance_um,
                             )
-                            or _point_near_record_port_endpoint(
+                            or point_near_record_port_endpoint(
                                 point,
                                 record_b,
                                 tolerance_um=port_access_tolerance_um,
@@ -495,7 +495,7 @@ def _verify_realized_route_intersections(
                                     "net_id_b": int(net_id_b),
                                     "net_name_a": record_a.net_name,
                                     "net_name_b": record_b.net_name,
-                                    "point_um": _rounded_point(point),
+                                    "point_um": rounded_point(point),
                                     "grid_cell": [int(grid_cell[0]), int(grid_cell[1])],
                                     "reason": "route_endpoint_access",
                                 }
@@ -504,22 +504,22 @@ def _verify_realized_route_intersections(
                     if min(margin_a, margin_b) <= endpoint_margin_tolerance_um:
                         point = (point_x, point_y)
                         if (
-                            _point_near_route_endpoint(
+                            point_near_route_endpoint(
                                 point,
                                 centerlines_by_id.get(net_id_a, ()),
                                 tolerance_um=endpoint_margin_tolerance_um,
                             )
-                            or _point_near_route_endpoint(
+                            or point_near_route_endpoint(
                                 point,
                                 centerlines_by_id.get(net_id_b, ()),
                                 tolerance_um=endpoint_margin_tolerance_um,
                             )
-                            or _point_near_record_port_endpoint(
+                            or point_near_record_port_endpoint(
                                 point,
                                 record_a,
                                 tolerance_um=endpoint_margin_tolerance_um,
                             )
-                            or _point_near_record_port_endpoint(
+                            or point_near_record_port_endpoint(
                                 point,
                                 record_b,
                                 tolerance_um=endpoint_margin_tolerance_um,
@@ -531,7 +531,7 @@ def _verify_realized_route_intersections(
                                     "net_id_b": int(net_id_b),
                                     "net_name_a": record_a.net_name,
                                     "net_name_b": record_b.net_name,
-                                    "point_um": _rounded_point(point),
+                                    "point_um": rounded_point(point),
                                     "grid_cell": (
                                         [int(grid_cell[0]), int(grid_cell[1])]
                                         if grid_cell is not None
@@ -544,7 +544,7 @@ def _verify_realized_route_intersections(
                     if grid_cell is not None and min(margin_a, margin_b) <= (
                         endpoint_margin_tolerance_um
                     ):
-                        nearby_cells = _grid_cell_neighborhood(grid_cell, radius=1)
+                        nearby_cells = grid_cell_neighborhood(grid_cell, radius=1)
                         if nearby_cells.intersection(
                             opened_cells_by_id.get(net_id_a, set())
                         ) or nearby_cells.intersection(opened_cells_by_id.get(net_id_b, set())):
@@ -553,22 +553,22 @@ def _verify_realized_route_intersections(
                                 grid_size_um
                             )
                             if (
-                                _point_near_route_endpoint(
+                                point_near_route_endpoint(
                                     point,
                                     centerlines_by_id.get(net_id_a, ()),
                                     tolerance_um=nearby_endpoint_tolerance_um,
                                 )
-                                or _point_near_route_endpoint(
+                                or point_near_route_endpoint(
                                     point,
                                     centerlines_by_id.get(net_id_b, ()),
                                     tolerance_um=nearby_endpoint_tolerance_um,
                                 )
-                                or _point_near_record_port_endpoint(
+                                or point_near_record_port_endpoint(
                                     point,
                                     record_a,
                                     tolerance_um=nearby_endpoint_tolerance_um,
                                 )
-                                or _point_near_record_port_endpoint(
+                                or point_near_record_port_endpoint(
                                     point,
                                     record_b,
                                     tolerance_um=nearby_endpoint_tolerance_um,
@@ -580,7 +580,7 @@ def _verify_realized_route_intersections(
                                         "net_id_b": int(net_id_b),
                                         "net_name_a": record_a.net_name,
                                         "net_name_b": record_b.net_name,
-                                        "point_um": _rounded_point((point_x, point_y)),
+                                        "point_um": rounded_point((point_x, point_y)),
                                         "grid_cell": [
                                             int(grid_cell[0]),
                                             int(grid_cell[1]),
@@ -590,8 +590,8 @@ def _verify_realized_route_intersections(
                                 )
                                 continue
                     contact_adjacent = margin_a <= eps and margin_b <= eps
-                    axis_u = _segment_unit_vector(segment_a)
-                    axis_v = _segment_unit_vector(segment_b)
+                    axis_u = segment_unit_vector(segment_a)
+                    axis_v = segment_unit_vector(segment_b)
                     footprint_polygon: list[tuple[float, float]] = []
                     footprint_blockers: list[dict[str, object]] = []
                     rust_fields: dict[str, object] | None = None
@@ -629,7 +629,7 @@ def _verify_realized_route_intersections(
                         if not perpendicular or not footprint_straight:
                             footprint_axis_u = (1.0, 0.0)
                             footprint_axis_v = (0.0, 1.0)
-                        footprint_polygon = _crossing_footprint_polygon(
+                        footprint_polygon = crossing_footprint_polygon(
                             center=(point_x, point_y),
                             axis_u=footprint_axis_u,
                             axis_v=footprint_axis_v,
@@ -663,7 +663,7 @@ def _verify_realized_route_intersections(
                         "net_id_b": int(net_id_b),
                         "net_name_a": record_a.net_name,
                         "net_name_b": record_b.net_name,
-                        "point_um": _rounded_point((point_x, point_y)),
+                        "point_um": rounded_point((point_x, point_y)),
                         "grid_cell": (
                             [int(grid_cell[0]), int(grid_cell[1])]
                             if grid_cell is not None
@@ -672,7 +672,7 @@ def _verify_realized_route_intersections(
                         "route_endpoint_distance_a_um": (
                             round(float(route_endpoint_distance_a), 6)
                             if (
-                                route_endpoint_distance_a := _point_route_endpoint_distance_um(
+                                route_endpoint_distance_a := point_route_endpoint_distance_um(
                                     (point_x, point_y),
                                     centerlines_by_id.get(net_id_a, ()),
                                 )
@@ -683,7 +683,7 @@ def _verify_realized_route_intersections(
                         "route_endpoint_distance_b_um": (
                             round(float(route_endpoint_distance_b), 6)
                             if (
-                                route_endpoint_distance_b := _point_route_endpoint_distance_um(
+                                route_endpoint_distance_b := point_route_endpoint_distance_um(
                                     (point_x, point_y),
                                     centerlines_by_id.get(net_id_b, ()),
                                 )
@@ -694,7 +694,7 @@ def _verify_realized_route_intersections(
                         "port_endpoint_distance_a_um": (
                             round(float(port_endpoint_distance_a), 6)
                             if (
-                                port_endpoint_distance_a := _point_record_port_endpoint_distance_um(
+                                port_endpoint_distance_a := point_record_port_endpoint_distance_um(
                                     (point_x, point_y),
                                     record_a,
                                 )
@@ -705,7 +705,7 @@ def _verify_realized_route_intersections(
                         "port_endpoint_distance_b_um": (
                             round(float(port_endpoint_distance_b), 6)
                             if (
-                                port_endpoint_distance_b := _point_record_port_endpoint_distance_um(
+                                port_endpoint_distance_b := point_record_port_endpoint_distance_um(
                                     (point_x, point_y),
                                     record_b,
                                 )
@@ -713,8 +713,8 @@ def _verify_realized_route_intersections(
                             is not None
                             else None
                         ),
-                        "segment_a_um": _rounded_segment(segment_a),
-                        "segment_b_um": _rounded_segment(segment_b),
+                        "segment_a_um": rounded_segment(segment_a),
+                        "segment_b_um": rounded_segment(segment_b),
                         "segment_a_margin_um": _rounded_margin_um(margin_a),
                         "segment_b_margin_um": _rounded_margin_um(margin_b),
                         "required_margin_um": round(float(record_required_margin_um), 6),
@@ -728,7 +728,7 @@ def _verify_realized_route_intersections(
                         ),
                         "search_required_margin_um": round(float(record_required_margin_um), 6),
                         "crossing_footprint_polygon_um": [
-                            _rounded_point(point) for point in footprint_polygon
+                            rounded_point(point) for point in footprint_polygon
                         ],
                         "crossing_footprint_blockers": footprint_blockers,
                         "expected_pair": bool(pair_expected),
@@ -792,7 +792,7 @@ def _verify_realized_route_intersections(
             ]
             if not polygon_a or not polygon_b:
                 continue
-            if not _convex_polygons_overlap_with_area(polygon_a, polygon_b):
+            if not convex_polygons_overlap_with_area(polygon_a, polygon_b):
                 continue
             overlap_peer_a = {
                 "net_id_a": crossing_b.get("net_id_a"),
@@ -868,7 +868,7 @@ def _verify_realized_route_intersections(
     return illegal
 
 
-def _populate_realized_intersections_from_native_crossing_events(
+def populate_realized_intersections_from_native_crossing_events(
     *,
     crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
@@ -897,7 +897,7 @@ def _populate_realized_intersections_from_native_crossing_events(
         return []
 
     _width, _height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
-    footprint_half_um = _crossing_footprint_half_extent_um(
+    footprint_half_um = crossing_footprint_half_extent_um(
         crossing_plan_info=crossing_plan_info,
         grid_size_um=float(grid_size_um),
     )
@@ -948,13 +948,13 @@ def _populate_realized_intersections_from_native_crossing_events(
             continue
 
         segment_a = (
-            _grid_point_to_physical_um(
+            grid_point_to_physical_um(
                 route_segment_grid[0],
                 grid_size_um=float(grid_size_um),
                 origin_x_um=float(origin_x_um),
                 origin_y_um=float(origin_y_um),
             ),
-            _grid_point_to_physical_um(
+            grid_point_to_physical_um(
                 route_segment_grid[1],
                 grid_size_um=float(grid_size_um),
                 origin_x_um=float(origin_x_um),
@@ -962,13 +962,13 @@ def _populate_realized_intersections_from_native_crossing_events(
             ),
         )
         segment_b = (
-            _grid_point_to_physical_um(
+            grid_point_to_physical_um(
                 partner_segment_grid[0],
                 grid_size_um=float(grid_size_um),
                 origin_x_um=float(origin_x_um),
                 origin_y_um=float(origin_y_um),
             ),
-            _grid_point_to_physical_um(
+            grid_point_to_physical_um(
                 partner_segment_grid[1],
                 grid_size_um=float(grid_size_um),
                 origin_x_um=float(origin_x_um),
@@ -976,21 +976,21 @@ def _populate_realized_intersections_from_native_crossing_events(
             ),
         )
         raw_point_um = (float(grid_point[0]), float(grid_point[1]))
-        raw_point_bbox = _segment_bbox_um((raw_point_um, raw_point_um))
-        segment_a_bbox = _segment_bbox_um(segment_a)
-        segment_b_bbox = _segment_bbox_um(segment_b)
-        if _um_bboxes_overlap(
+        raw_point_bbox = segment_bbox_um((raw_point_um, raw_point_um))
+        segment_a_bbox = segment_bbox_um(segment_a)
+        segment_b_bbox = segment_bbox_um(segment_b)
+        if um_bboxes_overlap(
             raw_point_bbox,
             segment_a_bbox,
             eps=float(grid_size_um),
-        ) and _um_bboxes_overlap(
+        ) and um_bboxes_overlap(
             raw_point_bbox,
             segment_b_bbox,
             eps=float(grid_size_um),
         ):
             point_um = raw_point_um
         else:
-            point_um = _grid_point_to_physical_um(
+            point_um = grid_point_to_physical_um(
                 grid_point,
                 grid_size_um=float(grid_size_um),
                 origin_x_um=float(origin_x_um),
@@ -1008,27 +1008,27 @@ def _populate_realized_intersections_from_native_crossing_events(
 
         record_a = routed_records_by_net_id.get(net_id_a)
         record_b = routed_records_by_net_id.get(net_id_b)
-        len_a = _segment_length_um(segment_a)
-        len_b = _segment_length_um(segment_b)
+        len_a = segment_length_um(segment_a)
+        len_b = segment_length_um(segment_b)
         margin_a = min(
-            _point_distance_um(point_um, segment_a[0]),
-            _point_distance_um(point_um, segment_a[1]),
+            point_distance_um(point_um, segment_a[0]),
+            point_distance_um(point_um, segment_a[1]),
         )
         margin_b = min(
-            _point_distance_um(point_um, segment_b[0]),
-            _point_distance_um(point_um, segment_b[1]),
+            point_distance_um(point_um, segment_b[0]),
+            point_distance_um(point_um, segment_b[1]),
         )
-        axis_u = _segment_unit_vector(segment_a)
-        axis_v = _segment_unit_vector(segment_b)
+        axis_u = segment_unit_vector(segment_a)
+        axis_v = segment_unit_vector(segment_b)
         footprint_polygon: list[tuple[float, float]] = []
         if axis_u is not None and axis_v is not None and footprint_half_um > 0.0:
-            footprint_polygon = _crossing_footprint_polygon(
+            footprint_polygon = crossing_footprint_polygon(
                 center=point_um,
                 axis_u=axis_u,
                 axis_v=axis_v,
                 half_extent_um=footprint_half_um,
             )
-        grid_cell = _physical_point_to_grid_cell(
+        grid_cell = physical_point_to_grid_cell(
             point_um,
             grid_size_um=float(grid_size_um),
             origin_x_um=float(origin_x_um),
@@ -1039,12 +1039,12 @@ def _populate_realized_intersections_from_native_crossing_events(
             "net_id_b": int(net_id_b),
             "net_name_a": record_a.net_name if record_a is not None else str(net_id_a),
             "net_name_b": record_b.net_name if record_b is not None else str(net_id_b),
-            "point_um": _rounded_point(point_um),
+            "point_um": rounded_point(point_um),
             "grid_cell": (
                 [int(grid_cell[0]), int(grid_cell[1])] if grid_cell is not None else None
             ),
-            "segment_a_um": _rounded_segment(segment_a),
-            "segment_b_um": _rounded_segment(segment_b),
+            "segment_a_um": rounded_segment(segment_a),
+            "segment_b_um": rounded_segment(segment_b),
             "segment_a_length_um": round(float(len_a), 6),
             "segment_b_length_um": round(float(len_b), 6),
             "segment_a_margin_um": round(float(margin_a), 6),
@@ -1053,7 +1053,7 @@ def _populate_realized_intersections_from_native_crossing_events(
             "search_required_margin_um": round(float(search_required_margin_um), 6),
             "crossing_footprint_half_um": round(float(footprint_half_um), 6),
             "crossing_footprint_um": round(2.0 * float(footprint_half_um), 6),
-            "crossing_footprint_polygon_um": [_rounded_point(point) for point in footprint_polygon],
+            "crossing_footprint_polygon_um": [rounded_point(point) for point in footprint_polygon],
             "crossing_footprint_blockers": [],
             "expected_pair": True,
             "planned": _planned_flag(planned_pairs, net_id_a, net_id_b),
@@ -1164,13 +1164,13 @@ def _native_record_from_rust_verdict(
             return None
         try:
             return (
-                _grid_point_to_physical_um(
+                grid_point_to_physical_um(
                     (float(raw[0][0]), float(raw[0][1])),
                     grid_size_um=grid_size_um,
                     origin_x_um=origin_x_um,
                     origin_y_um=origin_y_um,
                 ),
-                _grid_point_to_physical_um(
+                grid_point_to_physical_um(
                     (float(raw[1][0]), float(raw[1][1])),
                     grid_size_um=grid_size_um,
                     origin_x_um=origin_x_um,
@@ -1184,17 +1184,17 @@ def _native_record_from_rust_verdict(
     segment_b = _segment_um(verdict.get("partner_segment"))
     record_a = routed_records_by_net_id.get(net_id_a)
     record_b = routed_records_by_net_id.get(net_id_b)
-    grid_cell = _physical_point_to_grid_cell(
+    grid_cell = physical_point_to_grid_cell(
         point_um,
         grid_size_um=grid_size_um,
         origin_x_um=origin_x_um,
         origin_y_um=origin_y_um,
     )
     footprint_polygon: list[tuple[float, float]] = []
-    axis_u = _segment_unit_vector(segment_a) if segment_a is not None else None
-    axis_v = _segment_unit_vector(segment_b) if segment_b is not None else None
+    axis_u = segment_unit_vector(segment_a) if segment_a is not None else None
+    axis_v = segment_unit_vector(segment_b) if segment_b is not None else None
     if axis_u is not None and axis_v is not None and footprint_half_um > 0.0:
-        footprint_polygon = _crossing_footprint_polygon(
+        footprint_polygon = crossing_footprint_polygon(
             center=point_um,
             axis_u=axis_u,
             axis_v=axis_v,
@@ -1205,13 +1205,13 @@ def _native_record_from_rust_verdict(
         "net_id_b": net_id_b,
         "net_name_a": record_a.net_name if record_a is not None else str(net_id_a),
         "net_name_b": record_b.net_name if record_b is not None else str(net_id_b),
-        "point_um": _rounded_point(point_um),
+        "point_um": rounded_point(point_um),
         "grid_cell": ([int(grid_cell[0]), int(grid_cell[1])] if grid_cell is not None else None),
-        "segment_a_um": _rounded_segment(segment_a) if segment_a is not None else None,
-        "segment_b_um": _rounded_segment(segment_b) if segment_b is not None else None,
+        "segment_a_um": rounded_segment(segment_a) if segment_a is not None else None,
+        "segment_b_um": rounded_segment(segment_b) if segment_b is not None else None,
         "crossing_footprint_half_um": round(float(footprint_half_um), 6),
         "crossing_footprint_um": round(2.0 * float(footprint_half_um), 6),
-        "crossing_footprint_polygon_um": [_rounded_point(point) for point in footprint_polygon],
+        "crossing_footprint_polygon_um": [rounded_point(point) for point in footprint_polygon],
         "crossing_footprint_blockers": [],
         "expected_pair": True,
         "planned": _planned_flag(planned_pairs, net_id_a, net_id_b),

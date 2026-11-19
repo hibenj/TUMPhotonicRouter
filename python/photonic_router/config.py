@@ -137,7 +137,7 @@ class CrossingPlanConfig:
 @dataclass(frozen=True)
 class CrossingGridConfig:
     """Mirrors the env reads of `python/photonic_router/crossings/preplaced_crossing_grids.py`'s
-    `crossing_grid_geometry_from_config`/`_column_grid_stage` and
+    `crossing_grid_geometry_from_config`/`column_grid_stage` and
     `python/photonic_router/crossings/crossing_structures.py`'s `select_layer_structure`. Every
     float/string field is `None` when unset, in which case the site's own
     (`CrossingGridGeometry` or literal) default applies."""
@@ -192,7 +192,7 @@ class FanoutAccessConfig:
     #: int, else raises. `None` = unset -> outermost of that fallback chain.
     target_protected_lane_spacing_cells: int | None = None
     #: `PHOTONIC_ROUTER_FANOUT_STUB_BEND_DEGREES`: alias table (see
-    #: `_fanout_stub_bend_steps`), site default `"90"`. `None` = unset.
+    #: `fanout_stub_bend_steps`), site default `"90"`. `None` = unset.
     fanout_stub_bend_degrees: str | None = None
     #: `PHOTONIC_ROUTER_FANOUT_STUB_FORWARD_CELLS`: non-negative int, else
     #: raises. `None` = unset (site computes `max(3, bend_radius_cells + 3)`).
@@ -359,7 +359,7 @@ class RoutingConfig:
     Every `PHOTONIC_ROUTER_*` variable read by the Python
     modules of this package (outside `env_overlay.py` itself) is a typed field
     somewhere under this tree, threaded explicitly from `route_benchmark`
-    down to `_RouteNetsRustSession` (whose `.router` field is `RouterConfig`,
+    down to `RouteNetsRustSession` (whose `.router` field is `RouterConfig`,
     the Rust-boundary configuration Milestone 1 Slice 1 introduced)."""
 
     router: RouterConfig = field(default_factory=RouterConfig)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, cast
 
-from photonic_router.records.route_rust_obstacle_config import _grid_origin_xy
+from photonic_router.records.route_rust_obstacle_config import grid_origin_xy
 from photonic_router.records.route_rust_types import (
     OpticalRouteClearancePolicy,
     _as_float,
@@ -25,7 +25,7 @@ from photonic_router.routing.settings import SessionSettings
 DENSE_OBSTACLE_CELL_CAP_MARGIN = 2
 
 
-def _fanout_int_or_default(value: int | None, default: int) -> int:
+def fanout_int_or_default(value: int | None, default: int) -> int:
     """`value` is a resolved `FanoutAccessConfig` field: `None` (unset)
     keeps the site's own `default`; validation (non-negative, raises)
     already happened when the config was parsed from the environment."""
@@ -54,7 +54,7 @@ def configure_router_and_grid(
     """
     obstacle_map = context.obstacle_map
     t_router_setup_start = timing.pipeline_timer_start(settings)
-    origin_x_um, origin_y_um = _grid_origin_xy(context.grid)
+    origin_x_um, origin_y_um = grid_origin_xy(context.grid)
     if settings.config.diagnostics.trace_grid:
         # Path-investigation harness: the grid<->um mapping must come from
         # the tool, never from a hand conversion (see
@@ -183,7 +183,7 @@ def configure_router_and_grid(
     port_lane_length_cells = max(3, 2 * bend_radius_cells + 2)
     port_lane_half_width_cells = max(1, bend_radius_cells + commit_radius_cells + 1)
     # Separate override scoped to dense-source-fanout instances only
-    # (`_is_dense_source_fanout_instance`) -- e.g. a multi-port MMI
+    # (`is_dense_source_fanout_instance`) -- e.g. a multi-port MMI
     # splitter with many stubbed ports stacked close together, where the
     # flat per-port reservation above overlaps heavily and merges into
     # one large blocked region. Every *other* port (e.g. a heater port
@@ -204,11 +204,11 @@ def configure_router_and_grid(
     # stable baseline with both knobs at `0` (previously `half_width=2`,
     # `length=port_lane_length_cells`): still routes 111/111, 0 errors,
     # 0 self-intersections, 0 cross-net overlaps.
-    stub_port_lane_length_cells = _fanout_int_or_default(
+    stub_port_lane_length_cells = fanout_int_or_default(
         settings.config.fanout.stub_port_lane_length_cells,
         0,
     )
-    stub_port_lane_half_width_cells = _fanout_int_or_default(
+    stub_port_lane_half_width_cells = fanout_int_or_default(
         settings.config.fanout.stub_port_lane_half_width_cells,
         0,
     )

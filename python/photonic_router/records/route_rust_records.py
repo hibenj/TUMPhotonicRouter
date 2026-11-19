@@ -219,7 +219,7 @@ def routed_edge_lengths_from_records(
     }
 
 
-def _centerline_tuple(points: object) -> tuple[tuple[float, float], ...]:
+def centerline_tuple(points: object) -> tuple[tuple[float, float], ...]:
     if not isinstance(points, list):
         return ()
     out: list[tuple[float, float]] = []
@@ -285,7 +285,7 @@ def apply_port_endpoint_corrections(
                 print("ERROR: " + message)
             updated.append(replace(record, endpoint_correction_error=message))
             continue
-        centerline = _centerline_tuple(raw_centerline)
+        centerline = centerline_tuple(raw_centerline)
         if not centerline:
             message = format_port_endpoint_correction_error(
                 record,

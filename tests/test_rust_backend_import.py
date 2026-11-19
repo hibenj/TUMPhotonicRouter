@@ -115,8 +115,8 @@ def test_crossing_verdicts_match_the_events_and_the_python_verifier():
     from types import SimpleNamespace
 
     from photonic_router.crossings.route_rust_crossing_verification import (
-        _populate_realized_intersections_from_native_crossing_events,
-        _verify_realized_route_intersections,
+        populate_realized_intersections_from_native_crossing_events,
+        verify_realized_route_intersections,
     )
     from photonic_router.plm.path_length_graph import PortRef
     from photonic_router.records.route_rust_types import RoutedNetRecord
@@ -165,7 +165,7 @@ def test_crossing_verdicts_match_the_events_and_the_python_verifier():
     )
     info.bend_runout_cells_per_crossing = 1
     grid_spec = (20, 14, 1.0, 0.0, 0.0)
-    illegal = _populate_realized_intersections_from_native_crossing_events(
+    illegal = populate_realized_intersections_from_native_crossing_events(
         crossing_plan_info=info,
         routed_records_by_net_id={},
         native_crossing_events=events,
@@ -195,7 +195,7 @@ def test_crossing_verdicts_match_the_events_and_the_python_verifier():
     )
     full_info.bend_runout_cells_per_crossing = 1
     full_info.crossing_mode = "lidar-pure"
-    illegal = _verify_realized_route_intersections(
+    illegal = verify_realized_route_intersections(
         crossing_plan_info=full_info,
         routed_records_by_net_id={
             1: _record("a", ((8.5, 2.5), (8.5, 10.5))),

@@ -22,7 +22,7 @@ from gdsfactory.schematic import Schematic
 
 from photonic_router.config import RouterConfig, RoutingConfig
 from photonic_router.crossings.crossing_modes import normalize_crossing_mode
-from photonic_router.crossings.route_rust_crossing_plan import _effective_crossing_search_loss
+from photonic_router.crossings.route_rust_crossing_plan import effective_crossing_search_loss
 from photonic_router.placement_analysis import PlacementAnalysis
 from photonic_router.records.route_order import normalize_net_order
 from photonic_router.records.route_rust_types import RipupRerouteConfig
@@ -134,7 +134,7 @@ class SessionSettings:
         if crossings.crossing_loss < 0:
             raise ValueError("crossing_loss must be non-negative")
         crossing_mode = normalize_crossing_mode(crossings.crossing_mode)
-        crossing_search_loss = _effective_crossing_search_loss(
+        crossing_search_loss = effective_crossing_search_loss(
             enable_crossings=bool(crossings.enable_crossings),
             crossing_loss=float(crossings.crossing_loss),
             config=resolved_config.crossing_plan,

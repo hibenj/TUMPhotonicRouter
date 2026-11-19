@@ -14,8 +14,8 @@ from photonic_router.cli import _build_arg_parser
 from photonic_router.crossings.route_rust_crossing_plan import (
     COLLISION_CROSSING_SEARCH_LOSS_ENV,
     DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
-    _build_crossing_plan_info,
-    _effective_crossing_search_loss,
+    build_crossing_plan_info,
+    effective_crossing_search_loss,
 )
 from photonic_router.electrical import (
     DEFAULT_BONDPAD_WIDTH_UM,
@@ -98,11 +98,11 @@ def test_electrical_width_defaults_are_centralized():
 
 
 def test_lidar_pure_uses_search_only_crossing_penalty_by_default():
-    assert _effective_crossing_search_loss(
+    assert effective_crossing_search_loss(
         enable_crossings=True,
         crossing_loss=0.0,
     ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)
-    assert _effective_crossing_search_loss(
+    assert effective_crossing_search_loss(
         enable_crossings=True,
         crossing_loss=0.07,
     ) == pytest.approx(0.07)
@@ -114,12 +114,12 @@ def test_collision_crossing_search_penalty_can_be_overridden(monkeypatch):
     monkeypatch.setenv(COLLISION_CROSSING_SEARCH_LOSS_ENV, "30")
     crossing_plan_config = RoutingConfig.from_environment().crossing_plan
 
-    assert _effective_crossing_search_loss(
+    assert effective_crossing_search_loss(
         enable_crossings=True,
         crossing_loss=0.0,
         config=crossing_plan_config,
     ) == pytest.approx(30.0)
-    assert _effective_crossing_search_loss(
+    assert effective_crossing_search_loss(
         enable_crossings=True,
         crossing_loss=0.07,
         config=crossing_plan_config,
@@ -139,7 +139,7 @@ def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
 
     fake_backend = SimpleNamespace(CrossingConfig=FakeCrossingConfig)
 
-    info = _build_crossing_plan_info(
+    info = build_crossing_plan_info(
         rust_backend=fake_backend,
         router=FakeRouter(),
         schematic=SimpleNamespace(),
@@ -1738,7 +1738,7 @@ def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
     router, backend = _fake_crossing_plan_router_and_backend(captured)
     jobs, schematic, layout = _mm8_route_jobs()
 
-    info = _build_crossing_plan_info(
+    info = build_crossing_plan_info(
         rust_backend=backend,
         router=router,
         schematic=schematic,
@@ -1768,7 +1768,7 @@ def test_lidar_pure_still_ignores_the_topology_plan():
     router, backend = _fake_crossing_plan_router_and_backend(captured)
     jobs, schematic, layout = _mm8_route_jobs()
 
-    info = _build_crossing_plan_info(
+    info = build_crossing_plan_info(
         rust_backend=backend,
         router=router,
         schematic=schematic,
@@ -1834,7 +1834,7 @@ def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
     router, backend = _fake_crossing_plan_router_and_backend(captured)
     jobs, schematic, layout = _mm8_route_jobs()
     monkeypatch.setenv(PLANNED_CROSSING_BUDGET_ENV, "1")
-    info = _build_crossing_plan_info(
+    info = build_crossing_plan_info(
         rust_backend=backend,
         router=router,
         schematic=schematic,
@@ -1855,7 +1855,7 @@ def test_lidar_guided_shares_the_lidar_pure_search_penalty():
     # "Shares" is now structural rather than asserted per mode: since
     # Milestone 8 Slice C the price takes no crossing-mode argument at all,
     # so lidar-guided cannot get a different one.
-    assert _effective_crossing_search_loss(
+    assert effective_crossing_search_loss(
         enable_crossings=True,
         crossing_loss=0.0,
     ) == pytest.approx(DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM)

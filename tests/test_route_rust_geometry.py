@@ -5,7 +5,7 @@ from typing import Any, Protocol, cast
 
 from photonic_router.flow import load_benchmark
 from photonic_router.records.layout_from_schematic import layout_from_schematic
-from photonic_router.records.route_rust_geometry import _physical_point_to_grid_cell
+from photonic_router.records.route_rust_geometry import physical_point_to_grid_cell
 from photonic_router.records.route_rust_records import _grid_cell_center_um
 from photonic_router.routing.api import route_match_and_realize
 from photonic_router.routing.options import MatchingOptions
@@ -25,13 +25,13 @@ class _RouteWithCompressedWaypoints(Protocol):
 
 
 def test_physical_point_to_grid_cell_preserves_floor_snap_and_invalid_guards():
-    assert _physical_point_to_grid_cell(
+    assert physical_point_to_grid_cell(
         (-0.51, 2.49),
         grid_size_um=0.5,
         origin_x_um=-1.0,
         origin_y_um=2.0,
     ) == (0, 0)
-    assert _physical_point_to_grid_cell(
+    assert physical_point_to_grid_cell(
         (-5.01, -3.01),
         grid_size_um=2.0,
         origin_x_um=-5.0,
@@ -39,7 +39,7 @@ def test_physical_point_to_grid_cell_preserves_floor_snap_and_invalid_guards():
     ) == (-1, -1)
 
     assert (
-        _physical_point_to_grid_cell(
+        physical_point_to_grid_cell(
             (0.0, 0.0),
             grid_size_um=0.0,
             origin_x_um=0.0,
@@ -48,7 +48,7 @@ def test_physical_point_to_grid_cell_preserves_floor_snap_and_invalid_guards():
         is None
     )
     assert (
-        _physical_point_to_grid_cell(
+        physical_point_to_grid_cell(
             (float("nan"), 0.0),
             grid_size_um=1.0,
             origin_x_um=0.0,

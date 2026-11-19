@@ -258,6 +258,22 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- 88 helpers that other modules import lose their leading underscore (S2,
+  slice 3; rule 3.5: a name starting with an underscore stays in its
+  module). `_grid_cell_center_um`-style names that several modules used
+  were public in effect; they are now public in name, e.g.
+  `records.route_rust_geometry.physical_point_to_grid_cell`. **API change**
+  for whoever imported one of them. Imports of private names from another
+  module fall from 143 to 27. The 27 are eleven names the rename left
+  alone: eight are defined in more than one module (`_in_bounds` and
+  `_load_rust_backend` five times each, `_as_float`, `_as_int`,
+  `_ensure_dir`, `_port_center_um`, `_grid_cell_center_um`,
+  `_all_port_accesses` twice), which is a finding of its own under "one
+  implementation per concern", and three would collide with an existing
+  public name. The rename makes 73 functions and one class visible to the
+  docstring rule that it did not count while they were private: the pinned
+  counts of `ruff_D103` and `ruff_D101` rise from 75 to 147 and from 56 to
+  57 with this change, as debt that was there and is now measured.
 - The module `photonic_router.routing.route_rust` is gone (S2, slice 2). It
   was a shim of 430 lines that re-exported 180 names of the routing package
   and of five other packages under the path the routing code had before it

@@ -16,7 +16,7 @@ from gdsfactory.schematic import Schematic
 from photonic_router.config import CrossingPlanConfig
 from photonic_router.crossings.crossing_modes import is_guided_mode
 from photonic_router.crossings.route_rust_crossing_components import (
-    _crossing_component_bbox_size_um,
+    crossing_component_bbox_size_um,
 )
 from photonic_router.placement_analysis import PlacementAnalysis, analyze_placement
 from photonic_router.records.route_rust_records import route_edge_key
@@ -61,7 +61,7 @@ def _routed_records_by_net_id(
     return records_by_id
 
 
-def _resolve_crossing_half_size_cells(
+def resolve_crossing_half_size_cells(
     *,
     requested_half_size_cells: int,
     enable_crossings: bool,
@@ -76,7 +76,7 @@ def _resolve_crossing_half_size_cells(
         info["half_size_cells"] = int(requested_half_size_cells)
         return int(requested_half_size_cells), info
 
-    component_size = _crossing_component_bbox_size_um()
+    component_size = crossing_component_bbox_size_um()
     if component_size is None:
         info["reason"] = "crossing_component_unavailable"
         info["half_size_cells"] = 0
@@ -124,7 +124,7 @@ def _edge_key_to_info(edge_key: object) -> dict[str, object]:
     }
 
 
-def _effective_crossing_search_loss(
+def effective_crossing_search_loss(
     *,
     enable_crossings: bool,
     crossing_loss: float,
@@ -172,7 +172,7 @@ def _effective_single_discounted_crossing_per_pair(
     return config.planned_crossing_budget
 
 
-def _build_crossing_plan_info(
+def build_crossing_plan_info(
     *,
     rust_backend: object,
     router: object,
@@ -427,7 +427,7 @@ def _write_insertion_loss_report(
     crossing_plan_info.insertion_loss_by_net = per_net
 
 
-def _augment_insertion_loss_report(
+def augment_insertion_loss_report(
     *,
     crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
@@ -457,7 +457,7 @@ def _augment_insertion_loss_report(
     )
 
 
-def _augment_insertion_loss_report_from_realized_intersections(
+def augment_insertion_loss_report_from_realized_intersections(
     *,
     crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
@@ -497,7 +497,7 @@ def _augment_insertion_loss_report_from_realized_intersections(
     )
 
 
-def _write_crossing_debug_artifacts(
+def write_crossing_debug_artifacts(
     *,
     debug_path: Path | None,
     debug_prefix: str,

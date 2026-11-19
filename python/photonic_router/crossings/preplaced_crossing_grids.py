@@ -178,7 +178,7 @@ def _crossing_half_extent_um(crossing: Component) -> float:
     return math.hypot(float(port[0]) - float(center.x), float(port[1]) - float(center.y))
 
 
-def _lane_movement(
+def lane_movement(
     stage_plan: CrossingStagePlan,
 ) -> tuple[dict[str, tuple[int, int, int]], list[tuple[int, int, object, object]]]:
     """Simulate the swap schedule and return each lane's single movement block.
@@ -276,7 +276,7 @@ def crossing_grid_geometry_from_config(
     )
 
 
-def _net_endpoints(schematic: Schematic, net_name: str) -> tuple[str, str]:
+def net_endpoints(schematic: Schematic, net_name: str) -> tuple[str, str]:
     bundle = schematic.netlist.routes[net_name]
     links = dict(bundle.links)
     if len(links) != 1:
@@ -539,7 +539,7 @@ def _derive_crossing_tiles(
         target_xs: list[float] = []
         target_rows: list[float] = []
         for edge in lanes:
-            p1, p2 = _net_endpoints(schematic, edge.net_name)
+            p1, p2 = net_endpoints(schematic, edge.net_name)
             source = get_port_from_instance(unrouted_layout, *p1.split(","))
             target = get_port_from_instance(unrouted_layout, *p2.split(","))
             rows.append(float(source.dcenter[1]))
@@ -571,7 +571,7 @@ def _derive_crossing_tiles(
             fallback_nets.update(edge.net_name for edge in stage_plan.initial_edge_order)
             continue
         if decision.chosen == COLUMN_GRID:
-            stage_result = _column_grid_stage(
+            stage_result = column_grid_stage(
                 schematic,
                 unrouted_layout,
                 stage_plan,
@@ -596,7 +596,7 @@ def _derive_crossing_tiles(
                     "crossing tiles need the stage's lanes ordered top to bottom by their "
                     f"source rows; stage {stage_key} rows {rows}"
                 )
-        movement, crossings = _lane_movement(stage_plan)
+        movement, crossings = lane_movement(stage_plan)
         level_count = max(level for level, *_ in crossings) + 1
         band_x0 = max(source_xs)
         band_x1 = min(target_xs)
@@ -637,7 +637,7 @@ def _derive_crossing_tiles(
                 continue  # a lane that crosses nothing stays an ordinary net
             first, last, direction = movement[net_name]
             enter, leave = ("ul", "lr") if direction > 0 else ("ll", "ur")
-            p1, p2 = _net_endpoints(schematic, net_name)
+            p1, p2 = net_endpoints(schematic, net_name)
             previous = p1
             names: list[str] = []
             for index, level in enumerate(range(first, last + 1)):
@@ -805,7 +805,7 @@ def plain_corner_component(
     return component
 
 
-def _column_grid_stage(
+def column_grid_stage(
     schematic: Schematic,
     unrouted_layout: Component,
     stage_plan: CrossingStagePlan,
@@ -859,7 +859,7 @@ def _column_grid_stage(
     entry: dict[str, tuple[float, float]] = {}
     target: dict[str, tuple[float, float]] = {}
     for edge in stage_plan.initial_edge_order:
-        p1, p2 = _net_endpoints(schematic, edge.net_name)
+        p1, p2 = net_endpoints(schematic, edge.net_name)
         endpoints[edge.net_name] = (p1, p2)
         if p1 in anchors:
             entry[edge.net_name] = anchors[p1]
@@ -1349,7 +1349,7 @@ def derive_preplaced_crossing_layout(
     for net_name in schematic.netlist.routes:
         if net_name in interstage_net_names:
             continue
-        p1, p2 = _net_endpoints(schematic, net_name)
+        p1, p2 = net_endpoints(schematic, net_name)
         derived.add_net(Net(p1=p1, p2=p2, name=net_name))
     for net in segment_nets:
         derived.add_net(net)

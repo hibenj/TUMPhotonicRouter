@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 import gdsfactory as gf
 from gdsfactory.component import Component
 
-from photonic_router.records.route_rust_geometry import _rounded_point
+from photonic_router.records.route_rust_geometry import rounded_point
 
 if TYPE_CHECKING:
     from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
@@ -41,14 +41,14 @@ def _bbox_size_um(component: Component) -> tuple[float, float] | None:
 
 
 def _bbox_center_um(ref: Any) -> tuple[float, float] | None:
-    bounds = _bbox_bounds_um(ref)
+    bounds = bbox_bounds_um(ref)
     if bounds is None:
         return None
     left, bottom, right, top = bounds
     return (left + right) / 2.0, (bottom + top) / 2.0
 
 
-def _bbox_bounds_um(ref: Any) -> tuple[float, float, float, float] | None:
+def bbox_bounds_um(ref: Any) -> tuple[float, float, float, float] | None:
     try:
         bbox = ref.dbbox() if callable(ref.dbbox) else ref.dbbox
     except (AttributeError, TypeError):
@@ -114,7 +114,7 @@ def _active_crossing_component() -> Component | None:
             return None
 
 
-def _crossing_component_bbox_size_um() -> tuple[str, float, float] | None:
+def crossing_component_bbox_size_um() -> tuple[str, float, float] | None:
     component = _active_crossing_component()
     if component is None:
         return None
@@ -124,7 +124,7 @@ def _crossing_component_bbox_size_um() -> tuple[str, float, float] | None:
     return str(component.name), float(size[0]), float(size[1])
 
 
-def _point_um_from_mapping(value: object) -> tuple[float, float] | None:
+def point_um_from_mapping(value: object) -> tuple[float, float] | None:
     if not isinstance(value, (tuple, list)) or len(value) < 2:
         return None
     try:
@@ -142,8 +142,8 @@ def _segment_um_from_mapping(
 ) -> tuple[tuple[float, float], tuple[float, float]] | None:
     if not isinstance(value, (tuple, list)) or len(value) < 2:
         return None
-    start = _point_um_from_mapping(value[0])
-    end = _point_um_from_mapping(value[1])
+    start = point_um_from_mapping(value[0])
+    end = point_um_from_mapping(value[1])
     if start is None or end is None:
         return None
     if math.hypot(end[0] - start[0], end[1] - start[1]) <= 1.0e-9:
@@ -227,7 +227,7 @@ def _shared_crossing_component_clusters(
     return {index: set(cluster) for cluster in clusters_by_root.values() for index in cluster}
 
 
-def _crossing_footprint_polygon_metadata(
+def crossing_footprint_polygon_metadata(
     raw_crossing: Mapping[str, object],
 ) -> list[list[float]] | None:
     raw_polygon = raw_crossing.get("crossing_footprint_polygon_um")
@@ -247,7 +247,7 @@ def _crossing_footprint_polygon_metadata(
     return polygon if len(polygon) >= 3 else None
 
 
-def _place_realized_crossing_components(
+def place_realized_crossing_components(
     routed_layout: Component,
     crossing_plan_info: CrossingPlanInfo,
 ) -> list[dict[str, object]]:
@@ -291,7 +291,7 @@ def _place_realized_crossing_components(
             representative_index = min(cluster_indices)
             if index != representative_index:
                 continue
-        point_um = _point_um_from_mapping(raw_crossing.get("point_um"))
+        point_um = point_um_from_mapping(raw_crossing.get("point_um"))
         if point_um is None:
             continue
         rotation_deg = _crossing_component_rotation_deg(raw_crossing)
@@ -320,9 +320,9 @@ def _place_realized_crossing_components(
         placement: dict[str, object] = {
             "component_name": component_name,
             "instance_name": str(getattr(ref, "name", instance_name)),
-            "point_um": _rounded_point(point_um),
-            "center_um": _rounded_point(point_um),
-            "optical_center_um": _rounded_point(point_um),
+            "point_um": rounded_point(point_um),
+            "center_um": rounded_point(point_um),
+            "optical_center_um": rounded_point(point_um),
             "rotation_deg": round(float(rotation_deg), 6),
             "source_crossing_index": int(index),
             "classification": classification,
@@ -352,7 +352,7 @@ def _place_realized_crossing_components(
                 placement["shared_owner_net_names"] = sorted(shared_owner_names)
             if shared_owner_ids:
                 placement["shared_owner_net_ids"] = sorted(shared_owner_ids)
-        footprint_polygon = _crossing_footprint_polygon_metadata(raw_crossing)
+        footprint_polygon = crossing_footprint_polygon_metadata(raw_crossing)
         if footprint_polygon is not None:
             placement["crossing_footprint_polygon_um"] = footprint_polygon
         if component_bbox_um is not None:
@@ -367,7 +367,7 @@ def _place_realized_crossing_components(
     return placements
 
 
-def _legal_crossing_overlap_polygons_for_verification(
+def legal_crossing_overlap_polygons_for_verification(
     crossing_plan_info: CrossingPlanInfo | None,
 ) -> dict[tuple[int, int], tuple[tuple[tuple[float, float], ...], ...]]:
     if crossing_plan_info is None:
@@ -417,7 +417,7 @@ def _legal_crossing_overlap_polygons_for_verification(
     return {pair: tuple(polygons) for pair, polygons in polygons_by_pair.items()}
 
 
-def _legal_crossing_component_footprints_for_verification(
+def legal_crossing_component_footprints_for_verification(
     crossing_plan_info: CrossingPlanInfo | None,
 ) -> tuple[dict[str, object], ...]:
     if crossing_plan_info is None:

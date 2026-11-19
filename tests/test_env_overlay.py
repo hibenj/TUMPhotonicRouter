@@ -649,7 +649,7 @@ def test_long_straight_exempt_dense_fanout_optional_bool_semantics():
 
 def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypatch):
     """`PHOTONIC_ROUTER_FANOUT_ACCESS_MODE` overrides the `fanout_access_mode`
-    constructor argument of `_RouteNetsRustSession` when set; unset lets the
+    constructor argument of `RouteNetsRustSession` when set; unset lets the
     constructor argument (or its own default) through."""
     import sys
     from pathlib import Path
@@ -662,7 +662,7 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
     from gdsfactory.component import Component
     from gdsfactory.gpdk import get_generic_pdk
     from photonic_router.routing import session as routing_session
-    from photonic_router.routing.session import _RouteNetsRustSession
+    from photonic_router.routing.session import RouteNetsRustSession
 
     get_generic_pdk().activate()
 
@@ -684,7 +684,7 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
     from uuid import uuid4
 
     def _session(fanout_access_mode, config=None):
-        return _RouteNetsRustSession(
+        return RouteNetsRustSession(
             Component(f"dummy_unrouted_{uuid4().hex}"),
             _DummySchematic(),
             session_options(fanout_access_mode=fanout_access_mode, config=config),

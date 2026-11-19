@@ -11,7 +11,7 @@ crossing debug JSON / the verification reports only carry the keys that were
 actually written, so a key that was never set must not appear. `None` is that
 "not written yet" marker for every optional field, `to_dict()` drops those
 fields, and `from_dict()` restores exactly what it was given. The ten fields
-`photonic_router.crossings.route_rust_crossing_plan._build_crossing_plan_info` always writes
+`photonic_router.crossings.route_rust_crossing_plan.build_crossing_plan_info` always writes
 are therefore not optional and are always emitted.
 
 `to_dict()` emits the keys in this class's declaration order, which is the
@@ -46,7 +46,7 @@ class CrossingPlanInfo:
     the phase that writes the field.
     """
 
-    # ---- always written by `_build_crossing_plan_info` (phase 4) ----------
+    # ---- always written by `build_crossing_plan_info` (phase 4) ----------
     enabled: bool = False
     """Whether crossing-aware routing is on at all. w:4"""
 
@@ -77,7 +77,7 @@ class CrossingPlanInfo:
     crossing_half_size_cells: int = 0
     """Half the crossing footprint, in grid cells. w:4"""
 
-    # ---- optional, `_build_crossing_plan_info` (phase 4) ------------------
+    # ---- optional, `build_crossing_plan_info` (phase 4) ------------------
     reason: str | None = None
     """Why no plan was built (lidar-pure mode, or the demand could not be built). w:4"""
 
@@ -243,7 +243,7 @@ class CrossingPlanInfo:
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> CrossingPlanInfo:
-        """Adopt a plan mapping -- `_build_crossing_plan_info`'s output, or one
+        """Adopt a plan mapping -- `build_crossing_plan_info`'s output, or one
         round-tripped through `RustRouteDebugArtifacts`.
 
         Unknown keys are an error rather than silently dropped data: every key

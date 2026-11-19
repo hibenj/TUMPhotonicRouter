@@ -28,14 +28,14 @@ from photonic_router.routing.router_setup import (  # noqa: E402
     dense_obstacle_cell_cap,
 )
 from photonic_router.routing.session import (  # noqa: E402
-    _RouteNetsRustSession,
+    RouteNetsRustSession,
     route_nets_rust,
 )
 
 __all__ = [
     "DENSE_OBSTACLE_CELL_CAP_MARGIN",
     "NEGOTIATED_MAX_ROUNDS",
-    "_RouteNetsRustSession",
+    "RouteNetsRustSession",
     "analyze_meander_insertion_for_requirements",
     "dense_obstacle_cell_cap",
     "route_match_and_realize",

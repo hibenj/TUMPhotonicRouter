@@ -6,9 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from photonic_router.crossings.route_rust_crossing_components import (
-    _place_realized_crossing_components,
+    place_realized_crossing_components,
 )
-from photonic_router.crossings.route_rust_crossing_plan import _write_crossing_debug_artifacts
+from photonic_router.crossings.route_rust_crossing_plan import write_crossing_debug_artifacts
 from photonic_router.records.route_rust_realization import realize_routed_net_records
 from photonic_router.records.route_rust_records import build_route_debug_artifacts
 from photonic_router.records.route_rust_types import (
@@ -66,13 +66,13 @@ def realize_and_assemble_debug_artifacts(
         timing.record_pipeline_timing(
             settings, state, "direct_realization", t_direct_realization_start
         )
-        _place_realized_crossing_components(state.routed_layout, state.crossing_plan_info)
+        place_realized_crossing_components(state.routed_layout, state.crossing_plan_info)
     elif state.crossing_plan_info.enabled:
         if state.crossing_plan_info.realized_crossing_components is None:
             state.crossing_plan_info.realized_crossing_components = []
         if state.crossing_plan_info.realized_crossing_component_count is None:
             state.crossing_plan_info.realized_crossing_component_count = 0
-    _write_crossing_debug_artifacts(
+    write_crossing_debug_artifacts(
         debug_path=state.obstacles.debug_path
         if state.obstacles.debug_path is not None
         else Path("build"),

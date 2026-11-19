@@ -42,7 +42,7 @@ def test_crossing_plan_needs_no_topology_metadata():
     # depths and ranks from the graph in that case (an empty mapping had to
     # mean "derive", found 2026-09-04); the plan now comes from the placed
     # layout alone (`photonic_router.crossings.crossing_demand`), the same call path
-    # as the router's `_build_crossing_plan_info`.
+    # as the router's `build_crossing_plan_info`.
     from benchmarks.multiportmmi_8x8 import build_schematic as build_mm8
 
     schematic = build_mm8()

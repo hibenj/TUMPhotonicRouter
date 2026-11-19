@@ -23,31 +23,31 @@ from typing import Any, cast
 from gdsfactory.component import Component
 
 from photonic_router.crossings.route_rust_crossing_components import (
-    _legal_crossing_component_footprints_for_verification,
-    _legal_crossing_overlap_polygons_for_verification,
-    _place_realized_crossing_components,
+    legal_crossing_component_footprints_for_verification,
+    legal_crossing_overlap_polygons_for_verification,
+    place_realized_crossing_components,
 )
 from photonic_router.crossings.route_rust_crossing_plan import (
-    _augment_insertion_loss_report,
-    _augment_insertion_loss_report_from_realized_intersections,
-    _write_crossing_debug_artifacts,
+    augment_insertion_loss_report,
+    augment_insertion_loss_report_from_realized_intersections,
+    write_crossing_debug_artifacts,
 )
 from photonic_router.crossings.route_rust_crossing_verification import (
-    _populate_realized_intersections_from_native_crossing_events,
-    _verify_realized_route_intersections,
+    populate_realized_intersections_from_native_crossing_events,
+    verify_realized_route_intersections,
 )
-from photonic_router.gds.route_rust_debug_artifacts import _dump_photonic_probe_failure_artifacts
-from photonic_router.records.route_rust_obstacle_config import _default_obstacle_layers
+from photonic_router.gds.route_rust_debug_artifacts import dump_photonic_probe_failure_artifacts
+from photonic_router.records.route_rust_obstacle_config import default_obstacle_layers
 from photonic_router.records.route_rust_realization import realize_routed_net_records
 from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.routing import timing
 from photonic_router.routing.dispatch import (
     NEGOTIATED_MAX_ROUNDS,
-    _record_route,
     native_route_jobs,
+    record_route,
 )
 from photonic_router.routing.finalize import (
-    _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids,
+    apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids,
 )
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import VerifiedRecords
@@ -502,14 +502,14 @@ def _repair_final_illegal_crossings(
         net_id = int(entry["net_id"])
         job = state.run.route_jobs_by_id[net_id]
         route_obj = entry["route"]
-        _record_route(settings, state, job, route_obj, opened_by_id[net_id])
+        record_route(settings, state, job, route_obj, opened_by_id[net_id])
         repaired_records.append(state.search.bookkeeping.records_by_id[net_id])
 
     if settings.enable_checked_endpoint_correction and repaired_records:
         repaired_net_ids = [
             int(record.net_id) for record in repaired_records if record.net_id is not None
         ]
-        _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+        apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
             settings,
             state,
             repaired_net_ids,
@@ -725,7 +725,7 @@ def _make_photonic_verification_probe_layout(
     timing.record_pipeline_timing(settings, state, "photonic_probe_realize", t_probe_realize_start)
     if state.crossing_plan_info.enabled:
         t_probe_crossings_start = timing.pipeline_timer_start(settings, state)
-        _place_realized_crossing_components(probe_layout, state.crossing_plan_info)
+        place_realized_crossing_components(probe_layout, state.crossing_plan_info)
         timing.record_pipeline_timing(
             settings,
             state,
@@ -762,7 +762,7 @@ def _refresh_photonic_verification(settings, state) -> PhotonicVerificationResul
         unrouted_layout=settings.unrouted_layout,
         route_width_um=settings.route_width_um,
         route_layer=settings.route_layer,
-        obstacle_layers=_default_obstacle_layers(
+        obstacle_layers=default_obstacle_layers(
             settings.route_layer,
             include_heater_obstacles=settings.include_heater_obstacles,
         ),
@@ -770,10 +770,10 @@ def _refresh_photonic_verification(settings, state) -> PhotonicVerificationResul
         allow_45_degree_turns=settings.allow_45_degree_turns,
         bend_radius_cells=state.kernel.radii.bend_radius_cells,
         legal_overlap_polygons_by_net_id_pair_um=(
-            _legal_crossing_overlap_polygons_for_verification(state.crossing_plan_info)
+            legal_crossing_overlap_polygons_for_verification(state.crossing_plan_info)
         ),
         crossing_component_footprints_um=(
-            _legal_crossing_component_footprints_for_verification(state.crossing_plan_info)
+            legal_crossing_component_footprints_for_verification(state.crossing_plan_info)
         ),
         check_route_coverage=settings.debug_stop_after_route_index is None,
         check_endpoint_connectivity=settings.enable_checked_endpoint_correction,
@@ -886,10 +886,10 @@ def _repair_final_photonic_issues(
         net_id = int(entry["net_id"])
         job = state.run.route_jobs_by_id[net_id]
         route_obj = entry["route"]
-        _record_route(settings, state, job, route_obj, opened_by_id[net_id])
+        record_route(settings, state, job, route_obj, opened_by_id[net_id])
         repaired_net_ids.append(net_id)
     if settings.enable_checked_endpoint_correction and repaired_net_ids:
-        failed_corrections = _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+        failed_corrections = apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
             settings,
             state,
             repaired_net_ids,
@@ -952,7 +952,7 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
             t_native_events_start,
         )
         t_insertion_loss_start = timing.pipeline_timer_start(settings, state)
-        _augment_insertion_loss_report(
+        augment_insertion_loss_report(
             crossing_plan_info=state.crossing_plan_info,
             routed_records_by_net_id=state.search.bookkeeping.records_by_id,
             native_crossing_events=native_crossing_events,
@@ -965,14 +965,14 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
         )
     t_illegal_crossing_verify_start = timing.pipeline_timer_start(settings, state)
     if settings.enable_internal_photonic_probe_verification:
-        illegal = _verify_realized_route_intersections(
+        illegal = verify_realized_route_intersections(
             crossing_plan_info=state.crossing_plan_info,
             routed_records_by_net_id=state.search.bookkeeping.records_by_id,
             realization_grid_spec=state.run.realization_grid_spec,
             native_crossing_verdicts=native_crossing_verdicts,
         )
     else:
-        illegal = _populate_realized_intersections_from_native_crossing_events(
+        illegal = populate_realized_intersections_from_native_crossing_events(
             crossing_plan_info=state.crossing_plan_info,
             routed_records_by_net_id=state.search.bookkeeping.records_by_id,
             native_crossing_events=native_crossing_events,
@@ -986,7 +986,7 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
         t_illegal_crossing_verify_start,
     )
     t_realized_insertion_loss_start = timing.pipeline_timer_start(settings, state)
-    _augment_insertion_loss_report_from_realized_intersections(
+    augment_insertion_loss_report_from_realized_intersections(
         crossing_plan_info=state.crossing_plan_info,
         routed_records_by_net_id=state.search.bookkeeping.records_by_id,
     )
@@ -1068,14 +1068,14 @@ def repair_and_verify_final_geometry(
                 break
             final_photonic_verification = _refresh_photonic_verification(settings, state)
         if not illegal_realized_crossings and not final_photonic_verification.success:
-            _write_crossing_debug_artifacts(
+            write_crossing_debug_artifacts(
                 debug_path=state.obstacles.debug_path
                 if state.obstacles.debug_path is not None
                 else Path("build"),
                 debug_prefix=settings.debug_prefix,
                 crossing_plan_info=state.crossing_plan_info,
             )
-            probe_failure_artifacts = _dump_photonic_probe_failure_artifacts(
+            probe_failure_artifacts = dump_photonic_probe_failure_artifacts(
                 debug_path=state.obstacles.debug_path
                 if state.obstacles.debug_path is not None
                 else Path("build"),

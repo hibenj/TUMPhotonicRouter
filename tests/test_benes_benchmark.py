@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from photonic_router.benchmark_metadata import load_benchmark_metadata
 from photonic_router.crossings.crossing_plan import CrossingEvent, CrossingPlan, build_crossing_plan
-from photonic_router.crossings.route_rust_crossing_plan import _resolve_crossing_half_size_cells
+from photonic_router.crossings.route_rust_crossing_plan import resolve_crossing_half_size_cells
 from photonic_router.crossings.topology_analysis import analyze_schematic_topology
 from photonic_router.plm.path_length_graph import build_graph_from_schematic
 from photonic_router.records.layout_from_schematic import layout_from_schematic
@@ -271,7 +271,7 @@ def test_crossing_plan_orders_4x4_benes_events_by_stage():
 
 
 def test_crossing_keepout_size_can_be_derived_from_pdk_component():
-    half_size_cells, info = _resolve_crossing_half_size_cells(
+    half_size_cells, info = resolve_crossing_half_size_cells(
         requested_half_size_cells=0,
         enable_crossings=True,
         grid_size_um=2.0,

@@ -155,7 +155,7 @@ def _write_centerline_probe_svg(
     path.write_text("\n".join(parts) + "\n", encoding="utf-8")
 
 
-def _dump_photonic_probe_failure_artifacts(
+def dump_photonic_probe_failure_artifacts(
     *,
     debug_path: Path,
     debug_prefix: str,
@@ -292,7 +292,7 @@ def _cells_bbox(cells: set[tuple[int, int]]) -> tuple[int, int, int, int] | None
     return min(xs), max(xs), min(ys), max(ys)
 
 
-def _rect_cell_count(
+def rect_cell_count(
     *,
     min_x: int,
     max_x: int,
@@ -304,7 +304,7 @@ def _rect_cell_count(
     return width * height
 
 
-def _rect_overlap_cell_count(
+def rect_overlap_cell_count(
     rect: tuple[int, int, int, int],
     *,
     min_x: int,
@@ -317,7 +317,7 @@ def _rect_overlap_cell_count(
     overlap_max_x = min(max_x, rect_max_x)
     overlap_min_y = max(min_y, rect_min_y)
     overlap_max_y = min(max_y, rect_max_y)
-    return _rect_cell_count(
+    return rect_cell_count(
         min_x=overlap_min_x,
         max_x=overlap_max_x,
         min_y=overlap_min_y,
@@ -325,7 +325,7 @@ def _rect_overlap_cell_count(
     )
 
 
-def _route_cells_bbox(cells: Iterable[tuple[int, int]]) -> tuple[int, int, int, int] | None:
+def route_cells_bbox(cells: Iterable[tuple[int, int]]) -> tuple[int, int, int, int] | None:
     normalized = [(int(cell[0]), int(cell[1])) for cell in cells]
     if not normalized:
         return None

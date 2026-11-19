@@ -12,15 +12,15 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 from photonic_router.crossings.route_rust_crossing_components import (
-    _place_realized_crossing_components,
+    place_realized_crossing_components,
 )
 from photonic_router.crossings.route_rust_crossing_plan import (
-    _augment_insertion_loss_report_from_realized_intersections,
     _routed_records_by_net_id,
-    _write_crossing_debug_artifacts,
+    augment_insertion_loss_report_from_realized_intersections,
+    write_crossing_debug_artifacts,
 )
 from photonic_router.crossings.route_rust_crossing_verification import (
-    _verify_realized_route_intersections,
+    verify_realized_route_intersections,
 )
 from photonic_router.plm import route_rust_meanders as _meander_impl
 from photonic_router.plm.path_length_diagnostics import (
@@ -41,9 +41,9 @@ from photonic_router.plm.path_length_requirements import (
     requirement_to_dict,
 )
 from photonic_router.records.route_rust_obstacle_config import (
-    _resolve_obstacle_config,
-    _with_bbox_cell_materialization,
-    _with_obstacle_mode,
+    resolve_obstacle_config,
+    with_bbox_cell_materialization,
+    with_obstacle_mode,
 )
 from photonic_router.records.route_rust_realization import realize_routed_net_records
 from photonic_router.records.route_rust_records import build_port_alignment_diagnostics
@@ -64,7 +64,7 @@ from photonic_router.routing.router_setup import (  # noqa: F401
     dense_obstacle_cell_cap,
 )
 from photonic_router.routing.session import (
-    _RouteNetsRustSession,
+    RouteNetsRustSession,
     route_nets_rust,
 )
 from photonic_router.static_obstacle_builder import (
@@ -109,7 +109,7 @@ def route_match_and_realize(
     realization = options.realization
     route_obstacle_config = options.obstacle_config
     if debug.debug_dir is None:
-        route_obstacle_config = _with_bbox_cell_materialization(
+        route_obstacle_config = with_bbox_cell_materialization(
             options.obstacle_config,
             materialize_bbox_cells=False,
             populate_obstacle_map=False,
@@ -233,7 +233,7 @@ def route_match_and_realize(
         if debug_artifacts.realization_grid_spec is None:
             raise RuntimeError("Missing realization grid spec from routing phase.")
         t_meander_obstacle_start = time.perf_counter()
-        resolved_user_obstacle_config = _resolve_obstacle_config(
+        resolved_user_obstacle_config = resolve_obstacle_config(
             options.obstacle_config,
             route_layer=realization.route_layer,
             include_heater_obstacles=options.include_heater_obstacles,
@@ -255,7 +255,7 @@ def route_match_and_realize(
         # conservative component bboxes. Keep static obstacles strict: source
         # and target access openings are valid for route entry/exit only, not
         # for placing meander boxes.
-        meander_obstacle_config = _with_obstacle_mode(
+        meander_obstacle_config = with_obstacle_mode(
             resolved_user_obstacle_config,
             obstacle_mode="rasterized_polygons",
             clear_port_open_cells_from_static=False,
@@ -363,18 +363,18 @@ def route_match_and_realize(
     if plan_info is not None and options.enable_internal_photonic_probe_verification:
         final_records_by_net_id = _routed_records_by_net_id(records_for_realization)
         if final_records_by_net_id:
-            illegal_realized_crossings = _verify_realized_route_intersections(
+            illegal_realized_crossings = verify_realized_route_intersections(
                 crossing_plan_info=plan_info,
                 routed_records_by_net_id=final_records_by_net_id,
                 realization_grid_spec=debug_artifacts.realization_grid_spec,
                 native_crossing_verdicts=plan_info.native_crossing_verdicts,
             )
-            _augment_insertion_loss_report_from_realized_intersections(
+            augment_insertion_loss_report_from_realized_intersections(
                 crossing_plan_info=plan_info,
                 routed_records_by_net_id=final_records_by_net_id,
             )
             if illegal_realized_crossings:
-                _write_crossing_debug_artifacts(
+                write_crossing_debug_artifacts(
                     debug_path=Path(debug.debug_dir)
                     if debug.debug_dir is not None
                     else Path("build"),
@@ -407,8 +407,8 @@ def route_match_and_realize(
         enable_endpoint_correction=realization.enable_checked_endpoint_correction,
     )
     if plan_info is not None:
-        _place_realized_crossing_components(routed_layout, plan_info)
-        _write_crossing_debug_artifacts(
+        place_realized_crossing_components(routed_layout, plan_info)
+        write_crossing_debug_artifacts(
             debug_path=Path(debug.debug_dir) if debug.debug_dir is not None else None,
             debug_prefix=debug.debug_prefix,
             crossing_plan_info=plan_info,
@@ -454,7 +454,7 @@ def static_fanout_anchors_um(
     routing run's (fan-out access mode, bend radius, obstacle configuration),
     otherwise the anchors differ.
     """
-    session = _RouteNetsRustSession(unrouted_layout, schematic, options)
+    session = RouteNetsRustSession(unrouted_layout, schematic, options)
     state = session.prepare()
     build_route_jobs_and_fanout_clustering(session.settings, state, schematic.netlist.routes)
     return {

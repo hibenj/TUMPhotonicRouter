@@ -44,7 +44,7 @@ from photonic_router.static_obstacle_builder import GridSpec
 if TYPE_CHECKING:  # annotation-only: `route_jobs` imports this module
     from gdsfactory.typings import Port
 
-    from photonic_router.routing.route_jobs import _FanoutAnchor
+    from photonic_router.routing.route_jobs import FanoutAnchor
 
 
 @dataclass(frozen=True)
@@ -220,7 +220,7 @@ class FanoutStubs:
     """Phase 3, step 2: the static fan-out stubs and the nets that use them."""
 
     #: the stub's anchor per port spec; a route to that port starts there
-    anchor_by_port_spec: dict[str, _FanoutAnchor]
+    anchor_by_port_spec: dict[str, FanoutAnchor]
     #: nets with a stub on either side, on the source side, on the target side
     anchor_net_ids: set[int]
     anchor_source_net_ids: set[int]

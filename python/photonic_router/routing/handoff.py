@@ -15,7 +15,7 @@ from photonic_router.records.route_order import depth_by_node_from_jobs, order_r
 from photonic_router.records.route_rust_types import RipupRerouteConfig, RouteJob
 from photonic_router.routing import timing
 from photonic_router.routing.products import RunPlan, StateOpenings, StaticHandoffCells
-from photonic_router.routing.route_jobs import _angle_to_step, _in_bounds, port_to_grid_state
+from photonic_router.routing.route_jobs import _in_bounds, angle_to_step, port_to_grid_state
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import FinalJobs
 from photonic_router.routing.state import SearchLog, SessionState
@@ -241,7 +241,7 @@ def _opened_cells_for_spec(
     )
 
 
-def _foreign_keepout_open_cells_for_spec(settings, state, port_spec: str) -> set[tuple[int, int]]:
+def foreign_keepout_open_cells_for_spec(settings, state, port_spec: str) -> set[tuple[int, int]]:
     cluster_specs = state.runways.source_cluster_specs_by_port_spec.get(port_spec)
     if cluster_specs:
         cells: set[tuple[int, int]] = set()
@@ -376,7 +376,7 @@ def _endpoint_bump_candidate_open_cells_for_state(
     """Cells a local endpoint bump may need opened against its own port pad."""
     base_x = int(grid_state.x)
     base_y = int(grid_state.y)
-    step_x, step_y = _angle_to_step(settings, state, int(grid_state.angle) % 8)
+    step_x, step_y = angle_to_step(settings, state, int(grid_state.angle) % 8)
     side_steps = ((-step_y, step_x), (step_y, -step_x))
     reach = max(1, int(state.kernel.radii.bend_radius_cells))
     axis_reach = 4 * reach
@@ -403,7 +403,7 @@ def _endpoint_bump_candidate_open_cells_for_state(
     return cells
 
 
-def _states_and_openings(
+def states_and_openings(
     settings,
     state,
     job: RouteJob,
@@ -481,10 +481,10 @@ def _states_and_openings(
     source_anchor_cell = (int(source_state.x), int(source_state.y))
     target_anchor_cell = (int(target_state.x), int(target_state.y))
     endpoint_foreign_keepout_open_cells = set(
-        _foreign_keepout_open_cells_for_spec(settings, state, port1_spec)
+        foreign_keepout_open_cells_for_spec(settings, state, port1_spec)
     )
     endpoint_foreign_keepout_open_cells.update(
-        _foreign_keepout_open_cells_for_spec(settings, state, port2_spec)
+        foreign_keepout_open_cells_for_spec(settings, state, port2_spec)
     )
     opened_candidate_cells = set(
         _opened_cells_for_spec(
@@ -738,7 +738,7 @@ def _precompute_openings(
 
     t_state_opening_precompute_start = timing.pipeline_timer_start(settings, state)
     state_openings_by_id = {
-        int(job.net_id): _states_and_openings(settings, state, job) for job in route_jobs
+        int(job.net_id): states_and_openings(settings, state, job) for job in route_jobs
     }
     timing.record_pipeline_timing(
         settings,

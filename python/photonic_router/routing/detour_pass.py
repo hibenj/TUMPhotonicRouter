@@ -22,12 +22,12 @@ from collections.abc import Iterable, Mapping
 from photonic_router.records.route_rust_types import RouteJob
 from photonic_router.routing.dispatch import (
     NEGOTIATED_MAX_ROUNDS,
-    _record_route,
-    _routing_endpoint_center_um,
     native_route_jobs,
+    record_route,
+    routing_endpoint_center_um,
 )
 from photonic_router.routing.finalize import (
-    _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids,
+    apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids,
 )
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import RoutedRecords
@@ -117,8 +117,8 @@ def run_detour_pass(
         job = jobs_by_id.get(net_id)
         if job is None:
             continue
-        source_center = _routing_endpoint_center_um(settings, state, job, source=True)
-        target_center = _routing_endpoint_center_um(settings, state, job, source=False)
+        source_center = routing_endpoint_center_um(settings, state, job, source=True)
+        target_center = routing_endpoint_center_um(settings, state, job, source=False)
         if source_center is None or target_center is None:
             continue
         bounds[net_id] = free_lower_bound_um(source_center, target_center, bend_radius_um)
@@ -165,10 +165,10 @@ def run_detour_pass(
         for raw_entry in result.get("routes", []):
             entry = dict(raw_entry)
             net_id = int(entry["net_id"])
-            _record_route(settings, state, jobs_by_id[net_id], entry["route"], opened_by_id[net_id])
+            record_route(settings, state, jobs_by_id[net_id], entry["route"], opened_by_id[net_id])
             rerouted_ids.append(net_id)
         if settings.enable_checked_endpoint_correction and rerouted_ids:
-            _apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+            apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
                 settings, state, rerouted_ids, record_pipeline_timing=False
             )
         after_um = sum(_route_lengths_um(state, detoured).values())

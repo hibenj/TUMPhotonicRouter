@@ -44,7 +44,7 @@ build_static_obstacle_map = _sob.build_static_obstacle_map
 _load_rust_backend = _sob._load_rust_backend
 
 
-class _RouteNetsRustSession:
+class RouteNetsRustSession:
     """One routing run: the settings, the state the phases share, and `run`."""
 
     def __init__(
@@ -149,5 +149,5 @@ def route_nets_rust(
     repairs the result and, unless `options.realization.defer_realization`
     is set, adds one polygon per routed net to a copy of the layout.
     """
-    session = _RouteNetsRustSession(unrouted_layout, schematic, options)
+    session = RouteNetsRustSession(unrouted_layout, schematic, options)
     return session.run()

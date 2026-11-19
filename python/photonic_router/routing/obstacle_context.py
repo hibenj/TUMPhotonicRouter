@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from photonic_router.crossings.route_rust_crossing_plan import _resolve_crossing_half_size_cells
+from photonic_router.crossings.route_rust_crossing_plan import resolve_crossing_half_size_cells
 from photonic_router.gds.route_rust_debug_artifacts import _ensure_dir
-from photonic_router.records.route_rust_geometry import _format_route_indices
-from photonic_router.records.route_rust_obstacle_config import _resolve_obstacle_config
+from photonic_router.records.route_rust_geometry import format_route_indices
+from photonic_router.records.route_rust_obstacle_config import resolve_obstacle_config
 from photonic_router.records.route_rust_types import _as_float
 from photonic_router.routing import timing
 from photonic_router.routing.products import ObstacleContext
@@ -36,7 +36,7 @@ def build_static_obstacle_context(
         RuntimeError: the kernel module does not expose `PyPhotonicRouter`.
     """
     t_obstacle_start = timing.pipeline_timer_start(settings)
-    resolved_obstacle_config = _resolve_obstacle_config(
+    resolved_obstacle_config = resolve_obstacle_config(
         settings.obstacle_config,
         route_layer=settings.route_layer,
         include_heater_obstacles=settings.include_heater_obstacles,
@@ -48,7 +48,7 @@ def build_static_obstacle_context(
     if settings.debug_timing and settings.verbose_route_diagnostics:
         print(f"      - Obstacle Map time: {timings_s.get('obstacle_map', 0.0):.4f} s")
     grid = obstacle_map.grid
-    resolved_crossing_half_size_cells, crossing_device_info = _resolve_crossing_half_size_cells(
+    resolved_crossing_half_size_cells, crossing_device_info = resolve_crossing_half_size_cells(
         requested_half_size_cells=int(settings.crossing_half_size_cells),
         enable_crossings=bool(settings.enable_crossings),
         grid_size_um=float(grid.grid_size_um),
@@ -76,7 +76,7 @@ def build_static_obstacle_context(
     if settings.debug_route_indices is None:
         print(f"\nRouting {len(nets)} nets using Rust router...")
     else:
-        selected = _format_route_indices(settings.debug_route_indices)
+        selected = format_route_indices(settings.debug_route_indices)
         print(
             f"\nRouting {len(nets)} nets using Rust router "
             f"(printing/exporting route SVGs for indices: {selected})..."

@@ -21,7 +21,7 @@ from photonic_router.electrical.river_routing import (
     count_direction_changes,
     route_bundles_as_channels,
 )
-from photonic_router.electrical.terminal_contacts import _orientation_distance
+from photonic_router.electrical.terminal_contacts import orientation_distance
 from photonic_router.electrical.types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
@@ -478,7 +478,7 @@ def _exit_facing_port_name(
     return min(
         terminal.ports,
         key=lambda port: (
-            _orientation_distance(port.orientation, target_orientation),
+            orientation_distance(port.orientation, target_orientation),
             port.name,
         ),
     ).name

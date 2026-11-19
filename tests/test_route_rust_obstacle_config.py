@@ -5,13 +5,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
-from photonic_router.records.route_rust_obstacle_config import _resolve_obstacle_config
+from photonic_router.records.route_rust_obstacle_config import resolve_obstacle_config
 from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 
 def test_resolve_obstacle_config_defaults_to_route_layer_when_missing():
-    resolved = _resolve_obstacle_config(None, route_layer=(1, 0))
+    resolved = resolve_obstacle_config(None, route_layer=(1, 0))
 
     assert isinstance(resolved, StaticObstacleMapConfig)
     assert resolved.obstacle_layers == ((1, 0),)
@@ -20,7 +20,7 @@ def test_resolve_obstacle_config_defaults_to_route_layer_when_missing():
 
 
 def test_resolve_obstacle_config_can_include_heater_layers():
-    resolved = _resolve_obstacle_config(
+    resolved = resolve_obstacle_config(
         None,
         route_layer=(1, 0),
         include_heater_obstacles=True,
@@ -31,7 +31,7 @@ def test_resolve_obstacle_config_can_include_heater_layers():
 
 
 def test_resolve_obstacle_config_keeps_optical_only_when_heaters_disabled():
-    resolved = _resolve_obstacle_config(
+    resolved = resolve_obstacle_config(
         None,
         route_layer=(1, 0),
         include_heater_obstacles=False,
@@ -47,7 +47,7 @@ def test_resolve_obstacle_config_preserves_existing_layers():
         obstacle_layers=((1, 0), (2, 0)),
     )
 
-    resolved = _resolve_obstacle_config(config, route_layer=(1, 0))
+    resolved = resolve_obstacle_config(config, route_layer=(1, 0))
 
     assert isinstance(resolved, StaticObstacleMapConfig)
     assert resolved.grid_size_um == 0.25
@@ -57,7 +57,7 @@ def test_resolve_obstacle_config_preserves_existing_layers():
 def test_resolve_obstacle_config_sets_default_layers_for_partial_dataclass():
     config = StaticObstacleMapConfig(grid_size_um=0.25, obstacle_layers=None)
 
-    resolved = _resolve_obstacle_config(config, route_layer=(3, 1))
+    resolved = resolve_obstacle_config(config, route_layer=(3, 1))
 
     assert isinstance(resolved, StaticObstacleMapConfig)
     assert resolved.grid_size_um == 0.25
@@ -65,7 +65,7 @@ def test_resolve_obstacle_config_sets_default_layers_for_partial_dataclass():
 
 
 def test_resolve_obstacle_config_sets_default_layers_for_dict():
-    resolved = _resolve_obstacle_config(
+    resolved = resolve_obstacle_config(
         {"grid_size_um": 1.0, "obstacle_layers": None},
         route_layer=(7, 2),
     )
@@ -81,7 +81,7 @@ def test_resolve_obstacle_config_preserves_obstacle_mode():
         obstacle_mode="bounding_boxes",
     )
 
-    resolved = _resolve_obstacle_config(config, route_layer=(1, 0))
+    resolved = resolve_obstacle_config(config, route_layer=(1, 0))
 
     assert isinstance(resolved, StaticObstacleMapConfig)
     assert resolved.obstacle_mode == "bounding_boxes"
@@ -93,7 +93,7 @@ def test_resolve_obstacle_config_preserves_clear_port_opening_option():
         obstacle_mode="rasterized_polygons",
     )
 
-    resolved = _resolve_obstacle_config(config, route_layer=(1, 0))
+    resolved = resolve_obstacle_config(config, route_layer=(1, 0))
 
     assert isinstance(resolved, StaticObstacleMapConfig)
     assert resolved.clear_port_open_cells_from_static is False

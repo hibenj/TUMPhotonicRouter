@@ -214,8 +214,8 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
 def footprint_resolver_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the two `route_jobs` helpers `_resolve_port_footprint_cells` reaches.
 
-    Milestone 5 Slice 2b: the helper calls `_port_access_rule_for` and
-    `_is_dense_source_fanout_instance` as module functions (imported into
+    Milestone 5 Slice 2b: the helper calls `port_access_rule_for` and
+    `is_dense_source_fanout_instance` as module functions (imported into
     `crossing_plan_stage` from their home module) instead of through a session
     forwarder, so the test stubs them where the helper looks them up. Each stub
     answers from the fake session it is handed, so one monkeypatch serves
@@ -223,12 +223,12 @@ def footprint_resolver_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(
         routing_crossing_plan_stage,
-        "_port_access_rule_for",
+        "port_access_rule_for",
         lambda _settings, state, **_kwargs: state.access_rule,
     )
     monkeypatch.setattr(
         routing_crossing_plan_stage,
-        "_is_dense_source_fanout_instance",
+        "is_dense_source_fanout_instance",
         lambda _settings, state, instance_name: (
             instance_name in state.dense_source_fanout_instances
         ),
@@ -1356,7 +1356,7 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
     # target at the raw cell center and realization then rejected the
     # slanted spliced stub. The pass must now submit a correction job for
     # the net with the source side left alone (pre-stitched) and the target
-    # resolved through `_routing_endpoint_center_um` (the anchor). See
+    # resolved through `routing_endpoint_center_um` (the anchor). See
     # `.agent/execplans/2026-08-27-router-fixes-for-crossing-grid-stubs.md`.
     net_id = 1
     record = SimpleNamespace(
@@ -1401,16 +1401,16 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
     # Milestone 5 Slice 2b: the pass calls its collaborators as module
     # functions, so the stubs are monkeypatched where `finalize` looks them up
     # instead of being attached to the fake session.
-    monkeypatch.setattr(routing_finalize, "_timing_start", lambda _settings, _state: 0.0)
-    monkeypatch.setattr(routing_finalize, "_routing_endpoint_center_um", _endpoint)
+    monkeypatch.setattr(routing_finalize, "timing_start", lambda _settings, _state: 0.0)
+    monkeypatch.setattr(routing_finalize, "routing_endpoint_center_um", _endpoint)
     monkeypatch.setattr(
         routing_finalize,
-        "_state_openings_for_job",
+        "state_openings_for_job",
         lambda _settings, _state, _job: (None, None, set(), None, None),
     )
     monkeypatch.setattr(
         routing_finalize,
-        "_clearance_exempt_cells_for_job",
+        "clearance_exempt_cells_for_job",
         lambda _settings, _state, _job: [],
     )
     monkeypatch.setattr(
@@ -1776,13 +1776,13 @@ def test_only_rules_flagged_for_instance_geometry_open_the_heater_pad(monkeypatc
     }
     monkeypatch.setattr(
         routing_route_jobs,
-        "_schematic_instance_component_name",
+        "schematic_instance_component_name",
         lambda _schematic, name: component_by_instance[name],
     )
     monkeypatch.setattr(routing_layers, "REGISTERED_PORT_ACCESS_RULES", [grid_rule])
     settings = SimpleNamespace(schematic=object())
     state = state_for_test()
-    rule_for = routing_route_jobs._port_access_rule_for
+    rule_for = routing_route_jobs.port_access_rule_for
     port = SimpleNamespace(port_type="optical")
 
     grid = rule_for(settings, state, instance_name="grid", port_name="in_0", port=port)

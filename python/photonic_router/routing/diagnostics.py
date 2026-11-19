@@ -2,7 +2,7 @@
 
 Nothing in here takes a routing decision. `dispatch.py` calls these writers
 when `state.obstacles.debug_path` or the attempt-diagnostics flag is set; the two small
-state readers `_state_openings_for_job` and `_route_cells_from_router` live
+state readers `state_openings_for_job` and `route_cells_from_router` live
 here because both the dispatch and the writers need them.
 """
 
@@ -19,25 +19,25 @@ from xml.sax.saxutils import escape as _xml_escape
 from photonic_router.gds.route_rust_debug_artifacts import (
     _cells_bbox,
     _ensure_dir,
-    _rect_cell_count,
-    _rect_overlap_cell_count,
-    _route_cells_bbox,
+    rect_cell_count,
+    rect_overlap_cell_count,
+    route_cells_bbox,
 )
 from photonic_router.records.route_rust_geometry import (
-    _format_illegal_crossing_root_causes_line,
-    _format_native_repair_trace_lines,
+    format_illegal_crossing_root_causes_line,
+    format_native_repair_trace_lines,
 )
-from photonic_router.records.route_rust_obstacle_config import _schematic_instance_component_name
+from photonic_router.records.route_rust_obstacle_config import schematic_instance_component_name
 from photonic_router.records.route_rust_types import (
     RouteJob,
     _as_float,
 )
-from photonic_router.routing.crossing_plan_stage import _cells_in_raw_static_geometry
+from photonic_router.routing.crossing_plan_stage import cells_in_raw_static_geometry
 from photonic_router.routing.handoff import (
-    _foreign_keepout_open_cells_for_spec,
-    _states_and_openings,
+    foreign_keepout_open_cells_for_spec,
+    states_and_openings,
 )
-from photonic_router.routing.route_jobs import _angle_to_step, _fanout_stub_bend_steps
+from photonic_router.routing.route_jobs import angle_to_step, fanout_stub_bend_steps
 
 
 def _direction_reaches_target_ray(
@@ -55,7 +55,7 @@ def _direction_reaches_target_ray(
     dy = target_y - source_y
     if abs(dx) <= tolerance and abs(dy) <= tolerance:
         return True
-    dir_x, dir_y = _angle_to_step(settings, state, source_angle)
+    dir_x, dir_y = angle_to_step(settings, state, source_angle)
     if dir_x == 0 and dir_y == 0:
         return False
     if dir_x == 0:
@@ -122,15 +122,15 @@ def _committed_dynamic_cells_for_attempt(
     for net_id in state.search.bookkeeping.records_by_id:
         if exclude_net_id is not None and int(net_id) == int(exclude_net_id):
             continue
-        merged.update(_route_cells_from_router(settings, state, net_id))
+        merged.update(route_cells_from_router(settings, state, net_id))
     return merged
 
 
-def _route_cells_from_router(settings, state, net_id: int) -> set[tuple[int, int]]:
+def route_cells_from_router(settings, state, net_id: int) -> set[tuple[int, int]]:
     return {(int(cell[0]), int(cell[1])) for cell in state.kernel.router.get_net_cells(int(net_id))}
 
 
-def _state_openings_for_job(
+def state_openings_for_job(
     settings,
     state,
     job: RouteJob,
@@ -143,7 +143,7 @@ def _static_cells_in_rect(settings, state, min_x: int, max_x: int, min_y: int, m
         return 0
     if state.static_cells.blocked_rects_for_diagnostics:
         return sum(
-            _rect_overlap_cell_count(
+            rect_overlap_cell_count(
                 rect,
                 min_x=min_x,
                 max_x=max_x,
@@ -174,7 +174,7 @@ def _cells_in_rect(
     return sum(1 for x, y in cells if min_x <= x <= max_x and min_y <= y <= max_y)
 
 
-def _route_attempt_diagnostics(
+def route_attempt_diagnostics(
     settings,
     state,
     job: RouteJob,
@@ -186,7 +186,7 @@ def _route_attempt_diagnostics(
     dynamic_cells_before = _committed_dynamic_cells_for_attempt(
         settings, state, exclude_net_id=job.net_id
     )
-    source_state, target_state, _, _, opened_cells = _state_openings_for_job(settings, state, job)
+    source_state, target_state, _, _, opened_cells = state_openings_for_job(settings, state, job)
     source_x = int(source_state.x)
     source_y = int(source_state.y)
     source_angle = int(source_state.angle)
@@ -199,7 +199,7 @@ def _route_attempt_diagnostics(
     span_bbox_max_x = max(source_x, target_x)
     span_bbox_min_y = min(source_y, target_y)
     span_bbox_max_y = max(source_y, target_y)
-    span_bbox_area = _rect_cell_count(
+    span_bbox_area = rect_cell_count(
         min_x=span_bbox_min_x,
         max_x=span_bbox_max_x,
         min_y=span_bbox_min_y,
@@ -211,7 +211,7 @@ def _route_attempt_diagnostics(
     window_max_y = int(getattr(route_obj, "last_window_max_y", -1)) if route_obj else -1
     window_area = int(getattr(route_obj, "last_window_area_cells", 0)) if route_obj else 0
     if window_area <= 0:
-        window_area = _rect_cell_count(
+        window_area = rect_cell_count(
             min_x=window_min_x,
             max_x=window_max_x,
             min_y=window_min_y,
@@ -252,7 +252,7 @@ def _route_attempt_diagnostics(
         max_y=span_bbox_max_y,
     )
     route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
-    route_bbox = _route_cells_bbox(route_cells or ())
+    route_bbox = route_cells_bbox(route_cells or ())
     if route_bbox is None:
         route_bbox_min_x = 0
         route_bbox_max_x = -1
@@ -260,7 +260,7 @@ def _route_attempt_diagnostics(
         route_bbox_max_y = -1
     else:
         route_bbox_min_x, route_bbox_max_x, route_bbox_min_y, route_bbox_max_y = route_bbox
-    route_bbox_area = _rect_cell_count(
+    route_bbox_area = rect_cell_count(
         min_x=route_bbox_min_x,
         max_x=route_bbox_max_x,
         min_y=route_bbox_min_y,
@@ -417,7 +417,7 @@ def _route_attempt_diagnostics(
     }
 
 
-def _write_route_diagnostics(
+def write_route_diagnostics(
     settings,
     state,
     *,
@@ -443,10 +443,10 @@ def _write_route_diagnostics(
     committed_dynamic_cells = _committed_dynamic_cells(settings, state, exclude_net_id=job.net_id)
     if state.obstacles.diagnostics_enabled:
         opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
-        opened_candidate_static_overlap = _cells_in_raw_static_geometry(
+        opened_candidate_static_overlap = cells_in_raw_static_geometry(
             settings, state, opened_candidate_cells
         )
-        opened_static_overlap = _cells_in_raw_static_geometry(settings, state, opened_cells_set)
+        opened_static_overlap = cells_in_raw_static_geometry(settings, state, opened_cells_set)
         opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
         dynamic_exempt_dynamic_overlap = dynamic_clearance_exempt_cells & committed_dynamic_cells
     else:
@@ -457,7 +457,7 @@ def _write_route_diagnostics(
         dynamic_exempt_dynamic_overlap = set()
 
     route_cells = route_cells or set()
-    route_static_overlap = _cells_in_raw_static_geometry(settings, state, route_cells)
+    route_static_overlap = cells_in_raw_static_geometry(settings, state, route_cells)
     route_overlap_with_candidate_opened_static = route_cells & opened_candidate_static_overlap
     route_overlap_with_effective_opened_static = route_cells & opened_static_overlap
     route_dynamic_overlap = route_cells & committed_dynamic_cells
@@ -465,10 +465,10 @@ def _write_route_diagnostics(
     route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
     route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
     current_endpoint_foreign_keepout_cells = set(
-        _foreign_keepout_open_cells_for_spec(settings, state, port1_spec)
+        foreign_keepout_open_cells_for_spec(settings, state, port1_spec)
     )
     current_endpoint_foreign_keepout_cells.update(
-        _foreign_keepout_open_cells_for_spec(settings, state, port2_spec)
+        foreign_keepout_open_cells_for_spec(settings, state, port2_spec)
     )
     foreign_keepout_open_cells = current_endpoint_foreign_keepout_cells & opened_cells_set
     current_port_runway_cells = set(state.ports.runway_cells_by_spec.get(port1_spec, set()))
@@ -541,7 +541,7 @@ def _write_route_diagnostics(
         cells: int = 0,
         delta: int = 0,
     ) -> tuple[tuple[int, int], int, list[tuple[int, int]]]:
-        start_dir = _angle_to_step(settings, state, source_angle)
+        start_dir = angle_to_step(settings, state, source_angle)
         if kind == "straight":
             relative = _relative_line_cells(
                 start=(0, 0),
@@ -552,7 +552,7 @@ def _write_route_diagnostics(
             end_angle = int(source_angle) % 8
         else:
             end_angle = (int(source_angle) + int(delta)) % 8
-            end_dir = _angle_to_step(settings, state, end_angle)
+            end_dir = angle_to_step(settings, state, end_angle)
             radius = max(0, int(state.kernel.radii.bend_radius_cells))
             first_leg = _relative_line_cells(
                 start=(0, 0),
@@ -581,7 +581,7 @@ def _write_route_diagnostics(
         for net_id in state.search.bookkeeping.records_by_id:
             if int(net_id) == int(job.net_id):
                 continue
-            overlap = cells & _route_cells_from_router(settings, state, int(net_id))
+            overlap = cells & route_cells_from_router(settings, state, int(net_id))
             if overlap:
                 owners[int(net_id)] = sorted(overlap)
         return owners
@@ -665,9 +665,9 @@ def _write_route_diagnostics(
             start_angle: int,
             delta: int,
         ) -> set[tuple[int, int]]:
-            start_dir = _angle_to_step(settings, state, start_angle)
+            start_dir = angle_to_step(settings, state, start_angle)
             end_angle = (int(start_angle) + int(delta)) % 8
-            end_dir = _angle_to_step(settings, state, end_angle)
+            end_dir = angle_to_step(settings, state, end_angle)
             cells: set[tuple[int, int]] = set()
             for step in range(radius + 1):
                 cells.add(
@@ -763,7 +763,7 @@ def _write_route_diagnostics(
                 delta=delta,
             )
             footprint_set = set(footprint)
-            static_overlap = _cells_in_raw_static_geometry(settings, state, footprint_set)
+            static_overlap = cells_in_raw_static_geometry(settings, state, footprint_set)
             routing_static_overlap = footprint_set & routing_static_cells
             effective_static_blockers = routing_static_overlap - opened_search_cells
             dynamic_overlap = footprint_set & committed_dynamic_cells
@@ -794,13 +794,13 @@ def _write_route_diagnostics(
         f"status={status}",
         f"source_spec={port1_spec}",
         f"target_spec={port2_spec}",
-        f"source_component={_schematic_instance_component_name(settings.schematic, job.inst1)}",
-        f"target_component={_schematic_instance_component_name(settings.schematic, job.inst2)}",
+        f"source_component={schematic_instance_component_name(settings.schematic, job.inst1)}",
+        f"target_component={schematic_instance_component_name(settings.schematic, job.inst2)}",
         f"source_access_rule={state.ports.access_rule_by_spec.get(port1_spec)}",
         f"target_access_rule={state.ports.access_rule_by_spec.get(port2_spec)}",
         f"foreign_port_keepout_cells={int(settings.foreign_port_keepout_cells)}",
         f"fanout_access_mode={settings.fanout_access_mode_normalized}",
-        f"fanout_stub_bend_degrees={45 * int(_fanout_stub_bend_steps(settings, state))}",
+        f"fanout_stub_bend_degrees={45 * int(fanout_stub_bend_steps(settings, state))}",
         f"fanout_anchor_port_count={len(state.fanout.anchor_by_port_spec)}",
         f"fanout_stub_center_cell_count={len(state.fanout.stub_center_cells)}",
         f"fanout_stub_static_cell_count={len(state.fanout.stub_static_cells)}",
@@ -874,7 +874,7 @@ def _write_route_diagnostics(
     diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _export_route_svg(
+def export_route_svg(
     settings,
     state,
     job: RouteJob,
@@ -903,7 +903,7 @@ def _export_route_svg(
         svg_text = state.kernel.router.export_debug_svg(route_obj)
     if opened_cells is None:
         try:
-            _, _, _, _, opened_cells = _state_openings_for_job(settings, state, job)
+            _, _, _, _, opened_cells = state_openings_for_job(settings, state, job)
         except Exception:
             opened_cells = []
     if settings.debug_stop_after_route_index is not None and int(job.route_index) == int(
@@ -914,7 +914,7 @@ def _export_route_svg(
         )
         if next_job is not None:
             with contextlib.suppress(Exception):
-                _, _, _, _, opened_cells = _states_and_openings(settings, state, next_job)
+                _, _, _, _, opened_cells = states_and_openings(settings, state, next_job)
     red_keepout_cells = state.static_cells.debug_port_keepout_cells - {
         (int(cell[0]), int(cell[1])) for cell in opened_cells
     }
@@ -949,7 +949,7 @@ def _export_route_svg(
     state.search.route_svgs.append(route_svg)
 
 
-def _route_engine_summary(settings, state, route_obj: Any) -> str:
+def route_engine_summary(settings, state, route_obj: Any) -> str:
     expanded_states = int(getattr(route_obj, "expanded_states", 0))
     route_kind = "simple" if expanded_states == 0 else "astar"
     length_um = _as_float(getattr(route_obj, "total_length_um", 0.0), 0.0)
@@ -1073,7 +1073,7 @@ def _corridor_clearance_diagnostic(
     }
 
 
-def _write_failed_log(
+def write_failed_log(
     settings,
     state,
     job: RouteJob,
@@ -1114,7 +1114,7 @@ def _write_failed_log(
         if getattr(record, "net_id", None) == job.net_id
     ]
     recent_attempts = [("recent", record) for record in state.search.attempt_records[-12:]]
-    root_cause_line = _format_illegal_crossing_root_causes_line(
+    root_cause_line = format_illegal_crossing_root_causes_line(
         [error_text]
         + [
             str(attempt.error)
@@ -1169,7 +1169,7 @@ def _write_failed_log(
     ]
     if root_cause_line is not None:
         fail_lines.append(root_cause_line)
-    fail_lines.extend(_format_native_repair_trace_lines(state.search.native_repair_trace))
+    fail_lines.extend(format_native_repair_trace_lines(state.search.native_repair_trace))
     for label, attempt in current_attempts[-8:] + recent_attempts:
         as_dict = attempt.as_dict()
         diagnostics = as_dict.get("diagnostics")

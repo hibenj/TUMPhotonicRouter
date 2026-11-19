@@ -90,14 +90,14 @@ class LayerDecision:
 def _layer_geometry(
     schematic: Schematic, unrouted_layout: Component, stage_plan: CrossingStagePlan
 ) -> tuple[dict[str, float], dict[str, float], list[float], list[float]]:
-    from photonic_router.crossings.preplaced_crossing_grids import _net_endpoints
+    from photonic_router.crossings.preplaced_crossing_grids import net_endpoints
 
     rows: dict[str, float] = {}
     target_rows: dict[str, float] = {}
     source_xs: list[float] = []
     target_xs: list[float] = []
     for edge in stage_plan.initial_edge_order:
-        p1, p2 = _net_endpoints(schematic, edge.net_name)
+        p1, p2 = net_endpoints(schematic, edge.net_name)
         source = get_port_from_instance(unrouted_layout, *p1.split(","))
         target = get_port_from_instance(unrouted_layout, *p2.split(","))
         rows[edge.net_name] = float(source.dcenter[1])
@@ -114,7 +114,7 @@ def evaluate_x_array(
     geometry,
 ) -> StructureCandidate:
     """Feasibility and cost of the X array on one layer (no anchors needed)."""
-    from photonic_router.crossings.preplaced_crossing_grids import _lane_movement
+    from photonic_router.crossings.preplaced_crossing_grids import lane_movement
 
     rows, target_rows, source_xs, target_xs = _layer_geometry(
         schematic, unrouted_layout, stage_plan
@@ -149,7 +149,7 @@ def evaluate_x_array(
                     f"dense source group {instance} (ports {row_b - row_a:.1f} um apart)",
                 )
     try:
-        _movement, crossings = _lane_movement(stage_plan)
+        _movement, crossings = lane_movement(stage_plan)
     except ValueError as exc:
         return StructureCandidate(X_ARRAY, False, str(exc).split(";")[0])
     levels = max(level for level, *_ in crossings) + 1
@@ -181,13 +181,13 @@ def evaluate_column_grid(
     """Feasibility and cost of the column grid on one layer (needs the
     router's fan-out anchors for the entry rows)."""
     from photonic_router.crossings.preplaced_crossing_grids import (
-        _column_grid_stage,
+        column_grid_stage,
         crossing_tile_component,
     )
 
     probe_tile = crossing_tile_component(geometry, axis_aligned=True)
     try:
-        probe = _column_grid_stage(
+        probe = column_grid_stage(
             schematic,
             unrouted_layout,
             stage_plan,

@@ -16,7 +16,7 @@ from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions
 from photonic_router.static_obstacle_builder import _load_rust_backend
 from photonic_router.verify.route_rust_endpoint_correction import (
-    _apply_crossing_aware_endpoint_correction_to_record,
+    apply_crossing_aware_endpoint_correction_to_record,
 )
 
 from tests.fixtures.sessions import session_options
@@ -730,7 +730,7 @@ class _FakeEndpointRouter:
 
 class _FakeCheckedEndpointRouter(_FakeEndpointRouter):
     """Mocks the checked, per-segment native correction (tier 1) that
-    `_apply_crossing_aware_endpoint_correction_to_record` tries first.
+    `apply_crossing_aware_endpoint_correction_to_record` tries first.
     Always succeeds, returning a straight connector directly between the
     two anchor points it is given -- enough to exercise tier 1's own
     accept path without needing to model the real native geometry search.
@@ -771,7 +771,7 @@ def test_crossing_aware_endpoint_correction_succeeds_via_checked_native_method()
     # is corrected through it directly -- there is no separate, weaker
     # fallback strategy to fall through to (see
     # .agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md).
-    updated = _apply_crossing_aware_endpoint_correction_to_record(
+    updated = apply_crossing_aware_endpoint_correction_to_record(
         _simple_record(),
         router=_FakeCheckedEndpointRouter(),
         crossing_points=[(4.5, 0.0), (5.5, 0.0)],
@@ -800,7 +800,7 @@ def test_crossing_aware_endpoint_correction_fails_honestly_without_checked_nativ
     # .agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md
     # closes; see that plan's Decision Log for the n_67/n_68 evidence
     # that motivated removing the old fallback tier entirely).
-    updated = _apply_crossing_aware_endpoint_correction_to_record(
+    updated = apply_crossing_aware_endpoint_correction_to_record(
         _simple_record(),
         router=_FakeEndpointRouter(),
         crossing_points=[(4.5, 0.0), (5.5, 0.0)],
@@ -820,7 +820,7 @@ def test_crossing_free_endpoint_correction_uses_normal_corrected_centerline():
         _simple_record(),
         corrected_centerline_um=((1.0, 0.0), (4.0, 0.0), (10.0, 0.0)),
     )
-    updated = _apply_crossing_aware_endpoint_correction_to_record(
+    updated = apply_crossing_aware_endpoint_correction_to_record(
         record,
         router=_FakeEndpointRouter(),
         crossing_points=[],

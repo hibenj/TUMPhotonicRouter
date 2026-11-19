@@ -13,7 +13,7 @@ GridSpec = _sob.GridSpec
 StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
 
 
-def _grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
+def grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
     if hasattr(grid, "origin"):
         origin = grid.origin
         return float(origin[0]), float(origin[1])
@@ -23,7 +23,7 @@ def _grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
     )
 
 
-def _default_obstacle_layers(
+def default_obstacle_layers(
     route_layer: tuple[int, int],
     *,
     include_heater_obstacles: bool = False,
@@ -33,7 +33,7 @@ def _default_obstacle_layers(
     return ((int(route_layer[0]), int(route_layer[1])),)
 
 
-def _resolve_obstacle_config(
+def resolve_obstacle_config(
     obstacle_config: object | None,
     *,
     route_layer: tuple[int, int],
@@ -41,7 +41,7 @@ def _resolve_obstacle_config(
 ) -> object:
     """Default obstacle extraction to the photonic routing layer."""
 
-    default_layers = _default_obstacle_layers(
+    default_layers = default_obstacle_layers(
         route_layer,
         include_heater_obstacles=include_heater_obstacles,
     )
@@ -67,7 +67,7 @@ def _resolve_obstacle_config(
     return obstacle_config
 
 
-def _with_bbox_cell_materialization(
+def with_bbox_cell_materialization(
     obstacle_config: object | None,
     *,
     materialize_bbox_cells: bool,
@@ -98,7 +98,7 @@ def _with_bbox_cell_materialization(
     return obstacle_config
 
 
-def _with_obstacle_mode(
+def with_obstacle_mode(
     obstacle_config: object | None,
     *,
     obstacle_mode: str,
@@ -143,7 +143,7 @@ def _coerce_component_name(instance: object) -> str | None:
     return None
 
 
-def _schematic_instance_component_name(
+def schematic_instance_component_name(
     schematic: object,
     instance_name: str,
 ) -> str | None:
@@ -157,7 +157,7 @@ def _schematic_instance_component_name(
     return _coerce_component_name(instance)
 
 
-def _port_type_name(port: object) -> str | None:
+def port_type_name(port: object) -> str | None:
     port_type = getattr(port, "port_type", None)
     if port_type is None:
         return None

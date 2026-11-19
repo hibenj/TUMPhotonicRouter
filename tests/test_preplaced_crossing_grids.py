@@ -114,7 +114,7 @@ def test_lane_movement_rejects_direction_reversal() -> None:
         events=(event, replace(event, level=event.level + 1, order_index=event.order_index + 1)),
     )
     with pytest.raises(ValueError, match="reverses direction"):
-        pcg._lane_movement(reversed_plan)
+        pcg.lane_movement(reversed_plan)
 
 
 def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge_cells():
@@ -178,7 +178,7 @@ def _lane_port_band(schematic, layout, stage_plan) -> tuple[float, float]:
 
     source_xs, target_xs = [], []
     for edge in stage_plan.initial_edge_order:
-        p1, p2 = pcg._net_endpoints(schematic, edge.net_name)
+        p1, p2 = pcg.net_endpoints(schematic, edge.net_name)
         source_xs.append(float(get_port_from_instance(layout, *p1.split(",")).dcenter[0]))
         target_xs.append(float(get_port_from_instance(layout, *p2.split(",")).dcenter[0]))
     return max(source_xs), min(target_xs)
