@@ -14,6 +14,11 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `docs/CODING_STANDARDS.md`, a draft (not adopted): the reference standards,
+  the proposed rules for architecture, Python, Rust, tests and documentation
+  with the way each is enforced (tool, test, review), how exceptions are
+  written, and a table of where the code stands against each rule on
+  2026-11-19. No code or check changes with it.
 - The placement analysis as a stage of its own (region graph, intermediate
   step between phases 1 and 2; a restructuring). New
   `python/photonic_router/placement_analysis.py`:

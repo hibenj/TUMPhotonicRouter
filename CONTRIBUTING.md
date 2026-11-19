@@ -128,6 +128,11 @@ Both `--check` options (`generate_config_reference.py --check`,
 
 ## Style
 
+[`docs/CODING_STANDARDS.md`](docs/CODING_STANDARDS.md) is a draft of the
+normative rules (limits, typing, documentation, how a rule is enforced) and
+the measured distance of the code from them; it is not adopted yet. What is
+in force today:
+
 - Python: `ruff format` and the `ruff check` rules in `pyproject.toml`. A new
   ignore carries a comment with its reason.
 - Rust: `cargo fmt`, `cargo clippy -D warnings`. A crate- or workspace-level
