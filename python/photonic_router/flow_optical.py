@@ -21,6 +21,7 @@ from photonic_router.flow_reporting import (
     report_partial_debug_artifacts,
     route_attempt_as_dict,
 )
+from photonic_router.placement_analysis import PlacementAnalysis
 from photonic_router.routing.route_rust import RipupRerouteConfig, route_match_and_realize
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
@@ -69,6 +70,9 @@ class OpticalRoutingStageConfig:
     # contribution 2: instance depths of the original netlist for the net
     # order (the derived netlist's tile stubs would scramble the layers)
     net_order_depth_by_node: dict[str, int] | None = None
+    # the flow's placement analysis for the guided crossing search; None for
+    # the baseline and for runs with crossings off
+    placement_analysis: PlacementAnalysis | None = None
     #: > 0 runs the detour pass after routing with this factor (plan 2026-10-06)
     detour_pass_factor: float = 0.0
     # Milestone 1 Slice 2: the full Python-side configuration tree, threaded
@@ -130,6 +134,7 @@ def run_photonic_routing_stage(
             heuristic_mode=config.heuristic_mode,
             net_order=config.net_order,
             net_order_depth_by_node=config.net_order_depth_by_node,
+            placement_analysis=config.placement_analysis,
             detour_pass_factor=config.detour_pass_factor,
             heap_tie_breaker=config.heap_tie_breaker,
             proactive_congestion_weight=float(config.proactive_congestion_weight),

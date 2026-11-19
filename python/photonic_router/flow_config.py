@@ -11,6 +11,7 @@ from photonic_router.electrical import (
     DEFAULT_WIRE_WIDTH_UM,
 )
 from photonic_router.flow_optical import OpticalRoutingStageConfig
+from photonic_router.placement_analysis import PlacementAnalysis
 from photonic_router.records.route_rust_types import DEFAULT_MEANDER_MAX_HEIGHT_UM
 from photonic_router.routing.route_rust import (
     RipupRerouteConfig,
@@ -206,6 +207,7 @@ def build_optical_routing_stage_config(
     heuristic_mode: str,
     net_order: str,
     net_order_depth_by_node: dict[str, int] | None = None,
+    placement_analysis: PlacementAnalysis | None = None,
     detour_pass_factor: float = 0.0,
     heap_tie_breaker: str,
     max_iterations: int,
@@ -250,6 +252,7 @@ def build_optical_routing_stage_config(
         heuristic_mode=heuristic_mode,
         net_order=net_order,
         net_order_depth_by_node=net_order_depth_by_node,
+        placement_analysis=placement_analysis,
         detour_pass_factor=detour_pass_factor,
         heap_tie_breaker=heap_tie_breaker,
         max_iterations=max_iterations,

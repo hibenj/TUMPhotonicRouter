@@ -327,6 +327,7 @@ def build_crossing_plan_and_port_footprints(
             router=state.router,
             schematic=settings.schematic,
             unrouted_layout=settings.unrouted_layout,
+            placement_analysis=settings.placement_analysis,
             route_jobs=route_jobs,
             enable_crossings=settings.enable_crossings,
             crossing_mode=settings.crossing_mode,

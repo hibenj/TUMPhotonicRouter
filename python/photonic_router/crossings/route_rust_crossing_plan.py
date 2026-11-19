@@ -14,11 +14,11 @@ from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 from photonic_router.config import CrossingPlanConfig
-from photonic_router.crossings.crossing_demand import CrossingDemand, build_crossing_demand
 from photonic_router.crossings.crossing_modes import is_guided_mode
 from photonic_router.crossings.route_rust_crossing_components import (
     _crossing_component_bbox_size_um,
 )
+from photonic_router.placement_analysis import PlacementAnalysis, analyze_placement
 from photonic_router.records.route_rust_records import route_edge_key
 from photonic_router.records.route_rust_types import RoutedNetRecord, RouteJob
 
@@ -179,6 +179,7 @@ def _build_crossing_plan_info(
     schematic: Schematic,
     unrouted_layout: Component,
     route_jobs: list[RouteJob],
+    placement_analysis: PlacementAnalysis | None = None,
     enable_crossings: bool,
     crossing_mode: str,
     crossing_loss: float,
@@ -189,9 +190,11 @@ def _build_crossing_plan_info(
 ) -> dict[str, object]:
     """Build the crossing plan info and hand contribution 1's guidance to the router.
 
-    The plan is the `CrossingDemand` of the placed layout (bands between the
-    component columns, `photonic_router.crossings.crossing_demand`); its events are
-    the invariant crossing pairs in the bubble-sort order of each band.
+    The plan is the `CrossingDemand` of the placement analysis (bands between
+    the component columns, `photonic_router.placement_analysis`); its events
+    are the invariant crossing pairs in the bubble-sort order of each band.
+    ``placement_analysis`` is the flow's; without one (a session entered
+    directly) the design is analysed here.
     ``guidance_net_names``: when given, only plan events between two of
     these nets are loaded (counts, guidance pairs); the others are dropped
     silently. Contribution 2's router fallback uses it so that the guided
@@ -247,7 +250,9 @@ def _build_crossing_plan_info(
         return info
 
     try:
-        demand: CrossingDemand = build_crossing_demand(schematic, unrouted_layout)
+        if placement_analysis is None:
+            placement_analysis = analyze_placement(schematic, unrouted_layout)
+        demand = placement_analysis.crossing_demand
     except (KeyError, ValueError) as exc:
         info["reason"] = "invalid_crossing_demand"
         info["error"] = str(exc)

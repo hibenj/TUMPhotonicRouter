@@ -23,6 +23,7 @@ from gdsfactory.schematic import Schematic
 from photonic_router.config import RouterConfig, RoutingConfig
 from photonic_router.crossings.crossing_modes import normalize_crossing_mode
 from photonic_router.crossings.route_rust_crossing_plan import _effective_crossing_search_loss
+from photonic_router.placement_analysis import PlacementAnalysis
 from photonic_router.records.route_order import normalize_net_order
 from photonic_router.records.route_rust_types import RipupRerouteConfig
 
@@ -66,6 +67,9 @@ class SessionSettings:
     routing_window_scale: float | None
     net_order: str
     net_order_depth_by_node: dict[str, int] | None
+    #: the flow's analysis of this design (`placement_analysis.py`); None when
+    #: the session was entered without one and analyses the design itself
+    placement_analysis: PlacementAnalysis | None
     #: > 0 runs the detour pass (phase 7b, `detour_pass.py`) with this factor
     detour_pass_factor: float
 
@@ -116,6 +120,7 @@ class SessionSettings:
         heuristic_mode: str = "heading_aware",
         net_order: str = "topological",
         net_order_depth_by_node: dict[str, int] | None = None,
+        placement_analysis: PlacementAnalysis | None = None,
         detour_pass_factor: float = 0.0,
         heap_tie_breaker: str = "smaller_g",
         proactive_congestion_weight: float = 0.0,
@@ -243,6 +248,7 @@ class SessionSettings:
             net_order_depth_by_node=(
                 dict(net_order_depth_by_node) if net_order_depth_by_node else None
             ),
+            placement_analysis=placement_analysis,
             detour_pass_factor=float(detour_pass_factor),
             enable_crossings=enable_crossings,
             crossing_loss=crossing_loss,

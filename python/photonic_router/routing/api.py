@@ -23,6 +23,7 @@ from photonic_router.crossings.route_rust_crossing_plan import (
 from photonic_router.crossings.route_rust_crossing_verification import (
     _verify_realized_route_intersections,
 )
+from photonic_router.placement_analysis import PlacementAnalysis
 from photonic_router.plm import route_rust_meanders as _meander_impl
 from photonic_router.plm.path_length_diagnostics import (
     analysis_to_info_dict,
@@ -114,6 +115,7 @@ def route_match_and_realize(
     heuristic_mode: str = "heading_aware",
     net_order: str = "topological",
     net_order_depth_by_node: dict[str, int] | None = None,
+    placement_analysis: PlacementAnalysis | None = None,
     detour_pass_factor: float = 0.0,
     heap_tie_breaker: str = "smaller_g",
     proactive_congestion_weight: float = 0.0,
@@ -164,6 +166,7 @@ def route_match_and_realize(
         heuristic_mode=heuristic_mode,
         net_order=net_order,
         net_order_depth_by_node=net_order_depth_by_node,
+        placement_analysis=placement_analysis,
         detour_pass_factor=detour_pass_factor,
         heap_tie_breaker=heap_tie_breaker,
         proactive_congestion_weight=proactive_congestion_weight,

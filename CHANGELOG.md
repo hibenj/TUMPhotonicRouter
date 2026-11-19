@@ -14,6 +14,34 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The placement analysis as a stage of its own (region graph, intermediate
+  step between phases 1 and 2; a restructuring). New
+  `python/photonic_router/placement_analysis.py`:
+  `analyze_placement(schematic, unrouted_layout)` returns a
+  `PlacementAnalysis` (the `CrossingDemand` and its `RegionGraph`). Until now
+  three places built the demand for themselves (`flow.py` for contribution 2,
+  `route_rust_crossing_plan._build_crossing_plan_info` for the guided
+  session, the stage-schedule helper of `preplaced_crossing_grids.py`). The
+  flow now runs `_placement_analysis_stage` (step 2a of its output) once per
+  placed design and only for a stage that reads the result: contribution 2's
+  tile stage takes it as an argument; the guided session receives it through
+  `build_optical_routing_stage_config`, `OpticalRoutingStageConfig`,
+  `route_match_and_realize` and `SessionSettings.placement_analysis`, and
+  `_build_crossing_plan_info` reads `placement_analysis.crossing_demand`.
+  With a router fallback under contribution 2 the derived design is analysed
+  as well, for the fallback nets. The baseline (`lidar-pure`) gets no
+  analysis. A session entered without the flow analyses its own design with
+  the same function. One error path changed: a net naming a port the layout
+  does not have now fails in the flow's analysis stage with its `KeyError`
+  instead of being recorded as `invalid_crossing_demand` in the session's
+  plan info (which let the guided search run without guidance); route jobs
+  are built from the same ports before that, so no routable design reaches
+  it. `preplaced_build_s` still includes the analysis time. Contract tests:
+  `tests/test_placement_analysis.py` (the session reads the flow's analysis
+  and does not analyse again; without one it analyses itself; the baseline
+  never reads one) and `tests/e2e/test_placement_analysis_flow.py` (analyses
+  per configuration on Benes 4x4: 0, 1, 1, and the demand is never built
+  outside the stage). Nine-cell gate and PLM gate exact.
 - The placement's free space as a region graph (region graph phase 1, a
   restructuring: no plan changes). New
   `python/photonic_router/crossings/routing_regions.py`: `cluster_columns`

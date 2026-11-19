@@ -64,7 +64,8 @@ calls (`photonic_router.flow.route_schematic`,
 ```text
 benchmark module ──build_schematic()──> Schematic
   └─ layout_from_schematic ─────────────> unrouted Component
-       ├─ [contribution 2] crossing demand -> pre-placed crossing tiles
+       ├─ [contributions 1, 2] placement analysis -> PlacementAnalysis
+       ├─ [contribution 2] its crossing demand -> pre-placed crossing tiles
        └─ routing session (routing/session.py::run, nine phases)
             1 static obstacle map (Python extraction, Rust rasterization)
             2 router setup (PyPhotonicRouter, primitive library, A* config)
@@ -101,10 +102,29 @@ reads the environment.
 `Component`: every instance placed, no route. Its bounding box sizes the
 grid.
 
-### 2.3 Pre-placed crossing grids (contribution 2 only)
+### 2.3 The placement analysis and the pre-placed crossing grids
+
+`placement_analysis.analyze_placement(schematic, unrouted_layout)` is the
+stage between the layout and everything that plans or routes
+(`flow._placement_analysis_stage`, step 2a of the flow's output). Its result,
+a `PlacementAnalysis`, holds the region graph and the crossing demand
+described below. The flow runs it once per placed design and only for a
+stage that reads it:
+
+| configuration | analysed design | reader |
+| --- | --- | --- |
+| baseline (`lidar-pure`) | none | none: the search discovers its crossings and must not be informed by a plan |
+| contribution 1 (`lidar-guided`) | the placed design | the routing session's crossing plan (phase 4), through `SessionSettings.placement_analysis` |
+| contribution 2 | the placed design | `flow._preplaced_crossing_grids_stage` |
+| contribution 2 with a router fallback | also the derived design (tiles as instances, nets as stubs) | the session's crossing plan, for the fallback nets |
+
+A routing session entered without the flow (`route_match_and_realize`
+called directly) analyses its own design with the same function. The
+reported tile build time (`preplaced_build_s`) includes the analysis the
+tiles are placed from, as it always did.
 
 With `--preplaced-crossing-grids true`, `flow._preplaced_crossing_grids_stage`
-builds the placement's `CrossingDemand` (`crossings/crossing_demand.py`): the
+reads the analysis's `CrossingDemand` (`crossings/crossing_demand.py`): the
 chip is cut into vertical *bands* between *columns* of components (a column
 is a maximal set of instances whose placed x-extents overlap or touch); a net
 whose two terminals point into one band from its two walls is *confined* to
@@ -164,7 +184,7 @@ searches without the long-straight congestion penalty.
 ### 2.7 Phase 4: the crossing plan
 
 `routing/crossing_plan_stage.py` builds the crossing plan when crossings are
-enabled: the same `CrossingDemand` as in 2.3, and per band the bubble-sort
+enabled: the `CrossingDemand` of the placement analysis (2.3), and per band the bubble-sort
 sequencing of the two wall orders (`crossings/crossing_plan.py`,
 `build_crossing_plan` over `LaneRank`s) into ordered `CrossingEvent`s. Under
 `--crossing-mode lidar-guided` (contribution 1) the planned pairs guide the
@@ -679,6 +699,7 @@ Top-level modules (23 files, 7,300 lines):
 | `flow_reporting.py`, `flow_stats.py`, `flow_component_info.py` | 550, 300, 30 | console output, GDS write; `RoutingFlowStats` and the SUMMARY line; component info |
 | `config.py`, `config_loading.py`, `env_overlay.py` | 390, 40, 810 | the configuration trees, their precedence, the overlay table |
 | `static_obstacle_builder.py`, `benchmark_extractor.py`, `routing_layers.py` | 930, 180, 130 | obstacle extraction and the `ObstacleMapBuilder` Protocol; geometry and port extraction; layer and port access tables |
+| `placement_analysis.py` | 60 | the placement analysis stage: `analyze_placement` -> `PlacementAnalysis` (region graph, crossing demand), section 2.3 |
 | `primitive_library.py`, `port_roles.py`, `graph_analysis.py`, `benchmark_metadata.py` | 180, 150, 60, 190 | primitive ids to components; input-side ports; shared graph context; benchmark metadata (`NODE_TYPES`, `INTERNAL_DELAYS_UM`, `INPUT_PORTS_BY_COMPONENT`) |
 
 Sub-packages:

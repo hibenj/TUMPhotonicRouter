@@ -83,6 +83,7 @@ from photonic_router.gds.route_overview_svg import (
     realized_extra_um_by_net,
     write_routes_overview_svg,
 )
+from photonic_router.placement_analysis import PlacementAnalysis, analyze_placement
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.records.route_order import default_net_order
 from photonic_router.routing.route_rust import RipupRerouteConfig
@@ -200,6 +201,30 @@ def _layout_from_schematic_stage(
     return unrouted_layout
 
 
+def _placement_analysis_stage(
+    *,
+    schematic: Schematic,
+    unrouted_layout: Component,
+    total_steps: int,
+    stats: RoutingFlowStats | None,
+    design: str = "placed design",
+) -> tuple[PlacementAnalysis, float]:
+    """Analyse a placed design once; the stages below read the result (`placement_analysis.py`).
+
+    Returns the analysis and the seconds it took.
+    """
+    print(f"\n[2a/{total_steps}] Analysing the {design}...")
+    t_start = time.perf_counter()
+    analysis = analyze_placement(schematic, unrouted_layout)
+    elapsed = time.perf_counter() - t_start
+    if stats is not None:
+        stats.step_times_s["placement_analysis"] = (
+            stats.step_times_s.get("placement_analysis", 0.0) + elapsed
+        )
+    print(f"      - {analysis.summary()}")
+    return analysis, elapsed
+
+
 def _print_flow_header(benchmark_name: str) -> None:
     print(f"\n{'=' * 60}")
     print(f"Routing Flow: {benchmark_name}")
@@ -215,6 +240,8 @@ def _preplaced_crossing_grids_stage(
     *,
     schematic: Schematic,
     unrouted_layout: Component,
+    analysis: PlacementAnalysis,
+    analysis_seconds: float,
     total_steps: int,
     stats: RoutingFlowStats | None,
     router_probe_kwargs: dict[str, object] | None = None,
@@ -229,9 +256,9 @@ def _preplaced_crossing_grids_stage(
     folds into the routing-stage config so the actual routing run's fan-out
     access agrees with the probe's.
 
-    Every interstage crossing of the benchmark is computed from its placement
-    (the band demand), realized as a pre-wired crossing grid instance placed
-    in the layer's free band, and the interstage nets are split into
+    Every interstage crossing of the benchmark comes from its placement
+    (`analysis.crossing_demand`, the band demand), is realized as a pre-wired
+    crossing grid instance placed in the layer's free band, and the interstage nets are split into
     crossing-free stubs. Downstream stages see an ordinary schematic and
     layout.
 
@@ -241,7 +268,6 @@ def _preplaced_crossing_grids_stage(
     nets and reasons, before anything is placed; those designs route with
     `--crossing-mode lidar-pure` or `lidar-guided`.
     """
-    from photonic_router.crossings.crossing_demand import build_crossing_demand
     from photonic_router.crossings.preplaced_crossing_grids import (
         derive_preplaced_crossing_layout,
         preplaced_crossing_grid_metrics,
@@ -249,7 +275,7 @@ def _preplaced_crossing_grids_stage(
 
     print(f"\n[2b/{total_steps}] Placing placement-derived crossing grids...")
     t_start = time.perf_counter()
-    demand = build_crossing_demand(schematic, unrouted_layout)
+    demand = analysis.crossing_demand
     try:
         demand.require_band_layered()
     except ValueError as exc:
@@ -271,7 +297,9 @@ def _preplaced_crossing_grids_stage(
             f"{derived.placed_crossing_count} crossing component(s) but the topology "
             f"expects {derived.expected_crossing_count}"
         )
-    elapsed = time.perf_counter() - t_start
+    # The reported build time (`preplaced_build_s` of the result tables) has
+    # always included the demand the tiles are placed from.
+    elapsed = time.perf_counter() - t_start + analysis_seconds
     if stats is not None:
         stats.step_times_s["preplaced_crossing_grids"] = elapsed
     print(
@@ -434,6 +462,12 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
                 "pre-placed grids resolve every crossing before routing, so the router "
                 "must run with crossings disabled."
             )
+        original_analysis, original_analysis_seconds = _placement_analysis_stage(
+            schematic=schematic,
+            unrouted_layout=unrouted_layout,
+            total_steps=total_steps,
+            stats=stats,
+        )
         (
             schematic,
             unrouted_layout,
@@ -443,6 +477,8 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
         ) = _preplaced_crossing_grids_stage(
             schematic=schematic,
             unrouted_layout=unrouted_layout,
+            analysis=original_analysis,
+            analysis_seconds=original_analysis_seconds,
             total_steps=total_steps,
             stats=stats,
             # The column grid puts its entry tiles on the router's static
@@ -482,6 +518,18 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
             "      - WARNING: path-length matching with the crossing-aware search on is "
             "not a supported combination; the stable configurations run --crossings false"
         )
+    # The guided search (contribution 1, and contribution 2's router fallback
+    # on its derived design) is the only reader of the analysis below this
+    # point; the baseline must not see a plan and gets none.
+    placement_analysis: PlacementAnalysis | None = None
+    if enable_crossings and is_guided_mode(crossing_mode):
+        placement_analysis, _seconds = _placement_analysis_stage(
+            schematic=schematic,
+            unrouted_layout=unrouted_layout,
+            total_steps=total_steps,
+            stats=stats,
+            design="design with crossing tiles" if preplaced_crossing_grids else "placed design",
+        )
     record_initial_route_stats(stats)
     optical_config = build_optical_routing_stage_config(
         enable_path_length_matching=options.path_length.enable_path_length_matching,
@@ -492,6 +540,7 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
         enable_crossings=enable_crossings,
         crossing_mode=crossing_mode,
         crossing_guidance_net_names=crossing_guidance_net_names,
+        placement_analysis=placement_analysis,
         crossing_half_size_cells=optical.crossing_half_size_cells,
         foreign_port_keepout_cells=optical.foreign_port_keepout_cells,
         fanout_access_mode=optical.fanout_access_mode,
