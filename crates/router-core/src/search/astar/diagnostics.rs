@@ -319,7 +319,8 @@ pub(crate) fn print_best_crossing_path(
             let d1 = ((b.0 - a.0).signum(), (b.1 - a.1).signum());
             let d2 = ((point.0 - b.0).signum(), (point.1 - b.1).signum());
             if d1 == d2 {
-                *waypoints.last_mut().unwrap() = point;
+                let last = waypoints.len() - 1;
+                waypoints[last] = point;
                 continue;
             }
         }

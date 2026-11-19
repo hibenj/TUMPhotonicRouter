@@ -1,3 +1,5 @@
 # Limits of docs/CODING_STANDARDS.md section 5; scripts/quality_ratchet.py
 # counts what exceeds them.
 too-many-lines-threshold = 120
+# Rule 5.3 is about library code: tests may unwrap.
+allow-unwrap-in-tests = true

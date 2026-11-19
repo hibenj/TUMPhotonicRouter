@@ -142,7 +142,7 @@ pub(crate) fn convert_result(
             .get_primitives_for_angle(s0.angle)
             .iter()
             .find(|p| p.id == *pid)
-            .unwrap();
+            .expect("a route's primitive ids come from the library it was searched with");
         let d = pyo3::types::PyDict::new_bound(py);
         d.set_item("primitive_id", pid)?;
         d.set_item("kind", primitive_kind(p))?;

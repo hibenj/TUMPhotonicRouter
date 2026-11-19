@@ -63,7 +63,6 @@ RUFF_RULES: dict[str, str] = {
 
 #: Clippy and rustc lints the standards propose for `router-core`.
 RUST_LINTS: dict[str, str] = {
-    "clippy::unwrap_used": "5.3 unwrap() outside tests",
     "missing_docs": "5.4 public item without a doc comment",
     "clippy::too_many_lines": "5.5 function over the line limit",
 }

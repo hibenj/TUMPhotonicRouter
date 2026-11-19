@@ -18,3 +18,6 @@ router-core = { path = "crates/router-core" }
 # Allowed here so that every other warning is a failure in CI.
 too_many_arguments = "allow"
 type_complexity = "allow"
+# docs/CODING_STANDARDS.md rule 5.3: no unwrap() outside tests (clippy.toml
+# exempts the tests).
+unwrap_used = "warn"

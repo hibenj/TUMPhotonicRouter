@@ -181,7 +181,8 @@ like the violation counts: a commit that adds one says why in its message.
    removing the allows is proposed.*
 3. Library code in `router-core` does not call `unwrap()`. An invariant is
    stated with `expect("why this cannot fail")`; a failure the caller can
-   act on is a `Result`. *Tool (`clippy::unwrap_used`), proposed.*
+   act on is a `Result`. *Tool (`clippy::unwrap_used` in the workspace
+   lints; `clippy.toml` exempts the tests), in force.*
 4. Every `pub` item of `router-core` has a doc comment
    (`#![warn(missing_docs)]`). *Tool, proposed.*
 5. A function body stays under 120 lines (`clippy::too_many_lines`).
@@ -219,29 +220,30 @@ like the violation counts: a commit that adds one says why in its message.
 
 Production Python under `python/photonic_router/` (46,110 lines, 109 files)
 and `crates/router-core`. `scripts/quality_ratchet.py` measures the counts
-below and `tests/baselines/quality_ratchet.json` pins them; the numbers here
-are that file's on 2026-11-19, and the file is the current truth.
+below and `tests/baselines/quality_ratchet.json` pins them. The table shows
+the first measurement and the counts after the first two work packages (both
+2026-11-19); the file is the current truth. Rules 4.10 (absolute imports) and 5.3 (no `unwrap()`) left the
+table when their counts reached zero and the lint sets took them over.
 
-| Rule | Measure (name in the pin) | 2026-11-19 |
-| --- | --- | --- |
-| 3.2 | fields of the shared session state (`session_state_fields`) | 82 |
-| 3.5 | underscore names imported from another module (`private_imports`) | 247 |
-| 4.2 | parameters without an annotation (`ruff_ANN001`) | 230 |
-| 4.2 | functions without a return annotation (`ruff_ANN201`, `ruff_ANN202`) | 3, 6 |
-| 4.2 | mypy errors on the whole package (`mypy_errors`) | 348 |
-| 4.3 | `dict[str, object]` / `dict[str, Any]` annotations (`untyped_dict_annotations`) | 222 |
-| 4.4 | functions over 7 parameters (`ruff_PLR0913`) | 58; the largest 50 |
-| 4.5 | functions over 50 statements (`ruff_PLR0915`) | 43 |
-| 4.5 | functions over complexity 10 (`ruff_C901`) | 70 |
-| 4.6 | `print` calls in the package (`ruff_T201`) | 157 |
-| 4.7 | public classes, methods, functions without a docstring (`ruff_D101`, `ruff_D102`, `ruff_D103`) | 56, 136, 77 |
-| 4.9 | blind `except Exception` (`ruff_BLE001`) | 35 |
-| 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 |
-| 5.3 | `unwrap()` in the library of `router-core`, tests excluded (`rust_unwrap_used`) | 1 |
-| 5.4 | public items of `router-core` without a doc comment (`rust_missing_docs`) | 796 |
-| 5.5 | functions of `router-core` over 120 lines (`rust_too_many_lines`) | 23 |
-| 2 | exceptions written at a function (`python_exceptions`, `rust_exceptions`) | 0, 39 |
-| 7.3 | user guide, developer guide (not measured) | none |
+| Rule | Measure (name in the pin) | at the first measurement | after S1 and S2 slice 3 |
+| --- | --- | --- | --- |
+| 3.2 | fields of the shared session state (`session_state_fields`) | 82 | 14 |
+| 3.5 | underscore names imported from another module (`private_imports`) | 247 | 27 |
+| 4.2 | parameters without an annotation (`ruff_ANN001`) | 230 | 218 |
+| 4.2 | functions without a return annotation (`ruff_ANN201`, `ruff_ANN202`) | 3, 6 | 3, 6 |
+| 4.2 | mypy errors on the whole package (`mypy_errors`) | 348 | 285 |
+| 4.3 | `dict[str, object]` / `dict[str, Any]` annotations (`untyped_dict_annotations`) | 222 | 216 |
+| 4.4 | functions over 7 parameters (`ruff_PLR0913`) | 58; the largest 50 | 50 |
+| 4.5 | functions over 50 statements (`ruff_PLR0915`) | 43 | 40 |
+| 4.5 | functions over complexity 10 (`ruff_C901`) | 70 | 68 |
+| 4.6 | `print` calls in the package (`ruff_T201`) | 157 | 157 |
+| 4.7 | public classes, methods, functions without a docstring (`ruff_D101`, `ruff_D102`, `ruff_D103`) | 56, 136, 77 | 52, 127, 67 |
+| 4.9 | blind `except Exception` (`ruff_BLE001`) | 35 | 35 |
+| 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 | 2 |
+| 5.4 | public items of `router-core` without a doc comment (`rust_missing_docs`) | 796 | 796 |
+| 5.5 | functions of `router-core` over 120 lines (`rust_too_many_lines`) | 23 | 23 |
+| 2 | exceptions written at a function (`python_exceptions`, `rust_exceptions`) | 0, 39 | 0, 39 |
+| 7.3 | user guide, developer guide (not measured) | none | none |
 
 The 39 Rust exceptions are per-function `allow(clippy::too_many_arguments)`
 attributes from before this document; they become `#[expect]` with a reason

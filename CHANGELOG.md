@@ -258,6 +258,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- No `unwrap()` in library code of the Rust workspace (rule 5.3 of the coding
+  standards is in force). The two calls outside tests are gone: the one in
+  the search's diagnostics dump is an index, the one in the bindings'
+  result conversion states its invariant with `expect`; `clippy::unwrap_used` is in the
+  workspace lints and `clippy.toml` exempts the tests, so the measure leaves
+  the quality ratchet (22 counts). The table of section 8 of the standards
+  shows the counts after S1 and S2 next to the first measurement.
 - Docstrings for the 14 modules whose helpers became public in S2 slice 3:
   94 public functions, methods and classes say what they are for and what
   they assume (units, the degenerate case, what is raised). Docstrings
