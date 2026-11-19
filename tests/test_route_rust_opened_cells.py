@@ -249,6 +249,7 @@ def _footprint_resolver_state(
                 port_lane_half_width_cells=max(1, bend_radius_cells + commit_radius_cells + 1),
             )
         ),
+        fanout=SimpleNamespace(anchor_by_port_spec={}),
         access_rule=access_rule,
         dense_source_fanout_instances=frozenset(),
     )
@@ -320,9 +321,20 @@ def test_resolve_port_footprint_cells_uses_stub_override_only_for_dense_fanout_i
                 stub_port_lane_half_width_cells=2,
             )
         ),
+        fanout=SimpleNamespace(anchor_by_port_spec={"mmi1_multiport_0_0,o2": object()}),
         access_rule=None,
         dense_source_fanout_instances=frozenset({"mmi0_multiport_0_0"}),
     )
+
+    # A target port with a static stub of its own gets the same stub-scoped
+    # sizing, although its instance is not a dense source fan-out.
+    assert routing_crossing_plan_stage._resolve_port_footprint_cells(
+        settings_for_test(),
+        state,
+        instance_name="mmi1_multiport_0_0",
+        port_name="o2",
+        port=port,
+    ) == (8, 2)
 
     # A port on the dense-fanout instance gets the stub-scoped override...
     assert routing_crossing_plan_stage._resolve_port_footprint_cells(

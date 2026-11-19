@@ -151,7 +151,7 @@ def _resolve_port_footprint_cells(
     # `PHOTONIC_ROUTER_STUB_PORT_LANE_*` environment variables) rather
     # than introducing separate target-only ones -- see
     # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
-    if f"{instance_name},{port_name}" in getattr(state, "fanout_anchor_by_port_spec", {}):
+    if f"{instance_name},{port_name}" in state.fanout.anchor_by_port_spec:
         return int(state.kernel.lanes.stub_port_lane_length_cells), int(
             state.kernel.lanes.stub_port_lane_half_width_cells
         )
