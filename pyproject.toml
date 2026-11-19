@@ -119,6 +119,16 @@ ignore = [
 # the repository root into sys.path.
 "experiments/*/scripts/*" = ["E402", "C401", "C408", "SIM105", "E741"]
 
+# The limits of docs/CODING_STANDARDS.md section 4. The rules that read them
+# (PLR0913, PLR0915, C901) are not selected above yet: scripts/quality_ratchet.py
+# counts their findings and holds the counts until they reach zero.
+[tool.ruff.lint.pylint]
+max-args = 7
+max-statements = 50
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
 

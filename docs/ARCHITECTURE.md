@@ -743,7 +743,7 @@ PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --release -p router-py
 .venv/bin/python -m pytest -q -m "not e2e" tests
 .venv/bin/python -m pytest -q tests             # with the end-to-end runs
 scripts/test_baseline.sh                        # both suites against tests/baselines/test_baseline.txt
-scripts/lint.sh                                 # ruff, generated files, mypy, rustfmt, clippy
+scripts/lint.sh                                 # ruff, generated files, quality ratchet, rustfmt, clippy
 ```
 
 ### 8.1 The oracles

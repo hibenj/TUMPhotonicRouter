@@ -1,0 +1,3 @@
+# Limits of docs/CODING_STANDARDS.md section 5; scripts/quality_ratchet.py
+# counts what exceeds them.
+too-many-lines-threshold = 120

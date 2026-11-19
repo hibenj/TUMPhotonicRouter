@@ -14,6 +14,20 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The quality ratchet: `scripts/quality_ratchet.py` measures 23 counts of
+  what does not meet the proposed rules of `docs/CODING_STANDARDS.md` yet
+  (ruff rules that are not selected, mypy's errors on the whole package,
+  imports of private names, untyped dictionaries, the fields of the session
+  state, three clippy lints on `router-core`, the exceptions) and compares
+  them with `tests/baselines/quality_ratchet.json`. A count may only fall,
+  and a fall is pinned in the same commit. `scripts/lint.sh` and CI run it
+  in place of the informational mypy step. The limits are configuration:
+  `max-args = 7`, `max-statements = 50`, `max-complexity = 10` in
+  `pyproject.toml`, `too-many-lines-threshold = 120` in the new
+  `clippy.toml`; none of them changes a lint result today. Section 8 of the
+  standards is corrected by the measurement: 58 functions exceed 7
+  parameters (136 was counted against ruff's default of 5), and one
+  `unwrap()` is outside test code (184 included the tests).
 - `docs/CODING_STANDARDS.md`, a draft (not adopted): the reference standards,
   the proposed rules for architecture, Python, Rust, tests and documentation
   with the way each is enforced (tool, test, review), how exceptions are

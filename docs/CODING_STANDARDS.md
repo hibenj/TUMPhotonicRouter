@@ -9,7 +9,7 @@ written. `CONTRIBUTING.md` says how to build, test and commit;
 `docs/ARCHITECTURE.md` says where things are; this page says what a change
 must satisfy. Where a rule can be checked by a tool, the tool is the rule and
 this page only names it. Section 8 lists where the code does not meet the
-rules yet, with numbers.
+rules yet, with numbers that a check holds.
 
 ## 1. Reference standards
 
@@ -31,7 +31,8 @@ Every rule below carries one of three levels. A rule without a level is not
 a rule.
 
 - **Tool**: a CI job fails (`.github/workflows/ci.yml`, locally
-  `scripts/lint.sh` and `scripts/test_baseline.sh`).
+  `scripts/lint.sh` and `scripts/test_baseline.sh`). For a proposed Tool
+  rule the job holds the count of violations (section 8) until it is zero.
 - **Test**: a test in `tests/` fails.
 - **Review**: a reviewer checks it. A pull request template that lists these
   rules is proposed and does not exist yet.
@@ -118,7 +119,7 @@ like the violation counts: a commit that adds one says why in its message.
 2. The two workspace-level allows (`too_many_arguments`, `type_complexity`)
    are debt, not policy: new code does not rely on them. *Review, in force;
    removing the allows is proposed.*
-3. Non-test code in `router-core` does not call `unwrap()`. An invariant is
+3. Library code in `router-core` does not call `unwrap()`. An invariant is
    stated with `expect("why this cannot fail")`; a failure the caller can
    act on is a `Result`. *Tool (`clippy::unwrap_used`), proposed.*
 4. Every `pub` item of `router-core` has a doc comment
@@ -154,31 +155,52 @@ like the violation counts: a commit that adds one says why in its message.
    "Generated files"). *Tool, in force.*
 5. Every behaviour change has a `CHANGELOG.md` entry. *Review, in force.*
 
-## 8. Where the code stands (2026-11-19)
+## 8. Where the code stands
 
-Measured on `regions/phase1-region-graph`, production Python under
-`python/photonic_router/` (46,110 lines, 109 files) and `crates/`.
+Production Python under `python/photonic_router/` (46,110 lines, 109 files)
+and `crates/router-core`. `scripts/quality_ratchet.py` measures the counts
+below and `tests/baselines/quality_ratchet.json` pins them; the numbers here
+are that file's on 2026-11-19, and the file is the current truth.
 
-| Rule | Measure | Today |
+| Rule | Measure (name in the pin) | 2026-11-19 |
 | --- | --- | --- |
-| 3.2 | fields of the shared session state (`routing/state.py`) | 82 |
-| 3.5 | imports of underscore names across modules | 244 in 23 files (104 in `routing/route_rust.py`) |
-| 4.2 | parameters without an annotation (ruff `ANN001`) | 230 |
-| 4.2 | mypy findings (`scripts/lint.sh`) | 236 |
-| 4.3 | `dict[str, object]` / `dict[str, Any]` annotations | 222 |
-| 4.4 | functions over 7 parameters (ruff `PLR0913`, counts keyword-only) | 136; seven over 20, the largest 50 |
-| 4.5 | functions over 50 statements (ruff `PLR0915`) | 43 |
-| 4.5 | functions over complexity 10 (ruff `C901`) | 70 |
-| 4.6 | `print` calls in the package (ruff `T201`) | 157 |
-| 4.7 | public functions and methods without a docstring (ruff `D102`, `D103`) | 213 |
-| 4.9 | blind `except Exception` (ruff `BLE001`) | 35 |
-| 5.2 | workspace-level clippy allows | 2 |
-| 5.3 | `unwrap()` in `router-core/src` (tests included) | 184 |
-| 7.3 | user guide, developer guide | none |
+| 3.2 | fields of the shared session state (`session_state_fields`) | 82 |
+| 3.5 | underscore names imported from another module (`private_imports`) | 247 |
+| 4.2 | parameters without an annotation (`ruff_ANN001`) | 230 |
+| 4.2 | functions without a return annotation (`ruff_ANN201`, `ruff_ANN202`) | 3, 6 |
+| 4.2 | mypy errors on the whole package (`mypy_errors`) | 348 |
+| 4.3 | `dict[str, object]` / `dict[str, Any]` annotations (`untyped_dict_annotations`) | 222 |
+| 4.4 | functions over 7 parameters (`ruff_PLR0913`) | 58; the largest 50 |
+| 4.5 | functions over 50 statements (`ruff_PLR0915`) | 43 |
+| 4.5 | functions over complexity 10 (`ruff_C901`) | 70 |
+| 4.6 | `print` calls in the package (`ruff_T201`) | 157 |
+| 4.7 | public classes, methods, functions without a docstring (`ruff_D101`, `ruff_D102`, `ruff_D103`) | 56, 136, 77 |
+| 4.9 | blind `except Exception` (`ruff_BLE001`) | 35 |
+| 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 |
+| 5.3 | `unwrap()` in the library of `router-core`, tests excluded (`rust_unwrap_used`) | 1 |
+| 5.4 | public items of `router-core` without a doc comment (`rust_missing_docs`) | 796 |
+| 5.5 | functions of `router-core` over 120 lines (`rust_too_many_lines`) | 23 |
+| 2 | exceptions written at a function (`python_exceptions`, `rust_exceptions`) | 0, 39 |
+| 7.3 | user guide, developer guide (not measured) | none |
+
+The 39 Rust exceptions are per-function `allow(clippy::too_many_arguments)`
+attributes from before this document. mypy's informational run of
+`pyproject.toml` covers a narrower file list (236 errors there); the rule is
+about the package, so the package is what is pinned.
 
 **Ratchet.** Until a proposed Tool rule holds everywhere, its count is
-pinned and may only fall: a change that raises one of the numbers above
-fails, a change that lowers it re-pins it. The number of exceptions
-(section 2) is pinned the same way. When a count reaches zero the
-rule moves into the lint configuration and leaves this table. The ratchet
-check itself is proposed and does not exist yet.
+pinned and may only fall. `scripts/quality_ratchet.py` (run by
+`scripts/lint.sh` and CI) fails when a count rose, and also when one fell
+and the pin was not rewritten, so that a gain cannot be spent again:
+
+```bash
+.venv/bin/python scripts/quality_ratchet.py            # check
+.venv/bin/python scripts/quality_ratchet.py --update   # pin the lower counts
+```
+
+`--update` refuses a higher count unless the measure is named with
+`--allow-rise`; that is how a new exception of section 2 is recorded, and
+the commit message gives its reason. The limits are configuration
+(`[tool.ruff.lint.pylint]` and `[tool.ruff.lint.mccabe]` in
+`pyproject.toml`, `clippy.toml`). When a count reaches zero the rule moves
+into the lint configuration and leaves this table and the pin.

@@ -55,10 +55,18 @@ scripts/lint.sh --fix    # apply ruff's and clippy's safe fixes
 ```
 
 It runs `ruff format --check`, `ruff check`, the generated-file checks (below),
-`mypy`, `cargo fmt --all -- --check` and `cargo clippy --workspace
+the quality ratchet, `cargo fmt --all -- --check` and `cargo clippy --workspace
 --all-targets -- -D warnings`. CI (`.github/workflows/ci.yml`) runs the same
 checks, the Rust tests and the fast Python suite on every push, and the paper
 gate nightly.
+
+The quality ratchet (`scripts/quality_ratchet.py`) counts what does not meet
+the proposed rules of [`docs/CODING_STANDARDS.md`](docs/CODING_STANDARDS.md)
+yet (long signatures and functions, missing annotations and docstrings,
+mypy's errors, `print`, imports of private names, three clippy lints) and
+compares the counts with `tests/baselines/quality_ratchet.json`. A count
+that rose fails. A count that fell fails until it is pinned with
+`.venv/bin/python scripts/quality_ratchet.py --update`, in the same commit.
 
 ## The two gates
 
@@ -120,6 +128,7 @@ when an output differs from a fresh generation.
 | `docs/paper_crossing_bounds.json` | `.venv/bin/python scripts/results/crossing_lower_bound.py --all-paper-cells --json docs/paper_crossing_bounds.json` | a paper benchmark's placement changes |
 | `docs/plm_baseline.json` | `.venv/bin/python scripts/results/plm_table.py results_plm --json docs/plm_baseline.json` | a PLM number moves on purpose |
 | `tests/baselines/test_baseline.txt` | `TEST_BASELINE_UPDATE=1 scripts/test_baseline.sh` | tests are added or removed |
+| `tests/baselines/quality_ratchet.json` | `.venv/bin/python scripts/quality_ratchet.py --update` | a count of the coding standards falls |
 | `tests/baselines/electrical_suite_metrics.json` | `.venv/bin/python scripts/benchmark_electrical.py --suite --output tests/baselines/electrical_suite_metrics.json` | an electrical number moves on purpose |
 | `benchmarks/<slice>.py`, `.toml` | `.venv/bin/python scripts/make_mesh_slice_benchmark.py` | a mesh slice is added |
 
@@ -130,7 +139,8 @@ Both `--check` options (`generate_config_reference.py --check`,
 
 [`docs/CODING_STANDARDS.md`](docs/CODING_STANDARDS.md) is a draft of the
 normative rules (limits, typing, documentation, how a rule is enforced) and
-the measured distance of the code from them; it is not adopted yet. What is
+the measured distance of the code from them, which the quality ratchet
+holds; the document is not adopted yet. What is
 in force today:
 
 - Python: `ruff format` and the `ruff check` rules in `pyproject.toml`. A new
