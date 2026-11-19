@@ -45,7 +45,9 @@ from photonic_router.verify.route_rust_endpoint_correction import (
 )
 
 
-def _endpoint_correction_crossing_net_ids(settings, state) -> set[int]:
+def _endpoint_correction_crossing_net_ids(
+    settings: SessionSettings, state: SessionState
+) -> set[int]:
     """Net ids involved in any crossing, per `router.crossing_events()`.
 
     Shared by `_apply_checked_endpoint_corrections_for_net_ids` and
@@ -85,8 +87,8 @@ def _endpoint_correction_crossing_net_ids(settings, state) -> set[int]:
 
 
 def _classify_net_for_endpoint_correction(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     net_id: int,
     *,
     crossing_net_ids: set[int],
@@ -169,8 +171,8 @@ def _classify_net_for_endpoint_correction(
 
 
 def _apply_checked_endpoint_corrections_for_net_ids(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     net_ids: Iterable[int],
     *,
     record_pipeline_timing: bool = True,
@@ -257,10 +259,11 @@ def _apply_checked_endpoint_corrections_for_net_ids(
     for raw_correction in cast(Iterable[Any], raw_corrections):
         correction = dict(raw_correction)
         net_id = int(correction["net_id"])
-        record = state.search.bookkeeping.records_by_id.get(net_id)
-        job = state.run.route_jobs_by_id.get(net_id)
-        if record is None or job is None:
+        known_record = state.search.bookkeeping.records_by_id.get(net_id)
+        known_job = state.run.route_jobs_by_id.get(net_id)
+        if known_record is None or known_job is None:
             continue
+        record, job = known_record, known_job
         error = correction.get("error")
         if error is not None:
             if state.run.collect_timing:
@@ -341,8 +344,8 @@ def _apply_checked_endpoint_corrections_for_net_ids(
 
 
 def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     net_ids: Iterable[int],
     *,
     record_pipeline_timing: bool = True,
@@ -475,9 +478,10 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         correction = dict(raw_correction)
         net_id = int(correction["net_id"])
         context = job_context_by_id.get(net_id)
-        job = state.run.route_jobs_by_id.get(net_id)
-        if context is None or job is None:
+        known_job = state.run.route_jobs_by_id.get(net_id)
+        if context is None or known_job is None:
             continue
+        job = known_job
         record, source_has_fanout_stub, target_has_fanout_stub = context
         error = correction.get("error")
         if error is not None:
@@ -580,7 +584,9 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
     return failed_net_ids
 
 
-def _current_crossing_points_by_net_id(settings, state) -> dict[int, list[tuple[float, float]]]:
+def _current_crossing_points_by_net_id(
+    settings: SessionSettings, state: SessionState
+) -> dict[int, list[tuple[float, float]]]:
     if not settings.enable_crossings or not hasattr(state.kernel.router, "crossing_events"):
         return {}
     try:
@@ -603,8 +609,8 @@ def _current_crossing_points_by_net_id(settings, state) -> dict[int, list[tuple[
 
 
 def _route_target_grid_center_um(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     route_obj: object | None,
 ) -> tuple[float, float] | None:
     if route_obj is None:
@@ -623,8 +629,8 @@ def _route_target_grid_center_um(
 
 
 def _route_target_angle(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     route_obj: object | None,
 ) -> int | None:
     if route_obj is None:
@@ -643,8 +649,8 @@ def _route_target_angle(
 
 
 def _record_terminal_bump_distance_check_candidates(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     crossing_points_by_net_id: Mapping[int, list[tuple[float, float]]],
     net_ids: Iterable[int],
 ) -> None:
@@ -786,8 +792,8 @@ def _record_terminal_bump_distance_check_candidates(
 
 
 def _apply_crossing_aware_endpoint_corrections_for_net_ids(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     net_ids: Iterable[int],
     *,
     record_pipeline_timing: bool = True,
@@ -908,8 +914,8 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
 
 
 def apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     net_ids: Iterable[int],
     *,
     record_pipeline_timing: bool = True,
@@ -958,8 +964,8 @@ def apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
 
 
 def _apply_all_endpoint_corrections_for_net_ids(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     net_ids: Iterable[int],
     *,
     print_warnings: bool = False,
@@ -1004,7 +1010,9 @@ def _apply_all_endpoint_corrections_for_net_ids(
     return failed_net_ids
 
 
-def _append_target_fanout_stubs_after_correction(settings, state) -> None:
+def _append_target_fanout_stubs_after_correction(
+    settings: SessionSettings, state: SessionState
+) -> None:
     """Splice each target-anchored net's fixed stub onto its corrected route.
 
     `record_route`/`RouteBookkeeping.record_route` pointed any

@@ -1,8 +1,8 @@
 {
-  "mypy_errors": 285,
+  "mypy_errors": 277,
   "private_imports": 7,
   "python_exceptions": 0,
-  "ruff_ANN001": 218,
+  "ruff_ANN001": 4,
   "ruff_ANN201": 3,
   "ruff_ANN202": 6,
   "ruff_BLE001": 35,

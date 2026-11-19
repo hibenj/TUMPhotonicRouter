@@ -54,7 +54,9 @@ class FanoutAnchor:
     stub_centerline_um: tuple[tuple[float, float], ...]
 
 
-def orientation_to_angle(settings, state, orientation: float | None, *, flip: bool = False) -> int:
+def orientation_to_angle(
+    settings: SessionSettings, state: SessionState, orientation: float | None, *, flip: bool = False
+) -> int:
     """Convert an orientation in degrees to a heading in eighths of a turn (0 east, 2 north).
 
     The orientation is rounded to the nearest 45 degrees; None gives 0. ``flip``
@@ -68,7 +70,7 @@ def orientation_to_angle(settings, state, orientation: float | None, *, flip: bo
     return angle
 
 
-def angle_to_step(settings, state, angle: int) -> tuple[int, int]:
+def angle_to_step(settings: SessionSettings, state: SessionState, angle: int) -> tuple[int, int]:
     """Return the (dx, dy) cell step of a heading in eighths of a turn (0 east, 2 north, y up)."""
     steps = [
         (1, 0),  # 0 east
@@ -83,14 +85,14 @@ def angle_to_step(settings, state, angle: int) -> tuple[int, int]:
     return steps[angle % 8]
 
 
-def cell_in_grid(settings, state, gx: int, gy: int) -> bool:
+def cell_in_grid(settings: SessionSettings, state: SessionState, gx: int, gy: int) -> bool:
     """Whether the cell (gx, gy) lies inside the routing grid of the session."""
     return 0 <= gx < int(state.obstacles.grid.width) and 0 <= gy < int(state.obstacles.grid.height)
 
 
 def port_to_grid_state(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     port: Port,
     grid_origin_x_um: float,
     grid_origin_y_um: float,
@@ -127,8 +129,8 @@ def port_to_grid_state(
 
 
 def port_access_rule_for(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     *,
     instance_name: str,
     port_name: str,
@@ -147,7 +149,7 @@ def port_access_rule_for(
     )
 
 
-def dense_fanout_min_ports(settings, state) -> int:
+def dense_fanout_min_ports(settings: SessionSettings, state: SessionState) -> int:
     """Smallest same-instance, same-angle port group treated as a dense fanout.
 
     Default 3 (the historical `> 2`). `PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS`
@@ -159,7 +161,9 @@ def dense_fanout_min_ports(settings, state) -> int:
     return 3 if value is None else value
 
 
-def _dense_fanout_group_size(settings, state, port_specs: set[str]) -> int:
+def _dense_fanout_group_size(
+    settings: SessionSettings, state: SessionState, port_specs: set[str]
+) -> int:
     """Ports of a group that qualify for automatic dense-fanout handling.
 
     A port with an explicit component access rule (see
@@ -185,7 +189,9 @@ def _dense_fanout_group_size(settings, state, port_specs: set[str]) -> int:
     return count
 
 
-def _dense_fanout_min_ports_for(settings, state, instance_name: str) -> int:
+def _dense_fanout_min_ports_for(
+    settings: SessionSettings, state: SessionState, instance_name: str
+) -> int:
     """Per-instance threshold: instances listed in
     `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES` (comma separated) get static
     stubs from two ports up -- the pre-placed crossing column grid needs
@@ -198,7 +204,9 @@ def _dense_fanout_min_ports_for(settings, state, instance_name: str) -> int:
     return dense_fanout_min_ports(settings, state)
 
 
-def is_dense_source_fanout_instance(settings, state, instance_name: str) -> bool:
+def is_dense_source_fanout_instance(
+    settings: SessionSettings, state: SessionState, instance_name: str
+) -> bool:
     """Whether a group of source ports of the instance reaches its dense fan-out threshold.
 
     The groups are the instance's source port specs by heading; one group whose dense
@@ -215,7 +223,9 @@ def is_dense_source_fanout_instance(settings, state, instance_name: str) -> bool
     )
 
 
-def _is_dense_source_fanout_group(settings, state, instance_name: str, angle: int) -> bool:
+def _is_dense_source_fanout_group(
+    settings: SessionSettings, state: SessionState, instance_name: str, angle: int
+) -> bool:
     return _dense_fanout_group_size(
         settings,
         state,
@@ -223,7 +233,9 @@ def _is_dense_source_fanout_group(settings, state, instance_name: str, angle: in
     ) >= _dense_fanout_min_ports_for(settings, state, instance_name)
 
 
-def _is_dense_target_fanout_instance(settings, state, instance_name: str) -> bool:
+def _is_dense_target_fanout_instance(
+    settings: SessionSettings, state: SessionState, instance_name: str
+) -> bool:
     return any(
         _dense_fanout_group_size(settings, state, port_specs)
         >= dense_fanout_min_ports(settings, state)
@@ -235,7 +247,9 @@ def _is_dense_target_fanout_instance(settings, state, instance_name: str) -> boo
     )
 
 
-def _is_dense_target_fanout_group(settings, state, instance_name: str, angle: int) -> bool:
+def _is_dense_target_fanout_group(
+    settings: SessionSettings, state: SessionState, instance_name: str, angle: int
+) -> bool:
     return _dense_fanout_group_size(
         settings,
         state,
@@ -243,14 +257,16 @@ def _is_dense_target_fanout_group(settings, state, instance_name: str, angle: in
     ) >= dense_fanout_min_ports(settings, state)
 
 
-def state_cell_center_um(settings, state, cell_x: int, cell_y: int) -> tuple[float, float]:
+def state_cell_center_um(
+    settings: SessionSettings, state: SessionState, cell_x: int, cell_y: int
+) -> tuple[float, float]:
     """Return the center of a cell of the session's routing grid in um."""
     return grid_cell_center(cell_x, cell_y, state.obstacles.grid)
 
 
 def _centerline_grid_cells(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     centerline_um: Iterable[tuple[float, float]],
 ) -> tuple[tuple[int, int], ...]:
     points = [
@@ -293,7 +309,7 @@ def _centerline_grid_cells(
     return tuple(dict.fromkeys(cells))
 
 
-def fanout_stub_bend_steps(settings, state) -> int:
+def fanout_stub_bend_steps(settings: SessionSettings, state: SessionState) -> int:
     """Return the bend of the fan-out stubs in eighths of a turn: 1 for 45 degrees, 2 for 90.
 
     Read from ``settings.config.fanout.fanout_stub_bend_degrees``, 90 if unset. Raises
@@ -323,8 +339,8 @@ def fanout_stub_bend_steps(settings, state) -> int:
 
 
 def _inflated_cells(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     cells: Iterable[tuple[int, int]],
     radius: int,
 ) -> set[tuple[int, int]]:
@@ -340,22 +356,28 @@ def _inflated_cells(
     return inflated
 
 
-def _angle_to_unit_vector(settings, state, angle: int) -> tuple[float, float]:
+def _angle_to_unit_vector(
+    settings: SessionSettings, state: SessionState, angle: int
+) -> tuple[float, float]:
     radians = (int(angle) % 8) * (math.pi / 4.0)
     return (math.cos(radians), math.sin(radians))
 
 
-def _rotate_left_vector(settings, state, vector: tuple[float, float]) -> tuple[float, float]:
+def _rotate_left_vector(
+    settings: SessionSettings, state: SessionState, vector: tuple[float, float]
+) -> tuple[float, float]:
     return (-vector[1], vector[0])
 
 
-def _rotate_right_vector(settings, state, vector: tuple[float, float]) -> tuple[float, float]:
+def _rotate_right_vector(
+    settings: SessionSettings, state: SessionState, vector: tuple[float, float]
+) -> tuple[float, float]:
     return (vector[1], -vector[0])
 
 
 def _append_stub_point(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     out: list[tuple[float, float]],
     point: tuple[float, float],
 ) -> None:
@@ -368,8 +390,8 @@ def _append_stub_point(
 
 
 def _append_arc_from_tangencies(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     out: list[tuple[float, float]],
     *,
     t_in: tuple[float, float],
@@ -433,8 +455,8 @@ def _append_arc_from_tangencies(
 
 
 def _append_realized_stub_bend(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     out: list[tuple[float, float]],
     start_point_um: tuple[float, float],
     start_angle: int,
@@ -482,8 +504,8 @@ def _append_realized_stub_bend(
 
 
 def _two_bend_static_stub_centerline_um(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     port_center_um: tuple[float, float],
     physical_angle: int,
     lateral_sign: int,
@@ -686,8 +708,8 @@ def _two_bend_static_stub_centerline_um(
 
 
 def _straight_static_stub_centerline_um(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     port_center_um: tuple[float, float],
     physical_angle: int,
     forward_cells: int,
@@ -767,7 +789,9 @@ def _straight_static_stub_centerline_um(
     return centerline, (anchor_x, anchor_y)
 
 
-def _build_static_fanout_anchors(settings, state) -> dict[str, FanoutAnchor]:
+def _build_static_fanout_anchors(
+    settings: SessionSettings, state: SessionState
+) -> dict[str, FanoutAnchor]:
     if settings.fanout_access_mode_normalized != "static-stubs":
         return {}
     default_forward_cells = max(3, int(state.kernel.radii.bend_radius_cells) + 3)
@@ -941,7 +965,9 @@ def _build_static_fanout_anchors(settings, state) -> dict[str, FanoutAnchor]:
     return anchors
 
 
-def _build_static_fanout_target_anchors(settings, state) -> dict[str, FanoutAnchor]:
+def _build_static_fanout_target_anchors(
+    settings: SessionSettings, state: SessionState
+) -> dict[str, FanoutAnchor]:
     """Build real, pre-committed straight stubs for dense TARGET ports.
 
     Unlike `_build_static_fanout_anchors` (the source-side equivalent),
@@ -1087,8 +1113,8 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, FanoutAnch
 
 
 def _dense_source_port_runway_lengths(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     jobs: list[RouteJob],
 ) -> dict[str, int]:
     """Reserve staggered source-port access in dense MMI fanout runs."""
@@ -1210,8 +1236,8 @@ def _dense_source_port_runway_lengths(
 
 
 def _equalize_dense_runway_reach(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     lengths_by_spec: dict[str, int],
     port_specs: list[str],
 ) -> None:
@@ -1245,8 +1271,8 @@ def _equalize_dense_runway_reach(
 
 
 def _dense_target_port_runway_lengths(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     jobs: list[RouteJob],
 ) -> dict[str, int]:
     """Reserve staggered target-port access for dense same-instance sinks."""

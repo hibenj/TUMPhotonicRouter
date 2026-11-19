@@ -34,7 +34,9 @@ from photonic_router.routing.state import SessionState
 from photonic_router.static_obstacle_builder import physical_to_grid
 
 
-def _cell_in_raw_static(settings, state, cell: tuple[int, int]) -> bool:
+def _cell_in_raw_static(
+    settings: SessionSettings, state: SessionState, cell: tuple[int, int]
+) -> bool:
     if cell in state.kernel.static.raw_static_cells:
         return True
     x, y = cell
@@ -45,8 +47,8 @@ def _cell_in_raw_static(settings, state, cell: tuple[int, int]) -> bool:
 
 
 def cells_in_raw_static_geometry(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     cells: set[tuple[int, int]],
 ) -> set[tuple[int, int]]:
     """Return those of ``cells`` that lie in the raw static obstacle geometry of the kernel state.
@@ -58,8 +60,8 @@ def cells_in_raw_static_geometry(
 
 
 def _resolve_port_footprint_cells(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     *,
     instance_name: str,
     port_name: str,
@@ -107,7 +109,9 @@ def _resolve_port_footprint_cells(
     )
 
 
-def _instance_ref_by_name(settings, state, instance_name: str) -> Any | None:
+def _instance_ref_by_name(
+    settings: SessionSettings, state: SessionState, instance_name: str
+) -> Any | None:
     try:
         instances = state.routed_layout.insts
     except (AttributeError, TypeError):
@@ -119,8 +123,8 @@ def _instance_ref_by_name(settings, state, instance_name: str) -> Any | None:
 
 
 def _instance_static_geometry_open_cells(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     *,
     instance_name: str,
     center_um: tuple[float, float],
@@ -252,7 +256,9 @@ class _PortAccess(NamedTuple):
     runway_cells_by_spec: dict[str, set[tuple[int, int]]]
 
 
-def _endpoint_state_for_lane_assignment(settings, state, port: Port, *, as_target: bool):
+def _endpoint_state_for_lane_assignment(
+    settings: SessionSettings, state: SessionState, port: Port, *, as_target: bool
+):
     return port_to_grid_state(
         settings,
         state,

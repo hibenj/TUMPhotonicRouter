@@ -38,11 +38,13 @@ from photonic_router.routing.handoff import (
     states_and_openings,
 )
 from photonic_router.routing.route_jobs import angle_to_step, fanout_stub_bend_steps
+from photonic_router.routing.settings import SessionSettings
+from photonic_router.routing.state import SessionState
 
 
 def _direction_reaches_target_ray(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     *,
     source_x: int,
     source_y: int,
@@ -68,8 +70,8 @@ def _direction_reaches_target_ray(
 
 
 def _source_lower_bounds(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     *,
     source_x: int,
     source_y: int,
@@ -105,14 +107,14 @@ def _source_lower_bounds(
 
 
 def _committed_dynamic_cells(
-    settings, state, *, exclude_net_id: int | None = None
+    settings: SessionSettings, state: SessionState, *, exclude_net_id: int | None = None
 ) -> set[tuple[int, int]]:
     return state.search.bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
 
 
 def _committed_dynamic_cells_for_attempt(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     *,
     exclude_net_id: int | None = None,
 ) -> set[tuple[int, int]]:
@@ -126,14 +128,16 @@ def _committed_dynamic_cells_for_attempt(
     return merged
 
 
-def route_cells_from_router(settings, state, net_id: int) -> set[tuple[int, int]]:
+def route_cells_from_router(
+    settings: SessionSettings, state: SessionState, net_id: int
+) -> set[tuple[int, int]]:
     """Return the cells the kernel router holds for a net as a set of (x, y) integer pairs."""
     return {(int(cell[0]), int(cell[1])) for cell in state.kernel.router.get_net_cells(int(net_id))}
 
 
 def state_openings_for_job(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     job: RouteJob,
 ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
     """Return the states and opened cells precomputed for a job in the static hand-off.
@@ -144,7 +148,9 @@ def state_openings_for_job(
     return state.run.state_openings_by_id[int(job.net_id)]
 
 
-def _static_cells_in_rect(settings, state, min_x: int, max_x: int, min_y: int, max_y: int) -> int:
+def _static_cells_in_rect(
+    settings: SessionSettings, state: SessionState, min_x: int, max_x: int, min_y: int, max_y: int
+) -> int:
     if min_x > max_x or min_y > max_y:
         return 0
     if state.static_cells.blocked_rects_for_diagnostics:
@@ -166,8 +172,8 @@ def _static_cells_in_rect(settings, state, min_x: int, max_x: int, min_y: int, m
 
 
 def _cells_in_rect(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     cells: set[tuple[int, int]],
     *,
     min_x: int,
@@ -181,8 +187,8 @@ def _cells_in_rect(
 
 
 def route_attempt_diagnostics(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     job: RouteJob,
     route_obj: object | None,
     *,
@@ -436,8 +442,8 @@ def route_attempt_diagnostics(
 
 
 def write_route_diagnostics(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     *,
     job: RouteJob,
     source_state: Any,
@@ -902,8 +908,8 @@ def write_route_diagnostics(
 
 
 def export_route_svg(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     job: RouteJob,
     route_obj: Any,
     *,
@@ -920,12 +926,13 @@ def export_route_svg(
     ``opened_cells`` defaults to the job's precomputed opened cells. Does nothing
     without a debug path or if ``settings.debug_route_indices`` excludes the job.
     """
-    should_export = state.obstacles.debug_path is not None and (
+    debug_path = state.obstacles.debug_path
+    selected = (
         settings.debug_route_indices is None or job.route_index in settings.debug_route_indices
     )
-    if not should_export:
+    if debug_path is None or not selected:
         return
-    route_dir = state.obstacles.debug_path / "routes"
+    route_dir = debug_path / "routes"
     ensure_dir(route_dir)
     route_svg = route_dir / f"{settings.debug_prefix}_{job.net_name}{suffix}.svg"
     if obstacle_cells is not None and hasattr(
@@ -985,7 +992,7 @@ def export_route_svg(
     state.search.route_svgs.append(route_svg)
 
 
-def route_engine_summary(settings, state, route_obj: Any) -> str:
+def route_engine_summary(settings: SessionSettings, state: SessionState, route_obj: Any) -> str:
     """Summarize a route object in one line: kind, length in um, cost and expanded states.
 
     The kind is ``simple`` if the route was found without expanding a search state,
@@ -999,8 +1006,8 @@ def route_engine_summary(settings, state, route_obj: Any) -> str:
 
 
 def _corridor_clearance_diagnostic(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     source_state: Any,
     target_state: Any,
     blocked_cells: set[tuple[int, int]],
@@ -1115,8 +1122,8 @@ def _corridor_clearance_diagnostic(
 
 
 def write_failed_log(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     job: RouteJob,
     source_state: Any,
     target_state: Any,

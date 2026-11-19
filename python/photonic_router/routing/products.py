@@ -322,10 +322,11 @@ class RunPlan:
     state_openings_by_id: dict[int, StateOpenings]
     #: the clearance-exempt cells the kernel computed per net
     clearance_exempt_cells_by_id: dict[int, list[tuple[int, int]]]
-    #: (width, height, cell size, origin x, origin y) for realization
-    realization_grid_spec: tuple[int, int, float, float, float] | None
+    #: (width, height, cell size, origin x, origin y) for realization; a grid
+    #: of no cells until phase 5 ran
+    realization_grid_spec: tuple[int, int, float, float, float]
     #: the rip-up and reroute configuration the loop runs with
-    repair_config: RipupRerouteConfig | None
+    repair_config: RipupRerouteConfig
     #: whether per-net timing buckets are filled
     collect_timing: bool
     #: whether committed dynamic cells are tracked per net
@@ -334,4 +335,4 @@ class RunPlan:
     @classmethod
     def empty(cls) -> RunPlan:
         """The plan of a session whose phase 5 has not run."""
-        return cls([], {}, {}, {}, {}, None, None, False, False)
+        return cls([], {}, {}, {}, {}, (0, 0, 0.0, 0.0, 0.0), RipupRerouteConfig(), False, False)

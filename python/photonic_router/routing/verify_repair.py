@@ -60,7 +60,9 @@ from photonic_router.verify.photonic_verification import (
 )
 
 
-def _grid_cell_from_raw_point(settings, state, raw_point: object) -> tuple[int, int] | None:
+def _grid_cell_from_raw_point(
+    settings: SessionSettings, state: SessionState, raw_point: object
+) -> tuple[int, int] | None:
     if not isinstance(raw_point, (tuple, list)) or len(raw_point) != 2:
         return None
     try:
@@ -74,7 +76,7 @@ def _grid_cell_from_raw_point(settings, state, raw_point: object) -> tuple[int, 
 
 
 def _illegal_crossing_grid_cell(
-    settings, state, item: Mapping[str, object]
+    settings: SessionSettings, state: SessionState, item: Mapping[str, object]
 ) -> tuple[int, int] | None:
     raw_cell = item.get("grid_cell")
     if isinstance(raw_cell, (tuple, list)) and len(raw_cell) == 2:
@@ -109,7 +111,9 @@ def _repair_reason(item: Mapping[str, object]) -> str:
     return _UNIFIED_REASON_TO_REPAIR_REASON.get(reason, reason)
 
 
-def _illegal_crossing_keepout_radius(settings, state, item: Mapping[str, object]) -> int:
+def _illegal_crossing_keepout_radius(
+    settings: SessionSettings, state: SessionState, item: Mapping[str, object]
+) -> int:
     reason = _repair_reason(item)
     if reason == "not_perpendicular":
         return max(1, int(state.obstacles.resolved_crossing_half_size_cells) + 1)
@@ -134,8 +138,8 @@ def _illegal_crossing_keepout_radius(settings, state, item: Mapping[str, object]
 
 
 def _add_keepout_square(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     keepout_cells: set[tuple[int, int]],
     *,
     center: tuple[int, int],
@@ -150,8 +154,8 @@ def _add_keepout_square(
 
 
 def _add_segment_keepout_cells(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     keepout_cells: set[tuple[int, int]],
     *,
     start_cell: tuple[int, int],
@@ -171,8 +175,8 @@ def _add_segment_keepout_cells(
 
 
 def _final_crossing_repair_keepout_cells(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     illegal_crossings: Iterable[Mapping[str, object]],
 ) -> set[tuple[int, int]]:
     keepout_cells: set[tuple[int, int]] = set()
@@ -211,8 +215,8 @@ def _final_crossing_repair_keepout_cells(
 
 
 def _final_crossing_repair_net_ids(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     illegal_crossings: Iterable[Mapping[str, object]],
 ) -> list[int]:
     net_ids: set[int] = set()
@@ -284,8 +288,8 @@ def _final_crossing_repair_net_ids(
 
 
 def _final_crossing_repair_batches(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     illegal_crossings: list[dict[str, object]],
     *,
     max_net_ids: int,
@@ -357,8 +361,8 @@ def _final_crossing_repair_batches(
 
 
 def _repair_final_illegal_crossings(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     illegal_crossings: list[dict[str, object]],
 ) -> bool:
     max_repair_net_ids = 12
@@ -520,7 +524,7 @@ def _repair_final_illegal_crossings(
     return True
 
 
-def _net_id_by_name(settings, state) -> dict[str, int]:
+def _net_id_by_name(settings: SessionSettings, state: SessionState) -> dict[str, int]:
     return {
         record.net_name: int(net_id)
         for net_id, record in state.search.bookkeeping.records_by_id.items()
@@ -528,8 +532,8 @@ def _net_id_by_name(settings, state) -> dict[str, int]:
 
 
 def _grid_rect_from_um_bbox(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     raw_bbox: object,
 ) -> tuple[int, int, int, int] | None:
     if not isinstance(raw_bbox, (tuple, list)) or len(raw_bbox) != 4:
@@ -558,8 +562,8 @@ def _grid_rect_from_um_bbox(
 
 
 def _add_keepout_rect(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     keepout_cells: set[tuple[int, int]],
     *,
     rect: tuple[int, int, int, int],
@@ -579,8 +583,8 @@ def _add_keepout_rect(
 
 
 def _cells_from_um_bbox(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     raw_bbox: object,
     *,
     radius: int,
@@ -594,7 +598,7 @@ def _cells_from_um_bbox(
 
 
 def _grid_rect_from_grid_bbox_text(
-    settings, state, text: str, name: str
+    settings: SessionSettings, state: SessionState, text: str, name: str
 ) -> tuple[int, int, int, int] | None:
     match = re.search(rf"{re.escape(name)}=\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)", text)
     if match is None:
@@ -610,7 +614,7 @@ def _grid_rect_from_grid_bbox_text(
 
 
 def _polygon_bbox_um(
-    settings, state, raw_polygon: object
+    settings: SessionSettings, state: SessionState, raw_polygon: object
 ) -> tuple[float, float, float, float] | None:
     if not isinstance(raw_polygon, IterableABC) or isinstance(
         raw_polygon,
@@ -636,8 +640,8 @@ def _polygon_bbox_um(
 
 
 def _photonic_issue_keepout_cells(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     issue: PhotonicVerificationIssue,
 ) -> set[tuple[int, int]]:
     radius = max(1, int(state.kernel.radii.core_commit_radius_cells) + 1)
@@ -684,8 +688,8 @@ def _photonic_issue_keepout_cells(
 
 
 def _photonic_issue_net_ids(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     issue: PhotonicVerificationIssue,
 ) -> set[int]:
     by_name = _net_id_by_name(settings, state)
@@ -700,8 +704,8 @@ def _photonic_issue_net_ids(
 
 
 def _make_photonic_verification_probe_layout(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     records: Iterable[RoutedNetRecord],
 ) -> Component:
     t_probe_layout_total_start = timing.pipeline_timer_start(settings, state)
@@ -741,7 +745,9 @@ def _make_photonic_verification_probe_layout(
     return probe_layout
 
 
-def _refresh_photonic_verification(settings, state) -> PhotonicVerificationResult:
+def _refresh_photonic_verification(
+    settings: SessionSettings, state: SessionState
+) -> PhotonicVerificationResult:
     # This is an internal diagnostic verifier, not the intended default
     # source of truth for production routing success. A* and the grid-level
     # crossing checks must reject illegal moves locally; the final geometry
@@ -784,8 +790,8 @@ def _refresh_photonic_verification(settings, state) -> PhotonicVerificationResul
 
 
 def _repair_final_photonic_issues(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     issues: tuple[PhotonicVerificationIssue, ...],
 ) -> bool:
     attempts = state.crossing_plan_info.final_photonic_repair_attempts
@@ -904,8 +910,8 @@ def _repair_final_photonic_issues(
 
 
 def _photonic_repair_failure_preview(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     verification: PhotonicVerificationResult,
 ) -> str:
     lines: list[str] = []
@@ -923,7 +929,9 @@ def _photonic_repair_failure_preview(
     return "; ".join(lines)
 
 
-def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, object]]:
+def _refresh_realized_crossing_verification(
+    settings: SessionSettings, state: SessionState
+) -> list[dict[str, object]]:
     t_refresh_crossings_start = timing.pipeline_timer_start(settings, state)
     native_crossing_events: list[Any] = []
     native_crossing_verdicts: list[Any] = []

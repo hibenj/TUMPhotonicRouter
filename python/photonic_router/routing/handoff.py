@@ -23,8 +23,8 @@ from photonic_router.static_obstacle_builder import grid_cell_center
 
 
 def _snap_nearly_collinear_states(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     source_state: Any,
     target_state: Any,
     source_port: Port,
@@ -106,7 +106,7 @@ def _snap_nearly_collinear_states(
 
 
 def _state_inside_dense_port_opening(
-    settings, state, port_spec: str | None, grid_state: Any
+    settings: SessionSettings, state: SessionState, port_spec: str | None, grid_state: Any
 ) -> bool:
     """Whether a state's cell belongs to the port's own dense-port opening (always, without one)."""
 
@@ -117,8 +117,8 @@ def _state_inside_dense_port_opening(
 
 
 def _snap_same_heading_minimum_bend_offset(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     source_state: Any,
     target_state: Any,
 ) -> tuple[Any, Any, set[tuple[int, int]]]:
@@ -189,8 +189,8 @@ def _snap_same_heading_minimum_bend_offset(
 
 
 def _filter_dense_port_opening(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     port_spec: str,
     cells: set[tuple[int, int]],
 ) -> set[tuple[int, int]]:
@@ -228,8 +228,8 @@ def _filter_dense_port_opening(
 
 
 def _opened_cells_for_spec(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     cells_by_spec: Mapping[str, set[tuple[int, int]]],
     port_spec: str,
 ) -> set[tuple[int, int]]:
@@ -241,7 +241,9 @@ def _opened_cells_for_spec(
     )
 
 
-def foreign_keepout_open_cells_for_spec(settings, state, port_spec: str) -> set[tuple[int, int]]:
+def foreign_keepout_open_cells_for_spec(
+    settings: SessionSettings, state: SessionState, port_spec: str
+) -> set[tuple[int, int]]:
     """Return the foreign keep-out cells opened for a port spec, without the normal runway cells.
 
     For a port in a source cluster these are the foreign keep-out cells of all ports
@@ -262,7 +264,9 @@ def foreign_keepout_open_cells_for_spec(settings, state, port_spec: str) -> set[
     )
 
 
-def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[RouteJob]:
+def _topological_net_route_order(
+    settings: SessionSettings, state: SessionState, jobs: list[RouteJob]
+) -> list[RouteJob]:
     """Route nets by `self.net_order` (`python/photonic_router/records/route_order.py`):
     source-instance depth first, then declaration order / grid span /
     planned crossing count; `span` alone orders by grid span across the
@@ -314,7 +318,9 @@ def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[
     return _debug_hoist_instance_first(settings, state, ordered)
 
 
-def _route_job_grid_span(settings, state, route_job: RouteJob) -> int:
+def _route_job_grid_span(
+    settings: SessionSettings, state: SessionState, route_job: RouteJob
+) -> int:
     source_state = port_to_grid_state(
         settings,
         state,
@@ -338,7 +344,9 @@ def _route_job_grid_span(settings, state, route_job: RouteJob) -> int:
     )
 
 
-def _debug_hoist_instance_first(settings, state, ordered: list[RouteJob]) -> list[RouteJob]:
+def _debug_hoist_instance_first(
+    settings: SessionSettings, state: SessionState, ordered: list[RouteJob]
+) -> list[RouteJob]:
     """Debug-only reordering: `PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE=<name>`
     hoists every net touching the named instance to the front of the
     routing order (relative order preserved on both sides), so a dense
@@ -375,8 +383,8 @@ def _debug_hoist_instance_first(settings, state, ordered: list[RouteJob]) -> lis
 
 
 def _endpoint_bump_candidate_open_cells_for_state(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     grid_state: Any,
 ) -> set[tuple[int, int]]:
     """Cells a local endpoint bump may need opened against its own port pad."""
@@ -410,8 +418,8 @@ def _endpoint_bump_candidate_open_cells_for_state(
 
 
 def states_and_openings(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     job: RouteJob,
 ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
     """Compute the two grid states of a job and the cells opened for its endpoints.

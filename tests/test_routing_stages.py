@@ -85,7 +85,7 @@ def test_phase2_router_setup_returns_the_kernel_setup(pipeline: Pipeline) -> Non
     assert state.kernel.radii.bend_radius_cells == 1  # bend_radius_um=1.0 over a 1 um grid
     assert state.kernel.static.raw_static_cells == set()  # the stand-in map blocks nothing
     # The realization grid spec is phase 5's, not this phase's (see state.py).
-    assert state.run.realization_grid_spec is None
+    assert state.run.realization_grid_spec == (0, 0, 0.0, 0.0, 0.0)
 
 
 def test_phase3_route_job_builder_turns_the_netlist_into_jobs(pipeline: Pipeline) -> None:

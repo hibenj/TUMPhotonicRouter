@@ -264,6 +264,17 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The helpers of the routing phases declare what they take (S4, slice 1).
+  214 parameters named `settings` and `state` in seven modules of
+  `routing/` are annotated `SessionSettings` and `SessionState`, so mypy
+  checks those function bodies for the first time. That surfaced 16 errors;
+  they are fixed where they came from: `RunPlan.realization_grid_spec` and
+  `RunPlan.repair_config` are no longer optional (the empty plan holds a
+  grid of no cells and the default configuration), two loops in
+  `finalize.py` no longer rebind a non-optional name to an optional lookup,
+  and the debug export narrows its directory before using it. Parameters
+  without an annotation fall from 218 to 4, mypy's errors from 285 to 277.
+  Behaviour is unchanged.
 - Helpers that existed more than once have one implementation or a name of
   their own (S2, slice 5; rule 3.3). The three private copies of
   `in_bounds` in `electrical/` use the one of `wire_geometry.py`; the two

@@ -49,7 +49,7 @@ NEGOTIATED_MAX_ROUNDS = 10
 
 
 def _foreign_keepout_cleanup_cells_for_spec(
-    settings, state, port_spec: str
+    settings: SessionSettings, state: SessionState, port_spec: str
 ) -> set[tuple[int, int]]:
     cells = set(state.ports.foreign_keepout_cells_by_spec.get(port_spec, set()))
     if not cells:
@@ -60,7 +60,9 @@ def _foreign_keepout_cleanup_cells_for_spec(
     return cells
 
 
-def _foreign_keepout_cleanup_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
+def _foreign_keepout_cleanup_cells_for_job(
+    settings: SessionSettings, state: SessionState, job: RouteJob
+) -> list[tuple[int, int]]:
     cells = _foreign_keepout_cleanup_cells_for_spec(settings, state, f"{job.inst1},{job.port1}")
     cells.update(
         _foreign_keepout_cleanup_cells_for_spec(settings, state, f"{job.inst2},{job.port2}")
@@ -68,12 +70,14 @@ def _foreign_keepout_cleanup_cells_for_job(settings, state, job: RouteJob) -> li
     return sorted(cells)
 
 
-def timing_start(settings, state) -> float:
+def timing_start(settings: SessionSettings, state: SessionState) -> float:
     """Return a ``time.perf_counter`` start time, or 0.0 if the run does not collect timing."""
     return time.perf_counter() if state.run.collect_timing else 0.0
 
 
-def _record_native_batch_timings(settings, state, batch_result: dict[str, Any]) -> None:
+def _record_native_batch_timings(
+    settings: SessionSettings, state: SessionState, batch_result: dict[str, Any]
+) -> None:
     if not settings.collect_pipeline_timing:
         return
     raw_timings = batch_result.get("timings_s")
@@ -88,7 +92,9 @@ def _record_native_batch_timings(settings, state, batch_result: dict[str, Any]) 
         state.route_nets_timings_s[name] = state.route_nets_timings_s.get(name, 0.0) + elapsed_s
 
 
-def _report_long_straight_congestion(settings, state, batch_result: dict[str, Any]) -> None:
+def _report_long_straight_congestion(
+    settings: SessionSettings, state: SessionState, batch_result: dict[str, Any]
+) -> None:
     records = [
         dict(record)
         for record in cast(
@@ -124,8 +130,8 @@ def _report_long_straight_congestion(settings, state, batch_result: dict[str, An
 
 
 def append_centerline_points(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     out: list[tuple[float, float]],
     points: Iterable[tuple[float, float]],
 ) -> None:
@@ -140,8 +146,8 @@ def append_centerline_points(
 
 
 def _fanout_stubbed_centerline(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     job: RouteJob,
     route_obj: Any,
 ) -> tuple[tuple[float, float], ...]:
@@ -183,8 +189,8 @@ def _fanout_stubbed_centerline(
 
 
 def routing_endpoint_center_um(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     job: RouteJob,
     *,
     source: bool,
@@ -203,16 +209,22 @@ def routing_endpoint_center_um(
     return anchor.center_um if anchor is not None else center_of_port_um(job.target_port)
 
 
-def clearance_exempt_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
+def clearance_exempt_cells_for_job(
+    settings: SessionSettings, state: SessionState, job: RouteJob
+) -> list[tuple[int, int]]:
     """Return the clearance-exempt cells computed for the job's net, or an empty list."""
     return state.run.clearance_exempt_cells_by_id.get(int(job.net_id), [])
 
 
-def _clearance_exempt_cell_set_for_job(settings, state, job: RouteJob) -> set[tuple[int, int]]:
+def _clearance_exempt_cell_set_for_job(
+    settings: SessionSettings, state: SessionState, job: RouteJob
+) -> set[tuple[int, int]]:
     return set(clearance_exempt_cells_for_job(settings, state, job))
 
 
-def native_route_jobs(settings, state, jobs: Iterable[RouteJob]) -> list[Any]:
+def native_route_jobs(
+    settings: SessionSettings, state: SessionState, jobs: Iterable[RouteJob]
+) -> list[Any]:
     """The kernel's `RouteJob` objects for `route_many_with_negotiated_repair_and_commit`.
 
     One job per Python `RouteJob`, in the order given: the net id, the two grid
@@ -248,8 +260,8 @@ def native_route_jobs(settings, state, jobs: Iterable[RouteJob]) -> list[Any]:
 
 
 def record_route(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     job: RouteJob,
     route_obj: Any,
     opened_cells: list[tuple[int, int]],
@@ -302,8 +314,8 @@ def record_route(
 
 
 def _finalize_committed_route(
-    settings,
-    state,
+    settings: SessionSettings,
+    state: SessionState,
     job: RouteJob,
     route_obj: Any,
     opened_cells: list[tuple[int, int]],
