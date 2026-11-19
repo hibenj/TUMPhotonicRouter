@@ -13,8 +13,8 @@ from gdsfactory.component import Component
 from photonic_router.records.route_rust_records import format_port_endpoint_correction_error
 from photonic_router.records.route_rust_types import (
     RoutedNetRecord,
-    _as_float,
-    _as_int,
+    as_float,
+    as_int,
 )
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
@@ -260,7 +260,7 @@ def _record_realized_polygon(
             and len(selected_meander_centerline) >= 2
         ):
             meander_centerline = [
-                (_as_float(p[0], 0.0), _as_float(p[1], 0.0))
+                (as_float(p[0], 0.0), as_float(p[1], 0.0))
                 for p in selected_meander_centerline
                 if isinstance(p, (tuple, list)) and len(p) == 2
             ]
@@ -272,8 +272,8 @@ def _record_realized_polygon(
                         corrected_centerline,
                         float(route_width_um),
                         record.route_obj,
-                        selected_run_start_index=_as_int(selected_run_start_index, 0),
-                        selected_run_end_index=_as_int(selected_run_end_index, 0),
+                        selected_run_start_index=as_int(selected_run_start_index, 0),
+                        selected_run_end_index=as_int(selected_run_end_index, 0),
                         meander_centerline=meander_centerline,
                         source_enabled=record.source_port_center_um is not None,
                         target_enabled=record.target_port_center_um is not None,
@@ -289,8 +289,8 @@ def _record_realized_polygon(
             return router.realize_route_polygon_from_planned_auto_meander(
                 record.route_obj,
                 float(route_width_um),
-                selected_run_start_index=_as_int(selected_run_start_index, 0),
-                selected_run_end_index=_as_int(selected_run_end_index, 0),
+                selected_run_start_index=as_int(selected_run_start_index, 0),
+                selected_run_end_index=as_int(selected_run_end_index, 0),
                 meander_centerline=meander_centerline,
             )
         raise RuntimeError(

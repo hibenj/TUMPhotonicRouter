@@ -15,7 +15,7 @@ from photonic_router.records.route_order import depth_by_node_from_jobs, order_r
 from photonic_router.records.route_rust_types import RipupRerouteConfig, RouteJob
 from photonic_router.routing import timing
 from photonic_router.routing.products import RunPlan, StateOpenings, StaticHandoffCells
-from photonic_router.routing.route_jobs import _in_bounds, angle_to_step, port_to_grid_state
+from photonic_router.routing.route_jobs import angle_to_step, cell_in_grid, port_to_grid_state
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import FinalJobs
 from photonic_router.routing.state import SearchLog, SessionState
@@ -161,7 +161,7 @@ def _snap_same_heading_minimum_bend_offset(
             sy + (snapped_offset_cells if dy > 0 else -snapped_offset_cells),
             target_angle,
         )
-        if not _in_bounds(settings, state, int(snapped_target.x), int(snapped_target.y)):
+        if not cell_in_grid(settings, state, int(snapped_target.x), int(snapped_target.y)):
             return source_state, target_state, extra_cells
         extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
         return source_state, snapped_target, extra_cells
@@ -180,7 +180,7 @@ def _snap_same_heading_minimum_bend_offset(
             ty,
             target_angle,
         )
-        if not _in_bounds(settings, state, int(snapped_target.x), int(snapped_target.y)):
+        if not cell_in_grid(settings, state, int(snapped_target.x), int(snapped_target.y)):
             return source_state, target_state, extra_cells
         extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
         return source_state, snapped_target, extra_cells

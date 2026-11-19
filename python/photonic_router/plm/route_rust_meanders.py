@@ -33,8 +33,8 @@ from photonic_router.records.route_rust_types import (
     MeanderInsertionReport,
     MeanderPlanningProfile,
     RoutedNetRecord,
-    _as_float,
-    _as_int,
+    as_float,
+    as_int,
     edge_key_to_dict,
 )
 
@@ -421,7 +421,7 @@ class _MeanderPlannerContext:
                 for raw_candidate in raw_candidate_results:
                     if not isinstance(raw_candidate, Mapping):
                         continue
-                    rust_index = _as_int(raw_candidate.get("candidate_index"), -1)
+                    rust_index = as_int(raw_candidate.get("candidate_index"), -1)
                     candidate_statuses.append(
                         {
                             "candidate_reason": (
@@ -458,14 +458,14 @@ class _MeanderPlannerContext:
             max_bumps = self.max_bumps_for_edge(split_edge_key, record)
             return _RequirementPlanOutcome(
                 selected_work_index=None,
-                split_part_count=_as_int(result.get("split_part_count"), len(raw_plans)),
+                split_part_count=as_int(result.get("split_part_count"), len(raw_plans)),
                 plans=[(split_edge_key, record, rr, max_bumps) for rr in raw_plans],
                 reason="",
                 elapsed_s=elapsed_s,
                 edge_calls=edge_calls,
                 candidate_statuses=candidate_statuses,
             )
-        selected_rust_index = _as_int(result.get("selected_candidate_index"), -1)
+        selected_rust_index = as_int(result.get("selected_candidate_index"), -1)
         if not (0 <= selected_rust_index < len(candidate_work_indices)):
             return _RequirementPlanOutcome(
                 selected_work_index=None,
@@ -578,7 +578,7 @@ class _MeanderPlannerContext:
             )
         raw_plans = cast(list[dict[str, object]], result.get("plans", []))
         plan_input_indices = [
-            _as_int(index, -1) for index in cast(list[object], result.get("plan_input_indices", []))
+            as_int(index, -1) for index in cast(list[object], result.get("plan_input_indices", []))
         ]
         if len(raw_plans) != len(plan_input_indices) or any(
             not (0 <= index < len(edge_keys)) for index in plan_input_indices
@@ -750,10 +750,10 @@ def _grid_rect_cell_set_overlap_count(
 def _parse_grid_rect(grid_rect: object) -> tuple[int, int, int, int] | None:
     if not isinstance(grid_rect, (tuple, list)) or len(grid_rect) != 4:
         return None
-    min_x = _as_int(grid_rect[0], 0)
-    max_x = _as_int(grid_rect[1], -1)
-    min_y = _as_int(grid_rect[2], 0)
-    max_y = _as_int(grid_rect[3], -1)
+    min_x = as_int(grid_rect[0], 0)
+    max_x = as_int(grid_rect[1], -1)
+    min_y = as_int(grid_rect[2], 0)
+    max_y = as_int(grid_rect[3], -1)
     if max_x < min_x or max_y < min_y:
         return None
     return min_x, max_x, min_y, max_y
@@ -784,7 +784,7 @@ def _planned_record(
             "min_straight_um": min_straight_um,
             "max_bumps": max_bumps,
             "max_meander_height_um": max_height_um,
-            "box_depth_um": _as_float(rr.get("box_depth_um", 20.0), 20.0),
+            "box_depth_um": as_float(rr.get("box_depth_um", 20.0), 20.0),
             "min_segment_length_um": min_seg_um,
             "endpoint_inset_um": endpoint_inset_um,
             "clearance_radius_cells": int(meander_box_clearance_radius_cells),
@@ -1018,9 +1018,9 @@ def _meander_search_config(
         max_meander_height_um=float(config.max_meander_height_um),
         auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
     )
-    min_straight_um = _as_float(raw_config.get("min_straight_um"), 0.0)
-    min_segment_um = _as_float(raw_config.get("min_segment_um"), 0.5)
-    max_height_um = _as_float(
+    min_straight_um = as_float(raw_config.get("min_straight_um"), 0.0)
+    min_segment_um = as_float(raw_config.get("min_segment_um"), 0.5)
+    max_height_um = as_float(
         raw_config.get("max_height_um"),
         float(config.max_meander_height_um),
     )
@@ -1032,7 +1032,7 @@ def _meander_search_config(
     )
     if box_depths_um is None or endpoint_insets_um is None:
         raise RuntimeError("Rust PLM search config returned malformed candidate lists")
-    endpoint_inset_um = _as_float(
+    endpoint_inset_um = as_float(
         raw_config.get("endpoint_inset_um"),
         endpoint_insets_um[0] if endpoint_insets_um else 0.0,
     )
@@ -1119,14 +1119,14 @@ def _record_candidate_profile(
             "edge_count_total": 0,
         },
     )
-    entry["candidate_attempts"] = _as_int(entry.get("candidate_attempts"), 0) + 1
-    entry["edge_calls"] = _as_int(entry.get("edge_calls"), 0) + int(edge_calls)
-    entry["elapsed_s"] = _as_float(entry.get("elapsed_s"), 0.0) + float(elapsed_s)
-    entry["edge_count_total"] = _as_int(entry.get("edge_count_total"), 0) + int(edge_count)
+    entry["candidate_attempts"] = as_int(entry.get("candidate_attempts"), 0) + 1
+    entry["edge_calls"] = as_int(entry.get("edge_calls"), 0) + int(edge_calls)
+    entry["elapsed_s"] = as_float(entry.get("elapsed_s"), 0.0) + float(elapsed_s)
+    entry["edge_count_total"] = as_int(entry.get("edge_count_total"), 0) + int(edge_count)
     status_key = (
         status if status in {"planned", "no_candidate", "already_satisfied"} else "no_candidate"
     )
-    entry[status_key] = _as_int(entry.get(status_key), 0) + 1
+    entry[status_key] = as_int(entry.get(status_key), 0) + 1
 
 
 def _minimum_four_bend_extra_length_um(
@@ -1192,10 +1192,10 @@ def _route_geometry_max_meander_bumps(
                 or len(p1) != 2
             ):
                 continue
-            x0 = _as_int(p0[0], 0)
-            y0 = _as_int(p0[1], 0)
-            x1 = _as_int(p1[0], 0)
-            y1 = _as_int(p1[1], 0)
+            x0 = as_int(p0[0], 0)
+            y0 = as_int(p0[1], 0)
+            x1 = as_int(p1[0], 0)
+            y1 = as_int(p1[1], 0)
             if x0 == x1:
                 longest_straight_um = max(longest_straight_um, abs(y1 - y0) * grid_size)
             elif y0 == y1:
@@ -1332,7 +1332,7 @@ def _plan_and_commit_final_physical_meanders(
             for selected_edge_key, record, rr, max_bumps in commit_plans:
                 requested = final_edge_requests.get(
                     selected_edge_key,
-                    _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0),
+                    as_float(rr.get("inserted_extra_length_um", 0.0), 0.0),
                 )
                 final_plan_by_edge.setdefault(selected_edge_key, []).append(
                     (selected_edge_key, record, rr, max_bumps)
@@ -1341,10 +1341,10 @@ def _plan_and_commit_final_physical_meanders(
                     selected_edge_key=selected_edge_key,
                     record=record,
                     rr=rr,
-                    requested=_as_float(rr.get("inserted_extra_length_um", requested), requested),
+                    requested=as_float(rr.get("inserted_extra_length_um", requested), requested),
                     max_bumps=max_bumps,
                     search_config=search_config,
-                    endpoint_inset_um=_as_float(
+                    endpoint_inset_um=as_float(
                         rr.get("endpoint_inset_um", search_config.endpoint_inset_um),
                         search_config.endpoint_inset_um,
                     ),
@@ -1382,7 +1382,7 @@ def _plan_and_commit_final_physical_meanders(
                 for final_plan in final_plan_by_edge[edge_key]
             ]
             entry.physical_inserted_extra_length_um = sum(
-                _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+                as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
                 for _, _, rr, _ in final_plans
             )
             entry.plan = final_plans[0][2]
@@ -1392,14 +1392,14 @@ def _plan_and_commit_final_physical_meanders(
             _mirror_entry(entry, virtual_entry)
 
     total_physical_inserted = sum(
-        _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+        as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
         for final_plans in final_plan_by_edge.values()
         for _, _, rr, _ in final_plans
     )
     realized_extra_by_edge: dict[RoutedEdgeKey, float] = {}
     for edge_key, final_plans in final_plan_by_edge.items():
         realized = sum(
-            _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0) for _, _, rr, _ in final_plans
+            as_float(rr.get("inserted_extra_length_um", 0.0), 0.0) for _, _, rr, _ in final_plans
         )
         if realized > EXACT_MEANDER_EPS_UM:
             realized_extra_by_edge[edge_key] = realized
@@ -1630,7 +1630,7 @@ def analyze_meander_insertion_for_requirements(
         for selected_edge_key, _record, rr, _max_bumps in outcome.plans:
             selected_physical_total_by_edge[selected_edge_key] = (
                 selected_physical_total_by_edge.get(selected_edge_key, 0.0)
-                + _as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+                + as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
             )
         representative_rr = outcome.plans[0][2]
         entry.status = "planned"
@@ -1830,8 +1830,8 @@ def _record_requirement_attempt(
         charged_reason = str(candidates[-1]["candidate_reason"])
     if charged_reason is not None and charged_reason in profile.candidate_profile:
         charged = profile.candidate_profile[charged_reason]
-        charged["edge_calls"] = _as_int(charged.get("edge_calls"), 0) + outcome.edge_calls
-        charged["elapsed_s"] = _as_float(charged.get("elapsed_s"), 0.0) + outcome.elapsed_s
+        charged["edge_calls"] = as_int(charged.get("edge_calls"), 0) + outcome.edge_calls
+        charged["elapsed_s"] = as_float(charged.get("elapsed_s"), 0.0) + outcome.elapsed_s
     profile.requirement_attempts.append(
         {
             "edge": edge_key_to_dict(edge_key),

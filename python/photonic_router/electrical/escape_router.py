@@ -13,6 +13,7 @@ from photonic_router.electrical.types import (
     GridCell,
     PadPlan,
 )
+from photonic_router.electrical.wire_geometry import in_bounds
 
 
 def route_common_bus_escape(
@@ -132,7 +133,7 @@ def _endpoint_dogleg_to_targets(
     )
     corner = (target[0], start[1])
     path = _axis_path(start, corner) + _axis_path(corner, target)[1:]
-    if not all(_in_bounds(cell, width, height) for cell in path):
+    if not all(in_bounds(cell, width, height) for cell in path):
         return None
     allowed = set(common_bus.tree_cells) | set(targets)
     if any(cell in blocked and cell not in allowed for cell in path):
@@ -185,7 +186,7 @@ def _shortest_tree_to_targets(
     queue: deque[GridCell] = deque()
     parent: dict[GridCell, GridCell | None] = {}
     for start in sorted(starts, key=lambda cell: _target_distance_key(cell, targets, pad_side)):
-        if not _in_bounds(start, width, height):
+        if not in_bounds(start, width, height):
             continue
         parent[start] = None
         queue.append(start)
@@ -193,7 +194,7 @@ def _shortest_tree_to_targets(
     while queue:
         current = queue.popleft()
         for neighbor in _neighbors(current, pad_side=pad_side):
-            if not _in_bounds(neighbor, width, height):
+            if not in_bounds(neighbor, width, height):
                 continue
             if neighbor in parent:
                 continue
@@ -244,8 +245,3 @@ def _reconstruct_path(
         current = parent[current]
     path.reverse()
     return tuple(path)
-
-
-def _in_bounds(cell: GridCell, width: int, height: int) -> bool:
-    x, y = cell
-    return 0 <= x < width and 0 <= y < height

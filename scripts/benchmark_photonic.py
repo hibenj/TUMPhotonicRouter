@@ -932,7 +932,7 @@ _REPEAT_MEDIAN_FIELDS = (
 )
 
 
-def _as_float(value: object) -> float | None:
+def as_float(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
@@ -941,7 +941,7 @@ def _as_float(value: object) -> float | None:
 
 
 def _median_float(values: Iterable[object]) -> float | None:
-    numbers = [_as_float(value) for value in values]
+    numbers = [as_float(value) for value in values]
     filtered = [value for value in numbers if value is not None]
     if not filtered:
         return None
@@ -959,7 +959,7 @@ def _aggregate_repeat_rows(samples: list[dict[str, object]], metric: str) -> dic
     sortable_samples = [
         (metric_value, sample)
         for sample in samples
-        if (metric_value := _as_float(sample.get(metric))) is not None
+        if (metric_value := as_float(sample.get(metric))) is not None
     ]
     representative = (
         sorted(sortable_samples, key=lambda item: item[0])[len(sortable_samples) // 2][1]
@@ -973,7 +973,7 @@ def _aggregate_repeat_rows(samples: list[dict[str, object]], metric: str) -> dic
             row[field] = median_value
 
     metric_samples = [
-        value for sample in samples if (value := _as_float(sample.get(metric))) is not None
+        value for sample in samples if (value := as_float(sample.get(metric))) is not None
     ]
     row["repeat_runs"] = len(samples)
     row["perf_metric"] = metric
@@ -1106,8 +1106,8 @@ def _perf_baseline_violations(
             )
             continue
 
-        expected = _as_float(baseline.get(metric))
-        actual = _as_float(current.get(metric))
+        expected = as_float(baseline.get(metric))
+        actual = as_float(current.get(metric))
         if expected is None:
             violations.append(
                 {
@@ -1158,8 +1158,8 @@ def _perf_baseline_violations(
                 )
 
         for key in ("expanded_states", "generated_neighbors"):
-            expected_counter = _as_float(baseline.get(key))
-            actual_counter = _as_float(current.get(key))
+            expected_counter = as_float(baseline.get(key))
+            actual_counter = as_float(current.get(key))
             if expected_counter is None or actual_counter is None:
                 continue
             allowed_counter = expected_counter * (1.0 + counter_relative_tolerance)
@@ -1347,7 +1347,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         row
         for row in rows
         if any(
-            _as_float(row.get(f"route_nets_{key}_s")) is not None for key in ROUTE_NETS_TIMING_KEYS
+            as_float(row.get(f"route_nets_{key}_s")) is not None for key in ROUTE_NETS_TIMING_KEYS
         )
     ]
     if route_split_rows:
@@ -1408,7 +1408,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
         row
         for row in rows
         if any(
-            _as_float(row.get(f"route_nets_native_batch_{key}_s")) is not None
+            as_float(row.get(f"route_nets_native_batch_{key}_s")) is not None
             for key in (
                 "route_job_unpack",
                 "route_search_total",
@@ -1511,7 +1511,7 @@ def _markdown_report(rows: Iterable[dict[str, object]], args: argparse.Namespace
                     median=_format_seconds(_record_seconds(row, metric)),
                     minimum=_format_seconds(_record_seconds(row, "perf_metric_min")),
                     maximum=_format_seconds(_record_seconds(row, "perf_metric_max")),
-                    samples=", ".join(_format_seconds(_as_float(value)) for value in sample_values),
+                    samples=", ".join(_format_seconds(as_float(value)) for value in sample_values),
                 )
             )
     violation_rows = [row for row in rows if row.get("perf_baseline_violations")]

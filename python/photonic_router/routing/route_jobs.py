@@ -11,7 +11,6 @@ from typing import Any
 
 from gdsfactory.typings import Port
 
-from photonic_router.crossings.route_rust_crossing_plan import _port_center_um
 from photonic_router.gds.route_gds import get_port_from_instance
 from photonic_router.records.route_rust_geometry import (
     compress_centerline,
@@ -21,6 +20,7 @@ from photonic_router.records.route_rust_obstacle_config import (
     port_type_name,
     schematic_instance_component_name,
 )
+from photonic_router.records.route_rust_records import center_of_port_um
 from photonic_router.records.route_rust_types import RouteJob
 from photonic_router.routing import timing
 from photonic_router.routing.products import DenseRunways, EndpointIndex, FanoutStubs
@@ -83,7 +83,8 @@ def angle_to_step(settings, state, angle: int) -> tuple[int, int]:
     return steps[angle % 8]
 
 
-def _in_bounds(settings, state, gx: int, gy: int) -> bool:
+def cell_in_grid(settings, state, gx: int, gy: int) -> bool:
+    """Whether the cell (gx, gy) lies inside the routing grid of the session."""
     return 0 <= gx < int(state.obstacles.grid.width) and 0 <= gy < int(state.obstacles.grid.height)
 
 
@@ -242,7 +243,8 @@ def _is_dense_target_fanout_group(settings, state, instance_name: str, angle: in
     ) >= dense_fanout_min_ports(settings, state)
 
 
-def _grid_cell_center_um(settings, state, cell_x: int, cell_y: int) -> tuple[float, float]:
+def state_cell_center_um(settings, state, cell_x: int, cell_y: int) -> tuple[float, float]:
+    """Return the center of a cell of the session's routing grid in um."""
     return grid_cell_center(cell_x, cell_y, state.obstacles.grid)
 
 
@@ -269,7 +271,7 @@ def _centerline_grid_cells(
         )
         if cell is None:
             return
-        if not _in_bounds(settings, state, cell[0], cell[1]):
+        if not cell_in_grid(settings, state, cell[0], cell[1]):
             return
         if cells and cells[-1] == cell:
             return
@@ -333,7 +335,7 @@ def _inflated_cells(
             for dy in range(-radius, radius + 1):
                 nx = int(cell_x) + dx
                 ny = int(cell_y) + dy
-                if _in_bounds(settings, state, nx, ny):
+                if cell_in_grid(settings, state, nx, ny):
                     inflated.add((nx, ny))
     return inflated
 
@@ -564,7 +566,7 @@ def _two_bend_static_stub_centerline_um(
             int(intermediate_step[1]),
         )
     else:
-        target_intermediate_y = _grid_cell_center_um(
+        target_intermediate_y = state_cell_center_um(
             settings,
             state,
             0,
@@ -660,7 +662,7 @@ def _two_bend_static_stub_centerline_um(
         / float(state.obstacles.grid.grid_size_um)
         - 0.5
     )
-    snapped_anchor = _grid_cell_center_um(settings, state, anchor_x, anchor_y)
+    snapped_anchor = state_cell_center_um(settings, state, anchor_x, anchor_y)
     snap_error_um = math.hypot(
         float(snapped_anchor[0]) - float(anchor_point[0]),
         float(snapped_anchor[1]) - float(anchor_point[1]),
@@ -677,7 +679,7 @@ def _two_bend_static_stub_centerline_um(
             f"bend_radius_cells={state.kernel.radii.bend_radius_cells}",
         )
         return None
-    if not _in_bounds(settings, state, anchor_x, anchor_y):
+    if not cell_in_grid(settings, state, anchor_x, anchor_y):
         fail("anchor_out_of_bounds")
         return None
     return compress_centerline(tuple(points)), (anchor_x, anchor_y)
@@ -743,7 +745,7 @@ def _straight_static_stub_centerline_um(
         return None
     anchor_x = int(port_cell[0]) + step_x * forward_cells
     anchor_y = int(port_cell[1]) + step_y * forward_cells
-    if not _in_bounds(settings, state, anchor_x, anchor_y):
+    if not cell_in_grid(settings, state, anchor_x, anchor_y):
         return None
     # Deliberately NOT grid-snapped: a port's exact physical position
     # generally does not fall exactly on a grid cell center, and a
@@ -837,7 +839,7 @@ def _build_static_fanout_anchors(settings, state) -> dict[str, FanoutAnchor]:
             ) -> tuple[int, int] | None:
                 port_spec, _current_lateral, _grid_state = item
                 _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
-                real_center = _port_center_um(port)
+                real_center = center_of_port_um(port)
                 if real_center is None:
                     return None
                 stub_result = _two_bend_static_stub_centerline_um(
@@ -854,7 +856,7 @@ def _build_static_fanout_anchors(settings, state) -> dict[str, FanoutAnchor]:
                 if stub_result is None:
                     return None
                 centerline, (anchor_x, anchor_y) = stub_result
-                anchor_center = _grid_cell_center_um(settings, state, anchor_x, anchor_y)
+                anchor_center = state_cell_center_um(settings, state, anchor_x, anchor_y)
                 anchors[port_spec] = FanoutAnchor(
                     port_spec=port_spec,
                     state_x=anchor_x,
@@ -1021,7 +1023,7 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, FanoutAnch
                 port_spec: str, lateral_x: int = lateral_x, lateral_y: int = lateral_y
             ) -> float:
                 _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
-                center = _port_center_um(port)
+                center = center_of_port_um(port)
                 if center is None:
                     return 0.0
                 return float(center[0]) * lateral_x + float(center[1]) * lateral_y
@@ -1053,7 +1055,7 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, FanoutAnch
 
             for port_spec, rank in ranked:
                 _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
-                real_center = _port_center_um(port)
+                real_center = center_of_port_um(port)
                 if real_center is None:
                     continue
                 length_cells = int(forward_cells) + int(spacing_cells) * (int(rank) - 1)
@@ -1183,7 +1185,7 @@ def _dense_source_port_runway_lengths(
             def _lateral_position_for_dense_source_runway(
                 run_job: RouteJob, lateral_x: int = lateral_x, lateral_y: int = lateral_y
             ) -> float:
-                center = _port_center_um(run_job.source_port)
+                center = center_of_port_um(run_job.source_port)
                 if center is None:
                     return float(run_job.route_index)
                 return float(center[0]) * lateral_x + float(center[1]) * lateral_y
@@ -1281,7 +1283,7 @@ def _dense_target_port_runway_lengths(
         def _lateral_position_for_dense_target_runway(
             run_job: RouteJob, lateral_x: int = lateral_x, lateral_y: int = lateral_y
         ) -> float:
-            center = _port_center_um(run_job.target_port)
+            center = center_of_port_um(run_job.target_port)
             if center is None:
                 return float(run_job.route_index)
             return float(center[0]) * lateral_x + float(center[1]) * lateral_y

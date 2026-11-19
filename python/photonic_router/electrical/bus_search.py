@@ -10,6 +10,7 @@ from photonic_router.electrical.port_access import (
     ordered_route_start_cells,
 )
 from photonic_router.electrical.types import ElectricalObstacleMap, ElectricalTerminal, GridCell
+from photonic_router.electrical.wire_geometry import in_bounds
 from photonic_router.static_obstacle_builder import physical_to_grid
 
 
@@ -147,7 +148,7 @@ def shortest_path_to_tree(
     while queue:
         current = queue.popleft()
         for neighbor in _neighbors(current, bus_side=obstacle_map.bus.side):
-            if not _in_bounds(neighbor, grid.width, grid.height):
+            if not in_bounds(neighbor, grid.width, grid.height):
                 continue
             if neighbor in parent:
                 continue
@@ -182,11 +183,6 @@ def _reconstruct_path(
         current = parent[current]
     path.reverse()
     return tuple(path)
-
-
-def _in_bounds(cell: GridCell, width: int, height: int) -> bool:
-    x, y = cell
-    return 0 <= x < width and 0 <= y < height
 
 
 def _manhattan(a: GridCell, b: GridCell) -> int:

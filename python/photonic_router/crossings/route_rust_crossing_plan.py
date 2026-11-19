@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
@@ -26,8 +26,9 @@ if TYPE_CHECKING:
     from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 
 
-def _ensure_dir(path: Path) -> None:
-    from photonic_router.gds.route_rust_debug_artifacts import _ensure_dir as route_rust_ensure_dir
+def _ensure_debug_dir(path: Path) -> None:
+    """Create the directory; the import is local because `gds` imports this module."""
+    from photonic_router.gds.route_rust_debug_artifacts import ensure_dir as route_rust_ensure_dir
 
     route_rust_ensure_dir(path)
 
@@ -106,20 +107,6 @@ def resolve_crossing_half_size_cells(
         }
     )
     return half_size_cells, info
-
-
-def _port_center_um(port: object) -> tuple[float, float] | None:
-    center = getattr(port, "center", None)
-    if center is None:
-        center = getattr(port, "dcenter", None)
-    if center is None:
-        return None
-    try:
-        center_seq = cast(Iterable[Any], center)
-        x_um, y_um = tuple(center_seq)[:2]
-        return (float(x_um), float(y_um))
-    except (TypeError, ValueError, IndexError):
-        return None
 
 
 def _edge_key_to_info(edge_key: object) -> dict[str, object]:
@@ -539,7 +526,7 @@ def write_crossing_debug_artifacts(
     if debug_path is None or not crossing_plan_info.enabled:
         return
     crossing_dir = debug_path / "crossings"
-    _ensure_dir(crossing_dir)
+    _ensure_debug_dir(crossing_dir)
     json_path = crossing_dir / f"{debug_prefix}_crossings.json"
     txt_path = crossing_dir / f"{debug_prefix}_crossings.txt"
     json_path.write_text(

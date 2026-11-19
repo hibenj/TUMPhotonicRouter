@@ -18,7 +18,7 @@ from xml.sax.saxutils import escape as _xml_escape
 
 from photonic_router.gds.route_rust_debug_artifacts import (
     _cells_bbox,
-    _ensure_dir,
+    ensure_dir,
     rect_cell_count,
     rect_overlap_cell_count,
     route_cells_bbox,
@@ -30,7 +30,7 @@ from photonic_router.records.route_rust_geometry import (
 from photonic_router.records.route_rust_obstacle_config import schematic_instance_component_name
 from photonic_router.records.route_rust_types import (
     RouteJob,
-    _as_float,
+    as_float,
 )
 from photonic_router.routing.crossing_plan_stage import cells_in_raw_static_geometry
 from photonic_router.routing.handoff import (
@@ -926,7 +926,7 @@ def export_route_svg(
     if not should_export:
         return
     route_dir = state.obstacles.debug_path / "routes"
-    _ensure_dir(route_dir)
+    ensure_dir(route_dir)
     route_svg = route_dir / f"{settings.debug_prefix}_{job.net_name}{suffix}.svg"
     if obstacle_cells is not None and hasattr(
         state.kernel.router, "export_debug_svg_with_obstacle_cells"
@@ -993,8 +993,8 @@ def route_engine_summary(settings, state, route_obj: Any) -> str:
     """
     expanded_states = int(getattr(route_obj, "expanded_states", 0))
     route_kind = "simple" if expanded_states == 0 else "astar"
-    length_um = _as_float(getattr(route_obj, "total_length_um", 0.0), 0.0)
-    total_cost = _as_float(getattr(route_obj, "total_cost", 0.0), 0.0)
+    length_um = as_float(getattr(route_obj, "total_length_um", 0.0), 0.0)
+    total_cost = as_float(getattr(route_obj, "total_cost", 0.0), 0.0)
     return f"{route_kind} length={length_um:.3f}um cost={total_cost:.3f} expanded={expanded_states}"
 
 
@@ -1136,7 +1136,7 @@ def write_failed_log(
     if state.obstacles.debug_path is None:
         return
     route_dir = state.obstacles.debug_path / "routes"
-    _ensure_dir(route_dir)
+    ensure_dir(route_dir)
     port1_spec = f"{job.inst1},{job.port1}"
     port2_spec = f"{job.inst2},{job.port2}"
     fail_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_FAILED.txt"

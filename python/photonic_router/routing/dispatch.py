@@ -8,14 +8,13 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
 
-from photonic_router.crossings.route_rust_crossing_plan import _port_center_um
 from photonic_router.gds.route_rust_debug_artifacts import (
-    _ensure_dir,
+    ensure_dir,
 )
 from photonic_router.records.route_rust_geometry import (
     compress_centerline,
 )
-from photonic_router.records.route_rust_records import centerline_tuple
+from photonic_router.records.route_rust_records import center_of_port_um, centerline_tuple
 from photonic_router.records.route_rust_types import (
     RouteJob,
     RouteTimingBucket,
@@ -198,10 +197,10 @@ def routing_endpoint_center_um(
     if source:
         port_spec = f"{job.inst1},{job.port1}"
         anchor = state.fanout.anchor_by_port_spec.get(port_spec)
-        return anchor.center_um if anchor is not None else _port_center_um(job.source_port)
+        return anchor.center_um if anchor is not None else center_of_port_um(job.source_port)
     port_spec = f"{job.inst2},{job.port2}"
     anchor = state.fanout.anchor_by_port_spec.get(port_spec)
-    return anchor.center_um if anchor is not None else _port_center_um(job.target_port)
+    return anchor.center_um if anchor is not None else center_of_port_um(job.target_port)
 
 
 def clearance_exempt_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
@@ -409,7 +408,7 @@ def dispatch_native_routing(
             and (route_selected_for_debug or settings.collect_attempt_diagnostics)
             and route_dir is not None
         ):
-            _ensure_dir(route_dir)
+            ensure_dir(route_dir)
             diag_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
         batch_opened_cells_by_id[int(job.net_id)] = native_job.opened_cells
         batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)

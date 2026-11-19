@@ -223,8 +223,8 @@ def _crossing_records_from_plan(plan_info: Mapping[str, object]) -> list[Crossin
         key = (
             classification,
             point,
-            _as_int(raw.get("net_id_a")),
-            _as_int(raw.get("net_id_b")),
+            _int_or_none(raw.get("net_id_a")),
+            _int_or_none(raw.get("net_id_b")),
             str(raw.get("reason", "") or ""),
         )
         if key in seen:
@@ -236,8 +236,8 @@ def _crossing_records_from_plan(plan_info: Mapping[str, object]) -> list[Crossin
             CrossingRecord(
                 classification=classification,
                 point_um=point,
-                net_id_a=_as_int(raw.get("net_id_a")),
-                net_id_b=_as_int(raw.get("net_id_b")),
+                net_id_a=_int_or_none(raw.get("net_id_a")),
+                net_id_b=_int_or_none(raw.get("net_id_b")),
                 net_name_a=_as_str_or_none(raw.get("net_name_a")),
                 net_name_b=_as_str_or_none(raw.get("net_name_b")),
                 reason=_as_str_or_none(raw.get("reason")),
@@ -456,13 +456,13 @@ def _cluster_peer_indices(crossing: CrossingRecord) -> set[int]:
     raw_indices = crossing.details.get("overlapping_crossing_indices")
     if isinstance(raw_indices, (list, tuple, set)):
         for raw_index in raw_indices:
-            value = _as_int(raw_index)
+            value = _int_or_none(raw_index)
             if value is not None:
                 indices.add(value)
-    value = _as_int(crossing.details.get("overlapping_crossing_index"))
+    value = _int_or_none(crossing.details.get("overlapping_crossing_index"))
     if value is not None:
         indices.add(value)
-    value = _as_int(crossing.details.get("source_crossing_index"))
+    value = _int_or_none(crossing.details.get("source_crossing_index"))
     if value is not None:
         indices.add(value)
     return indices
@@ -476,13 +476,13 @@ def _cluster_component_match(
     if not peer_indices:
         return -1, None
     for index, component in enumerate(realized_components):
-        source_index = _as_int(component.get("source_crossing_index"))
+        source_index = _int_or_none(component.get("source_crossing_index"))
         if source_index is not None and source_index in peer_indices:
             return index, component
         raw_shared_indices = component.get("shared_crossing_indices")
         if isinstance(raw_shared_indices, (list, tuple, set)):
             for raw_shared_index in raw_shared_indices:
-                shared_index = _as_int(raw_shared_index)
+                shared_index = _int_or_none(raw_shared_index)
                 if shared_index is not None and shared_index in peer_indices:
                     return index, component
     return -1, None
@@ -508,7 +508,7 @@ def _protected_segment_issues(
             )
             continue
 
-        tolerance_um = _as_float(segment.get("tolerance_um"), 1.0e-6)
+        tolerance_um = _finite_float(segment.get("tolerance_um"), 1.0e-6)
         direct_error = max(
             _distance(intended_start, realized_start),
             _distance(intended_end, realized_end),
@@ -609,8 +609,8 @@ def _plan_coverage_metrics(
     for event in _iter_mappings(plan_info.get("events")):
         if not event.get("loaded"):
             continue
-        net_id_a = _as_int(event.get("net_id_a"))
-        net_id_b = _as_int(event.get("net_id_b"))
+        net_id_a = _int_or_none(event.get("net_id_a"))
+        net_id_b = _int_or_none(event.get("net_id_b"))
         if net_id_a is None or net_id_b is None:
             continue
         planned_pairs.add(frozenset((net_id_a, net_id_b)))
@@ -728,16 +728,16 @@ def _coerce_cost_terms(item: RouteCostTerms | Mapping[str, object]) -> RouteCost
     if isinstance(item, RouteCostTerms):
         return item
     return RouteCostTerms(
-        net_id=_as_int(item.get("net_id")),
+        net_id=_int_or_none(item.get("net_id")),
         net_name=_as_str_or_none(item.get("net_name")),
-        length_um=_as_float(item.get("length_um"), 0.0),
-        length_loss=_as_float(item.get("length_loss"), 0.0),
-        bend_loss=_as_float(item.get("bend_loss"), 0.0),
-        crossing_loss=_as_float(item.get("crossing_loss"), 0.0),
+        length_um=_finite_float(item.get("length_um"), 0.0),
+        length_loss=_finite_float(item.get("length_loss"), 0.0),
+        bend_loss=_finite_float(item.get("bend_loss"), 0.0),
+        crossing_loss=_finite_float(item.get("crossing_loss"), 0.0),
         total_search_cost=_as_float_or_none(item.get("total_search_cost")),
-        history_cost=_as_float(item.get("history_cost"), 0.0),
-        congestion_cost=_as_float(item.get("congestion_cost"), 0.0),
-        other_search_guidance_cost=_as_float(item.get("other_search_guidance_cost"), 0.0),
+        history_cost=_finite_float(item.get("history_cost"), 0.0),
+        congestion_cost=_finite_float(item.get("congestion_cost"), 0.0),
+        other_search_guidance_cost=_finite_float(item.get("other_search_guidance_cost"), 0.0),
         physical_insertion_loss=_as_float_or_none(item.get("physical_insertion_loss")),
     )
 
@@ -772,7 +772,7 @@ def _as_float_pair(value: object) -> tuple[float, float] | None:
     return point
 
 
-def _as_float(value: object, default: float) -> float:
+def _finite_float(value: object, default: float) -> float:
     try:
         out = float(value)
     except (TypeError, ValueError):
@@ -788,7 +788,7 @@ def _as_float_or_none(value: object) -> float | None:
     return out if math.isfinite(out) else None
 
 
-def _as_int(value: object) -> int | None:
+def _int_or_none(value: object) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):

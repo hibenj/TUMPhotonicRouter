@@ -52,7 +52,7 @@ from photonic_router.records.route_rust_types import (
     MeanderInsertionConfig,
     OpticalRouteClearancePolicy,
     RouteRustPipelineResult,
-    _as_float,
+    as_float,
 )
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions, SessionOptions
 from photonic_router.routing.route_jobs import build_route_jobs_and_fanout_clustering
@@ -240,7 +240,7 @@ def route_match_and_realize(
         )
         meander_route_clearance_um = max(
             0.0,
-            _as_float(
+            as_float(
                 getattr(resolved_user_obstacle_config, "clearance_um", 0.0),
                 0.0,
             ),

@@ -157,7 +157,12 @@ def _add_counter_dict(target: dict[str, int], source: Mapping[str, int]) -> None
         target[name] = int(target.get(name, 0)) + int(source.get(name, 0))
 
 
-def _as_float(value: object, default: float = 0.0) -> float:
+def as_float(value: object, default: float = 0.0) -> float:
+    """Convert a number or a numeric string to float; anything else gives `default`.
+
+    Used on values read from kernel objects and dictionaries whose type is not
+    guaranteed. A non-finite float is returned as it is.
+    """
     if not isinstance(value, (int, float, str, bytes, bytearray)):
         return default
     try:
@@ -166,7 +171,11 @@ def _as_float(value: object, default: float = 0.0) -> float:
         return default
 
 
-def _as_int(value: object, default: int = 0) -> int:
+def as_int(value: object, default: int = 0) -> int:
+    """Convert a number or a numeric string to int; anything else gives `default`.
+
+    A float is truncated towards zero.
+    """
     if not isinstance(value, (int, float, str, bytes, bytearray)):
         return default
     try:
@@ -176,7 +185,7 @@ def _as_int(value: object, default: int = 0) -> int:
 
 
 def _get_route_int_stat(route_obj: object, attr: str) -> int:
-    return max(0, _as_int(getattr(route_obj, attr, 0), 0))
+    return max(0, as_int(getattr(route_obj, attr, 0), 0))
 
 
 @dataclass(frozen=True)
@@ -871,7 +880,7 @@ def route_attempt_record_from_route(
 ) -> RouteAttemptRecord:
     route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
     total_length_um = (
-        _as_float(route_obj.total_length_um, 0.0)
+        as_float(route_obj.total_length_um, 0.0)
         if route_obj is not None and hasattr(route_obj, "total_length_um")
         else None
     )

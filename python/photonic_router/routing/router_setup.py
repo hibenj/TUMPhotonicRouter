@@ -8,7 +8,7 @@ from typing import Any, cast
 from photonic_router.records.route_rust_obstacle_config import grid_origin_xy
 from photonic_router.records.route_rust_types import (
     OpticalRouteClearancePolicy,
-    _as_float,
+    as_float,
     bend_radius_cells_from_um,
 )
 from photonic_router.routing import timing
@@ -146,7 +146,7 @@ def configure_router_and_grid(
 
     route_clearance_um = max(
         0.0,
-        _as_float(getattr(context.resolved_obstacle_config, "clearance_um", 0.0), 0.0),
+        as_float(getattr(context.resolved_obstacle_config, "clearance_um", 0.0), 0.0),
     )
     clearance_policy = OpticalRouteClearancePolicy.from_dimensions(
         route_width_um=float(settings.route_width_um),

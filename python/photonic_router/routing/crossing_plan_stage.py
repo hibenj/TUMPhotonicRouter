@@ -9,24 +9,24 @@ from gdsfactory.typings import Port
 
 from photonic_router.crossings.route_rust_crossing_components import bbox_bounds_um
 from photonic_router.crossings.route_rust_crossing_plan import (
-    _port_center_um,
     build_crossing_plan_info,
 )
 from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 from photonic_router.records.route_rust_obstacle_config import port_type_name
+from photonic_router.records.route_rust_records import center_of_port_um
 from photonic_router.records.route_rust_types import RouteJob
 from photonic_router.routing import timing
 from photonic_router.routing.products import PortFootprints
 from photonic_router.routing.route_jobs import (
-    _grid_cell_center_um,
-    _in_bounds,
     angle_to_step,
+    cell_in_grid,
     dense_fanout_min_ports,
     fanout_stub_bend_steps,
     is_dense_source_fanout_instance,
     orientation_to_angle,
     port_access_rule_for,
     port_to_grid_state,
+    state_cell_center_um,
 )
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import PlannedJobs
@@ -222,7 +222,7 @@ def _instance_static_geometry_open_cells(
                 xs.update(range(start_x, end_x + 1))
         for cell_x in xs:
             inside_instance_bbox = min_x <= int(cell_x) <= max_x and min_y <= int(cell_y) <= max_y
-            cell_center = _grid_cell_center_um(settings, state, int(cell_x), int(cell_y))
+            cell_center = state_cell_center_um(settings, state, int(cell_x), int(cell_y))
             if (
                 opening_left <= cell_center[0] <= opening_right
                 and opening_bottom <= cell_center[1] <= opening_top
@@ -373,7 +373,7 @@ def _build_port_access(
     ] = []
     for port_spec, (instance_name, port_name, port) in state.endpoints.ports_by_spec.items():
         fanout_anchor = state.fanout.anchor_by_port_spec.get(port_spec)
-        center = fanout_anchor.center_um if fanout_anchor is not None else _port_center_um(port)
+        center = fanout_anchor.center_um if fanout_anchor is not None else center_of_port_um(port)
         if center is None:
             raise ValueError(f"Port {port_spec!r} has no finite center coordinate")
         orientation_value = getattr(port, "orientation", None)
@@ -532,7 +532,7 @@ def _lateral_positions_by_angle(
         )
         step_x, step_y = angle_to_step(settings, state, angle)
         lateral_x, lateral_y = -step_y, step_x
-        center = fanout_anchor.center_um if fanout_anchor is not None else _port_center_um(port)
+        center = fanout_anchor.center_um if fanout_anchor is not None else center_of_port_um(port)
         if center is None or (lateral_x == 0 and lateral_y == 0):
             continue
         lateral_position = float(center[0]) * lateral_x + float(center[1]) * lateral_y
@@ -645,7 +645,7 @@ def _assign_lane_offsets(
         def _lateral_position_for_lane_assignment(
             item: tuple[str, bool, Port], lateral_x: int = lateral_x, lateral_y: int = lateral_y
         ) -> float:
-            center = _port_center_um(item[2])
+            center = center_of_port_um(item[2])
             if center is None:
                 return 0.0
             return center[0] * lateral_x + center[1] * lateral_y
@@ -660,7 +660,7 @@ def _assign_lane_offsets(
             seen_endpoint_keys.add(endpoint_key)
             candidate_x = base_x + lateral_x * lane_index
             candidate_y = base_y + lateral_y * lane_index
-            if _in_bounds(settings, state, candidate_x, candidate_y):
+            if cell_in_grid(settings, state, candidate_x, candidate_y):
                 lane_offsets[endpoint_key] = (
                     lateral_x * lane_index,
                     lateral_y * lane_index,

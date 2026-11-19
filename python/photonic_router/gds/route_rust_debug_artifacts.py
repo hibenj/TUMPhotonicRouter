@@ -16,7 +16,8 @@ from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.verify.photonic_verification import PhotonicVerificationResult
 
 
-def _ensure_dir(path: Path) -> None:
+def ensure_dir(path: Path) -> None:
+    """Create the directory and its parents; an existing one is left as it is."""
     path.mkdir(parents=True, exist_ok=True)
 
 
@@ -180,7 +181,7 @@ def dump_photonic_probe_failure_artifacts(
         ``centerlines_json``, ``centerlines_svg`` and ``summary_txt``.
     """
     probe_dir = debug_path / "photonic_probe_failures"
-    _ensure_dir(probe_dir)
+    ensure_dir(probe_dir)
     stem = f"{debug_prefix}_photonic_probe_failure"
     artifacts: dict[str, str] = {}
 

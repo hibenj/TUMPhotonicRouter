@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from photonic_router.crossings.route_rust_crossing_plan import resolve_crossing_half_size_cells
-from photonic_router.gds.route_rust_debug_artifacts import _ensure_dir
+from photonic_router.gds.route_rust_debug_artifacts import ensure_dir
 from photonic_router.records.route_rust_geometry import format_route_indices
 from photonic_router.records.route_rust_obstacle_config import resolve_obstacle_config
-from photonic_router.records.route_rust_types import _as_float
+from photonic_router.records.route_rust_types import as_float
 from photonic_router.routing import timing
 from photonic_router.routing.products import ObstacleContext
 from photonic_router.routing.settings import SessionSettings
@@ -52,7 +52,7 @@ def build_static_obstacle_context(
         requested_half_size_cells=int(settings.crossing_half_size_cells),
         enable_crossings=bool(settings.enable_crossings),
         grid_size_um=float(grid.grid_size_um),
-        clearance_um=_as_float(
+        clearance_um=as_float(
             getattr(resolved_obstacle_config, "clearance_um", 0.0),
             0.0,
         ),
@@ -63,7 +63,7 @@ def build_static_obstacle_context(
 
     if debug_path is not None:
         obstacle_dir = debug_path / "static_obstacles"
-        _ensure_dir(obstacle_dir)
+        ensure_dir(obstacle_dir)
         obstacle_svg = obstacle_dir / f"{settings.debug_prefix}_obstacles.svg"
         obstacle_map.export_debug_svg(obstacle_svg)
         route_dir = debug_path / "routes"

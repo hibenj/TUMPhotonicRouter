@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -18,15 +18,20 @@ from photonic_router.records.route_rust_types import (
 from photonic_router.static_obstacle_builder import cell_center_coordinate
 
 
-def _port_center_um(port: object) -> tuple[float, float] | None:
+def center_of_port_um(port: object) -> tuple[float, float] | None:
+    """Return the center of a port in um, or None if it has no usable one.
+
+    Reads `center`, then `dcenter`; the value may be any iterable of at least
+    two numbers.
+    """
     center = getattr(port, "center", None)
     if center is None:
         center = getattr(port, "dcenter", None)
     if center is None:
         return None
-    center_seq = cast(Sequence[Any], center)
     try:
-        return (float(center_seq[0]), float(center_seq[1]))
+        x_um, y_um = tuple(cast(Iterable[Any], center))[:2]
+        return (float(x_um), float(y_um))
     except (TypeError, ValueError, IndexError):
         return None
 
@@ -377,7 +382,7 @@ class RouteBookkeeping:
         target_port_center_um = (
             target_port_center_um_override
             if target_port_center_um_override is not None
-            else _port_center_um(job.target_port)
+            else center_of_port_um(job.target_port)
         )
         self.records_by_id[job.net_id] = RoutedNetRecord(
             net_name=job.net_name,
@@ -387,7 +392,7 @@ class RouteBookkeeping:
             total_length_um=total_length_um,
             net_id=int(job.net_id),
             opened_cells=tuple(opened_cells),
-            source_port_center_um=_port_center_um(job.source_port),
+            source_port_center_um=center_of_port_um(job.source_port),
             target_port_center_um=target_port_center_um,
             source_port_orientation_deg=_port_orientation_deg(job.source_port),
             target_port_orientation_deg=_port_orientation_deg(job.target_port),

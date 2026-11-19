@@ -8,12 +8,15 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from typing import Any, cast
 
-from photonic_router.crossings.route_rust_crossing_plan import _port_center_um
 from photonic_router.crossings.route_rust_crossing_verification import (
     populate_realized_intersections_from_native_crossing_events,
 )
 from photonic_router.records.route_rust_geometry import compress_centerline
-from photonic_router.records.route_rust_records import EndpointCorrectionRouter, centerline_tuple
+from photonic_router.records.route_rust_records import (
+    EndpointCorrectionRouter,
+    center_of_port_um,
+    centerline_tuple,
+)
 from photonic_router.records.route_rust_types import (
     EndpointCorrectionCategory,
     NetEndpointCorrectionClassification,
@@ -28,7 +31,7 @@ from photonic_router.routing.dispatch import (
     state_openings_for_job,
     timing_start,
 )
-from photonic_router.routing.route_jobs import _grid_cell_center_um
+from photonic_router.routing.route_jobs import state_cell_center_um
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import RoutedRecords
 from photonic_router.routing.state import SessionState
@@ -614,7 +617,7 @@ def _route_target_grid_center_um(
         except (TypeError, IndexError):
             return None
     try:
-        return _grid_cell_center_um(settings, state, int(raw_state.x), int(raw_state.y))
+        return state_cell_center_um(settings, state, int(raw_state.x), int(raw_state.y))
     except (AttributeError, TypeError, ValueError):
         return None
 
@@ -1029,7 +1032,7 @@ def _append_target_fanout_stubs_after_correction(settings, state) -> None:
         if endpoint_entry is None:
             continue
         _inst, _port_name, port = endpoint_entry
-        true_port_um = _port_center_um(port)
+        true_port_um = center_of_port_um(port)
         if true_port_um is None:
             continue
         points = list(centerline)

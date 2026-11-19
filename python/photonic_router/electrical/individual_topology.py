@@ -17,6 +17,7 @@ from photonic_router.electrical.types import (
     IndividualEscapeTopologyResult,
     terminal_exit_dx,
 )
+from photonic_router.electrical.wire_geometry import in_bounds
 
 Axis = Literal["x", "y"]
 
@@ -172,7 +173,7 @@ def _distance_field_to_targets(
     while queue:
         current = queue.popleft()
         for neighbor in _reverse_neighbors(current, pad_side=pad_side):
-            if not _in_bounds(neighbor, width, height):
+            if not in_bounds(neighbor, width, height):
                 continue
             if neighbor in next_cell:
                 continue
@@ -235,7 +236,7 @@ def _best_source_path_to_boundary(
             candidates.append(((start_rank[source], 0, 0, source), (source,)))
             continue
         for neighbor in _forward_neighbors(source, pad_side=pad_side):
-            if not _in_bounds(neighbor, width, height):
+            if not in_bounds(neighbor, width, height):
                 continue
             if neighbor in blocked:
                 continue
@@ -589,11 +590,6 @@ def _reverse_neighbors(
     if pad_side == "top":
         return ((x, y - 1), (x - 1, y), (x + 1, y), (x, y + 1))
     return ((x, y + 1), (x - 1, y), (x + 1, y), (x, y - 1))
-
-
-def _in_bounds(cell: GridCell, width: int, height: int) -> bool:
-    x, y = cell
-    return 0 <= x < width and 0 <= y < height
 
 
 def _individual_terminal_open_cells(

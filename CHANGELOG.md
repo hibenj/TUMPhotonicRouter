@@ -264,6 +264,21 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Helpers that existed more than once have one implementation or a name of
+  their own (S2, slice 5; rule 3.3). The three private copies of
+  `in_bounds` in `electrical/` use the one of `wire_geometry.py`; the two
+  `_port_center_um` are one `records.route_rust_records.center_of_port_um`
+  (it accepts any iterable of two numbers, as the copy in `crossings/` did);
+  `gds.route_rust_debug_artifacts.ensure_dir` is public and the wrapper in
+  the crossing plan says why it imports late; the crossing report's own
+  `_as_float`/`_as_int`, which behave differently, are `_finite_float` and
+  `_int_or_none`, and the shared ones are `as_float`, `as_int`; the two
+  session wrappers in `route_jobs.py` are `cell_in_grid` and
+  `state_cell_center_um`. Imports of private names from another module
+  fall from 27 to 7. Left: `_load_rust_backend` (five bindings of one
+  function, which tests replace per module), `_all_port_accesses` (two
+  versions that sort differently) and three names whose public spelling is
+  taken.
 - No module of `records/` imports from a stage package any more (rule 3.4
   of the coding standards is in force for Python). `PortRef` and
   `RoutedEdgeKey` move from `plm/path_length_graph.py` to the new
