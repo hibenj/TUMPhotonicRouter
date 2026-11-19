@@ -83,6 +83,33 @@ def test_private_imports_counts_underscore_names_but_not_the_extension(tmp_path:
     assert ratchet.private_imports([source]) == 2
 
 
+def test_relative_imports_counts_statements_at_any_depth(tmp_path: Path) -> None:
+    ratchet = _load_ratchet()
+    source = tmp_path / "module.py"
+    source.write_text(
+        "from . import a\n"
+        "from .b import c, d\n"
+        "from package.e import f\n"
+        "def g():\n"
+        "    from ..h import i\n",
+        encoding="utf-8",
+    )
+
+    assert ratchet.relative_imports([source]) == 3
+
+
+def test_rust_exceptions_counts_allow_and_expect(tmp_path: Path) -> None:
+    ratchet = _load_ratchet()
+    (tmp_path / "lib.rs").write_text(
+        "#[allow(clippy::too_many_arguments)]\n"
+        '#[expect(clippy::too_many_lines, reason = "one case analysis")]\n'
+        "#[allow(dead_code)]\n",
+        encoding="utf-8",
+    )
+
+    assert ratchet.rust_exceptions(tmp_path) == 2
+
+
 def test_python_exceptions_counts_only_the_ratchet_rules(tmp_path: Path) -> None:
     ratchet = _load_ratchet()
     source = tmp_path / "module.py"

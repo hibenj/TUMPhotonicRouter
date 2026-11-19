@@ -13,17 +13,71 @@ rules yet, with numbers that a check holds.
 
 ## 1. Reference standards
 
-These are adopted as written. This page adds only what they do not decide.
+These documents are adopted as written, except for the deviations listed
+below the table. This page adds only what they do not decide. Where this
+page and a reference disagree, this page holds, and the disagreement is
+listed here so that it is never silent. All of them were read on
+2026-11-19.
 
-| Area | Standard |
+| Area | Standard | Publisher |
+| --- | --- | --- |
+| Python style | [PEP 8](https://peps.python.org/pep-0008/), as implemented by `ruff format` | Python (PEP, active) |
+| Python docstrings | [PEP 257](https://peps.python.org/pep-0257/), with the sections of the Google guide (`Args:`, `Returns:`, `Raises:`) | Python (PEP, active) |
+| Python typing | [PEP 484](https://peps.python.org/pep-0484/) and successors, checked by `mypy` | Python (PEP, final) |
+| Python, everything the PEPs leave open | [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html) | Google |
+| Rust style | the [Rust Style Guide](https://doc.rust-lang.org/nightly/style-guide/), as implemented by `cargo fmt` | Rust project |
+| Rust API design | the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) | Rust project |
+| Rust, everything those two leave open | [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/), version 2026.6; it states that it complements the two above | Microsoft |
+| Changelog | [Keep a Changelog 1.1](https://keepachangelog.com/en/1.1.0/) | |
+| Versions | [Semantic Versioning 2.0](https://semver.org/) from the first release on | |
+
+**Deviations, Python.**
+
+- Lines are 100 characters long. PEP 8 says 79 and lets a team agree on up
+  to 99; the Google guide says 80. 100 is the width of the Rust Style
+  Guide, so both languages share one number.
+- The formatter and linter are `ruff`. The Google guide names `pylint` and
+  Black or Pyink.
+- A module may import names: `from module import Name`. The Google guide
+  (2.2) allows imports of packages and modules only. The code is written
+  with name imports throughout; rule 3.5 limits which names may be
+  imported instead.
+- Stricter than the Google guide: every function is annotated (rule 4.2;
+  the guide asks for at least the public API), and function size has
+  limits a tool checks (rule 4.5; the guide gives a hint of about 40
+  lines and no limit).
+
+**Deviations, Rust.**
+
+- The lint set is the one of section 5, not the larger set the Microsoft
+  guidelines recommend (`M-STATIC-VERIFICATION`: clippy's `pedantic` group
+  and about twenty single lints).
+- The Microsoft guidelines for things this repository does not have
+  (async services, proc macros, DLL boundaries, telemetry) have nothing to
+  apply to.
+
+**Where the limits come from.** None of the numbers of sections 4 and 5 is
+taken from a reference standard; neither the Google guide nor the Microsoft
+guidelines limit parameters or complexity.
+
+| Limit | Origin |
 | --- | --- |
-| Python style | [PEP 8](https://peps.python.org/pep-0008/), as implemented by `ruff format` (line length 100) |
-| Python docstrings | [PEP 257](https://peps.python.org/pep-0257/), sections in the [Google style](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings) |
-| Python typing | [PEP 484](https://peps.python.org/pep-0484/) and successors, checked by `mypy` |
-| Rust style | the [Rust Style Guide](https://doc.rust-lang.org/nightly/style-guide/), as implemented by `cargo fmt` |
-| Rust API design | the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) |
-| Changelog | [Keep a Changelog 1.1](https://keepachangelog.com/en/1.1.0/) |
-| Versions | [Semantic Versioning 2.0](https://semver.org/) from the first release on |
+| 7 parameters (4.4) | Clippy's default for `too_many_arguments`, used for both languages; ruff's default is 5 |
+| 50 statements (4.5) | ruff's default, taken over from pylint |
+| complexity 10 (4.5) | ruff's default; McCabe's original threshold |
+| 120 lines per Rust function (5.5) | this repository's choice; Clippy's default is 100 |
+| about 15 fields per record (4.4) | this repository's choice |
+
+**Read and not adopted.** The [Scientific Python Development
+Guide](https://learn.scientific-python.org/development/) is a guide to
+setting up a package; the tools it recommends (ruff, mypy, pytest) are the
+ones in use here. The [ANSSI Secure Rust
+Guidelines](https://anssi-fr.github.io/rust-guide/) are written for
+security-critical applications and are stricter than this router needs
+(checked arithmetic everywhere, no indexing). Microsoft's [Engineering
+Playbook](https://microsoft.github.io/code-with-engineering-playbook/code-reviews/recipes/python/)
+has a Python review recipe that points to PEP 8 with type hints and adds
+nothing to the rows above.
 
 ## 2. How a rule is enforced
 
@@ -38,10 +92,13 @@ a rule.
   rules is proposed and does not exist yet.
 
 **Exceptions.** The limits are not loosened; a function that has a reason
-to exceed one carries an exception at the function: a `# noqa: <rule>` or
-`#[allow(clippy::<lint>)]` with a comment that names the reason (per-file
-ignores in `pyproject.toml` for whole categories such as the tests). An
-exception without a reason is a finding. Reasons that hold:
+to exceed one carries an exception at the function: in Python a
+`# noqa: <rule>` with a comment that names the reason, in Rust
+`#[expect(clippy::<lint>, reason = "...")]` (Microsoft's
+`M-LINT-OVERRIDE-EXPECT`: unlike `#[allow]`, the compiler reports an
+`#[expect]` that is no longer needed). Per-file ignores in `pyproject.toml`
+cover whole categories such as the tests. An exception without a reason is
+a finding. Reasons that hold:
 
 - a long, flat declaration without logic (the command-line arguments);
 - a state machine or case analysis of the kernel that a split would tear
@@ -111,6 +168,8 @@ like the violation counts: a commit that adds one says why in its message.
 9. An error message names what failed with the values that identify it (net
    name, coordinates, the benchmark). `except Exception` needs a comment
    saying why nothing narrower works (ruff `BLE001`). *Tool, proposed.*
+10. Imports are absolute: `from photonic_router.records import x`, not
+    `from .records import x` (Google guide 2.2). *Tool, proposed.*
 
 ## 5. Rust
 
@@ -176,6 +235,7 @@ are that file's on 2026-11-19, and the file is the current truth.
 | 4.6 | `print` calls in the package (`ruff_T201`) | 157 |
 | 4.7 | public classes, methods, functions without a docstring (`ruff_D101`, `ruff_D102`, `ruff_D103`) | 56, 136, 77 |
 | 4.9 | blind `except Exception` (`ruff_BLE001`) | 35 |
+| 4.10 | relative import statements (`relative_imports`) | 96 |
 | 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 |
 | 5.3 | `unwrap()` in the library of `router-core`, tests excluded (`rust_unwrap_used`) | 1 |
 | 5.4 | public items of `router-core` without a doc comment (`rust_missing_docs`) | 796 |
@@ -184,7 +244,8 @@ are that file's on 2026-11-19, and the file is the current truth.
 | 7.3 | user guide, developer guide (not measured) | none |
 
 The 39 Rust exceptions are per-function `allow(clippy::too_many_arguments)`
-attributes from before this document. mypy's informational run of
+attributes from before this document; they become `#[expect]` with a reason
+or disappear when the functions are reworked. mypy's informational run of
 `pyproject.toml` covers a narrower file list (236 errors there); the rule is
 about the package, so the package is what is pinned.
 

@@ -33,6 +33,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   with the way each is enforced (tool, test, review), how exceptions are
   written, and a table of where the code stands against each rule on
   2026-11-19. No code or check changes with it.
+- Coding standards, section 1 after reading the references: the Google
+  Python Style Guide and Microsoft's Pragmatic Rust Guidelines join the PEPs
+  and the Rust project's guides, with the deviations named (line length 100,
+  ruff, name imports) and the origin of every limit. Two rules follow from
+  them: imports are absolute (rule 4.10; the ratchet holds the 96 relative
+  import statements as `relative_imports`), and a Rust exception is written
+  `#[expect(lint, reason = "...")]` (the ratchet counts both spellings).
 - The placement analysis as a stage of its own (region graph, intermediate
   step between phases 1 and 2; a restructuring). New
   `python/photonic_router/placement_analysis.py`:

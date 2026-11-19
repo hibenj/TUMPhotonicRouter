@@ -73,7 +73,7 @@ RUST_DEBT_ALLOWS = ("too_many_arguments", "type_complexity")
 
 _UNTYPED_DICT = re.compile(r"\bdict\[str, (?:object|Any)\]")
 _NOQA = re.compile(r"#\s*noqa:\s*([A-Z0-9, ]+)")
-_RUST_ALLOW = re.compile(r"#!?\[allow\(([^)]*)\)\]")
+_RUST_ALLOW = re.compile(r"#!?\[(?:allow|expect)\(([^)]*)\)\]")
 
 
 def _python_sources(root: Path) -> list[Path]:
@@ -151,6 +151,15 @@ def private_imports(sources: Iterable[Path]) -> int:
     return count
 
 
+def relative_imports(sources: Iterable[Path]) -> int:
+    """Count `from . import x` and `from .module import x` statements (rule 4.10)."""
+    count = 0
+    for path in sources:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        count += sum(isinstance(node, ast.ImportFrom) and node.level > 0 for node in ast.walk(tree))
+    return count
+
+
 def untyped_dict_annotations(sources: Iterable[Path]) -> int:
     """Count `dict[str, object]` and `dict[str, Any]` in the sources (rule 4.3)."""
     return sum(len(_UNTYPED_DICT.findall(path.read_text(encoding="utf-8"))) for path in sources)
@@ -201,7 +210,11 @@ def rust_lint_counts() -> dict[str, int]:
 
 
 def rust_exceptions(source_root: Path = RUST_CORE / "src") -> int:
-    """Count `#[allow(...)]` attributes in `router-core` that name a ratchet lint."""
+    """Count the exceptions in `router-core` that name a ratchet lint.
+
+    Both spellings count: `#[expect(lint, reason = "...")]`, the one section
+    2 asks for, and the older `#[allow(lint)]`.
+    """
     watched = {lint.rsplit(":", 1)[-1] for lint in RUST_LINTS} | set(RUST_DEBT_ALLOWS)
     count = 0
     for path in sorted(source_root.rglob("*.rs")):
@@ -225,6 +238,7 @@ def measure() -> dict[str, int]:
     counts = ruff_counts()
     counts["mypy_errors"] = mypy_errors()
     counts["private_imports"] = private_imports(sources)
+    counts["relative_imports"] = relative_imports(sources)
     counts["untyped_dict_annotations"] = untyped_dict_annotations(sources)
     counts["session_state_fields"] = class_field_count(
         PACKAGE / "routing" / "state.py", "SessionState"
