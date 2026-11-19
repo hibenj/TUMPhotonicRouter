@@ -231,7 +231,7 @@ def _final_crossing_repair_net_ids(
                 blocker_net_id = int(cast(object, blocker.get("net_id")))
             except (TypeError, ValueError):
                 continue
-            if blocker_net_id in state.route_jobs_by_id:
+            if blocker_net_id in state.run.route_jobs_by_id:
                 net_ids.add(blocker_net_id)
 
     for item in illegal_crossings:
@@ -241,7 +241,7 @@ def _final_crossing_repair_net_ids(
                 net_id = int(cast(object, item.get(key)))
             except (TypeError, ValueError):
                 continue
-            if net_id in state.route_jobs_by_id:
+            if net_id in state.run.route_jobs_by_id:
                 item_pair_ids.append(net_id)
         reason = _repair_reason(item)
         if reason == "not_perpendicular":
@@ -268,7 +268,7 @@ def _final_crossing_repair_net_ids(
                         peer_net_id = int(cast(object, peer.get(key)))
                     except (TypeError, ValueError):
                         continue
-                    if peer_net_id in state.route_jobs_by_id:
+                    if peer_net_id in state.run.route_jobs_by_id:
                         peer_pair_ids.add(peer_net_id)
             net_ids.update(item_pair_ids)
             net_ids.update(peer_pair_ids)
@@ -280,7 +280,7 @@ def _final_crossing_repair_net_ids(
                 net_ids.update(item_pair_ids)
             continue
         net_ids.update(item_pair_ids)
-    return [net_id for net_id in state.route_order if net_id in net_ids]
+    return [net_id for net_id in state.run.route_order if net_id in net_ids]
 
 
 def _final_crossing_repair_batches(
@@ -342,7 +342,7 @@ def _final_crossing_repair_batches(
         if current_batch:
             capped_batches.append(current_batch)
 
-    route_index = {int(net_id): index for index, net_id in enumerate(state.route_order)}
+    route_index = {int(net_id): index for index, net_id in enumerate(state.run.route_order)}
 
     def _batch_sort_key(batch: list[dict[str, object]]) -> tuple[int, int, int]:
         repair_ids = _final_crossing_repair_net_ids(settings, state, batch)
@@ -404,7 +404,7 @@ def _repair_final_illegal_crossings(
     if (
         not selected_illegal_crossings
         or not state.crossing_plan_info.enabled
-        or not state.repair_config.enabled
+        or not state.run.repair_config.enabled
         or not hasattr(state.kernel.router, "add_static_cells")
         or not hasattr(state.kernel.router, "ripup_route")
     ):
@@ -418,7 +418,7 @@ def _repair_final_illegal_crossings(
                     net_id = int(cast(object, item.get(key)))
                 except (TypeError, ValueError):
                     continue
-                if net_id in state.route_jobs_by_id and net_id not in priority:
+                if net_id in state.run.route_jobs_by_id and net_id not in priority:
                     priority.append(net_id)
             blockers = item.get("crossing_footprint_blockers")
             if not isinstance(blockers, IterableABC) or isinstance(
@@ -433,7 +433,7 @@ def _repair_final_illegal_crossings(
                     blocker_net_id = int(cast(object, blocker.get("net_id")))
                 except (TypeError, ValueError):
                     continue
-                if blocker_net_id in state.route_jobs_by_id and blocker_net_id not in priority:
+                if blocker_net_id in state.run.route_jobs_by_id and blocker_net_id not in priority:
                     priority.append(blocker_net_id)
         repair_net_ids = [net_id for net_id in priority if net_id in repair_net_ids] + [
             net_id for net_id in repair_net_ids if net_id not in priority
@@ -472,7 +472,7 @@ def _repair_final_illegal_crossings(
         state.route_bookkeeping.clear_route(int(net_id))
 
     repair_jobs = native_route_jobs(
-        settings, state, (state.route_jobs_by_id[net_id] for net_id in repair_net_ids)
+        settings, state, (state.run.route_jobs_by_id[net_id] for net_id in repair_net_ids)
     )
     opened_by_id = {int(job.net_id): job.opened_cells for job in repair_jobs}
 
@@ -482,8 +482,8 @@ def _repair_final_illegal_crossings(
         state.kernel.radii.commit_radius_cells,
         state.kernel.radii.core_commit_radius_cells,
         NEGOTIATED_MAX_ROUNDS,
-        float(state.repair_config.history_weight),
-        int(state.repair_config.history_increment),
+        float(state.run.repair_config.history_weight),
+        int(state.run.repair_config.history_increment),
     )
     repair_result = dict(raw_repair_result)
     attempt["router_status"] = str(repair_result.get("status", ""))
@@ -500,7 +500,7 @@ def _repair_final_illegal_crossings(
     for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
         entry = dict(raw_entry)
         net_id = int(entry["net_id"])
-        job = state.route_jobs_by_id[net_id]
+        job = state.run.route_jobs_by_id[net_id]
         route_obj = entry["route"]
         _record_route(settings, state, job, route_obj, opened_by_id[net_id])
         repaired_records.append(state.route_bookkeeping.records_by_id[net_id])
@@ -716,7 +716,7 @@ def _make_photonic_verification_probe_layout(
         list(records),
         route_width_um=settings.route_width_um,
         route_layer=settings.route_layer,
-        realization_grid_spec=state.realization_grid_spec,
+        realization_grid_spec=state.run.realization_grid_spec,
         allow_45_degree_turns=settings.allow_45_degree_turns,
         bend_radius_cells=state.kernel.radii.bend_radius_cells,
         crossing_plan_info=state.crossing_plan_info.to_dict(),
@@ -766,7 +766,7 @@ def _refresh_photonic_verification(settings, state) -> PhotonicVerificationResul
             settings.route_layer,
             include_heater_obstacles=settings.include_heater_obstacles,
         ),
-        realization_grid_spec=state.realization_grid_spec,
+        realization_grid_spec=state.run.realization_grid_spec,
         allow_45_degree_turns=settings.allow_45_degree_turns,
         bend_radius_cells=state.kernel.radii.bend_radius_cells,
         legal_overlap_polygons_by_net_id_pair_um=(
@@ -820,7 +820,7 @@ def _repair_final_photonic_issues(
         selected_issues = selected_issues[:1]
     if (
         not selected_issues
-        or not state.repair_config.enabled
+        or not state.run.repair_config.enabled
         or not hasattr(state.kernel.router, "add_static_cells")
         or not hasattr(state.kernel.router, "ripup_route")
     ):
@@ -831,7 +831,7 @@ def _repair_final_photonic_issues(
     for issue in selected_issues:
         repair_net_ids_set.update(_photonic_issue_net_ids(settings, state, issue))
         keepout_cells.update(_photonic_issue_keepout_cells(settings, state, issue))
-    repair_net_ids = [net_id for net_id in state.route_order if net_id in repair_net_ids_set]
+    repair_net_ids = [net_id for net_id in state.run.route_order if net_id in repair_net_ids_set]
     attempt: dict[str, object] = {
         "selected_group": selected_group,
         "issue_counts": dict(Counter(issue.code for issue in issues)),
@@ -856,7 +856,7 @@ def _repair_final_photonic_issues(
         state.route_bookkeeping.clear_route(int(net_id))
 
     repair_jobs = native_route_jobs(
-        settings, state, (state.route_jobs_by_id[net_id] for net_id in repair_net_ids)
+        settings, state, (state.run.route_jobs_by_id[net_id] for net_id in repair_net_ids)
     )
     opened_by_id = {int(job.net_id): job.opened_cells for job in repair_jobs}
 
@@ -866,8 +866,8 @@ def _repair_final_photonic_issues(
         state.kernel.radii.commit_radius_cells,
         state.kernel.radii.core_commit_radius_cells,
         NEGOTIATED_MAX_ROUNDS,
-        float(state.repair_config.history_weight),
-        int(state.repair_config.history_increment),
+        float(state.run.repair_config.history_weight),
+        int(state.run.repair_config.history_increment),
     )
     repair_result = dict(raw_repair_result)
     attempt["router_status"] = str(repair_result.get("status", ""))
@@ -884,7 +884,7 @@ def _repair_final_photonic_issues(
     for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
         entry = dict(raw_entry)
         net_id = int(entry["net_id"])
-        job = state.route_jobs_by_id[net_id]
+        job = state.run.route_jobs_by_id[net_id]
         route_obj = entry["route"]
         _record_route(settings, state, job, route_obj, opened_by_id[net_id])
         repaired_net_ids.append(net_id)
@@ -968,7 +968,7 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
         illegal = _verify_realized_route_intersections(
             crossing_plan_info=state.crossing_plan_info,
             routed_records_by_net_id=state.route_bookkeeping.records_by_id,
-            realization_grid_spec=state.realization_grid_spec,
+            realization_grid_spec=state.run.realization_grid_spec,
             native_crossing_verdicts=native_crossing_verdicts,
         )
     else:
@@ -976,7 +976,7 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
             crossing_plan_info=state.crossing_plan_info,
             routed_records_by_net_id=state.route_bookkeeping.records_by_id,
             native_crossing_events=native_crossing_events,
-            realization_grid_spec=state.realization_grid_spec,
+            realization_grid_spec=state.run.realization_grid_spec,
             native_crossing_verdicts=native_crossing_verdicts,
         )
     timing.record_pipeline_timing(
@@ -1087,7 +1087,7 @@ def repair_and_verify_final_geometry(
                 records=state.last_photonic_probe_records
                 or state.route_bookkeeping.ordered_records(),
                 router=state.kernel.router,
-                realization_grid_spec=state.realization_grid_spec,
+                realization_grid_spec=state.run.realization_grid_spec,
                 allow_unchecked_bumps=True,
             )
             state.crossing_plan_info.photonic_probe_failure_artifacts = probe_failure_artifacts

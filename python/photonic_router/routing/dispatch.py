@@ -70,7 +70,7 @@ def _foreign_keepout_cleanup_cells_for_job(settings, state, job: RouteJob) -> li
 
 
 def _timing_start(settings, state) -> float:
-    return time.perf_counter() if state.collect_timing else 0.0
+    return time.perf_counter() if state.run.collect_timing else 0.0
 
 
 def _record_native_batch_timings(settings, state, batch_result: dict[str, Any]) -> None:
@@ -107,7 +107,7 @@ def _report_long_straight_congestion(settings, state, batch_result: dict[str, An
         grouped.setdefault(net_id, []).append(record)
     print("      - Long-straight congestion contributors:")
     for net_id in sorted(grouped):
-        job = state.route_jobs_by_id.get(net_id)
+        job = state.run.route_jobs_by_id.get(net_id)
         label = job.net_name if job is not None else f"net_id={net_id}"
         route_index = job.route_index if job is not None else "?"
         segments = grouped[net_id]
@@ -198,7 +198,7 @@ def _routing_endpoint_center_um(
 
 
 def _clearance_exempt_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
-    return state.batch_clearance_exempt_cells_by_id.get(int(job.net_id), [])
+    return state.run.clearance_exempt_cells_by_id.get(int(job.net_id), [])
 
 
 def _clearance_exempt_cell_set_for_job(settings, state, job: RouteJob) -> set[tuple[int, int]]:
@@ -210,7 +210,7 @@ def native_route_jobs(settings, state, jobs: Iterable[RouteJob]) -> list[Any]:
 
     One job per Python `RouteJob`, in the order given: the net id, the two grid
     states and the opened port cells of the static hand-off
-    (`state.route_state_openings_by_id`), the clearance-exempt cells of the
+    (`state.run.state_openings_by_id`), the clearance-exempt cells of the
     batch, the foreign keep-out cells the net may clean up, and the two routing
     endpoint centers (the fan-out anchor where one exists, the port center
     otherwise). The first routing, the detour pass and the two verify-repair
@@ -277,7 +277,7 @@ def _record_route(
         route_obj,
         opened_cells,
         route_cells=_route_cells_from_router(settings, state, job.net_id)
-        if state.track_dynamic_cells
+        if state.run.track_dynamic_cells
         else None,
         corrected_centerline_um=corrected_centerline_um,
         corrected_total_length_um=corrected_total_length_um,
@@ -345,7 +345,7 @@ def dispatch_native_routing(
     # `no_ripup`, which is plain in-order routing with no local rip-up and no
     # requeue; with one round every net has `failed_count == 0`, so the
     # loop's history weight stays 0.0 and its searches are unbounded.
-    repair_enabled = bool(state.repair_config.enabled)
+    repair_enabled = bool(state.run.repair_config.enabled)
     max_rounds = NEGOTIATED_MAX_ROUNDS if repair_enabled else 1
     no_ripup = not repair_enabled
     if not hasattr(state.kernel.router, "route_many_with_negotiated_repair_and_commit"):
@@ -402,11 +402,11 @@ def dispatch_native_routing(
         state.kernel.radii.commit_radius_cells,
         state.kernel.radii.core_commit_radius_cells,
         max_rounds,
-        float(state.repair_config.history_weight),
-        int(state.repair_config.history_increment),
+        float(state.run.repair_config.history_weight),
+        int(state.run.repair_config.history_increment),
         no_ripup=no_ripup,
     )
-    batch_elapsed_s = time.perf_counter() - batch_start if state.collect_timing else 0.0
+    batch_elapsed_s = time.perf_counter() - batch_start if state.run.collect_timing else 0.0
     timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
     t_batch_result_processing_start = timing.pipeline_timer_start(settings, state)
     batch_result = dict(raw_batch_result)
@@ -424,7 +424,7 @@ def dispatch_native_routing(
     for raw_attempt in raw_attempts:
         attempt = dict(raw_attempt)
         net_id = int(attempt["net_id"])
-        job = state.route_jobs_by_id[net_id]
+        job = state.run.route_jobs_by_id[net_id]
         route_obj = attempt.get("route")
         if route_obj is None:
             route_obj = None
@@ -455,7 +455,7 @@ def dispatch_native_routing(
                 route_obj,
                 suffix=f"_attempt{attempt_index}_{bucket_name}",
             )
-        if state.collect_timing:
+        if state.run.collect_timing:
             bucket = state.route_timing_buckets.setdefault(
                 bucket_name,
                 RouteTimingBucket(),
@@ -503,7 +503,7 @@ def dispatch_native_routing(
         entry = dict(raw_entry)
         net_id = int(entry["net_id"])
         route_obj = entry["route"]
-        job = state.route_jobs_by_id[net_id]
+        job = state.run.route_jobs_by_id[net_id]
         opened_cells = batch_opened_cells_by_id[net_id]
         _record_route(settings, state, job, route_obj, opened_cells)
         should_print_route, diag_txt = batch_debug_by_id[net_id]
@@ -525,7 +525,7 @@ def dispatch_native_routing(
 
     if str(batch_result.get("status", "")) != "routed":
         failed_net_id = int(batch_result.get("failed_net_id", -1))
-        failed_job = state.route_jobs_by_id.get(failed_net_id)
+        failed_job = state.run.route_jobs_by_id.get(failed_net_id)
         error_text = str(batch_result.get("error", "No route found"))
         if failed_job is None:
             raise RuntimeError(error_text)

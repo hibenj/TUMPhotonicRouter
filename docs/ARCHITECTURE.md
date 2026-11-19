@@ -217,7 +217,11 @@ paper benchmarks); the flow does not read it.
 `routing/handoff.py` produces the jobs exactly as the kernel will see them
 (snapped endpoints, foreign keep-outs) in their routing order
 (`records/route_order.py`, `--net-order`; topological layers by default,
-`topological-span` under contribution 2).
+`topological-span` under contribution 2), hands the static cells to the
+kernel (the obstacle map, the port reservations, the die keep-out) and
+precomputes each net's endpoint states and opened cells. Its two frozen
+records are `StaticHandoffCells` (`state.static_cells`) and `RunPlan`
+(`state.run`).
 
 ### 2.9 Phase 6: dispatch to the kernel
 
@@ -462,10 +466,10 @@ obstacle configuration). `SessionSettings` (`routing/settings.py`,
 `from_options`) validates the options and holds the resolved,
 frozen inputs of the session. Phases 1 and 2 return frozen products
 (`routing/products.py`: `ObstacleContext`, `KernelSetup`), phase 3 stores
-three frozen step records and phase 4 one. `SessionState`
-(`routing/state.py`) holds those six, the crossing plan, and what the
-phases from 5 on still write into a shared record, one documented field per value with its
-writing, mutating and reading phases (`w:`, `m:`, `r:`). Ten fields are
+three frozen step records, phase 4 one and phase 5 two. `SessionState`
+(`routing/state.py`) holds those eight, the crossing plan, and what the
+phases from 6 on still write into a shared record, one documented field per value with its
+writing, mutating and reading phases (`w:`, `m:`, `r:`). Nine fields are
 written by more than one phase and carry a `# shared writer` marker (the
 crossing plan, the search counters and timing
 buckets, the route bookkeeping); every other field has one writer.

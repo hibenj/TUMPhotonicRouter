@@ -135,13 +135,13 @@ def _state_openings_for_job(
     state,
     job: RouteJob,
 ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
-    return state.route_state_openings_by_id[int(job.net_id)]
+    return state.run.state_openings_by_id[int(job.net_id)]
 
 
 def _static_cells_in_rect(settings, state, min_x: int, max_x: int, min_y: int, max_y: int) -> int:
     if min_x > max_x or min_y > max_y:
         return 0
-    if state.blocked_static_rects_for_diagnostics:
+    if state.static_cells.blocked_rects_for_diagnostics:
         return sum(
             _rect_overlap_cell_count(
                 rect,
@@ -150,11 +150,11 @@ def _static_cells_in_rect(settings, state, min_x: int, max_x: int, min_y: int, m
                 min_y=min_y,
                 max_y=max_y,
             )
-            for rect in state.blocked_static_rects_for_diagnostics
+            for rect in state.static_cells.blocked_rects_for_diagnostics
         )
     return sum(
         1
-        for x, y in state.static_blocked_cells_before_port_reservations
+        for x, y in state.static_cells.blocked_cells_before_port_reservations
         if min_x <= x <= max_x and min_y <= y <= max_y
     )
 
@@ -403,16 +403,16 @@ def _route_attempt_diagnostics(
         "candidate_blocker_count": len(blocker_ids),
         "candidate_blocker_net_ids": blocker_ids,
         "candidate_blocker_route_indices": [
-            state.route_jobs_by_id[net_id].route_index
+            state.run.route_jobs_by_id[net_id].route_index
             for net_id in blocker_ids
-            if net_id in state.route_jobs_by_id
+            if net_id in state.run.route_jobs_by_id
         ],
         "ripup_victim_count": len(victim_ids),
         "ripup_victim_net_ids": victim_ids,
         "ripup_victim_route_indices": [
-            state.route_jobs_by_id[net_id].route_index
+            state.run.route_jobs_by_id[net_id].route_index
             for net_id in victim_ids
-            if net_id in state.route_jobs_by_id
+            if net_id in state.run.route_jobs_by_id
         ],
     }
 
@@ -602,9 +602,9 @@ def _write_route_diagnostics(
         if dx_sign != 1:
             return []
         radius = max(1, int(state.kernel.radii.bend_radius_cells))
-        routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
-        routing_static_cells.update(state.debug_port_keepout_cells)
-        routing_static_cells.update(state.foreign_port_keepout_static_cells)
+        routing_static_cells = set(state.static_cells.blocked_cells_before_port_reservations)
+        routing_static_cells.update(state.static_cells.debug_port_keepout_cells)
+        routing_static_cells.update(state.static_cells.foreign_keepout_cells)
         routing_static_cells.update(state.fanout.stub_static_cells)
         opened_search_cells = set(opened_cells_set)
         allowed_dynamic_cells = set(route_dynamic_overlap)
@@ -654,9 +654,9 @@ def _write_route_diagnostics(
         if not state.obstacles.diagnostics_enabled:
             return []
         radius = max(1, int(state.kernel.radii.bend_radius_cells))
-        routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
-        routing_static_cells.update(state.debug_port_keepout_cells)
-        routing_static_cells.update(state.foreign_port_keepout_static_cells)
+        routing_static_cells = set(state.static_cells.blocked_cells_before_port_reservations)
+        routing_static_cells.update(state.static_cells.debug_port_keepout_cells)
+        routing_static_cells.update(state.static_cells.foreign_keepout_cells)
         routing_static_cells.update(state.fanout.stub_static_cells)
         opened_search_cells = set(opened_cells_set)
 
@@ -739,9 +739,9 @@ def _write_route_diagnostics(
             for cell in opened_cells_set
             if cell in (source_key, target_key) or cell not in committed_dynamic_cells
         }
-        routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
-        routing_static_cells.update(state.debug_port_keepout_cells)
-        routing_static_cells.update(state.foreign_port_keepout_static_cells)
+        routing_static_cells = set(state.static_cells.blocked_cells_before_port_reservations)
+        routing_static_cells.update(state.static_cells.debug_port_keepout_cells)
+        routing_static_cells.update(state.static_cells.foreign_keepout_cells)
         routing_static_cells.update(state.fanout.stub_static_cells)
         primitive_specs: list[tuple[str, str, int, int]] = [
             ("straight_short", "straight", int(state.kernel.primitive_cfg.straight_short_cells), 0),
@@ -816,7 +816,7 @@ def _write_route_diagnostics(
             "target_dense_source_cluster_size="
             f"{len(state.runways.source_cluster_specs_by_port_spec.get(port2_spec, set()))}"
         ),
-        f"foreign_port_keepout_static_count={len(state.foreign_port_keepout_static_cells)}",
+        f"foreign_port_keepout_static_count={len(state.static_cells.foreign_keepout_cells)}",
         f"foreign_port_keepout_open_count={len(foreign_keepout_open_cells)}",
         f"source_state=({source_anchor_cell[0]}, {source_anchor_cell[1]}, {int(source_state.angle)})",
         f"target_state=({target_anchor_cell[0]}, {target_anchor_cell[1]}, {int(target_state.angle)})",
@@ -909,13 +909,13 @@ def _export_route_svg(
     if settings.debug_stop_after_route_index is not None and int(job.route_index) == int(
         settings.debug_stop_after_route_index
     ):
-        next_job = state.full_route_jobs_by_route_index.get(
+        next_job = state.run.full_route_jobs_by_route_index.get(
             int(settings.debug_stop_after_route_index) + 1
         )
         if next_job is not None:
             with contextlib.suppress(Exception):
                 _, _, _, _, opened_cells = _states_and_openings(settings, state, next_job)
-    red_keepout_cells = state.debug_port_keepout_cells - {
+    red_keepout_cells = state.static_cells.debug_port_keepout_cells - {
         (int(cell[0]), int(cell[1])) for cell in opened_cells
     }
     if red_keepout_cells:
@@ -1092,7 +1092,7 @@ def _write_failed_log(
     fail_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_FAILED.txt"
     committed_dynamic_cells = _committed_dynamic_cells(settings, state)
     opened_candidate_static_overlap = (
-        opened_candidate_cells & state.static_blocked_cells_before_port_reservations
+        opened_candidate_cells & state.static_cells.blocked_cells_before_port_reservations
     )
     opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
     opened_cells_set = set(opened_cells)
@@ -1101,10 +1101,12 @@ def _write_failed_log(
         state,
         source_state,
         target_state,
-        (state.static_blocked_cells_before_port_reservations - opened_cells_set)
+        (state.static_cells.blocked_cells_before_port_reservations - opened_cells_set)
         | committed_dynamic_cells,
     )
-    opened_static_overlap = opened_cells_set & state.static_blocked_cells_before_port_reservations
+    opened_static_overlap = (
+        opened_cells_set & state.static_cells.blocked_cells_before_port_reservations
+    )
     opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
     current_attempts = [
         ("current", record)

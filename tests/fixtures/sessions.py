@@ -45,6 +45,8 @@ from photonic_router.routing.products import (
     PortFootprints,
     PortLanes,
     RawStaticGeometry,
+    RunPlan,
+    StaticHandoffCells,
 )
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SessionState
@@ -115,12 +117,14 @@ _PRODUCT_GROUPS: dict[str, type] = {
 }
 
 
-#: the slots of the records of phases 3 and 4 (`products.py`)
+#: the slots of the records of phases 3 to 5 (`products.py`)
 _STEP_RECORDS: dict[str, Any] = {
     "endpoints": EndpointIndex,
     "fanout": FanoutStubs,
     "runways": DenseRunways,
     "ports": PortFootprints,
+    "static_cells": StaticHandoffCells,
+    "run": RunPlan,
 }
 
 

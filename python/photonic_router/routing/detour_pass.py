@@ -107,7 +107,7 @@ def run_detour_pass(
     factor = float(settings.detour_pass_factor)
     if factor <= 0:
         return routed
-    jobs_by_id: dict[int, RouteJob] = {int(k): v for k, v in state.route_jobs_by_id.items()}
+    jobs_by_id: dict[int, RouteJob] = {int(k): v for k, v in state.run.route_jobs_by_id.items()}
     routed_ids = [
         int(record.net_id) for record in routed.routed_net_records if record.net_id is not None
     ]
@@ -150,8 +150,8 @@ def run_detour_pass(
             state.kernel.radii.commit_radius_cells,
             state.kernel.radii.core_commit_radius_cells,
             NEGOTIATED_MAX_ROUNDS,
-            float(state.repair_config.history_weight),
-            int(state.repair_config.history_increment),
+            float(state.run.repair_config.history_weight),
+            int(state.run.repair_config.history_increment),
         )
         result = dict(raw_result)
         if str(result.get("status", "")) != "routed":

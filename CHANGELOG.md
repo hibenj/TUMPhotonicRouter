@@ -258,6 +258,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Routing phase 5 runs in steps with two frozen results (S1, slice 5; a
+  restructuring). `finalize_route_jobs_and_static_handoff` (230 lines) is
+  now `_in_routing_order`, `_hand_static_cells_to_kernel`,
+  `_jobs_of_this_run` and `_precompute_openings`. Thirteen fields of the
+  shared state become `StaticHandoffCells` (`state.static_cells`) and
+  `RunPlan` (`state.run`) of `routing/products.py`; a fourteenth,
+  `chip_boundary_static_rects`, was written and never read and is gone. The
+  state has 24 fields (36 before). Behaviour is unchanged.
 - Routing phase 4 runs in five steps with one frozen result (S1, slice 4; a
   restructuring). `build_crossing_plan_and_port_footprints` was one function
   of 330 lines. It is now `_build_crossing_plan`, `_build_port_access`,

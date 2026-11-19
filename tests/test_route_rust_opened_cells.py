@@ -1455,6 +1455,16 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
         anchor_source_net_ids={source_stub_net_id, both_stub_net_id},
         anchor_target_net_ids={target_stub_net_id, both_stub_net_id},
         anchor_net_ids={source_stub_net_id, target_stub_net_id, both_stub_net_id},
+        route_jobs_by_id={
+            net_id: SimpleNamespace()
+            for net_id in (
+                plain_net_id,
+                crossing_net_id,
+                source_stub_net_id,
+                target_stub_net_id,
+                both_stub_net_id,
+            )
+        },
     )
     state.route_bookkeeping = SimpleNamespace(
         records_by_id={
@@ -1465,16 +1475,6 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
             both_stub_net_id: _record(corrected_centerline_um=((0.0, 0.0), (1.0, 0.0))),
         }
     )
-    state.route_jobs_by_id = {
-        net_id: SimpleNamespace()
-        for net_id in (
-            plain_net_id,
-            crossing_net_id,
-            source_stub_net_id,
-            target_stub_net_id,
-            both_stub_net_id,
-        )
-    }
     crossing_net_ids = {crossing_net_id}
 
     def classify(net_id: int):

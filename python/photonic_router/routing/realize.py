@@ -51,7 +51,7 @@ def realize_and_assemble_debug_artifacts(
             routed_net_records,
             route_width_um=settings.route_width_um,
             route_layer=settings.route_layer,
-            realization_grid_spec=state.realization_grid_spec,
+            realization_grid_spec=state.run.realization_grid_spec,
             allow_45_degree_turns=settings.allow_45_degree_turns,
             bend_radius_cells=state.kernel.radii.bend_radius_cells,
             crossing_plan_info=state.crossing_plan_info.to_dict(),
@@ -98,7 +98,7 @@ def realize_and_assemble_debug_artifacts(
         route_svgs=state.route_svgs,
         obstacle_map=obstacle_map,
         routed_net_records=routed_net_records,
-        realization_grid_spec=state.realization_grid_spec,
+        realization_grid_spec=state.run.realization_grid_spec,
         allow_45_degree_turns=settings.allow_45_degree_turns,
         bend_radius_cells=state.kernel.radii.bend_radius_cells,
         route_search_summary=summarize_route_search(

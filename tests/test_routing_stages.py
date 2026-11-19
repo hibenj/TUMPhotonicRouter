@@ -71,8 +71,8 @@ def test_phase2_router_setup_returns_the_kernel_setup(pipeline: Pipeline) -> Non
     assert isinstance(kernel, KernelSetup)
     state = pipeline.state
     assert state.kernel is kernel and state.obstacles is pipeline.through(1)
-    # the blockers before port reservations start as the raw static cells
-    assert state.static_blocked_cells_before_port_reservations is kernel.static.raw_static_cells
+    # phase 5's records are still the empty ones
+    assert state.static_cells.blocked_cells_before_port_reservations == set()
     assert state.kernel.router is not None
     assert hasattr(state.kernel.router, "route_many_with_negotiated_repair_and_commit")
     assert state.kernel.primitive_cfg is not None
@@ -85,7 +85,7 @@ def test_phase2_router_setup_returns_the_kernel_setup(pipeline: Pipeline) -> Non
     assert state.kernel.radii.bend_radius_cells == 1  # bend_radius_um=1.0 over a 1 um grid
     assert state.kernel.static.raw_static_cells == set()  # the stand-in map blocks nothing
     # The realization grid spec is phase 5's, not this phase's (see state.py).
-    assert state.realization_grid_spec is None
+    assert state.run.realization_grid_spec is None
 
 
 def test_phase3_route_job_builder_turns_the_netlist_into_jobs(pipeline: Pipeline) -> None:
@@ -165,11 +165,11 @@ def test_phase5_static_handoff_orders_the_jobs_and_starts_the_search_clock(
         job.net_id for job in planned.route_jobs
     )
     assert final.astar_start_s > 0.0  # the search clock started
-    assert pipeline.state.route_jobs_by_id.keys() == {1, 2, 3}
+    assert pipeline.state.run.route_jobs_by_id.keys() == {1, 2, 3}
     # The realization grid this phase hands on is the grid phase 1 measured.
-    assert pipeline.state.realization_grid_spec == (GRID_WIDTH, GRID_HEIGHT, 1.0, 0.0, 0.0)
-    assert pipeline.state.repair_config is not None
-    assert set(pipeline.state.batch_clearance_exempt_cells_by_id) == {1, 2, 3}
+    assert pipeline.state.run.realization_grid_spec == (GRID_WIDTH, GRID_HEIGHT, 1.0, 0.0, 0.0)
+    assert pipeline.state.run.repair_config is not None
+    assert set(pipeline.state.run.clearance_exempt_cells_by_id) == {1, 2, 3}
 
 
 def test_phase6_kernel_dispatcher_leaves_the_routes_in_the_bookkeeping(
@@ -213,7 +213,7 @@ def test_phase9_realizer_assembles_the_debug_artifacts_with_the_plan_as_a_mappin
     verified = pipeline.through(8)
     artifacts = pipeline.through(9)
 
-    assert artifacts.realization_grid_spec == pipeline.state.realization_grid_spec
+    assert artifacts.realization_grid_spec == pipeline.state.run.realization_grid_spec
     assert [record.net_name for record in artifacts.routed_net_records] == [
         record.net_name for record in verified.routed_net_records
     ]
@@ -224,6 +224,21 @@ def test_phase9_realizer_assembles_the_debug_artifacts_with_the_plan_as_a_mappin
     assert artifacts.crossing_plan_info == pipeline.state.crossing_plan_info.to_dict()
     # Realization happened on the session's layout, not on the unrouted one.
     assert pipeline.state.routed_layout.get_polygons()
+
+
+def test_phase5_stores_the_static_cells_and_the_run_plan(pipeline: Pipeline) -> None:
+    final = pipeline.through(5)
+    state = pipeline.state
+
+    assert state.run.route_order == [job.net_id for job in final.route_jobs]
+    assert state.route_bookkeeping.route_order is state.run.route_order
+    # the blockers before port reservations: the raw static cells plus the runways
+    assert (
+        state.static_cells.blocked_cells_before_port_reservations
+        >= state.kernel.static.raw_static_cells | state.ports.normal_runway_cells
+    )
+    with pytest.raises(FrozenInstanceError):
+        state.run.route_order = []  # type: ignore[misc]
 
 
 def test_phase4_stores_the_port_footprints_as_one_frozen_record(pipeline: Pipeline) -> None:

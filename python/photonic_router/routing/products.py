@@ -16,6 +16,9 @@ record's `empty()` value.
 Phase 4 (`crossing_plan_stage.py`) returns the crossing plan and one
 `PortFootprints`, which it stores as `state.ports`.
 
+Phase 5 (`handoff.py`) stores `StaticHandoffCells` (`state.static_cells`)
+and `RunPlan` (`state.run`).
+
 Nothing rebinds a field of these records after its step returned.
 
 The records are frozen, their members are not all immutable: the kernel
@@ -31,7 +34,11 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from photonic_router.records.route_rust_types import OpticalRouteClearancePolicy
+from photonic_router.records.route_rust_types import (
+    OpticalRouteClearancePolicy,
+    RipupRerouteConfig,
+    RouteJob,
+)
 from photonic_router.static_obstacle_builder import GridSpec
 
 if TYPE_CHECKING:  # annotation-only: `route_jobs` imports this module
@@ -275,3 +282,55 @@ class PortFootprints:
     def empty(cls) -> PortFootprints:
         """The footprints of a session whose phase 4 has not run."""
         return cls({}, {}, {}, {}, set(), {}, {}, {}, {})
+
+
+#: per net: the source state, the target state (kernel `State` handles), the
+#: cells opened for the source and for the target, the clearance-exempt cells
+StateOpenings = tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]
+
+
+@dataclass(frozen=True)
+class StaticHandoffCells:
+    """Phase 5: the static cells the kernel was given beyond the obstacle map."""
+
+    #: the foreign-port keep-out cells of all instances
+    foreign_keepout_cells: set[tuple[int, int]]
+    #: runways, foreign keep-outs and fan-out stubs, for the debug artifacts
+    debug_port_keepout_cells: set[tuple[int, int]]
+    #: the raw static cells plus those reservations
+    blocked_cells_before_port_reservations: set[tuple[int, int]]
+    #: the static blocker rectangles and the die keep-out, for diagnostics
+    blocked_rects_for_diagnostics: list[tuple[int, int, int, int]]
+
+    @classmethod
+    def empty(cls) -> StaticHandoffCells:
+        """The cells of a session whose phase 5 has not run."""
+        return cls(set(), set(), set(), [])
+
+
+@dataclass(frozen=True)
+class RunPlan:
+    """Phase 5: the jobs of this run and what was precomputed for them."""
+
+    #: net ids in the order the kernel routes them
+    route_order: list[int]
+    #: the jobs of this run by net id
+    route_jobs_by_id: dict[int, RouteJob]
+    #: every job by route index, including those a debug limit cut off
+    full_route_jobs_by_route_index: dict[int, RouteJob]
+    state_openings_by_id: dict[int, StateOpenings]
+    #: the clearance-exempt cells the kernel computed per net
+    clearance_exempt_cells_by_id: dict[int, list[tuple[int, int]]]
+    #: (width, height, cell size, origin x, origin y) for realization
+    realization_grid_spec: tuple[int, int, float, float, float] | None
+    #: the rip-up and reroute configuration the loop runs with
+    repair_config: RipupRerouteConfig | None
+    #: whether per-net timing buckets are filled
+    collect_timing: bool
+    #: whether committed dynamic cells are tracked per net
+    track_dynamic_cells: bool
+
+    @classmethod
+    def empty(cls) -> RunPlan:
+        """The plan of a session whose phase 5 has not run."""
+        return cls([], {}, {}, {}, {}, None, None, False, False)

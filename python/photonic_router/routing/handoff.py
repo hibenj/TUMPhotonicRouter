@@ -15,6 +15,7 @@ from photonic_router.records.route_order import depth_by_node_from_jobs, order_r
 from photonic_router.records.route_rust_records import RouteBookkeeping
 from photonic_router.records.route_rust_types import RipupRerouteConfig, RouteJob, RouteTimingBucket
 from photonic_router.routing import timing
+from photonic_router.routing.products import RunPlan, StateOpenings, StaticHandoffCells
 from photonic_router.routing.route_jobs import _angle_to_step, _in_bounds, port_to_grid_state
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import FinalJobs
@@ -558,35 +559,13 @@ def _states_and_openings(
     )
 
 
-def finalize_route_jobs_and_static_handoff(
-    settings: SessionSettings,
-    state: SessionState,
-    route_jobs: list[RouteJob],
-    foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]],
-    obstacle_map: Any,
-) -> FinalJobs:
-    """Order route jobs, hand static/keepout geometry off to Rust, apply debug-limit slicing, and prepare repair/timing bookkeeping.
+def _in_routing_order(
+    settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
+) -> list[RouteJob]:
+    """Step 1: order the jobs and renumber them when repair is enabled.
 
-    Applies `self._topological_net_route_order` when repair is enabled
-    (reordering only helps a negotiation loop that can recover from a
-    bad order; with repair disabled -- e.g. `test_benchmarks_route_with_astar_only`,
-    which isolates plain A* on purpose -- a net that ends up later in a
-    changed order can collide irrecoverably with an already-committed
-    net that plain A* has no way to rip up, so declaration order is left
-    untouched in that mode), aggregates static keepout cells
-    (port runways, foreign-port keepouts, fanout stubs) and hands them to the Rust
-    router via `set_static_rects`/`set_static_cells`/`add_static_cells`, applies
-    `debug_stop_after_route_index`/`PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT` slicing to
-    produce the final `route_jobs` for this run (also recording the pre-slicing job
-    list as `self.full_route_jobs_by_route_index`), builds `self.repair_config`,
-    `self.route_jobs_by_id`, `self.route_order`, and `self.route_bookkeeping`,
-    initializes the route-search stats/timing-bucket attributes, and precomputes
-    `self.batch_clearance_exempt_cells_by_id` via a batched Rust call. Returns the
-    final, post-slicing `route_jobs` list used for dispatch, and `t_astar_start`
-    (the `time.perf_counter()` reading taken before the precompute steps in this
-    method, not after it returns) so the caller's post-dispatch `astar_elapsed_s`
-    measurement still covers this method's own precompute time, exactly as it did
-    before this method existed as a separate call.
+    Without repair the declaration order stays: plain A* cannot recover
+    from a net that a changed order routes into a committed one.
     """
     repair_enabled = (settings.ripup_reroute_config or RipupRerouteConfig()).enabled
     if repair_enabled:
@@ -604,25 +583,36 @@ def finalize_route_jobs_and_static_handoff(
         route_jobs = [
             replace(job, route_index=position) for position, job in enumerate(route_jobs, start=1)
         ]
+    return route_jobs
 
+
+def _hand_static_cells_to_kernel(
+    settings: SessionSettings,
+    state: SessionState,
+    keepout_cells_by_instance: dict[str, set[tuple[int, int]]],
+    obstacle_map: Any,
+) -> StaticHandoffCells:
+    """Step 2: give the kernel the static map, the port reservations and the die keep-out.
+
+    Raises:
+        RuntimeError: the loaded kernel lacks one of the static-geometry calls.
+    """
     port_runway_static_cells: set[tuple[int, int]] = set()
     for cells in state.ports.runway_cells_by_spec.values():
         port_runway_static_cells.update(cells)
-    state.foreign_port_keepout_static_cells: set[tuple[int, int]] = set()
-    for cells in foreign_port_keepout_cells_by_instance.values():
-        state.foreign_port_keepout_static_cells.update(cells)
-    state.debug_port_keepout_cells = set(port_runway_static_cells)
-    state.debug_port_keepout_cells.update(state.foreign_port_keepout_static_cells)
-    state.debug_port_keepout_cells.update(state.fanout.stub_static_cells)
-    state.static_blocked_cells_before_port_reservations = set(state.kernel.static.raw_static_cells)
-    state.static_blocked_cells_before_port_reservations.update(port_runway_static_cells)
-    state.static_blocked_cells_before_port_reservations.update(
-        state.foreign_port_keepout_static_cells
-    )
-    state.static_blocked_cells_before_port_reservations.update(state.fanout.stub_static_cells)
+    foreign_keepout_cells: set[tuple[int, int]] = set()
+    for cells in keepout_cells_by_instance.values():
+        foreign_keepout_cells.update(cells)
+    debug_port_keepout_cells = set(port_runway_static_cells)
+    debug_port_keepout_cells.update(foreign_keepout_cells)
+    debug_port_keepout_cells.update(state.fanout.stub_static_cells)
+    blocked_cells_before_port_reservations = set(state.kernel.static.raw_static_cells)
+    blocked_cells_before_port_reservations.update(port_runway_static_cells)
+    blocked_cells_before_port_reservations.update(foreign_keepout_cells)
+    blocked_cells_before_port_reservations.update(state.fanout.stub_static_cells)
 
     t_static_handoff_start = timing.pipeline_timer_start(settings, state)
-    state.blocked_static_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
+    blocked_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
     if hasattr(obstacle_map, "blocked_static_rects"):
         blocked_static_rects: list[tuple[int, int, int, int]] = []
         raw_blocked_rects = cast(
@@ -632,7 +622,7 @@ def finalize_route_jobs_and_static_handoff(
             if len(rect) != 4:
                 continue
             blocked_static_rects.append((int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])))
-        state.blocked_static_rects_for_diagnostics = list(blocked_static_rects)
+        blocked_rects_for_diagnostics = list(blocked_static_rects)
         if blocked_static_rects:
             if not hasattr(state.kernel.router, "set_static_rects"):
                 raise RuntimeError(
@@ -647,11 +637,7 @@ def finalize_route_jobs_and_static_handoff(
     else:
         sorted_static_cells = sorted(state.kernel.static.raw_static_cells)
         state.kernel.router.set_static_cells(sorted_static_cells)
-    if (
-        port_runway_static_cells
-        or state.foreign_port_keepout_static_cells
-        or state.fanout.stub_static_cells
-    ):
+    if port_runway_static_cells or foreign_keepout_cells or state.fanout.stub_static_cells:
         if not hasattr(state.kernel.router, "add_static_cells"):
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
@@ -660,9 +646,7 @@ def finalize_route_jobs_and_static_handoff(
             )
         state.kernel.router.add_static_cells(
             sorted(
-                port_runway_static_cells
-                | state.foreign_port_keepout_static_cells
-                | state.fanout.stub_static_cells
+                port_runway_static_cells | foreign_keepout_cells | state.fanout.stub_static_cells
             )
         )
     # Chip-boundary keepout: the grid padding outside the routable die
@@ -673,7 +657,6 @@ def finalize_route_jobs_and_static_handoff(
         for rect in getattr(obstacle_map, "chip_boundary_rects", ())
         if len(rect) == 4
     ]
-    state.chip_boundary_static_rects: list[tuple[int, int, int, int]] = chip_boundary_rects
     if chip_boundary_rects:
         if not hasattr(state.kernel.router, "add_static_rects"):
             raise RuntimeError(
@@ -682,7 +665,7 @@ def finalize_route_jobs_and_static_handoff(
                 "`maturin develop --release`."
             )
         state.kernel.router.add_static_rects(chip_boundary_rects)
-        state.blocked_static_rects_for_diagnostics.extend(chip_boundary_rects)
+        blocked_rects_for_diagnostics.extend(chip_boundary_rects)
         if settings.verbose_route_diagnostics:
             print(
                 "  Chip-boundary keepout: "
@@ -691,8 +674,21 @@ def finalize_route_jobs_and_static_handoff(
             )
     timing.record_pipeline_timing(settings, state, "static_map_handoff", t_static_handoff_start)
 
-    full_route_jobs = list(route_jobs)
-    state.full_route_jobs_by_route_index = {int(job.route_index): job for job in full_route_jobs}
+    return StaticHandoffCells(
+        foreign_keepout_cells=foreign_keepout_cells,
+        debug_port_keepout_cells=debug_port_keepout_cells,
+        blocked_cells_before_port_reservations=blocked_cells_before_port_reservations,
+        blocked_rects_for_diagnostics=blocked_rects_for_diagnostics,
+    )
+
+
+def _jobs_of_this_run(settings: SessionSettings, full_route_jobs: list[RouteJob]) -> list[RouteJob]:
+    """Step 3: cut the ordered jobs down to what the debug limits let this run route.
+
+    Raises:
+        ValueError: `debug_stop_after_route_index` exceeds the number of jobs.
+    """
+    route_jobs = full_route_jobs
     full_route_count = len(full_route_jobs)
     if (
         settings.debug_stop_after_route_index is not None
@@ -721,33 +717,17 @@ def finalize_route_jobs_and_static_handoff(
                 "routes in actual execution order"
             )
 
-    state.repair_config = settings.ripup_reroute_config or RipupRerouteConfig()
-    state.route_jobs_by_id = {job.net_id: job for job in route_jobs}
-    state.route_order = [job.net_id for job in route_jobs]
-    state.collect_timing = (
-        settings.debug_timing
-        or settings.collect_route_stats
-        or settings.collect_attempt_diagnostics
-    )
-    state.track_dynamic_cells = state.obstacles.diagnostics_enabled
-    state.route_bookkeeping = RouteBookkeeping(
-        route_order=state.route_order,
-        diagnostics_enabled=state.track_dynamic_cells,
-    )
+    return route_jobs
 
-    t_astar_start = 0.0
-    if state.collect_timing:
-        t_astar_start = time.perf_counter()
-    state.total_expanded_states = 0
-    state.simple_route_count = 0
-    state.repair_count = 0
-    state.route_attempt_records = []
-    state.native_repair_trace_records: list[dict[str, object]] = []
-    state.route_timing_buckets: dict[str, RouteTimingBucket] = {
-        name: RouteTimingBucket()
-        for name in ("normal_route", "probe_route", "braid_ripup", "endpoint_correction")
-    }
 
+def _precompute_openings(
+    settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
+) -> tuple[dict[int, StateOpenings], dict[int, list[tuple[int, int]]]]:
+    """Step 5: per net the endpoint states with their opened cells, and the exempt cells.
+
+    Raises:
+        RuntimeError: the loaded kernel lacks the clearance-exempt batch call.
+    """
     if not hasattr(state.kernel.router, "build_dynamic_clearance_exempt_cells_for_routes"):
         extension_path = getattr(state.rust_backend, "__file__", "<unknown>")
         raise RuntimeError(
@@ -758,7 +738,7 @@ def finalize_route_jobs_and_static_handoff(
         )
 
     t_state_opening_precompute_start = timing.pipeline_timer_start(settings, state)
-    state.route_state_openings_by_id = {
+    state_openings_by_id = {
         int(job.net_id): _states_and_openings(settings, state, job) for job in route_jobs
     }
     timing.record_pipeline_timing(
@@ -769,10 +749,10 @@ def finalize_route_jobs_and_static_handoff(
     )
     clearance_exempt_inputs = [
         (int(net_id), state_openings[0], state_openings[1], state_openings[4])
-        for net_id, state_openings in state.route_state_openings_by_id.items()
+        for net_id, state_openings in state_openings_by_id.items()
     ]
     t_clearance_exempt_batch_start = timing.pipeline_timer_start(settings, state)
-    state.batch_clearance_exempt_cells_by_id = {
+    clearance_exempt_cells_by_id = {
         int(net_id): [(int(cell[0]), int(cell[1])) for cell in cells]
         for net_id, cells in state.kernel.router.build_dynamic_clearance_exempt_cells_for_routes(
             clearance_exempt_inputs,
@@ -787,12 +767,73 @@ def finalize_route_jobs_and_static_handoff(
         t_clearance_exempt_batch_start,
     )
 
-    state.realization_grid_spec = (
-        int(state.obstacles.grid.width),
-        int(state.obstacles.grid.height),
-        float(state.obstacles.grid.grid_size_um),
-        float(state.kernel.frame.origin_x_um),
-        float(state.kernel.frame.origin_y_um),
-    )
+    return state_openings_by_id, clearance_exempt_cells_by_id
 
+
+def finalize_route_jobs_and_static_handoff(
+    settings: SessionSettings,
+    state: SessionState,
+    route_jobs: list[RouteJob],
+    foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]],
+    obstacle_map: Any,
+) -> FinalJobs:
+    """Phase 5: order the jobs, hand the static cells to the kernel, prepare the run.
+
+    Stores two frozen records, `state.static_cells` (what the kernel was
+    given beyond the obstacle map) and `state.run` (the jobs of this run
+    and what was precomputed for them), and resets the search's bookkeeping
+    and counters, which phase 6 fills. Returns the jobs of this run and the
+    clock reading from before the precomputation, so that the search time
+    the caller measures covers it.
+    """
+    full_route_jobs = _in_routing_order(settings, state, route_jobs)
+    state.static_cells = _hand_static_cells_to_kernel(
+        settings, state, foreign_port_keepout_cells_by_instance, obstacle_map
+    )
+    route_jobs = _jobs_of_this_run(settings, full_route_jobs)
+
+    route_order = [job.net_id for job in route_jobs]
+    collect_timing = (
+        settings.debug_timing
+        or settings.collect_route_stats
+        or settings.collect_attempt_diagnostics
+    )
+    track_dynamic_cells = state.obstacles.diagnostics_enabled
+    state.route_bookkeeping = RouteBookkeeping(
+        route_order=route_order,
+        diagnostics_enabled=track_dynamic_cells,
+    )
+    t_astar_start = 0.0
+    if collect_timing:
+        t_astar_start = time.perf_counter()
+    state.total_expanded_states = 0
+    state.simple_route_count = 0
+    state.repair_count = 0
+    state.route_attempt_records = []
+    state.native_repair_trace_records = []
+    state.route_timing_buckets = {
+        name: RouteTimingBucket()
+        for name in ("normal_route", "probe_route", "braid_ripup", "endpoint_correction")
+    }
+
+    state_openings_by_id, clearance_exempt_cells_by_id = _precompute_openings(
+        settings, state, route_jobs
+    )
+    state.run = RunPlan(
+        route_order=route_order,
+        route_jobs_by_id={job.net_id: job for job in route_jobs},
+        full_route_jobs_by_route_index={int(job.route_index): job for job in full_route_jobs},
+        state_openings_by_id=state_openings_by_id,
+        clearance_exempt_cells_by_id=clearance_exempt_cells_by_id,
+        realization_grid_spec=(
+            int(state.obstacles.grid.width),
+            int(state.obstacles.grid.height),
+            float(state.obstacles.grid.grid_size_um),
+            float(state.kernel.frame.origin_x_um),
+            float(state.kernel.frame.origin_y_um),
+        ),
+        repair_config=settings.ripup_reroute_config or RipupRerouteConfig(),
+        collect_timing=collect_timing,
+        track_dynamic_cells=track_dynamic_cells,
+    )
     return FinalJobs(route_jobs, t_astar_start)
