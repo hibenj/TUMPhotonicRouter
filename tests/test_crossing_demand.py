@@ -22,14 +22,13 @@ from photonic_router.crossings.crossing_demand import (
     NON_ADJACENT_WALLS,
     SAME_WALL,
     VERTICAL_PORT,
-    Column,
     Terminal,
     _Link,
     build_crossing_demand,
-    cluster_columns,
     demand_from_geometry,
 )
 from photonic_router.crossings.crossing_plan import build_crossing_plan
+from photonic_router.crossings.routing_regions import Column, build_region_graph, cluster_columns
 from photonic_router.crossings.topology_analysis import analyze_schematic_topology
 from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
 from photonic_router.records.layout_from_schematic import layout_from_schematic
@@ -184,7 +183,7 @@ def test_nets_outside_the_band_model_are_listed_with_reasons_and_get_no_pairs() 
         "off_chip", _terminal("l0", "w", 0.0, 20.0, 180.0), _terminal("f0", "e", 110.0, 20.0, 0.0)
     )
     demand = demand_from_geometry(
-        columns, [swap_a, swap_b, reverse, same_wall, skip, vertical, off_chip]
+        build_region_graph(columns), [swap_a, swap_b, reverse, same_wall, skip, vertical, off_chip]
     )
 
     assert sorted(demand.bands) == [0]
@@ -216,7 +215,7 @@ def test_equal_y_terminals_are_ordered_by_x_then_net_name() -> None:
         _link("a", _terminal("l", "o2", 9.0, 0.0, 0.0), _terminal("r", "i2", 50.0, 1.0, 180.0)),
         _link("b", _terminal("l", "o3", 9.0, 0.0, 0.0), _terminal("r", "i3", 50.0, 0.0, 180.0)),
     ]
-    demand = demand_from_geometry(columns, nets)
+    demand = demand_from_geometry(build_region_graph(columns), nets)
     band = demand.bands[0]
     assert [edge.net_name for edge in band.left_order] == ["c", "a", "b"]
     assert [edge.net_name for edge in band.right_order] == ["c", "a", "b"]
@@ -294,7 +293,7 @@ def _outside_link(reason: str) -> _Link:
 
 
 def test_stage_schedule_lists_only_the_bands_with_events_left_to_right() -> None:
-    demand = demand_from_geometry(_THREE_COLUMNS, _layered_links())
+    demand = demand_from_geometry(build_region_graph(_THREE_COLUMNS), _layered_links())
     assert sorted(demand.bands) == [0, 1] and demand.bands[1].stage.events == ()
     demand.require_band_layered()  # every net is confined: no error
     schedule = demand.stage_schedule()
@@ -311,13 +310,20 @@ def test_stage_schedule_lists_only_the_bands_with_events_left_to_right() -> None
     assert schedule.event_count == len(demand.plan.events) == 1
     assert schedule.to_text().startswith("StageSchedule: 1 crossing(s) in 1 stage(s)\nband 0->1")
     # a demand without any event has an empty schedule
-    assert len(demand_from_geometry(_THREE_COLUMNS, _layered_links()[2:]).stage_schedule()) == 0
+    assert (
+        len(
+            demand_from_geometry(
+                build_region_graph(_THREE_COLUMNS), _layered_links()[2:]
+            ).stage_schedule()
+        )
+        == 0
+    )
 
 
 @pytest.mark.parametrize("reason", [SAME_WALL, NON_ADJACENT_WALLS, VERTICAL_PORT, CHIP_BOUNDARY])
 def test_require_band_layered_names_the_net_and_its_reason(reason: str) -> None:
     outside = _outside_link(reason)
-    demand = demand_from_geometry(_THREE_COLUMNS, [*_layered_links(), outside])
+    demand = demand_from_geometry(build_region_graph(_THREE_COLUMNS), [*_layered_links(), outside])
     assert [net.reason for net in demand.outside] == [reason]
     with pytest.raises(ValueError) as info:
         demand.require_band_layered()
@@ -341,7 +347,7 @@ def test_outside_summary_groups_the_nets_by_sorted_reason_in_netlist_order() -> 
             _terminal("r1", "i4", 100.0, -20.0, 180.0),
         ),
     ]
-    demand = demand_from_geometry(_THREE_COLUMNS, links)
+    demand = demand_from_geometry(build_region_graph(_THREE_COLUMNS), links)
     assert demand.outside_summary() == (
         "5 net(s) outside the band model (chip_boundary: x_off_chip; "
         "non_adjacent_walls: x_skip, x_skip2; same_wall: x_same; vertical_port: x_vertical)"

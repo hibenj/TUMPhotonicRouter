@@ -51,7 +51,6 @@ _register_windows_rust_dll_directories()
 from photonic_router.benchmark_extractor import ExtractedBenchmark, Port, extract_benchmark
 from photonic_router.crossings.crossing_demand import (
     Band,
-    Column,
     CrossingDemand,
     OutsideNet,
     build_crossing_demand,
@@ -63,6 +62,7 @@ from photonic_router.crossings.crossing_plan import (
     LaneRank,
     build_crossing_plan,
 )
+from photonic_router.crossings.routing_regions import Column
 from photonic_router.graph_analysis import GraphAnalysisContext
 from photonic_router.plm.path_length_graph import (
     DelayInsertionCandidate,

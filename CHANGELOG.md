@@ -14,6 +14,30 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The placement's free space as a region graph (region graph phase 1, a
+  restructuring: no plan changes). New
+  `python/photonic_router/crossings/routing_regions.py`: `cluster_columns`
+  and `Column` moved here from `crossing_demand.py`, and a column now carries
+  the merged y-intervals of its instances (`occupied`).
+  `build_region_graph(columns)` returns a `RegionGraph` of *bands* (the space
+  between two consecutive columns over the chip height), *passages* (the
+  y-intervals of a column that no instance occupies: above, below and
+  between its instances) and *portals* (the segment a passage shares with
+  each band beside its column). `crossing_chords` is the crossing test of a
+  region: two nets cross in it iff their ends alternate around its boundary;
+  it replaces `crossing_demand._alternating_pairs`, which was that test for
+  a band's two walls. `demand_from_geometry` takes the `RegionGraph` instead
+  of the column tuple, and `CrossingDemand` gains `regions` and `paths`
+  (every confined net: the one band it runs through). Why: on the 20
+  benchmarks outside the paper table (the twelve cascades, `heater_s_mod`,
+  `heater_single`, `clements_8x8`, the five private circuits) 719 nets, 10
+  to 35 % per benchmark, are outside the band model, 659 of them because
+  they pass one or more columns; a path through passages is what the next
+  phase gives them. The plan (columns, bands, wall orders, invariant pairs,
+  events, outside nets and their text) is identical before and after on all
+  46 benchmarks with a schematic; nine-cell gate and PLM gate exact.
+  `tests/test_routing_regions.py` (11 tests).
+
 - `experiments/`: the ideas tried against the paper table that did not
   become part of the main code, and the records of the strategy switches
   that did (`experiments/README.md` has the convention). One folder per

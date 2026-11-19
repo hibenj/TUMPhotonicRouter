@@ -14,6 +14,13 @@ wall; these are the band's *invariant pairs*, and their count over all
 bands is `lower_bound()`: exact for a routing that keeps every net in its
 band, a lower bound otherwise.
 
+The columns, the bands and the free passages inside the columns are the
+`RegionGraph` of `routing_regions.py` (`CrossingDemand.regions`); a confined
+net is the path of length one through its band (`CrossingDemand.paths`), and
+its band's invariant pairs are the chords that alternate on the band's
+boundary (`routing_regions.crossing_chords`). Nets on longer paths are not
+planned yet.
+
 Per band the two wall orders go through `crossing_plan.build_crossing_plan`
 (the bubble-sort sequencing, one stage per band keyed `(left column, right
 column)`), so contribution 2's tiles and contribution 1's guidance see the
@@ -48,10 +55,17 @@ from photonic_router.crossings.crossing_plan import (
     LaneRank,
     build_crossing_plan,
 )
+from photonic_router.crossings.routing_regions import (
+    Column,
+    RegionGraph,
+    RegionKey,
+    build_region_graph,
+    cluster_columns,
+    crossing_chords,
+)
 from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
 
 ORIENTATION_TOLERANCE_DEG = 1.0
-TOUCH_TOLERANCE_UM = 1e-3
 
 SAME_WALL = "same_wall"
 NON_ADJACENT_WALLS = "non_adjacent_walls"
@@ -77,16 +91,6 @@ class Terminal:
         if abs(angle - 180.0) <= ORIENTATION_TOLERANCE_DEG:
             return "left"
         return "vertical"
-
-
-@dataclass(frozen=True)
-class Column:
-    """A wall: instances whose x-extents overlap or touch, over the chip height."""
-
-    index: int
-    x_min: float
-    x_max: float
-    instances: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -192,6 +196,10 @@ class CrossingDemand:
     plan: CrossingPlan = field(repr=False)
     """The bands' stages, keyed `(band index, band index + 1)`, in the shape
     contribution 2 and the guidance consume."""
+    regions: RegionGraph = field(repr=False)
+    """The placement's bands and passages; `columns` are its columns."""
+    paths: dict[RoutedEdgeKey, tuple[RegionKey, ...]] = field(repr=False)
+    """The regions every planned net runs through, in order: its one band."""
 
     def lower_bound(self) -> int:
         """Crossings every band-confined routing of this placement realises."""
@@ -284,8 +292,7 @@ def build_crossing_demand(schematic: Any, unrouted_layout: Any) -> CrossingDeman
     """
     boxes, ports = _placed_geometry(unrouted_layout)
     links = _links(schematic, ports)
-    columns = cluster_columns(boxes)
-    return demand_from_geometry(columns, links)
+    return demand_from_geometry(build_region_graph(cluster_columns(boxes)), links)
 
 
 def _placed_geometry(
@@ -329,22 +336,6 @@ def _parse_port_ref(spec: str) -> PortRef:
     return PortRef(instance=instance, port=port)
 
 
-def cluster_columns(boxes: Mapping[str, tuple[float, float, float, float]]) -> tuple[Column, ...]:
-    """Maximal groups of instances with overlapping or touching x-extents, left to right."""
-    ordered = sorted(boxes.items(), key=lambda item: (item[1][0], item[1][2], item[0]))
-    columns: list[tuple[float, float, list[str]]] = []
-    for name, (x_min, _y_min, x_max, _y_max) in ordered:
-        if columns and x_min <= columns[-1][1] + TOUCH_TOLERANCE_UM:
-            current = columns[-1]
-            columns[-1] = (current[0], max(current[1], x_max), current[2] + [name])
-            continue
-        columns.append((x_min, x_max, [name]))
-    return tuple(
-        Column(index=index, x_min=x_min, x_max=x_max, instances=tuple(names))
-        for index, (x_min, x_max, names) in enumerate(columns)
-    )
-
-
 def _band_of(terminal: Terminal, column_index: int, column_count: int) -> int | None:
     """Band index the terminal points into, or None for the chip boundary."""
     side = terminal.side
@@ -368,7 +359,8 @@ def _wall_order(terminals: Iterable[tuple[RoutedEdgeKey, Terminal]]) -> tuple[Ro
     return tuple(edge for _neg_y, _x, _name, edge in ordered)
 
 
-def demand_from_geometry(columns: tuple[Column, ...], links: Iterable[_Link]) -> CrossingDemand:
+def demand_from_geometry(regions: RegionGraph, links: Iterable[_Link]) -> CrossingDemand:
+    columns = regions.columns
     column_of = {name: column.index for column in columns for name in column.instances}
     confined: dict[int, list[tuple[RoutedEdgeKey, Terminal, Terminal]]] = {}
     outside: list[OutsideNet] = []
@@ -435,33 +427,38 @@ def demand_from_geometry(columns: tuple[Column, ...], links: Iterable[_Link]) ->
     plan = build_crossing_plan(lane_ranks)
 
     bands: dict[int, Band] = {}
+    paths: dict[RoutedEdgeKey, tuple[RegionKey, ...]] = {}
     for band_index, (left_order, right_order) in orders.items():
+        region = regions.band(band_index)
         bands[band_index] = Band(
             index=band_index,
-            x_min=columns[band_index].x_max,
-            x_max=columns[band_index + 1].x_min,
+            x_min=region.x_min,
+            x_max=region.x_max,
             left_order=left_order,
             right_order=right_order,
-            invariant_pairs=_alternating_pairs(left_order, right_order),
+            invariant_pairs=crossing_chords(_band_chords(left_order, right_order)),
             stage=plan.stages[(band_index, band_index + 1)],
         )
+        paths.update((edge, (region.key,)) for edge in left_order)
     return CrossingDemand(
         columns=columns,
         bands=dict(sorted(bands.items())),
         outside=tuple(outside),
         plan=plan,
+        regions=regions,
+        paths=paths,
     )
 
 
-def _alternating_pairs(
+def _band_chords(
     left_order: tuple[RoutedEdgeKey, ...],
     right_order: tuple[RoutedEdgeKey, ...],
-) -> tuple[frozenset[RoutedEdgeKey], ...]:
-    """Pairs whose order on the two walls differs, in left-wall order."""
+) -> list[tuple[RoutedEdgeKey, int, int]]:
+    """Every net of a band with its two positions on the band's boundary.
+
+    The boundary is walked down the left wall and back up the right wall, so
+    two nets alternate iff their order on the two walls differs.
+    """
+    last = 2 * len(left_order) - 1
     right_rank = {edge: rank for rank, edge in enumerate(right_order)}
-    pairs: list[frozenset[RoutedEdgeKey]] = []
-    for i, upper in enumerate(left_order):
-        for lower in left_order[i + 1 :]:
-            if right_rank[upper] > right_rank[lower]:
-                pairs.append(frozenset((upper, lower)))
-    return tuple(pairs)
+    return [(edge, rank, last - right_rank[edge]) for rank, edge in enumerate(left_order)]
