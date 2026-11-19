@@ -360,7 +360,7 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_CROSSING_GRID_CORNERS",
         "PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS",
         "PHOTONIC_ROUTER_TRACE_COLUMN_GRID",
-        # Fan-out access (python/photonic_router/routing/route_rust.py)
+        # Fan-out access (python/photonic_router/routing/)
         "PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES",
         "PHOTONIC_ROUTER_DENSE_FANOUT_MIN_PORTS",
         "PHOTONIC_ROUTER_FANOUT_ACCESS_MODE",
@@ -372,11 +372,11 @@ PYTHON_SIDE_NAMES: frozenset[str] = frozenset(
         "PHOTONIC_ROUTER_FANOUT_STUB_X_OFFSET_CELLS",
         "PHOTONIC_ROUTER_STUB_PORT_LANE_HALF_WIDTH_CELLS",
         "PHOTONIC_ROUTER_STUB_PORT_LANE_LENGTH_CELLS",
-        # Search tuning (python/photonic_router/routing/route_rust.py)
+        # Search tuning (python/photonic_router/routing/)
         "PHOTONIC_ROUTER_MIN_BEND_WEIGHT",
         "PHOTONIC_ROUTER_HEAP_TIE_BREAKER",
         "PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT",
-        # Flow diagnostics (python/photonic_router/routing/route_rust.py, route_rust_endpoint_correction.py)
+        # Flow diagnostics (python/photonic_router/routing/, route_rust_endpoint_correction.py)
         "PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT",
         "PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE",
         "PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_NETS",
@@ -661,8 +661,8 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
 
     from gdsfactory.component import Component
     from gdsfactory.gpdk import get_generic_pdk
-    from photonic_router.routing import route_rust
     from photonic_router.routing import session as routing_session
+    from photonic_router.routing.session import _RouteNetsRustSession
 
     get_generic_pdk().activate()
 
@@ -684,7 +684,7 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
     from uuid import uuid4
 
     def _session(fanout_access_mode, config=None):
-        return route_rust._RouteNetsRustSession(
+        return _RouteNetsRustSession(
             Component(f"dummy_unrouted_{uuid4().hex}"),
             _DummySchematic(),
             session_options(fanout_access_mode=fanout_access_mode, config=config),

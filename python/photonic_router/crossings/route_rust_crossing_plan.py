@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 def _ensure_dir(path: Path) -> None:
-    from photonic_router.routing.route_rust import _ensure_dir as route_rust_ensure_dir
+    from photonic_router.gds.route_rust_debug_artifacts import _ensure_dir as route_rust_ensure_dir
 
     route_rust_ensure_dir(path)
 

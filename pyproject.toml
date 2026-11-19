@@ -93,7 +93,7 @@ ignore = [
     # specific runtime error messages built from local context (net name,
     # coordinates, blocker sets, ...) rather than a small fixed set of
     # exception classes -- that is the established, correct style here
-    # (see any routing-failure RuntimeError in python/photonic_router/routing/route_rust.py),
+    # (see any routing-failure RuntimeError in python/photonic_router/routing/),
     # not something to fight. 162 of this rule set's 994-finding baseline
     # (2026-08-25) were this one rule before it was added here.
     "TRY003",
@@ -110,7 +110,6 @@ ban-relative-imports = "all"
 # Scripts and the two shims insert the repository root into sys.path before
 # importing from it, so their imports cannot be at the top of the file.
 "scripts/**" = ["E402"]
-"python/photonic_router/routing/route_rust.py" = ["E402"]
 "python/photonic_router/__init__.py" = ["E402"]
 # The 2026-09 path-investigation harness is exploratory code kept as the
 # record of that investigation (PATH_INVESTIGATION_HARNESS.md in the private

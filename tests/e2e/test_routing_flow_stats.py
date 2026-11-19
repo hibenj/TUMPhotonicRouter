@@ -11,6 +11,12 @@ from typing import cast
 import pytest
 from photonic_router import benchmark_metadata
 from photonic_router.cli import _build_arg_parser
+from photonic_router.crossings.route_rust_crossing_plan import (
+    COLLISION_CROSSING_SEARCH_LOSS_ENV,
+    DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+    _build_crossing_plan_info,
+    _effective_crossing_search_loss,
+)
 from photonic_router.electrical import (
     DEFAULT_BONDPAD_WIDTH_UM,
     DEFAULT_BUS_WIDTH_UM,
@@ -40,21 +46,15 @@ from photonic_router.records.route_rust_types import (
     DEFAULT_BEND_RADIUS_UM,
     DEFAULT_MEANDER_MAX_HEIGHT_UM,
     MeanderInsertionConfig,
+    RipupRerouteConfig,
     RouteAttemptRecord,
     RoutedNetRecord,
     RouteJob,
     RouteSearchSummary,
     bend_radius_cells_from_um,
 )
+from photonic_router.routing.api import route_match_and_realize
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions, SessionOptions
-from photonic_router.routing.route_rust import (
-    COLLISION_CROSSING_SEARCH_LOSS_ENV,
-    DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
-    RipupRerouteConfig,
-    _build_crossing_plan_info,
-    _effective_crossing_search_loss,
-    route_match_and_realize,
-)
 from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from photonic_router.verify.photonic_verification import verify_photonic_routing

@@ -7,14 +7,18 @@ from gdsfactory.component import Component
 from photonic_router.crossings.crossing_verification_report import (
     build_crossing_verification_report,
 )
+from photonic_router.crossings.route_rust_crossing_components import (
+    _place_realized_crossing_components,
+)
+from photonic_router.crossings.route_rust_crossing_plan import (
+    _augment_insertion_loss_report_from_realized_intersections,
+)
+from photonic_router.crossings.route_rust_crossing_verification import (
+    _verify_realized_route_intersections,
+)
 from photonic_router.plm.path_length_graph import PortRef
 from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
-from photonic_router.routing.route_rust import (
-    _augment_insertion_loss_report_from_realized_intersections,
-    _place_realized_crossing_components,
-    _verify_realized_route_intersections,
-)
 
 
 def _record(

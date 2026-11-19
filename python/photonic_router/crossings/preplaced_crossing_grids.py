@@ -477,8 +477,8 @@ def _derive_crossing_tiles(
     anchors: dict[str, tuple[float, float]] = {}
     dense_fanout_instances: frozenset[str] | None = None
     from photonic_router.crossings.crossing_structures import evaluate_x_array
+    from photonic_router.routing.api import static_fanout_anchors_um
     from photonic_router.routing.options import SessionOptions
-    from photonic_router.routing.route_rust import static_fanout_anchors_um
 
     # Every source instance with two or more crossing lanes in a
     # column-grid layer gets static fan-out stubs (the router's default

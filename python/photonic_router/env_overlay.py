@@ -587,7 +587,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         comma_digit_ints_frozenset,
     ),
     EnvVar(_PREFIX + "TRACE_COLUMN_GRID", ("crossing_grid", "trace_column_grid"), truthy),
-    # Fan-out access (python/photonic_router/routing/route_rust.py)
+    # Fan-out access (python/photonic_router/routing/)
     EnvVar(
         _PREFIX + "DENSE_FANOUT_INSTANCES",
         ("fanout", "dense_fanout_instances"),
@@ -637,7 +637,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("fanout", "stub_port_lane_length_cells"),
         nonnegative_int(_PREFIX + "STUB_PORT_LANE_LENGTH_CELLS"),
     ),
-    # Search tuning (python/photonic_router/routing/route_rust.py)
+    # Search tuning (python/photonic_router/routing/)
     EnvVar(_PREFIX + "MIN_BEND_WEIGHT", ("search", "min_bend_weight"), plain_float),
     EnvVar(_PREFIX + "HEAP_TIE_BREAKER", ("search", "heap_tie_breaker"), heap_tie_breaker_override),
     EnvVar(
@@ -655,7 +655,7 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
         ("search", "long_straight_exempt_dense_fanout"),
         exact_one,
     ),
-    # Flow diagnostics (python/photonic_router/routing/route_rust.py, route_rust_endpoint_correction.py)
+    # Flow diagnostics (python/photonic_router/routing/, route_rust_endpoint_correction.py)
     EnvVar(
         _PREFIX + "DEBUG_EXECUTION_LIMIT",
         ("diagnostics", "debug_execution_limit"),

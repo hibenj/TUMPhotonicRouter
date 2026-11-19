@@ -23,6 +23,7 @@ from photonic_router.flow_reporting import (
     report_partial_debug_artifacts,
     route_attempt_as_dict,
 )
+from photonic_router.routing.api import route_match_and_realize
 from photonic_router.routing.options import (
     CircuitMetadata,
     CrossingOptions,
@@ -33,7 +34,6 @@ from photonic_router.routing.options import (
     SearchOptions,
     SessionOptions,
 )
-from photonic_router.routing.route_rust import route_match_and_realize
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 

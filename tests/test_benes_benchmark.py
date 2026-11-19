@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from photonic_router.benchmark_metadata import load_benchmark_metadata
 from photonic_router.crossings.crossing_plan import CrossingEvent, CrossingPlan, build_crossing_plan
+from photonic_router.crossings.route_rust_crossing_plan import _resolve_crossing_half_size_cells
 from photonic_router.crossings.topology_analysis import analyze_schematic_topology
 from photonic_router.plm.path_length_graph import build_graph_from_schematic
 from photonic_router.records.layout_from_schematic import layout_from_schematic
-from photonic_router.routing.route_rust import _resolve_crossing_half_size_cells
 
 from benchmarks import benes_4x4, benes_8x8, benes_16x16, benes_32x32
 from benchmarks.benes import (

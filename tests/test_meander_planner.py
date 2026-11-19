@@ -23,12 +23,9 @@ from photonic_router.plm.route_rust_meanders import (
     _MeanderPlannerContext,
     _normalize_minimum_insertable_request,
 )
+from photonic_router.records.route_rust_types import MeanderInsertionConfig, RoutedNetRecord
 from photonic_router.routing import api as routing_api
-from photonic_router.routing.route_rust import (
-    MeanderInsertionConfig,
-    RoutedNetRecord,
-    analyze_meander_insertion_for_requirements,
-)
+from photonic_router.routing.api import analyze_meander_insertion_for_requirements
 from photonic_router.static_obstacle_builder import _load_rust_backend
 
 from tests.fixtures.path_length import (

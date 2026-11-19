@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import cast
 
-import photonic_router.routing.route_rust as route_rust
 import pytest
 from gdsfactory.component import Component
 from photonic_router import flow as routing_flow
@@ -18,14 +17,16 @@ from photonic_router.plm.path_length_graph import (
     PortRef,
     RoutedEdgeKey,
 )
-from photonic_router.records.route_rust_types import MeanderEdgeReport, MeanderInsertionReport
-from photonic_router.routing import api as routing_api
-from photonic_router.routing.options import CircuitMetadata, MatchingOptions
-from photonic_router.routing.route_rust import (
+from photonic_router.records.route_rust_types import (
+    MeanderEdgeReport,
+    MeanderInsertionReport,
     RoutedNetRecord,
     RouteRustPipelineResult,
     RustRouteDebugArtifacts,
 )
+from photonic_router.routing import api as routing_api
+from photonic_router.routing.api import route_match_and_realize
+from photonic_router.routing.options import CircuitMetadata, MatchingOptions
 
 from tests.fixtures.flows import run_flow
 from tests.fixtures.path_length import (
@@ -182,7 +183,7 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
         ),
     )
 
-    result = route_rust.route_match_and_realize(
+    result = route_match_and_realize(
         Component(name="unrouted_lifted_pipeline_pass"),
         schematic,
         matching=MatchingOptions(enable_path_length_matching=True),
@@ -339,7 +340,7 @@ def test_route_match_and_realize_rejects_unrealized_lifted_plm(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Path-length matching failed") as exc_info:
-        route_rust.route_match_and_realize(
+        route_match_and_realize(
             Component(name="unrouted_lifted_pipeline_fail"),
             schematic,
             matching=MatchingOptions(enable_path_length_matching=True),

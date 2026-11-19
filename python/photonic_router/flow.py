@@ -428,7 +428,7 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
                 search=replace(config.search, long_straight_exempt_dense_fanout=True),
             )
     # Contribution 2 splits nets into tile stubs; keep the net order's depth
-    # layers those of the original netlist (see route_rust.net_order_depth_by_node).
+    # layers those of the original netlist (see `SearchOptions.net_order_depth_by_node`).
     net_order_depth_by_node: dict[str, int] | None = (
         _depth_by_node_from_schematic(schematic) if preplaced_crossing_grids else None
     )

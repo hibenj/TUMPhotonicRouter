@@ -164,7 +164,7 @@ class CrossingGridConfig:
 
 @dataclass(frozen=True)
 class FanoutAccessConfig:
-    """Mirrors the fan-out-related env reads of `python/photonic_router/routing/route_rust.py`."""
+    """Mirrors the fan-out-related env reads of `python/photonic_router/routing/`."""
 
     #: `PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES`: comma-separated instance
     #: names. Unset (`None`) means no override. Also SELF-SET: the
@@ -210,7 +210,7 @@ class FanoutAccessConfig:
 
 @dataclass(frozen=True)
 class SearchTuning:
-    """Mirrors the search-tuning env reads of `python/photonic_router/routing/route_rust.py`."""
+    """Mirrors the search-tuning env reads of `python/photonic_router/routing/`."""
 
     #: `PHOTONIC_ROUTER_MIN_BEND_WEIGHT`: float, default 12.0.
     min_bend_weight: float = 12.0
@@ -237,7 +237,7 @@ class SearchTuning:
 @dataclass(frozen=True)
 class FlowDiagnostics:
     """Mirrors the Python-side diagnostic env reads of
-    `python/photonic_router/routing/route_rust.py` and `python/photonic_router/verify/route_rust_endpoint_correction.py`."""
+    `python/photonic_router/routing/` and `python/photonic_router/verify/route_rust_endpoint_correction.py`."""
 
     #: `PHOTONIC_ROUTER_DEBUG_EXECUTION_LIMIT`: int >= 1, else raises.
     #: `None` = unset.

@@ -7,8 +7,8 @@ from photonic_router.flow import load_benchmark
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.records.route_rust_geometry import _physical_point_to_grid_cell
 from photonic_router.records.route_rust_records import _grid_cell_center_um
+from photonic_router.routing.api import route_match_and_realize
 from photonic_router.routing.options import MatchingOptions
-from photonic_router.routing.route_rust import route_match_and_realize
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 from tests.fixtures.flows import run_flow

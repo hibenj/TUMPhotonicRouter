@@ -150,7 +150,7 @@ Mirrors the env reads of `python/photonic_router/crossings/preplaced_crossing_gr
 
 ### `fanout` -- `FanoutAccessConfig`
 
-Mirrors the fan-out-related env reads of `python/photonic_router/routing/route_rust.py`.
+Mirrors the fan-out-related env reads of `python/photonic_router/routing/`.
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
@@ -168,7 +168,7 @@ Mirrors the fan-out-related env reads of `python/photonic_router/routing/route_r
 
 ### `search` -- `SearchTuning`
 
-Mirrors the search-tuning env reads of `python/photonic_router/routing/route_rust.py`.
+Mirrors the search-tuning env reads of `python/photonic_router/routing/`.
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |
@@ -180,7 +180,7 @@ Mirrors the search-tuning env reads of `python/photonic_router/routing/route_rus
 
 ### `diagnostics` -- `FlowDiagnostics`
 
-Mirrors the Python-side diagnostic env reads of `python/photonic_router/routing/route_rust.py` and `python/photonic_router/verify/route_rust_endpoint_correction.py`.
+Mirrors the Python-side diagnostic env reads of `python/photonic_router/routing/` and `python/photonic_router/verify/route_rust_endpoint_correction.py`.
 
 | field | type | default | environment variable | description |
 | --- | --- | --- | --- | --- |

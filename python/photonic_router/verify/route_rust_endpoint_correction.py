@@ -31,7 +31,7 @@ from photonic_router.records.route_rust_types import RoutedNetRecord, RustRouteD
 
 
 def _load_rust_backend():
-    from photonic_router.routing.route_rust import _load_rust_backend as route_rust_load_backend
+    from photonic_router.routing.session import _load_rust_backend as route_rust_load_backend
 
     return route_rust_load_backend()
 

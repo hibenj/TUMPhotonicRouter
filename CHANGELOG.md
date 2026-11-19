@@ -258,6 +258,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The module `photonic_router.routing.route_rust` is gone (S2, slice 2). It
+  was a shim of 430 lines that re-exported 180 names of the routing package
+  and of five other packages under the path the routing code had before it
+  was split, 104 of them private. **API change**: import a name from the
+  module that defines it (`route_match_and_realize` from
+  `photonic_router.routing.api`, `RipupRerouteConfig` from
+  `photonic_router.records.route_rust_types`, and so on). The 22 files that
+  used the shim (7 of the package, 14 tests, one script) are rewritten.
+  Imports of private names from another module fall from 247 to 143.
 - Imports are absolute everywhere (S2, slice 1; rule 4.10 of the coding
   standards is in force). The 96 relative import statements of the package,
   nearly all in `electrical/` and `gds/`, and those of the tests are

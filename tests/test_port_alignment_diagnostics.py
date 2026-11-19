@@ -14,10 +14,10 @@ from photonic_router.records.route_rust_records import (
 )
 from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions
-from photonic_router.routing.route_rust import (
+from photonic_router.static_obstacle_builder import _load_rust_backend
+from photonic_router.verify.route_rust_endpoint_correction import (
     _apply_crossing_aware_endpoint_correction_to_record,
 )
-from photonic_router.static_obstacle_builder import _load_rust_backend
 
 from tests.fixtures.sessions import session_options
 
@@ -171,7 +171,7 @@ def test_heater_s_mod_pass0_characterizes_current_port_alignment():
 
     from photonic_router.flow import load_benchmark
     from photonic_router.records.layout_from_schematic import layout_from_schematic
-    from photonic_router.routing.route_rust import route_nets_rust
+    from photonic_router.routing.session import route_nets_rust
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
     schematic = load_benchmark("heater_s_mod")
@@ -232,7 +232,7 @@ def test_heater_s_mod_route_match_uses_corrected_records_for_realization():
     from photonic_router.benchmark_metadata import resolve_internal_delays_for_instances
     from photonic_router.flow import load_benchmark
     from photonic_router.records.layout_from_schematic import layout_from_schematic
-    from photonic_router.routing.route_rust import route_match_and_realize
+    from photonic_router.routing.api import route_match_and_realize
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
     from benchmarks.heater_s_mod import INTERNAL_DELAYS_UM, NODE_TYPES

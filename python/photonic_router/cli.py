@@ -89,7 +89,7 @@ from photonic_router.flow_options import (
     PreplacedCrossingGridOptions,
 )
 from photonic_router.records.route_order import NET_ORDERS
-from photonic_router.routing.route_rust import RipupRerouteConfig
+from photonic_router.records.route_rust_types import RipupRerouteConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 _CONFIGURATION_FLAGS: dict[str, tuple[str, ...]] = {

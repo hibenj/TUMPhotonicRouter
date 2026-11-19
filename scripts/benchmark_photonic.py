@@ -32,7 +32,7 @@ from photonic_router.flow_config import (
 )
 from photonic_router.flow_options import FlowOptions
 from photonic_router.flow_stats import RoutingFlowStats
-from photonic_router.routing.route_rust import RipupRerouteConfig
+from photonic_router.records.route_rust_types import RipupRerouteConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 DEFAULT_BENCHMARKS = ("heater_s_mod", "benes_4x4", "benes_8x8")

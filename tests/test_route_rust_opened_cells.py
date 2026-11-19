@@ -14,13 +14,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
 import gdsfactory as gf
 from gdsfactory.gpdk import get_generic_pdk
+from photonic_router.records.route_rust_types import EndpointCorrectionCategory
 from photonic_router.routing import crossing_plan_stage as routing_crossing_plan_stage
 from photonic_router.routing import diagnostics as routing_diagnostics
 from photonic_router.routing import finalize as routing_finalize
 from photonic_router.routing import obstacle_context as routing_obstacle_context
 from photonic_router.routing import route_jobs as routing_route_jobs
-from photonic_router.routing import route_rust
 from photonic_router.routing import session as routing_session
+from photonic_router.routing.session import _load_rust_backend, route_nets_rust
 from photonic_router.routing.state import SessionState
 from photonic_router.routing_layers import ComponentPortAccessRule
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
@@ -186,7 +187,7 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
 
     for bend_radius_um in (1.0, 3.0):
         with pytest.raises(_PortOpeningCaptured):
-            route_rust.route_nets_rust(
+            route_nets_rust(
                 _make_dummy_layout(),
                 schematic,
                 session_options(
@@ -446,7 +447,7 @@ def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
     )
 
     try:
-        route_rust.route_nets_rust(
+        route_nets_rust(
             _make_dummy_layout(),
             schematic,
             session_options(
@@ -492,7 +493,7 @@ def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
 
 
 def test_rust_dynamic_clearance_exempt_batch_covers_endpoint_boxes_and_run_in_corridors():
-    rust_backend = route_rust._load_rust_backend()
+    rust_backend = _load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend is not available")
 
@@ -591,7 +592,7 @@ def test_route_nets_rust_applies_heater_opening_without_heater_obstacle_layers(
         )
     )
 
-    _routed_layout, debug_artifacts = route_rust.route_nets_rust(
+    _routed_layout, debug_artifacts = route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -662,7 +663,7 @@ def test_route_nets_rust_does_not_apply_heater_rule_to_electrical_port(
         )
     )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -711,7 +712,7 @@ def test_route_nets_rust_defaults_to_strict_bounding_box_mode(monkeypatch, tmp_p
         )
     )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -759,7 +760,7 @@ def test_route_nets_rust_does_not_open_dynamic_geometry(monkeypatch, tmp_path):
         )
     )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -811,7 +812,7 @@ def test_route_nets_rust_opened_port_cell_in_bounding_box_mode(monkeypatch, tmp_
         )
     )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         layout,
         schematic,
         session_options(
@@ -868,7 +869,7 @@ def test_route_nets_rust_route_to_blocked_port_with_opened_cells(monkeypatch, tm
         )
     )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -938,7 +939,7 @@ def test_route_nets_rust_foreign_port_keepout_blocks_unrelated_net(monkeypatch, 
     )
 
     with pytest.raises(RuntimeError, match="No route found for unrelated"):
-        route_rust.route_nets_rust(
+        route_nets_rust(
             _make_dummy_layout(),
             schematic,
             session_options(
@@ -1002,7 +1003,7 @@ def test_route_nets_rust_foreign_port_keepout_does_not_open_sibling_port(
     )
 
     with pytest.raises(RuntimeError, match="No route found for to_active_port"):
-        route_rust.route_nets_rust(
+        route_nets_rust(
             _make_dummy_layout(),
             schematic,
             session_options(
@@ -1071,7 +1072,7 @@ def test_route_nets_rust_dense_same_instance_keepout_does_not_open_raw_static_si
     )
 
     with pytest.raises(RuntimeError, match="No route found for to_active_port"):
-        route_rust.route_nets_rust(
+        route_nets_rust(
             _make_dummy_layout(),
             schematic,
             session_options(
@@ -1140,7 +1141,7 @@ def test_route_nets_rust_foreign_port_keepout_uses_unified_self_opening_for_same
         )
     )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -1212,7 +1213,7 @@ def test_route_nets_rust_removes_foreign_keepout_after_port_is_routed(
         )
     )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -1286,7 +1287,7 @@ def test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor(
         )
     )
 
-    _routed_layout, debug_artifacts = route_rust.route_nets_rust(
+    _routed_layout, debug_artifacts = route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -1485,27 +1486,27 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
     assert classify(missing_net_id) is None
 
     plain = classify(plain_net_id)
-    assert plain.category is route_rust.EndpointCorrectionCategory.UNRESTRICTED
+    assert plain.category is EndpointCorrectionCategory.UNRESTRICTED
     assert not plain.has_crossing
     assert not plain.source_has_fanout_stub
     assert not plain.target_has_fanout_stub
 
     crossing = classify(crossing_net_id)
-    assert crossing.category is route_rust.EndpointCorrectionCategory.CROSSING_AWARE
+    assert crossing.category is EndpointCorrectionCategory.CROSSING_AWARE
     assert crossing.has_crossing
 
     source_only = classify(source_stub_net_id)
-    assert source_only.category is route_rust.EndpointCorrectionCategory.FANOUT_STUB_SOURCE_ONLY
+    assert source_only.category is EndpointCorrectionCategory.FANOUT_STUB_SOURCE_ONLY
     assert source_only.source_has_fanout_stub
     assert not source_only.target_has_fanout_stub
 
     target_only = classify(target_stub_net_id)
-    assert target_only.category is route_rust.EndpointCorrectionCategory.FANOUT_STUB_TARGET_ONLY
+    assert target_only.category is EndpointCorrectionCategory.FANOUT_STUB_TARGET_ONLY
     assert not target_only.source_has_fanout_stub
     assert target_only.target_has_fanout_stub
 
     both = classify(both_stub_net_id)
-    assert both.category is route_rust.EndpointCorrectionCategory.ALREADY_CORRECTED_NO_OP
+    assert both.category is EndpointCorrectionCategory.ALREADY_CORRECTED_NO_OP
     assert both.source_has_fanout_stub
     assert both.target_has_fanout_stub
 
@@ -1515,7 +1516,7 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
     # docstring) -- not a bug, an explicit, tested edge case.
     state.search.bookkeeping.records_by_id[source_stub_net_id] = _record()
     not_yet_precorrected = classify(source_stub_net_id)
-    assert not_yet_precorrected.category is route_rust.EndpointCorrectionCategory.UNRESTRICTED
+    assert not_yet_precorrected.category is EndpointCorrectionCategory.UNRESTRICTED
 
 
 def test_endpoint_correction_crossing_net_ids_propagates_real_failures():
@@ -1576,7 +1577,7 @@ def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
         )
     )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -1650,7 +1651,7 @@ def test_route_nets_rust_clear_port_opening_flag_controls_global_crossing_blocki
     )
 
     with pytest.raises(RuntimeError, match="No route found"):
-        route_rust.route_nets_rust(
+        route_nets_rust(
             _make_dummy_layout(),
             schematic,
             session_options(
@@ -1672,7 +1673,7 @@ def test_route_nets_rust_clear_port_opening_flag_controls_global_crossing_blocki
             ),
         )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -1722,7 +1723,7 @@ def test_route_nets_rust_multi_net_with_bounding_box_mode(monkeypatch, tmp_path)
         )
     )
 
-    route_rust.route_nets_rust(
+    route_nets_rust(
         layout,
         schematic,
         session_options(

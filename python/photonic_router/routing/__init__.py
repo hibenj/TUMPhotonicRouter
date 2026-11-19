@@ -4,8 +4,7 @@
 its stage-private helpers, and `api` holds the module-level entry points. The
 phases answer to the Protocols in `stages`; they take the run's frozen inputs
 (`settings.SessionSettings`) and its mutable record (`state.SessionState`), and
-`timing` holds the pipeline timers they all use. The `photonic_router.routing.route_rust`
-module is a compatibility shim re-exporting this package.
+`timing` holds the pipeline timers they all use.
 """
 
 from __future__ import annotations

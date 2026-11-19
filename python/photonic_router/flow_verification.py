@@ -76,7 +76,7 @@ def verify_and_attach_photonic_reports(
 
     # This Python geometry verifier is the normal final gate for the realized
     # routed layout. Internal photonic probe verification in
-    # `photonic_router.routing.route_rust` should be treated as diagnostic/mismatch
+    # `photonic_router.routing.verify_repair` should be treated as diagnostic/mismatch
     # debugging support; this pass is the authoritative check before the GDS is
     # accepted.
     photonic_verification = verify_photonic_routing(

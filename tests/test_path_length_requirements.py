@@ -15,16 +15,14 @@ from photonic_router.plm.path_length_graph import (
     RoutedEdgeKey,
 )
 from photonic_router.plm.path_length_requirements import (
+    analyze_path_length_matching,
     build_requirement_delay_candidates,
     compute_group_lifted_requirements,
     compute_output_matching_requirements,
     merge_missing_length_requirements,
     minimum_four_bend_extra_length_um,
 )
-from photonic_router.routing.route_rust import (
-    RoutedNetRecord,
-    analyze_path_length_matching,
-)
+from photonic_router.records.route_rust_types import RoutedNetRecord
 
 from tests.fixtures.path_length import (
     SchematicLike,
