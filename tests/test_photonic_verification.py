@@ -17,6 +17,7 @@ from photonic_router.records.route_rust_realization import (
     realized_record_polygons,
 )
 from photonic_router.records.route_rust_types import RoutedNetRecord
+from photonic_router.routing.options import CircuitMetadata, MatchingOptions
 from photonic_router.static_obstacle_builder import _load_rust_backend
 from photonic_router.verify.photonic_verification import (
     PhotonicVerificationIssue,
@@ -38,6 +39,8 @@ from photonic_router.verify.photonic_verification import (
     _verify_self_intersecting_routes,
     verify_photonic_routing,
 )
+
+from tests.fixtures.sessions import session_options
 
 get_generic_pdk().activate()
 
@@ -1437,26 +1440,29 @@ def test_realized_record_region_equals_component_path():
     result = route_match_and_realize(
         unrouted_layout,
         schematic,
-        enable_path_length_matching=True,
-        path_length_match_outputs=True,
-        node_types=metadata.get("node_types"),
-        internal_delays_um=metadata.get("internal_delays_um"),
-        debug_dir=None,
-        debug_prefix="heater_s_mod",
-        allow_45_degree_turns=False,
-        bend_radius_um=10.0,
-        max_iterations=5_000_000,
-        routing_window_scale=0.05,
-        collect_route_stats=True,
-        include_heater_obstacles=True,
-        obstacle_config=StaticObstacleMapConfig(
-            grid_size_um=2.0,
-            obstacle_mode="bounding_boxes",
-            clearance_um=0.0,
-            heater_clearance_um=10.0,
-            chip_add_x_um=0.0,
-            chip_add_y_um=40.0,
-            clear_port_open_cells_from_static=False,
+        session_options(
+            debug_dir=None,
+            debug_prefix="heater_s_mod",
+            allow_45_degree_turns=False,
+            bend_radius_um=10.0,
+            max_iterations=5_000_000,
+            routing_window_scale=0.05,
+            collect_route_stats=True,
+            include_heater_obstacles=True,
+            obstacle_config=StaticObstacleMapConfig(
+                grid_size_um=2.0,
+                obstacle_mode="bounding_boxes",
+                clearance_um=0.0,
+                heater_clearance_um=10.0,
+                chip_add_x_um=0.0,
+                chip_add_y_um=40.0,
+                clear_port_open_cells_from_static=False,
+            ),
+        ),
+        matching=MatchingOptions(enable_path_length_matching=True, path_length_match_outputs=True),
+        metadata=CircuitMetadata(
+            node_types=metadata.get("node_types"),
+            internal_delays_um=metadata.get("internal_delays_um"),
         ),
     )
     heater_debug_artifacts = result.debug_artifacts

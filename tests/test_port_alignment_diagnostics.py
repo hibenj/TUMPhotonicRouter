@@ -13,10 +13,13 @@ from photonic_router.records.route_rust_records import (
     build_port_alignment_diagnostics,
 )
 from photonic_router.records.route_rust_types import RoutedNetRecord
+from photonic_router.routing.options import CircuitMetadata, MatchingOptions
 from photonic_router.routing.route_rust import (
     _apply_crossing_aware_endpoint_correction_to_record,
 )
 from photonic_router.static_obstacle_builder import _load_rust_backend
+
+from tests.fixtures.sessions import session_options
 
 
 def _centerline_length_um(centerline: tuple[tuple[float, float], ...]) -> float:
@@ -177,12 +180,14 @@ def test_heater_s_mod_pass0_characterizes_current_port_alignment():
     _, artifacts = route_nets_rust(
         layout,
         schematic,
-        obstacle_config=StaticObstacleMapConfig(clearance_um=0.0),
-        defer_realization=True,
-        include_heater_obstacles=True,
-        collect_route_stats=True,
-        allow_45_degree_turns=False,
-        enable_checked_endpoint_correction=False,
+        session_options(
+            obstacle_config=StaticObstacleMapConfig(clearance_um=0.0),
+            defer_realization=True,
+            include_heater_obstacles=True,
+            collect_route_stats=True,
+            allow_45_degree_turns=False,
+            enable_checked_endpoint_correction=False,
+        ),
     )
 
     # gc_in_0/gc_in_1 both feed lane 0's first MMI (mmi_a_0), analogous to the
@@ -237,17 +242,21 @@ def test_heater_s_mod_route_match_uses_corrected_records_for_realization():
     result = route_match_and_realize(
         layout,
         schematic,
-        enable_path_length_matching=False,
-        node_types=NODE_TYPES,
-        internal_delays_um=resolve_internal_delays_for_instances(
-            schematic,
-            INTERNAL_DELAYS_UM,
+        session_options(
+            obstacle_config=StaticObstacleMapConfig(clearance_um=0.0),
+            include_heater_obstacles=True,
+            collect_route_stats=True,
+            allow_45_degree_turns=False,
+            enable_checked_endpoint_correction=False,
         ),
-        obstacle_config=StaticObstacleMapConfig(clearance_um=0.0),
-        include_heater_obstacles=True,
-        collect_route_stats=True,
-        allow_45_degree_turns=False,
-        enable_grid_endpoint_correction=False,
+        matching=MatchingOptions(enable_path_length_matching=False),
+        metadata=CircuitMetadata(
+            node_types=NODE_TYPES,
+            internal_delays_um=resolve_internal_delays_for_instances(
+                schematic,
+                INTERNAL_DELAYS_UM,
+            ),
+        ),
     )
 
     records = result.debug_artifacts.routed_net_records

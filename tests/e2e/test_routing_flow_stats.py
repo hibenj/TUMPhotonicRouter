@@ -46,6 +46,7 @@ from photonic_router.records.route_rust_types import (
     RouteSearchSummary,
     bend_radius_cells_from_um,
 )
+from photonic_router.routing.options import CircuitMetadata, MatchingOptions, SessionOptions
 from photonic_router.routing.route_rust import (
     COLLISION_CROSSING_SEARCH_LOSS_ENV,
     DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
@@ -58,7 +59,7 @@ from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 from photonic_router.verify.photonic_verification import verify_photonic_routing
 
-from tests.fixtures.sessions import route_electrical_benchmark_result
+from tests.fixtures.sessions import route_electrical_benchmark_result, session_options
 from tests.fixtures.synthetic_layouts import path_length_schematic
 
 
@@ -77,12 +78,7 @@ def test_path_length_meander_height_defaults_are_centralized():
         inspect.signature(run_routing_flow).parameters["path_length_meander_height_um"].default
         == DEFAULT_MEANDER_MAX_HEIGHT_UM
     )
-    assert (
-        inspect.signature(route_match_and_realize)
-        .parameters["path_length_meander_height_um"]
-        .default
-        == DEFAULT_MEANDER_MAX_HEIGHT_UM
-    )
+    assert MatchingOptions().path_length_meander_height_um == DEFAULT_MEANDER_MAX_HEIGHT_UM
 
 
 def test_electrical_width_defaults_are_centralized():
@@ -263,12 +259,14 @@ def test_route_match_uses_rust_batch_path_when_repair_disabled():
     result = route_match_and_realize(
         unrouted_layout,
         schematic,
-        enable_path_length_matching=False,
-        allow_45_degree_turns=True,
-        bend_radius_um=5.0,
-        collect_route_stats=True,
-        ripup_reroute_config=RipupRerouteConfig(enabled=False),
-        obstacle_config=StaticObstacleMapConfig(clearance_um=0.0),
+        session_options(
+            allow_45_degree_turns=True,
+            bend_radius_um=5.0,
+            collect_route_stats=True,
+            ripup_reroute_config=RipupRerouteConfig(enabled=False),
+            obstacle_config=StaticObstacleMapConfig(clearance_um=0.0),
+        ),
+        matching=MatchingOptions(enable_path_length_matching=False),
     )
 
     summary = result.debug_artifacts.route_search_summary
@@ -323,26 +321,29 @@ def _route_heater_s_mod_for_regression(waveguide_clearance_um: float):
     result = route_match_and_realize(
         unrouted_layout,
         schematic,
-        enable_path_length_matching=True,
-        path_length_match_outputs=True,
-        node_types=metadata.get("node_types"),
-        internal_delays_um=metadata.get("internal_delays_um"),
-        debug_dir=None,
-        debug_prefix="heater_s_mod",
-        allow_45_degree_turns=False,
-        bend_radius_um=10.0,
-        max_iterations=5_000_000,
-        routing_window_scale=0.05,
-        collect_route_stats=True,
-        include_heater_obstacles=True,
-        obstacle_config=StaticObstacleMapConfig(
-            grid_size_um=2.0,
-            obstacle_mode="bounding_boxes",
-            clearance_um=float(waveguide_clearance_um),
-            heater_clearance_um=10.0,
-            chip_add_x_um=0.0,
-            chip_add_y_um=40.0,
-            clear_port_open_cells_from_static=False,
+        session_options(
+            debug_dir=None,
+            debug_prefix="heater_s_mod",
+            allow_45_degree_turns=False,
+            bend_radius_um=10.0,
+            max_iterations=5_000_000,
+            routing_window_scale=0.05,
+            collect_route_stats=True,
+            include_heater_obstacles=True,
+            obstacle_config=StaticObstacleMapConfig(
+                grid_size_um=2.0,
+                obstacle_mode="bounding_boxes",
+                clearance_um=float(waveguide_clearance_um),
+                heater_clearance_um=10.0,
+                chip_add_x_um=0.0,
+                chip_add_y_um=40.0,
+                clear_port_open_cells_from_static=False,
+            ),
+        ),
+        matching=MatchingOptions(enable_path_length_matching=True, path_length_match_outputs=True),
+        metadata=CircuitMetadata(
+            node_types=metadata.get("node_types"),
+            internal_delays_um=metadata.get("internal_delays_um"),
         ),
     )
     return schematic, unrouted_layout, result
@@ -395,27 +396,29 @@ def _route_heater_s_mod_sibling_pair(crossing_mode: str | None):
     return route_match_and_realize(
         unrouted_layout,
         schematic,
-        enable_path_length_matching=False,
-        debug_dir=None,
-        debug_prefix="heater_s_mod",
-        allow_45_degree_turns=False,
-        bend_radius_um=10.0,
-        max_iterations=5_000_000,
-        routing_window_scale=0.05,
-        collect_route_stats=True,
-        include_heater_obstacles=True,
-        enable_crossings=crossing_mode is not None,
-        crossing_mode=crossing_mode or "lidar-pure",
-        debug_stop_after_route_index=2,
-        obstacle_config=StaticObstacleMapConfig(
-            grid_size_um=2.0,
-            obstacle_mode="bounding_boxes",
-            clearance_um=3.0,
-            heater_clearance_um=10.0,
-            chip_add_x_um=0.0,
-            chip_add_y_um=40.0,
-            clear_port_open_cells_from_static=False,
+        session_options(
+            debug_dir=None,
+            debug_prefix="heater_s_mod",
+            allow_45_degree_turns=False,
+            bend_radius_um=10.0,
+            max_iterations=5_000_000,
+            routing_window_scale=0.05,
+            collect_route_stats=True,
+            include_heater_obstacles=True,
+            enable_crossings=crossing_mode is not None,
+            crossing_mode=crossing_mode or "lidar-pure",
+            debug_stop_after_route_index=2,
+            obstacle_config=StaticObstacleMapConfig(
+                grid_size_um=2.0,
+                obstacle_mode="bounding_boxes",
+                clearance_um=3.0,
+                heater_clearance_um=10.0,
+                chip_add_x_um=0.0,
+                chip_add_y_um=40.0,
+                clear_port_open_cells_from_static=False,
+            ),
         ),
+        matching=MatchingOptions(enable_path_length_matching=False),
     )
 
 
@@ -850,15 +853,13 @@ def test_run_routing_flow_uses_strict_default_obstacle_config(monkeypatch):
     def fake_route_match_and_realize(
         _layout: object,
         _schematic: object,
-        *,
-        obstacle_config: object | None = None,
-        ripup_reroute_config: object | None = None,
+        options: SessionOptions,
         **_kwargs: object,
     ):
-        captured["obstacle_config"] = obstacle_config
-        captured["ripup_reroute_config"] = ripup_reroute_config
-        captured["collect_route_stats"] = _kwargs.get("collect_route_stats")
-        captured["bend_radius_um"] = _kwargs.get("bend_radius_um")
+        captured["obstacle_config"] = options.obstacle_config
+        captured["ripup_reroute_config"] = options.ripup_reroute_config
+        captured["collect_route_stats"] = options.debug.collect_route_stats
+        captured["bend_radius_um"] = options.realization.bend_radius_um
         routed_layout = SimpleNamespace(name="routed_layout_rust")
         routed_layout.write_gds = lambda *_args, **_kwargs: None
         return SimpleNamespace(
@@ -944,6 +945,7 @@ def test_run_routing_flow_writes_crossing_verification_report(monkeypatch, tmp_p
     def fake_route_match_and_realize(
         _layout: object,
         _schematic: object,
+        _options: SessionOptions,
         **_kwargs: object,
     ):
         routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
@@ -1058,6 +1060,7 @@ def test_run_routing_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_pa
     def fake_route_match_and_realize(
         _layout: object,
         _schematic: object,
+        _options: SessionOptions,
         **_kwargs: object,
     ):
         routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
@@ -1174,6 +1177,7 @@ def test_run_routing_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_
     def fake_route_match_and_realize(
         _layout: object,
         _schematic: object,
+        _options: SessionOptions,
         **_kwargs: object,
     ):
         routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
@@ -1280,9 +1284,10 @@ def test_run_routing_flow_collects_route_summary_when_stats_requested(monkeypatc
     def fake_route_match_and_realize(
         _layout: object,
         _schematic: object,
-        **kwargs: object,
+        options: SessionOptions,
+        **_kwargs: object,
     ):
-        captured["collect_route_stats"] = kwargs.get("collect_route_stats")
+        captured["collect_route_stats"] = options.debug.collect_route_stats
         routed_layout = SimpleNamespace(name="routed_layout_rust")
         routed_layout.write_gds = lambda *_args, **_kwargs: None
         return SimpleNamespace(
@@ -1536,6 +1541,7 @@ def test_run_routing_flow_can_append_electrical_routing(monkeypatch):
     def fake_route_match_and_realize(
         _layout: object,
         _schematic: object,
+        _options: SessionOptions,
         **_kwargs: object,
     ):
         return SimpleNamespace(
@@ -1920,7 +1926,7 @@ def test_flow_net_order_default_follows_the_configuration(
     seen: dict[str, str] = {}
 
     def capture(*args, **kwargs):
-        seen["net_order"] = kwargs["config"].net_order
+        seen["net_order"] = kwargs["config"].session.search.net_order
         raise _StopAtRoutingStage()
 
     monkeypatch.setattr(routing_flow, "run_photonic_routing_stage", capture)

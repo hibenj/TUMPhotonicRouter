@@ -51,6 +51,7 @@ import itertools
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 import gdsfactory as gf
 from gdsfactory.component import Component
@@ -65,6 +66,10 @@ from photonic_router.routing_layers import (
     ComponentPortAccessRule,
     register_component_port_access_rule,
 )
+
+if TYPE_CHECKING:
+    # the routing package imports this one; only the annotation needs the name
+    from photonic_router.routing.options import SessionOptions
 
 TO_GRID_SUFFIX = "__to_grid"
 FROM_GRID_SUFFIX = "__from_grid"
@@ -376,7 +381,7 @@ def crossing_tile_component(
 
 
 def _router_grid_origin(
-    unrouted_layout: Component, router_probe_kwargs: Mapping[str, object] | None
+    unrouted_layout: Component, router_probe_options: SessionOptions | None
 ) -> tuple[float, float, float] | None:
     """The routing grid's (origin_x, origin_y, cell size) the flow will use.
 
@@ -385,9 +390,9 @@ def _router_grid_origin(
     unless the config pins a die bbox. None when no probe config is given
     (unit tests without a router configuration): tiles then stay unsnapped.
     """
-    if not router_probe_kwargs:
+    if router_probe_options is None:
         return None
-    config = router_probe_kwargs.get("obstacle_config")
+    config = router_probe_options.obstacle_config
     if config is None:
         return None
     grid = float(getattr(config, "grid_size_um", 0.0) or 0.0)
@@ -453,7 +458,7 @@ def _derive_crossing_tiles(
     schedule: StageSchedule,
     geometry: CrossingGridGeometry,
     derived: Schematic,
-    router_probe_kwargs: Mapping[str, object] | None = None,
+    router_probe_options: SessionOptions | None = None,
     config: CrossingGridConfig | None = None,
 ) -> tuple:
     """Place one crossing tile per planned crossing and split every crossing
@@ -472,6 +477,7 @@ def _derive_crossing_tiles(
     anchors: dict[str, tuple[float, float]] = {}
     dense_fanout_instances: frozenset[str] | None = None
     from photonic_router.crossings.crossing_structures import evaluate_x_array
+    from photonic_router.routing.options import SessionOptions
     from photonic_router.routing.route_rust import static_fanout_anchors_um
 
     # Every source instance with two or more crossing lanes in a
@@ -494,13 +500,16 @@ def _derive_crossing_tiles(
             count[edge.source.instance] = count.get(edge.source.instance, 0) + 1
         dense.update(name for name, n in count.items() if n >= 2)
     dense_fanout_instances = frozenset(dense) if dense else None
-    probe_kwargs = dict(router_probe_kwargs or {})
-    probe_config = probe_kwargs.get("config") or RoutingConfig()
-    probe_kwargs["config"] = replace(
-        probe_config,
-        fanout=replace(probe_config.fanout, dense_fanout_instances=dense_fanout_instances),
+    probe_options = router_probe_options if router_probe_options is not None else SessionOptions()
+    probe_config = probe_options.config or RoutingConfig()
+    probe_options = replace(
+        probe_options,
+        config=replace(
+            probe_config,
+            fanout=replace(probe_config.fanout, dense_fanout_instances=dense_fanout_instances),
+        ),
     )
-    anchors = static_fanout_anchors_um(unrouted_layout, schematic, **probe_kwargs)
+    anchors = static_fanout_anchors_um(unrouted_layout, schematic, probe_options)
     print(
         f"      - crossing tiles: {len(anchors)} static fan-out anchor(s) from the router "
         f"(dense instances: {', '.join(sorted(dense)) or 'none'})"
@@ -598,7 +607,7 @@ def _derive_crossing_tiles(
         tile_by_key: dict[tuple[int, int], str] = {}
         key_by_lane_level: dict[tuple[str, int], tuple[int, int]] = {}
         depth = stage_plan.source_depth
-        grid_origin = _router_grid_origin(unrouted_layout, router_probe_kwargs)
+        grid_origin = _router_grid_origin(unrouted_layout, router_probe_options)
         for level, upper_slot, upper, lower in crossings:
             name = f"{CROSSING_TILE_PREFIX}stage{depth}_l{level}_s{upper_slot}"
             x = band_x0 + float(geometry.band_margin_um) + (level + 0.5) * pitch
@@ -1291,7 +1300,7 @@ def derive_preplaced_crossing_layout(
     schedule: StageSchedule,
     *,
     geometry: CrossingGridGeometry | None = None,
-    router_probe_kwargs: Mapping[str, object] | None = None,
+    router_probe_options: SessionOptions | None = None,
     config: CrossingGridConfig | None = None,
 ) -> DerivedCrossingLayout:
     """Derive a schematic/layout pair with crossing grids placed and nets split.
@@ -1299,8 +1308,8 @@ def derive_preplaced_crossing_layout(
     ``schedule`` is the placement's `CrossingDemand.stage_schedule()`: the
     bands with crossing events, left to right (`build_stage_schedule_for_benchmark`).
 
-    ``router_probe_kwargs`` (tiles mode, column grid): the routing run's
-    configuration (obstacle config, fan-out access mode, bend radius), so the
+    ``router_probe_options`` (tiles mode, column grid): the routing run's
+    options (obstacle config, fan-out access mode, bend radius), so the
     entry tiles can be placed on the router's static fan-out anchors.
 
     ``unrouted_layout`` (the benchmark's own unrouted layout) is only used to
@@ -1321,7 +1330,7 @@ def derive_preplaced_crossing_layout(
         schedule,
         geometry,
         derived,
-        router_probe_kwargs,
+        router_probe_options,
         config=config,
     )
     (

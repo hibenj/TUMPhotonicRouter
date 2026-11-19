@@ -136,6 +136,8 @@ def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge
     from photonic_router.records.layout_from_schematic import layout_from_schematic
     from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
+    from tests.fixtures.sessions import session_options
+
     probe = {
         "fanout_access_mode": "static-stubs",
         "bend_radius_um": 5.0,
@@ -146,7 +148,7 @@ def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge
     layout = layout_from_schematic(schematic)
     schedule = build_stage_schedule_for_benchmark(schematic, layout)
     derived = derive_preplaced_crossing_layout(
-        schematic, layout, schedule, router_probe_kwargs=probe
+        schematic, layout, schedule, router_probe_options=session_options(**probe)
     )
     grid = 2.0
     origin_x = float(layout.dbbox().left) - 20.0

@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+from tests.fixtures.sessions import session_options
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
 import gdsfactory as gf
@@ -186,20 +188,22 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
         with pytest.raises(_PortOpeningCaptured):
             route_rust.route_nets_rust(
                 _make_dummy_layout(),
-                schematic,  # type: ignore[arg-type]
-                obstacle_config=StaticObstacleMapConfig(
-                    obstacle_mode="rasterized_polygons",
-                    grid_size_um=1.0,
-                    security_margin_um=0.0,
-                    clearance_um=0.0,
-                    port_open_radius_um=0.0,
-                    die_bbox=(0.0, 0.0, 30.0, 20.0),
+                schematic,
+                session_options(
+                    obstacle_config=StaticObstacleMapConfig(
+                        obstacle_mode="rasterized_polygons",
+                        grid_size_um=1.0,
+                        security_margin_um=0.0,
+                        clearance_um=0.0,
+                        port_open_radius_um=0.0,
+                        die_bbox=(0.0, 0.0, 30.0, 20.0),
+                    ),
+                    route_width_um=0.5,
+                    allow_45_degree_turns=False,
+                    bend_radius_um=bend_radius_um,
+                    max_iterations=100_000,
+                    defer_realization=True,
                 ),
-                route_width_um=0.5,
-                allow_45_degree_turns=False,
-                bend_radius_um=bend_radius_um,
-                max_iterations=100_000,
-                defer_realization=True,
             )
 
     assert captured_lane_widths == [2, 2, 4, 4]
@@ -424,13 +428,15 @@ def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
     try:
         route_rust.route_nets_rust(
             _make_dummy_layout(),
-            schematic,  # type: ignore[arg-type]
-            debug_dir=tmp_path,
-            debug_prefix="opened_cells_regression",
-            route_width_um=0.5,
-            allow_45_degree_turns=False,
-            max_iterations=100_000,
-            defer_realization=True,
+            schematic,
+            session_options(
+                debug_dir=tmp_path,
+                debug_prefix="opened_cells_regression",
+                route_width_um=0.5,
+                allow_45_degree_turns=False,
+                max_iterations=100_000,
+                defer_realization=True,
+            ),
         )
     except RuntimeError as exc:
         assert "No route found" in str(exc)
@@ -567,14 +573,16 @@ def test_route_nets_rust_applies_heater_opening_without_heater_obstacle_layers(
 
     _routed_layout, debug_artifacts = route_rust.route_nets_rust(
         _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        debug_dir=tmp_path,
-        debug_prefix="heater_keyed_openings",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        include_heater_obstacles=False,
-        max_iterations=100_000,
-        defer_realization=True,
+        schematic,
+        session_options(
+            debug_dir=tmp_path,
+            debug_prefix="heater_keyed_openings",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            include_heater_obstacles=False,
+            max_iterations=100_000,
+            defer_realization=True,
+        ),
     )
 
     heater_diag = (
@@ -636,14 +644,16 @@ def test_route_nets_rust_does_not_apply_heater_rule_to_electrical_port(
 
     route_rust.route_nets_rust(
         _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        debug_dir=tmp_path,
-        debug_prefix="heater_electrical_opening",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        include_heater_obstacles=True,
-        max_iterations=100_000,
-        defer_realization=True,
+        schematic,
+        session_options(
+            debug_dir=tmp_path,
+            debug_prefix="heater_electrical_opening",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            include_heater_obstacles=True,
+            max_iterations=100_000,
+            defer_realization=True,
+        ),
     )
 
     diag_text = (
@@ -683,13 +693,15 @@ def test_route_nets_rust_defaults_to_strict_bounding_box_mode(monkeypatch, tmp_p
 
     route_rust.route_nets_rust(
         _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        debug_dir=tmp_path,
-        debug_prefix="strict_default_mode",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        max_iterations=100_000,
-        defer_realization=True,
+        schematic,
+        session_options(
+            debug_dir=tmp_path,
+            debug_prefix="strict_default_mode",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            max_iterations=100_000,
+            defer_realization=True,
+        ),
     )
 
     resolved = captured["config"]
@@ -729,13 +741,15 @@ def test_route_nets_rust_does_not_open_dynamic_geometry(monkeypatch, tmp_path):
 
     route_rust.route_nets_rust(
         _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        debug_dir=tmp_path,
-        debug_prefix="opened_dynamic_regression",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        max_iterations=100_000,
-        defer_realization=True,
+        schematic,
+        session_options(
+            debug_dir=tmp_path,
+            debug_prefix="opened_dynamic_regression",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            max_iterations=100_000,
+            defer_realization=True,
+        ),
     )
 
     diag_path = tmp_path / "routes" / "opened_dynamic_regression_net_b_diagnostics.txt"
@@ -779,21 +793,23 @@ def test_route_nets_rust_opened_port_cell_in_bounding_box_mode(monkeypatch, tmp_
 
     route_rust.route_nets_rust(
         layout,
-        schematic,  # type: ignore[arg-type]
-        obstacle_config=StaticObstacleMapConfig(
-            obstacle_mode="bounding_boxes",
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            die_bbox=(0.0, 0.0, 30.0, 20.0),
+        schematic,
+        session_options(
+            obstacle_config=StaticObstacleMapConfig(
+                obstacle_mode="bounding_boxes",
+                grid_size_um=1.0,
+                security_margin_um=0.0,
+                clearance_um=0.0,
+                port_open_radius_um=0.0,
+                die_bbox=(0.0, 0.0, 30.0, 20.0),
+            ),
+            debug_dir=tmp_path,
+            debug_prefix="bounding_box_opened",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            max_iterations=100_000,
+            defer_realization=True,
         ),
-        debug_dir=tmp_path,
-        debug_prefix="bounding_box_opened",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        max_iterations=100_000,
-        defer_realization=True,
     )
 
     diag_path = tmp_path / "routes" / "bounding_box_opened_boxed_port_net_diagnostics.txt"
@@ -834,22 +850,24 @@ def test_route_nets_rust_route_to_blocked_port_with_opened_cells(monkeypatch, tm
 
     route_rust.route_nets_rust(
         _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        obstacle_config=StaticObstacleMapConfig(
-            obstacle_mode="rasterized_polygons",
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            clear_port_open_cells_from_static=False,
-            die_bbox=(0.0, 0.0, 30.0, 20.0),
+        schematic,
+        session_options(
+            obstacle_config=StaticObstacleMapConfig(
+                obstacle_mode="rasterized_polygons",
+                grid_size_um=1.0,
+                security_margin_um=0.0,
+                clearance_um=0.0,
+                port_open_radius_um=0.0,
+                clear_port_open_cells_from_static=False,
+                die_bbox=(0.0, 0.0, 30.0, 20.0),
+            ),
+            debug_dir=tmp_path,
+            debug_prefix="strict_mode_blocked_port",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            max_iterations=100_000,
+            defer_realization=True,
         ),
-        debug_dir=tmp_path,
-        debug_prefix="strict_mode_blocked_port",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        max_iterations=100_000,
-        defer_realization=True,
     )
 
     diag_path = (
@@ -902,23 +920,25 @@ def test_route_nets_rust_foreign_port_keepout_blocks_unrelated_net(monkeypatch, 
     with pytest.raises(RuntimeError, match="No route found for unrelated"):
         route_rust.route_nets_rust(
             _make_dummy_layout(),
-            schematic,  # type: ignore[arg-type]
-            obstacle_config=StaticObstacleMapConfig(
-                obstacle_mode="rasterized_polygons",
-                grid_size_um=1.0,
-                security_margin_um=0.0,
-                clearance_um=0.0,
-                port_open_radius_um=0.0,
-                die_bbox=(0.0, 0.0, 30.0, 21.0),
+            schematic,
+            session_options(
+                obstacle_config=StaticObstacleMapConfig(
+                    obstacle_mode="rasterized_polygons",
+                    grid_size_um=1.0,
+                    security_margin_um=0.0,
+                    clearance_um=0.0,
+                    port_open_radius_um=0.0,
+                    die_bbox=(0.0, 0.0, 30.0, 21.0),
+                ),
+                debug_dir=tmp_path,
+                debug_prefix="foreign_keepout_blocks",
+                route_width_um=0.5,
+                allow_45_degree_turns=False,
+                bend_radius_um=3.0,
+                foreign_port_keepout_cells=3,
+                max_iterations=10_000,
+                defer_realization=True,
             ),
-            debug_dir=tmp_path,
-            debug_prefix="foreign_keepout_blocks",
-            route_width_um=0.5,
-            allow_45_degree_turns=False,
-            bend_radius_um=3.0,
-            foreign_port_keepout_cells=3,
-            max_iterations=10_000,
-            defer_realization=True,
         )
 
 
@@ -964,23 +984,25 @@ def test_route_nets_rust_foreign_port_keepout_does_not_open_sibling_port(
     with pytest.raises(RuntimeError, match="No route found for to_active_port"):
         route_rust.route_nets_rust(
             _make_dummy_layout(),
-            schematic,  # type: ignore[arg-type]
-            obstacle_config=StaticObstacleMapConfig(
-                obstacle_mode="rasterized_polygons",
-                grid_size_um=1.0,
-                security_margin_um=0.0,
-                clearance_um=0.0,
-                port_open_radius_um=0.0,
-                die_bbox=(0.0, 0.0, 30.0, 21.0),
+            schematic,
+            session_options(
+                obstacle_config=StaticObstacleMapConfig(
+                    obstacle_mode="rasterized_polygons",
+                    grid_size_um=1.0,
+                    security_margin_um=0.0,
+                    clearance_um=0.0,
+                    port_open_radius_um=0.0,
+                    die_bbox=(0.0, 0.0, 30.0, 21.0),
+                ),
+                debug_dir=tmp_path,
+                debug_prefix="foreign_keepout_sibling_closed",
+                route_width_um=0.5,
+                allow_45_degree_turns=False,
+                bend_radius_um=3.0,
+                foreign_port_keepout_cells=3,
+                max_iterations=10_000,
+                defer_realization=True,
             ),
-            debug_dir=tmp_path,
-            debug_prefix="foreign_keepout_sibling_closed",
-            route_width_um=0.5,
-            allow_45_degree_turns=False,
-            bend_radius_um=3.0,
-            foreign_port_keepout_cells=3,
-            max_iterations=10_000,
-            defer_realization=True,
         )
 
 
@@ -1031,23 +1053,25 @@ def test_route_nets_rust_dense_same_instance_keepout_does_not_open_raw_static_si
     with pytest.raises(RuntimeError, match="No route found for to_active_port"):
         route_rust.route_nets_rust(
             _make_dummy_layout(),
-            schematic,  # type: ignore[arg-type]
-            obstacle_config=StaticObstacleMapConfig(
-                obstacle_mode="rasterized_polygons",
-                grid_size_um=1.0,
-                security_margin_um=0.0,
-                clearance_um=0.0,
-                port_open_radius_um=0.0,
-                die_bbox=(0.0, 0.0, 30.0, 21.0),
+            schematic,
+            session_options(
+                obstacle_config=StaticObstacleMapConfig(
+                    obstacle_mode="rasterized_polygons",
+                    grid_size_um=1.0,
+                    security_margin_um=0.0,
+                    clearance_um=0.0,
+                    port_open_radius_um=0.0,
+                    die_bbox=(0.0, 0.0, 30.0, 21.0),
+                ),
+                debug_dir=tmp_path,
+                debug_prefix="dense_same_instance_raw_static_closed",
+                route_width_um=0.5,
+                allow_45_degree_turns=False,
+                bend_radius_um=2.0,
+                foreign_port_keepout_cells=3,
+                max_iterations=10_000,
+                defer_realization=True,
             ),
-            debug_dir=tmp_path,
-            debug_prefix="dense_same_instance_raw_static_closed",
-            route_width_um=0.5,
-            allow_45_degree_turns=False,
-            bend_radius_um=2.0,
-            foreign_port_keepout_cells=3,
-            max_iterations=10_000,
-            defer_realization=True,
         )
 
     diag_path = (
@@ -1098,23 +1122,25 @@ def test_route_nets_rust_foreign_port_keepout_uses_unified_self_opening_for_same
 
     route_rust.route_nets_rust(
         _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        obstacle_config=StaticObstacleMapConfig(
-            obstacle_mode="rasterized_polygons",
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            die_bbox=(0.0, 0.0, 30.0, 21.0),
+        schematic,
+        session_options(
+            obstacle_config=StaticObstacleMapConfig(
+                obstacle_mode="rasterized_polygons",
+                grid_size_um=1.0,
+                security_margin_um=0.0,
+                clearance_um=0.0,
+                port_open_radius_um=0.0,
+                die_bbox=(0.0, 0.0, 30.0, 21.0),
+            ),
+            debug_dir=tmp_path,
+            debug_prefix="foreign_keepout_opens",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            bend_radius_um=3.0,
+            foreign_port_keepout_cells=3,
+            max_iterations=10_000,
+            defer_realization=True,
         ),
-        debug_dir=tmp_path,
-        debug_prefix="foreign_keepout_opens",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        bend_radius_um=3.0,
-        foreign_port_keepout_cells=3,
-        max_iterations=10_000,
-        defer_realization=True,
     )
 
     diag_path = tmp_path / "routes" / "foreign_keepout_opens_to_mid_diagnostics.txt"
@@ -1168,22 +1194,24 @@ def test_route_nets_rust_removes_foreign_keepout_after_port_is_routed(
 
     route_rust.route_nets_rust(
         _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        obstacle_config=StaticObstacleMapConfig(
-            obstacle_mode="rasterized_polygons",
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            die_bbox=(0.0, 0.0, 30.0, 21.0),
+        schematic,
+        session_options(
+            obstacle_config=StaticObstacleMapConfig(
+                obstacle_mode="rasterized_polygons",
+                grid_size_um=1.0,
+                security_margin_um=0.0,
+                clearance_um=0.0,
+                port_open_radius_um=0.0,
+                die_bbox=(0.0, 0.0, 30.0, 21.0),
+            ),
+            debug_dir=tmp_path,
+            debug_prefix="foreign_keepout_cleanup",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            foreign_port_keepout_cells=3,
+            max_iterations=10_000,
+            defer_realization=True,
         ),
-        debug_dir=tmp_path,
-        debug_prefix="foreign_keepout_cleanup",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        foreign_port_keepout_cells=3,
-        max_iterations=10_000,
-        defer_realization=True,
     )
 
     diag_path = (
@@ -1240,25 +1268,27 @@ def test_route_nets_rust_static_stub_fanout_uses_virtual_source_anchor(
 
     _routed_layout, debug_artifacts = route_rust.route_nets_rust(
         _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        obstacle_config=StaticObstacleMapConfig(
-            obstacle_mode="rasterized_polygons",
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            die_bbox=(0.0, 0.0, 45.0, 20.0),
+        schematic,
+        session_options(
+            obstacle_config=StaticObstacleMapConfig(
+                obstacle_mode="rasterized_polygons",
+                grid_size_um=1.0,
+                security_margin_um=0.0,
+                clearance_um=0.0,
+                port_open_radius_um=0.0,
+                die_bbox=(0.0, 0.0, 45.0, 20.0),
+            ),
+            debug_dir=tmp_path,
+            debug_prefix="static_stub_fanout",
+            debug_stop_after_route_index=1,
+            route_width_um=0.5,
+            allow_45_degree_turns=True,
+            bend_radius_um=1.0,
+            foreign_port_keepout_cells=0,
+            fanout_access_mode="static-stubs",
+            max_iterations=20_000,
+            defer_realization=True,
         ),
-        debug_dir=tmp_path,
-        debug_prefix="static_stub_fanout",
-        debug_stop_after_route_index=1,
-        route_width_um=0.5,
-        allow_45_degree_turns=True,
-        bend_radius_um=1.0,
-        foreign_port_keepout_cells=0,
-        fanout_access_mode="static-stubs",
-        max_iterations=20_000,
-        defer_realization=True,
     )
 
     diag_path = tmp_path / "routes" / "static_stub_fanout_spread_0_diagnostics.txt"
@@ -1529,24 +1559,26 @@ def test_route_nets_rust_same_instance_port_access_does_not_open_sibling_lane(
 
     route_rust.route_nets_rust(
         _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        obstacle_config=StaticObstacleMapConfig(
-            obstacle_mode="rasterized_polygons",
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            die_bbox=(0.0, 0.0, 40.0, 25.0),
+        schematic,
+        session_options(
+            obstacle_config=StaticObstacleMapConfig(
+                obstacle_mode="rasterized_polygons",
+                grid_size_um=1.0,
+                security_margin_um=0.0,
+                clearance_um=0.0,
+                port_open_radius_um=0.0,
+                die_bbox=(0.0, 0.0, 40.0, 25.0),
+            ),
+            debug_dir=tmp_path,
+            debug_prefix="same_instance_sibling_lane",
+            debug_stop_after_route_index=1,
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            bend_radius_um=2.0,
+            foreign_port_keepout_cells=0,
+            max_iterations=10_000,
+            defer_realization=True,
         ),
-        debug_dir=tmp_path,
-        debug_prefix="same_instance_sibling_lane",
-        debug_stop_after_route_index=1,
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        bend_radius_um=2.0,
-        foreign_port_keepout_cells=0,
-        max_iterations=10_000,
-        defer_realization=True,
     )
 
     diag_path = tmp_path / "routes" / "same_instance_sibling_lane_to_active_port_diagnostics.txt"
@@ -1601,42 +1633,46 @@ def test_route_nets_rust_clear_port_opening_flag_controls_global_crossing_blocki
     with pytest.raises(RuntimeError, match="No route found"):
         route_rust.route_nets_rust(
             _make_dummy_layout(),
-            schematic,  # type: ignore[arg-type]
+            schematic,
+            session_options(
+                obstacle_config=StaticObstacleMapConfig(
+                    obstacle_mode="rasterized_polygons",
+                    grid_size_um=1.0,
+                    security_margin_um=0.0,
+                    clearance_um=0.0,
+                    port_open_radius_um=0.0,
+                    clear_port_open_cells_from_static=False,
+                    die_bbox=(0.0, 0.0, 30.0, 20.0),
+                ),
+                debug_dir=tmp_path,
+                debug_prefix="strict_mode_compare_false",
+                route_width_um=0.5,
+                allow_45_degree_turns=False,
+                max_iterations=100_000,
+                defer_realization=True,
+            ),
+        )
+
+    route_rust.route_nets_rust(
+        _make_dummy_layout(),
+        schematic,
+        session_options(
             obstacle_config=StaticObstacleMapConfig(
                 obstacle_mode="rasterized_polygons",
                 grid_size_um=1.0,
                 security_margin_um=0.0,
                 clearance_um=0.0,
                 port_open_radius_um=0.0,
-                clear_port_open_cells_from_static=False,
+                clear_port_open_cells_from_static=True,
                 die_bbox=(0.0, 0.0, 30.0, 20.0),
             ),
             debug_dir=tmp_path,
-            debug_prefix="strict_mode_compare_false",
+            debug_prefix="strict_mode_compare_true",
             route_width_um=0.5,
             allow_45_degree_turns=False,
             max_iterations=100_000,
             defer_realization=True,
-        )
-
-    route_rust.route_nets_rust(
-        _make_dummy_layout(),
-        schematic,  # type: ignore[arg-type]
-        obstacle_config=StaticObstacleMapConfig(
-            obstacle_mode="rasterized_polygons",
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            clear_port_open_cells_from_static=True,
-            die_bbox=(0.0, 0.0, 30.0, 20.0),
         ),
-        debug_dir=tmp_path,
-        debug_prefix="strict_mode_compare_true",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        max_iterations=100_000,
-        defer_realization=True,
     )
 
 
@@ -1669,21 +1705,23 @@ def test_route_nets_rust_multi_net_with_bounding_box_mode(monkeypatch, tmp_path)
 
     route_rust.route_nets_rust(
         layout,
-        schematic,  # type: ignore[arg-type]
-        obstacle_config=StaticObstacleMapConfig(
-            obstacle_mode="bounding_boxes",
-            grid_size_um=1.0,
-            security_margin_um=0.0,
-            clearance_um=0.0,
-            port_open_radius_um=0.0,
-            die_bbox=(0.0, 0.0, 30.0, 20.0),
+        schematic,
+        session_options(
+            obstacle_config=StaticObstacleMapConfig(
+                obstacle_mode="bounding_boxes",
+                grid_size_um=1.0,
+                security_margin_um=0.0,
+                clearance_um=0.0,
+                port_open_radius_um=0.0,
+                die_bbox=(0.0, 0.0, 30.0, 20.0),
+            ),
+            debug_dir=tmp_path,
+            debug_prefix="bounding_box_multi_net",
+            route_width_um=0.5,
+            allow_45_degree_turns=False,
+            max_iterations=100_000,
+            defer_realization=True,
         ),
-        debug_dir=tmp_path,
-        debug_prefix="bounding_box_multi_net",
-        route_width_um=0.5,
-        allow_45_degree_turns=False,
-        max_iterations=100_000,
-        defer_realization=True,
     )
 
     for net_name in ("bbox_net_a", "bbox_net_b"):

@@ -20,6 +20,7 @@ from photonic_router.plm.path_length_graph import (
 )
 from photonic_router.records.route_rust_types import MeanderEdgeReport, MeanderInsertionReport
 from photonic_router.routing import api as routing_api
+from photonic_router.routing.options import CircuitMetadata, MatchingOptions
 from photonic_router.routing.route_rust import (
     RoutedNetRecord,
     RouteRustPipelineResult,
@@ -183,15 +184,17 @@ def test_route_match_and_realize_plans_lifted_sub_bump_group(monkeypatch):
     result = route_rust.route_match_and_realize(
         Component(name="unrouted_lifted_pipeline_pass"),
         schematic,
-        enable_path_length_matching=True,
-        node_types={
-            "gc_0": "input",
-            "gc_1": "input",
-            "mmi_0": "gate",
-            "gc_2": "output",
-            "gc_3": "output",
-        },
-        internal_delays_um={},
+        matching=MatchingOptions(enable_path_length_matching=True),
+        metadata=CircuitMetadata(
+            node_types={
+                "gc_0": "input",
+                "gc_1": "input",
+                "mmi_0": "gate",
+                "gc_2": "output",
+                "gc_3": "output",
+            },
+            internal_delays_um={},
+        ),
     )
 
     analysis_info = cast(dict[str, object], result.path_length_analysis_info)
@@ -338,15 +341,17 @@ def test_route_match_and_realize_rejects_unrealized_lifted_plm(monkeypatch):
         route_rust.route_match_and_realize(
             Component(name="unrouted_lifted_pipeline_fail"),
             schematic,
-            enable_path_length_matching=True,
-            node_types={
-                "gc_0": "input",
-                "gc_1": "input",
-                "mmi_0": "gate",
-                "gc_2": "output",
-                "gc_3": "output",
-            },
-            internal_delays_um={},
+            matching=MatchingOptions(enable_path_length_matching=True),
+            metadata=CircuitMetadata(
+                node_types={
+                    "gc_0": "input",
+                    "gc_1": "input",
+                    "mmi_0": "gate",
+                    "gc_2": "output",
+                    "gc_3": "output",
+                },
+                internal_delays_um={},
+            ),
         )
 
     assert "gc0_to_mmi_in1" in str(exc_info.value)
@@ -435,7 +440,7 @@ def test_main_flow_flag_enables_path_length_matching(monkeypatch):
         path_length_match_outputs=True,
     )
 
-    assert captured["path_length_match_outputs"] is True
+    assert captured["matching"].path_length_match_outputs is True
     assert "path_length_analysis" in layout.info
     assert "meander_requirements" in layout.info
     assert len(layout.info["meander_requirements"]) == 1

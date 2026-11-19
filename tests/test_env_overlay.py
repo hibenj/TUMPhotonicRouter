@@ -45,6 +45,8 @@ from photonic_router.env_overlay import (
     zero_one_crossing_budget,
 )
 
+from tests.fixtures.sessions import session_options
+
 # --- one test per parser rule -------------------------------------------
 
 
@@ -683,10 +685,9 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
 
     def _session(fanout_access_mode, config=None):
         return route_rust._RouteNetsRustSession(
-            unrouted_layout=Component(f"dummy_unrouted_{uuid4().hex}"),
-            schematic=_DummySchematic(),
-            fanout_access_mode=fanout_access_mode,
-            config=config,
+            Component(f"dummy_unrouted_{uuid4().hex}"),
+            _DummySchematic(),
+            session_options(fanout_access_mode=fanout_access_mode, config=config),
         )
 
     # No env override: the constructor argument wins.

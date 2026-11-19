@@ -13,6 +13,8 @@ from photonic_router.crossings import preplaced_crossing_grids as pcg
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
+from tests.fixtures.sessions import session_options
+
 get_generic_pdk().activate()
 
 PROBE_KWARGS = {
@@ -32,7 +34,7 @@ def _decisions(name: str) -> list[cs.LayerDecision]:
     # the probe must see the routing run's configuration (2 um grid, static
     # stubs, bend radius 5), or the anchors differ from the run's
     derived = pcg.derive_preplaced_crossing_layout(
-        schematic, layout, schedule, router_probe_kwargs=PROBE_KWARGS
+        schematic, layout, schedule, router_probe_options=session_options(**PROBE_KWARGS)
     )
     return [d for d in derived.layer_decisions if isinstance(d, cs.LayerDecision)]
 

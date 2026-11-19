@@ -44,14 +44,17 @@ from photonic_router.flow_config import (
     SCRIPT_PROACTIVE_CONGESTION_RADIUS_CELLS,
     SCRIPT_PROACTIVE_CONGESTION_WEIGHT,
     DebugSvgSelector,
-    build_optical_routing_stage_config,
     build_static_obstacle_config,
     debug_artifact_routing_options,
     parse_debug_svg_selector,
     resolve_legacy_display_options,
 )
 from photonic_router.flow_electrical import run_electrical_routing_step
-from photonic_router.flow_optical import run_photonic_routing_stage
+from photonic_router.flow_optical import (
+    OpticalStageInputs,
+    build_optical_routing_stage_config,
+    run_photonic_routing_stage,
+)
 from photonic_router.flow_options import (
     DebugArtifactOptions,
     ElectricalOptions,
@@ -86,6 +89,12 @@ from photonic_router.gds.route_overview_svg import (
 from photonic_router.placement_analysis import PlacementAnalysis, analyze_placement
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.records.route_order import default_net_order
+from photonic_router.routing.options import (
+    CrossingOptions,
+    PortAccessOptions,
+    RealizationOptions,
+    SessionOptions,
+)
 from photonic_router.routing.route_rust import RipupRerouteConfig
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
@@ -244,7 +253,7 @@ def _preplaced_crossing_grids_stage(
     analysis_seconds: float,
     total_steps: int,
     stats: RoutingFlowStats | None,
-    router_probe_kwargs: dict[str, object] | None = None,
+    router_probe_options: SessionOptions | None = None,
     config: RoutingConfig,
 ) -> tuple[Schematic, Component, dict[str, object], frozenset[str], frozenset[str] | None]:
     """Replace the schematic/layout with the crossing-grid-derived pair.
@@ -287,7 +296,7 @@ def _preplaced_crossing_grids_stage(
         schematic,
         unrouted_layout,
         demand.stage_schedule(),
-        router_probe_kwargs=router_probe_kwargs,
+        router_probe_options=router_probe_options,
         config=config.crossing_grid,
     )
     metrics = preplaced_crossing_grid_metrics(derived)
@@ -484,13 +493,13 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
             # The column grid puts its entry tiles on the router's static
             # fan-out anchors, so the probe must see the routing run's
             # configuration.
-            router_probe_kwargs={
-                "obstacle_config": route_static_obstacle_config,
-                "fanout_access_mode": optical.fanout_access_mode,
-                "bend_radius_um": options.layout.bend_radius_um,
-                "include_heater_obstacles": obstacles.include_heater_obstacles,
-                "config": config,
-            },
+            router_probe_options=SessionOptions(
+                port_access=PortAccessOptions(fanout_access_mode=optical.fanout_access_mode),
+                realization=RealizationOptions(bend_radius_um=options.layout.bend_radius_um),
+                obstacle_config=route_static_obstacle_config,
+                include_heater_obstacles=obstacles.include_heater_obstacles,
+                config=config,
+            ),
             config=config,
         )
         # The stage's own static-fanout probe computed which source
@@ -532,46 +541,23 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
         )
     record_initial_route_stats(stats)
     optical_config = build_optical_routing_stage_config(
-        enable_path_length_matching=options.path_length.enable_path_length_matching,
-        path_length_match_outputs=options.path_length.path_length_match_outputs,
-        path_length_declared_unmatched_groups=options.path_length.path_length_declared_unmatched_groups,
-        path_length_output_scope=options.path_length.path_length_output_scope,
-        path_length_meander_height_um=options.path_length.path_length_meander_height_um,
-        enable_crossings=enable_crossings,
-        crossing_mode=crossing_mode,
-        crossing_guidance_net_names=crossing_guidance_net_names,
-        placement_analysis=placement_analysis,
-        crossing_half_size_cells=optical.crossing_half_size_cells,
-        foreign_port_keepout_cells=optical.foreign_port_keepout_cells,
-        fanout_access_mode=optical.fanout_access_mode,
-        proactive_congestion_weight=optical.proactive_congestion_weight,
-        proactive_congestion_radius_cells=optical.proactive_congestion_radius_cells,
-        allow_45_degree_turns=options.layout.allow_45_degree_turns,
-        bend_radius_um=options.layout.bend_radius_um,
-        use_indexed_heap=optical.use_indexed_heap,
-        enable_simple_routes=optical.enable_simple_routes,
-        primitive_ordering=optical.primitive_ordering,
-        heuristic_mode=optical.heuristic_mode,
-        net_order=net_order,
-        net_order_depth_by_node=net_order_depth_by_node,
-        detour_pass_factor=optical.detour_pass_factor,
-        heap_tie_breaker=optical.heap_tie_breaker,
-        max_iterations=optical.max_iterations,
-        routing_window_scale=optical.routing_window_scale,
-        include_heater_obstacles=obstacles.include_heater_obstacles,
-        ripup_reroute_config=optical.ripup_reroute_config,
-        route_static_obstacle_config=route_static_obstacle_config,
-        debug_dir=debug_dir,
-        route_debug_indices=route_debug_indices,
-        debug_stop_after_route_index=debug.debug_stop_after_route_index,
-        debug_timing=debug.debug_timing,
-        debug_meanders=debug.debug_meanders,
-        verbose_routes=debug.verbose_routes,
-        debug_svgs_enabled=debug_svgs_enabled,
-        collect_route_stats=options.stats.collect_route_stats,
-        collect_attempt_diagnostics=debug.collect_attempt_diagnostics,
-        stats=stats,
-        config=config,
+        options,
+        config,
+        OpticalStageInputs(
+            crossings=CrossingOptions(
+                enable_crossings=enable_crossings,
+                crossing_mode=crossing_mode,
+                crossing_half_size_cells=int(optical.crossing_half_size_cells),
+                crossing_guidance_net_names=crossing_guidance_net_names,
+                placement_analysis=placement_analysis,
+            ),
+            net_order=net_order,
+            net_order_depth_by_node=net_order_depth_by_node,
+            obstacle_config=route_static_obstacle_config,
+            debug_dir=debug_dir,
+            debug_route_indices=route_debug_indices,
+            debug_svgs_enabled=debug_svgs_enabled,
+        ),
     )
     optical_result = run_photonic_routing_stage(
         benchmark_name=benchmark_name,

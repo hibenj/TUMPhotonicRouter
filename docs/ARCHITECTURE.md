@@ -436,8 +436,17 @@ inserted length and footprint). The report side is `MeanderEdgeReport`
 (edge, requested, credited and physical inserted length, planned edges,
 status, reason) inside a `MeanderInsertionReport`.
 
-**Session state.** `SessionSettings` (`routing/settings.py`) holds the
-frozen inputs of one routing session; `SessionState` (`routing/state.py`)
+**Session options, settings and state.** A caller hands a session one
+`SessionOptions` (`routing/options.py`): five frozen groups by reader
+(`search`, `crossings`, `port_access`, `debug`, `realization`) and five
+values of the session itself; `route_match_and_realize` also takes a
+`MatchingOptions` and the benchmark's `CircuitMetadata`. The flow builds them
+in `flow_optical.build_optical_routing_stage_config` from its `FlowOptions`
+and from what the earlier stages decided (`OpticalStageInputs`: the
+negotiated crossing setup with the placement analysis, the net order, the
+obstacle configuration). `SessionSettings` (`routing/settings.py`,
+`from_options`) validates the options and holds the resolved,
+frozen inputs of the session; `SessionState` (`routing/state.py`)
 everything it computes, one documented field per value with its writing,
 mutating and reading phases (`w:`, `m:`, `r:`). Eighteen fields are written
 by more than one phase and carry a `# shared writer` marker (the crossing
@@ -585,7 +594,8 @@ directly and the loop through `run_negotiated_batch`, which needs no Python
 | `RoutingConfig` | `python/photonic_router/config.py` | the Python-side tree: `router`, `crossing_plan`, `crossing_grid`, `fanout`, `search` (`SearchTuning`), `diagnostics` (`FlowDiagnostics`) and `write_gds_on_photonic_verification_failure` |
 | `FlowOptions` | `python/photonic_router/flow_options.py` | the flow-level choices in eleven frozen groups, one per consuming stage: `loading`, `layout`, `obstacles`, `preplaced_grids`, `optical`, `verification`, `path_length`, `electrical`, `debug`, `output`, `stats` |
 | `ElectricalRoutingConfig` | `python/photonic_router/electrical/types.py` | the electrical pipeline's parameters, inside `FlowOptions.electrical` |
-| `SessionSettings` | `python/photonic_router/routing/settings.py` | one routing session's frozen inputs, built from the two trees above |
+| `SessionOptions`, `MatchingOptions`, `CircuitMetadata` | `python/photonic_router/routing/options.py` | what a caller chooses for one routing session, in frozen groups by reader; the arguments of `route_nets_rust` and `route_match_and_realize` |
+| `SessionSettings` | `python/photonic_router/routing/settings.py` | one routing session's validated, resolved inputs, built from its `SessionOptions` |
 
 Precedence, lowest to highest (`config_loading.build_config`, `cli.main`):
 
@@ -706,7 +716,7 @@ Sub-packages:
 
 | package | files, lines | responsibility |
 | --- | --- | --- |
-| `routing/` | 20, 10,100 | the routing session: `session.py` (the nine-phase `run`), `settings.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `crossing_plan_info.py`, `timing.py`, `api.py` (`route_match_and_realize`), `route_rust.py` (a re-export shim for older import paths) |
+| `routing/` | 20, 10,100 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `crossing_plan_info.py`, `timing.py`, `api.py` (`route_match_and_realize`), `route_rust.py` (a re-export shim for older import paths) |
 | `crossings/` | 12, 6,000 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,400, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 1,300 for verification), `crossing_verification_report.py`, `topology_analysis.py` (test oracle) |
 | `plm/` | 5, 3,600 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,850) |
 | `verify/` | 3, 2,150 | `photonic_verification.py` (1,240, the geometry verifier), `route_rust_endpoint_correction.py` (900) |

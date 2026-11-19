@@ -14,20 +14,17 @@ takes: `self.settings` (frozen `settings.SessionSettings`, Slice 2a) is the run'
 inputs, `self.state` (mutable `state.SessionState`) is everything the run
 computes -- one documented field per per-run attribute, with the writing and
 reading phases named. The class itself owns nothing else: it validates the
-keywords, builds the two records and calls the nine phases of `stages.py`, whose
+options (`options.SessionOptions`), builds the two records and calls the nine phases of `stages.py`, whose
 Protocols declare each phase's inputs and its product."""
 
 from __future__ import annotations
 
 import importlib
-from pathlib import Path
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
-from photonic_router.config import RoutingConfig
-from photonic_router.placement_analysis import PlacementAnalysis
-from photonic_router.records.route_rust_types import RipupRerouteConfig, RustRouteDebugArtifacts
+from photonic_router.records.route_rust_types import RustRouteDebugArtifacts
 from photonic_router.routing import (
     crossing_plan_stage,
     detour_pass,
@@ -42,6 +39,7 @@ from photonic_router.routing import (
 from photonic_router.routing import (
     route_jobs as route_jobs_stage,  # `route_jobs` is a local name in `run`
 )
+from photonic_router.routing.options import SessionOptions
 from photonic_router.routing.settings import (
     SessionSettings,
 )
@@ -55,162 +53,24 @@ _load_rust_backend = _sob._load_rust_backend
 
 
 class _RouteNetsRustSession:
+    """One routing run: the settings, the state the phases share, and `run`."""
+
     def __init__(
         self,
         unrouted_layout: Component,
         schematic: Schematic,
-        *,
-        obstacle_config: object | None = None,
-        debug_dir: str | Path | None = None,
-        debug_prefix: str = "route",
-        debug_route_indices: set[int] | None = None,
-        debug_stop_after_route_index: int | None = None,
-        route_width_um: float = 0.5,
-        route_layer: tuple[int, int] = (1, 0),
-        allow_45_degree_turns: bool = True,
-        bend_radius_um: float | None = None,
-        use_indexed_heap: bool = False,
-        enable_simple_routes: bool = True,
-        primitive_ordering: str = "library",
-        heuristic_mode: str = "heading_aware",
-        net_order: str = "topological",
-        net_order_depth_by_node: dict[str, int] | None = None,
-        placement_analysis: PlacementAnalysis | None = None,
-        detour_pass_factor: float = 0.0,
-        heap_tie_breaker: str = "smaller_g",
-        proactive_congestion_weight: float = 0.0,
-        proactive_congestion_radius_cells: int = 0,
-        max_iterations: int = 500_000,
-        routing_window_scale: float | None = None,
-        debug_timing: bool = False,
-        verbose_route_diagnostics: bool = False,
-        collect_route_stats: bool = False,
-        collect_attempt_diagnostics: bool = False,
-        enable_internal_photonic_probe_verification: bool = False,
-        include_heater_obstacles: bool = False,
-        ripup_reroute_config: RipupRerouteConfig | None = None,
-        enable_crossings: bool = False,
-        crossing_loss: float = 0.0,
-        crossing_mode: str = "lidar-pure",
-        crossing_half_size_cells: int = 0,
-        foreign_port_keepout_cells: int = 0,
-        fanout_access_mode: str | None = None,
-        crossing_guidance_net_names: frozenset[str] | None = None,
-        defer_realization: bool = False,
-        enable_checked_endpoint_correction: bool = True,
-        config: RoutingConfig | None = None,
-    ):
-        """Route schematic nets using Rust A* and add one polygon per routed net.
+        options: SessionOptions | None = None,
+    ) -> None:
+        """Validate the options and set up an empty session for the design.
 
-        This function routes each net by:
-        1. Building a static obstacle map from the unrouted layout.
-        2. Calling the Rust A* router for each net.
-        3. Realizing one closed polygon in Rust and inserting it with add_polygon.
-        4. Updating blocked cells for subsequent nets using width-aware inflation.
-
-        Parameters:
-            unrouted_layout: Component with placed instances but no routes.
-            schematic: Schematic with net definitions.
-            obstacle_config: Optional obstacle-map configuration.
-            debug_dir: Directory where debug SVGs are written when provided.
-            debug_prefix: Prefix used for debug SVG filenames.
-            debug_route_indices: Optional 1-based net indices for per-route SVG
-                export. When omitted, every route SVG is exported.
-            debug_stop_after_route_index: Optional 1-based route index where routing
-                stops after building full-netlist debug context. Port keepouts and
-                crossing context are still derived from all schematic routes.
-            route_width_um: Realized waveguide width in micrometers.
-            route_layer: Target GDS layer/datatype tuple for route polygons.
-            allow_45_degree_turns: If False, omit ±45-degree turn primitives.
-            bend_radius_um: Minimum bend radius in micrometers. When omitted, the
-                module default is used. The value is rounded up to the active grid
-                cell size.
-            use_indexed_heap: Benchmark-only queue experiment. Pass 8E measured
-                this slower than duplicate-entry BinaryHeap queueing, so the
-                production default remains False.
-            enable_simple_routes: If False, skip straight/L/Z simple-route
-                candidates and force routes through A* search.
-            primitive_ordering: Benchmark-only dense A* primitive iteration order.
-                Supported values: "library", "long_straight_first",
-                "target_biased". Pass 8F keeps "library" as the default.
-            heuristic_mode: Dense A* heuristic. Supported values: "distance",
-                "heading_aware".
-            max_iterations: Maximum A* state expansions per route attempt.
-            verbose_route_diagnostics: If True, print per-net route progress and
-                detailed A* timing buckets. Failures are always printed.
-            enable_internal_photonic_probe_verification: If True, run the expensive
-                internal realized-layout photonic probe before returning. The
-                production default is False because `routing_flow.py` runs the
-                authoritative Python geometry verification on the final layout.
-            foreign_port_keepout_cells: Additional global keepout distance in front
-                of each endpoint port. Active endpoint ports can open this region;
-                dense multi-port instances can also open same-instance fanout
-                keepouts, while unrelated nets cannot.
-            fanout_access_mode: Dense multi-port access strategy. The default
-                "legacy-runway" preserves the existing staggered source-port
-                runway reservations. "off" disables those dense reservations.
-                "static-stubs" pre-routes deterministic same-instance fanout
-                stubs as static geometry and routes from virtual anchor ports.
-            defer_realization: If True, keep routed RouteResult objects but skip
-                polygon realization. This is used for pre-realization transforms
-                such as path-length matching/meander insertion.
-            enable_checked_endpoint_correction: If False, skip the checked
-                grid-to-port correction pass used by PLM-oriented flows.
-            config: Typed configuration (Milestone 1: `RoutingConfig`, whose
-                `.router` field is `src/config.rs`'s `RouterConfig`, passed
-                to `PyPhotonicRouter`), replacing every `PHOTONIC_ROUTER_*`
-                variable this module and the kernel used to read directly.
-                When omitted, `RoutingConfig.from_environment()` is used, so
-                every caller that passes nothing keeps today's behavior.
-
-        Returns:
-            A tuple of (routed_layout, debug_artifacts).
-            :param debug_timing:
+        Args:
+            unrouted_layout: the component with placed instances and no routes.
+            schematic: the schematic whose nets are routed.
+            options: the caller's choices (`options.py`); None is the default
+                session.
         """
-        self.settings = SessionSettings.from_arguments(
-            unrouted_layout,
-            schematic,
-            obstacle_config=obstacle_config,
-            debug_dir=debug_dir,
-            debug_prefix=debug_prefix,
-            debug_route_indices=debug_route_indices,
-            debug_stop_after_route_index=debug_stop_after_route_index,
-            route_width_um=route_width_um,
-            route_layer=route_layer,
-            allow_45_degree_turns=allow_45_degree_turns,
-            bend_radius_um=bend_radius_um,
-            use_indexed_heap=use_indexed_heap,
-            enable_simple_routes=enable_simple_routes,
-            primitive_ordering=primitive_ordering,
-            heuristic_mode=heuristic_mode,
-            net_order=net_order,
-            net_order_depth_by_node=net_order_depth_by_node,
-            placement_analysis=placement_analysis,
-            detour_pass_factor=detour_pass_factor,
-            heap_tie_breaker=heap_tie_breaker,
-            proactive_congestion_weight=proactive_congestion_weight,
-            proactive_congestion_radius_cells=proactive_congestion_radius_cells,
-            max_iterations=max_iterations,
-            routing_window_scale=routing_window_scale,
-            debug_timing=debug_timing,
-            verbose_route_diagnostics=verbose_route_diagnostics,
-            collect_route_stats=collect_route_stats,
-            collect_attempt_diagnostics=collect_attempt_diagnostics,
-            enable_internal_photonic_probe_verification=(
-                enable_internal_photonic_probe_verification
-            ),
-            include_heater_obstacles=include_heater_obstacles,
-            ripup_reroute_config=ripup_reroute_config,
-            enable_crossings=enable_crossings,
-            crossing_loss=crossing_loss,
-            crossing_mode=crossing_mode,
-            crossing_half_size_cells=crossing_half_size_cells,
-            foreign_port_keepout_cells=foreign_port_keepout_cells,
-            fanout_access_mode=fanout_access_mode,
-            crossing_guidance_net_names=crossing_guidance_net_names,
-            defer_realization=defer_realization,
-            enable_checked_endpoint_correction=enable_checked_endpoint_correction,
-            config=config,
+        self.settings = SessionSettings.from_options(
+            unrouted_layout, schematic, options if options is not None else SessionOptions()
         )
 
         rust_backend = _load_rust_backend()
@@ -282,89 +142,14 @@ class _RouteNetsRustSession:
 def route_nets_rust(
     unrouted_layout: Component,
     schematic: Schematic,
-    *,
-    obstacle_config: object | None = None,
-    debug_dir: str | Path | None = None,
-    debug_prefix: str = "route",
-    debug_route_indices: set[int] | None = None,
-    debug_stop_after_route_index: int | None = None,
-    route_width_um: float = 0.5,
-    route_layer: tuple[int, int] = (1, 0),
-    allow_45_degree_turns: bool = True,
-    bend_radius_um: float | None = None,
-    use_indexed_heap: bool = False,
-    enable_simple_routes: bool = True,
-    primitive_ordering: str = "library",
-    heuristic_mode: str = "heading_aware",
-    net_order: str = "topological",
-    net_order_depth_by_node: dict[str, int] | None = None,
-    placement_analysis: PlacementAnalysis | None = None,
-    detour_pass_factor: float = 0.0,
-    heap_tie_breaker: str = "smaller_g",
-    proactive_congestion_weight: float = 0.0,
-    proactive_congestion_radius_cells: int = 0,
-    max_iterations: int = 500_000,
-    routing_window_scale: float | None = None,
-    debug_timing: bool = False,
-    verbose_route_diagnostics: bool = False,
-    collect_route_stats: bool = False,
-    collect_attempt_diagnostics: bool = False,
-    enable_internal_photonic_probe_verification: bool = False,
-    include_heater_obstacles: bool = False,
-    ripup_reroute_config: RipupRerouteConfig | None = None,
-    enable_crossings: bool = False,
-    crossing_loss: float = 0.0,
-    crossing_mode: str = "lidar-pure",
-    crossing_half_size_cells: int = 0,
-    foreign_port_keepout_cells: int = 0,
-    fanout_access_mode: str | None = None,
-    crossing_guidance_net_names: frozenset[str] | None = None,
-    defer_realization: bool = False,
-    enable_checked_endpoint_correction: bool = True,
-    config: RoutingConfig | None = None,
+    options: SessionOptions | None = None,
 ) -> tuple[Component, RustRouteDebugArtifacts]:
-    """Route schematic nets through a temporary routing session."""
-    session = _RouteNetsRustSession(
-        unrouted_layout=unrouted_layout,
-        schematic=schematic,
-        obstacle_config=obstacle_config,
-        debug_dir=debug_dir,
-        debug_prefix=debug_prefix,
-        debug_route_indices=debug_route_indices,
-        debug_stop_after_route_index=debug_stop_after_route_index,
-        route_width_um=route_width_um,
-        route_layer=route_layer,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_um=bend_radius_um,
-        use_indexed_heap=use_indexed_heap,
-        enable_simple_routes=enable_simple_routes,
-        primitive_ordering=primitive_ordering,
-        heuristic_mode=heuristic_mode,
-        net_order=net_order,
-        net_order_depth_by_node=net_order_depth_by_node,
-        placement_analysis=placement_analysis,
-        detour_pass_factor=detour_pass_factor,
-        heap_tie_breaker=heap_tie_breaker,
-        proactive_congestion_weight=proactive_congestion_weight,
-        proactive_congestion_radius_cells=proactive_congestion_radius_cells,
-        max_iterations=max_iterations,
-        routing_window_scale=routing_window_scale,
-        debug_timing=debug_timing,
-        verbose_route_diagnostics=verbose_route_diagnostics,
-        collect_route_stats=collect_route_stats,
-        collect_attempt_diagnostics=collect_attempt_diagnostics,
-        enable_internal_photonic_probe_verification=enable_internal_photonic_probe_verification,
-        include_heater_obstacles=include_heater_obstacles,
-        ripup_reroute_config=ripup_reroute_config,
-        enable_crossings=enable_crossings,
-        crossing_loss=crossing_loss,
-        crossing_mode=crossing_mode,
-        crossing_half_size_cells=crossing_half_size_cells,
-        foreign_port_keepout_cells=foreign_port_keepout_cells,
-        fanout_access_mode=fanout_access_mode,
-        crossing_guidance_net_names=crossing_guidance_net_names,
-        defer_realization=defer_realization,
-        enable_checked_endpoint_correction=enable_checked_endpoint_correction,
-        config=config,
-    )
+    """Route the nets of a schematic and return the layout and the debug record.
+
+    The session builds the static obstacle map of the layout, routes every
+    net with the Rust kernel (negotiated rip-up and reroute), verifies and
+    repairs the result and, unless `options.realization.defer_realization`
+    is set, adds one polygon per routed net to a copy of the layout.
+    """
+    session = _RouteNetsRustSession(unrouted_layout, schematic, options)
     return session.run()

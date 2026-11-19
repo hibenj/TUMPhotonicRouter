@@ -7,9 +7,11 @@ from photonic_router.flow import load_benchmark, run_routing_flow
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.records.route_rust_geometry import _physical_point_to_grid_cell
 from photonic_router.records.route_rust_records import _grid_cell_center_um
+from photonic_router.routing.options import MatchingOptions
 from photonic_router.routing.route_rust import route_match_and_realize
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
+from tests.fixtures.sessions import session_options
 from tests.fixtures.synthetic_layouts import (
     TIGHT_S_BEND_BEND_RADIUS_UM,
     TIGHT_S_BEND_OFFSET_UM,
@@ -115,17 +117,19 @@ def test_ten_um_bend_radius_does_not_backtrack_on_a_one_cell_short_s_bend():
     result = route_match_and_realize(
         layout,
         schematic,
-        enable_path_length_matching=False,
-        debug_dir=None,
-        allow_45_degree_turns=False,
-        bend_radius_um=TIGHT_S_BEND_BEND_RADIUS_UM,
-        max_iterations=5_000_000,
-        obstacle_config=StaticObstacleMapConfig(
-            obstacle_mode="bounding_boxes",
-            clearance_um=3.0,
-            heater_clearance_um=5.0,
-            clear_port_open_cells_from_static=False,
+        session_options(
+            debug_dir=None,
+            allow_45_degree_turns=False,
+            bend_radius_um=TIGHT_S_BEND_BEND_RADIUS_UM,
+            max_iterations=5_000_000,
+            obstacle_config=StaticObstacleMapConfig(
+                obstacle_mode="bounding_boxes",
+                clearance_um=3.0,
+                heater_clearance_um=5.0,
+                clear_port_open_cells_from_static=False,
+            ),
         ),
+        matching=MatchingOptions(enable_path_length_matching=False),
     )
 
     records_by_name = {

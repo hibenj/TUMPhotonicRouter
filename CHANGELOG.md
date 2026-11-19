@@ -251,6 +251,26 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The options of a routing session are one typed argument (S1, slice 1 of
+  the data flow between the stages; a restructuring). New
+  `python/photonic_router/routing/options.py`: `SessionOptions` with the
+  groups `SearchOptions`, `CrossingOptions`, `PortAccessOptions`,
+  `DebugOptions` and `RealizationOptions`, plus `MatchingOptions` and
+  `CircuitMetadata`. They replace the keyword lists of
+  `route_nets_rust`, `_RouteNetsRustSession`, `static_fanout_anchors_um`
+  (41 keywords each), `route_match_and_realize` (49) and
+  `SessionSettings.from_arguments` (41, now `from_options`), and the 40
+  flat fields of `OpticalRoutingStageConfig`. The flow builds them in
+  `flow_optical.build_optical_routing_stage_config(options, config,
+  inputs)` from its `FlowOptions` and an `OpticalStageInputs` (what the
+  earlier stages decided); the builder moved there from `flow_config.py`.
+  The pre-placed crossing grids take the probe's configuration as
+  `router_probe_options: SessionOptions` instead of the untyped
+  `router_probe_kwargs` dictionary. **API change:** callers of these
+  functions pass the records; `enable_grid_endpoint_correction` of
+  `route_match_and_realize` is `realization.enable_checked_endpoint_correction`.
+  The tests use `tests/fixtures/sessions.py::session_options(**flat)`.
+  `run_routing_flow` keeps its keyword list for now.
 - Algorithm pass measurements (2026-11-09, records only, no code in the
   main tree): `experiments/pattern-pass/` closes research item 8 on the
   attempt anatomy of the archived table (the searches a pattern route could

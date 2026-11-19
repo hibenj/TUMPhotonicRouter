@@ -1,5 +1,5 @@
 {
-  "mypy_errors": 348,
+  "mypy_errors": 346,
   "private_imports": 247,
   "python_exceptions": 0,
   "ruff_ANN001": 230,
@@ -12,7 +12,7 @@
   "ruff_D102": 136,
   "ruff_D103": 77,
   "ruff_D104": 0,
-  "ruff_PLR0913": 58,
+  "ruff_PLR0913": 53,
   "ruff_PLR0915": 43,
   "ruff_T201": 157,
   "rust_exceptions": 39,
@@ -21,5 +21,5 @@
   "rust_unwrap_used": 1,
   "rust_workspace_debt_allows": 2,
   "session_state_fields": 82,
-  "untyped_dict_annotations": 222
+  "untyped_dict_annotations": 221
 }

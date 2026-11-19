@@ -4,18 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from photonic_router.config import RoutingConfig
 from photonic_router.electrical import (
     DEFAULT_BUS_WIDTH_UM,
     DEFAULT_PAD_PITCH_UM,
     DEFAULT_WIRE_WIDTH_UM,
 )
-from photonic_router.flow_optical import OpticalRoutingStageConfig
-from photonic_router.placement_analysis import PlacementAnalysis
 from photonic_router.records.route_rust_types import DEFAULT_MEANDER_MAX_HEIGHT_UM
-from photonic_router.routing.route_rust import (
-    RipupRerouteConfig,
-)
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 DebugSvgSelector = bool | int | str | range | set[int] | list[int] | tuple[int, ...]
@@ -183,90 +177,3 @@ def debug_artifact_routing_options(
     if not debug_svgs_enabled and collect_attempt_diagnostics:
         route_debug_indices = set()
     return debug_dir, route_debug_indices
-
-
-def build_optical_routing_stage_config(
-    *,
-    enable_path_length_matching: bool,
-    path_length_match_outputs: bool,
-    path_length_declared_unmatched_groups: tuple[str, ...] = (),
-    path_length_output_scope: str = "all",
-    path_length_meander_height_um: float,
-    enable_crossings: bool,
-    crossing_mode: str,
-    crossing_half_size_cells: int,
-    foreign_port_keepout_cells: int,
-    fanout_access_mode: str | None,
-    proactive_congestion_weight: float,
-    proactive_congestion_radius_cells: int,
-    allow_45_degree_turns: bool,
-    bend_radius_um: float,
-    use_indexed_heap: bool,
-    enable_simple_routes: bool,
-    primitive_ordering: str,
-    heuristic_mode: str,
-    net_order: str,
-    net_order_depth_by_node: dict[str, int] | None = None,
-    placement_analysis: PlacementAnalysis | None = None,
-    detour_pass_factor: float = 0.0,
-    heap_tie_breaker: str,
-    max_iterations: int,
-    routing_window_scale: float | None,
-    include_heater_obstacles: bool,
-    ripup_reroute_config: RipupRerouteConfig | None,
-    route_static_obstacle_config: StaticObstacleMapConfig,
-    debug_dir: Path | None,
-    route_debug_indices: set[int] | None,
-    debug_stop_after_route_index: int | None,
-    debug_timing: bool,
-    debug_meanders: bool,
-    verbose_routes: bool,
-    debug_svgs_enabled: bool,
-    collect_route_stats: bool,
-    collect_attempt_diagnostics: bool,
-    stats: object | None,
-    crossing_guidance_net_names: frozenset[str] | None = None,
-    config: RoutingConfig | None = None,
-) -> OpticalRoutingStageConfig:
-    """Collect public flow arguments into the optical-stage config object."""
-    return OpticalRoutingStageConfig(
-        routing_config=config if config is not None else RoutingConfig(),
-        enable_path_length_matching=enable_path_length_matching,
-        path_length_match_outputs=path_length_match_outputs,
-        path_length_declared_unmatched_groups=path_length_declared_unmatched_groups,
-        path_length_output_scope=path_length_output_scope,
-        path_length_meander_height_um=path_length_meander_height_um,
-        enable_crossings=enable_crossings,
-        crossing_mode=crossing_mode,
-        crossing_guidance_net_names=crossing_guidance_net_names,
-        crossing_half_size_cells=crossing_half_size_cells,
-        foreign_port_keepout_cells=foreign_port_keepout_cells,
-        fanout_access_mode=fanout_access_mode,
-        proactive_congestion_weight=proactive_congestion_weight,
-        proactive_congestion_radius_cells=proactive_congestion_radius_cells,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_um=bend_radius_um,
-        use_indexed_heap=use_indexed_heap,
-        enable_simple_routes=enable_simple_routes,
-        primitive_ordering=primitive_ordering,
-        heuristic_mode=heuristic_mode,
-        net_order=net_order,
-        net_order_depth_by_node=net_order_depth_by_node,
-        placement_analysis=placement_analysis,
-        detour_pass_factor=detour_pass_factor,
-        heap_tie_breaker=heap_tie_breaker,
-        max_iterations=max_iterations,
-        routing_window_scale=routing_window_scale,
-        include_heater_obstacles=include_heater_obstacles,
-        ripup_reroute_config=ripup_reroute_config,
-        obstacle_config=route_static_obstacle_config,
-        debug_dir=debug_dir,
-        debug_route_indices=route_debug_indices,
-        debug_stop_after_route_index=debug_stop_after_route_index,
-        debug_timing=debug_timing,
-        debug_meanders=debug_meanders,
-        verbose_routes=verbose_routes,
-        debug_svgs_enabled=debug_svgs_enabled,
-        collect_route_stats=collect_route_stats,
-        collect_attempt_diagnostics=collect_attempt_diagnostics,
-    )

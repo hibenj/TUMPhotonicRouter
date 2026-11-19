@@ -10,6 +10,7 @@ three-net synthetic scenario in `tests.fixtures.synthetic_layouts`.
 
 from __future__ import annotations
 
+from dataclasses import fields, replace
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -32,6 +33,7 @@ from photonic_router.routing import realize as realize_module
 from photonic_router.routing import route_jobs as route_jobs_module
 from photonic_router.routing import router_setup as router_setup_module
 from photonic_router.routing import verify_repair as verify_repair_module
+from photonic_router.routing.options import SessionOptions
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SessionState
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, _load_rust_backend
@@ -44,20 +46,52 @@ from .synthetic_layouts import (
     three_net_schematic,
 )
 
+_OPTION_GROUPS = ("search", "crossings", "port_access", "debug", "realization")
+
+
+def session_options(**values: Any) -> SessionOptions:
+    """Build `SessionOptions` from flat field names.
+
+    A test names the few options it cares about; this puts each one into the
+    group of `photonic_router.routing.options` that declares it, e.g.
+    `session_options(max_iterations=5, debug_dir=path)`. An unknown name
+    raises, so a renamed option cannot be passed silently.
+    """
+    top_level = {f.name for f in fields(SessionOptions)} - set(_OPTION_GROUPS)
+    grouped: dict[str, dict[str, Any]] = {}
+    top: dict[str, Any] = {}
+    for name, value in values.items():
+        if name in top_level:
+            top[name] = value
+            continue
+        owners = [
+            group
+            for group in _OPTION_GROUPS
+            if name in {f.name for f in fields(type(getattr(SessionOptions(), group)))}
+        ]
+        if len(owners) != 1:
+            raise TypeError(f"session_options: {name!r} is not an option of a routing session")
+        grouped.setdefault(owners[0], {})[name] = value
+    defaults = SessionOptions()
+    return replace(
+        defaults,
+        **top,
+        **{group: replace(getattr(defaults, group), **chosen) for group, chosen in grouped.items()},
+    )
+
 
 def settings_for_test(**overrides: Any) -> SessionSettings:
     """Build a `SessionSettings` for a session assembled with `object.__new__`.
 
-    Milestone 5 Slice 2a moved the session's keyword-derived attributes into one
-    frozen `SessionSettings`, so a test that used to write `session.<attr> = ...`
-    writes `session.settings = settings_for_test(<attr>=...)` instead. The
-    overrides are the constructor's own keywords, so they go through the same
+    A test that needs a fake session writes
+    `session.settings = settings_for_test(<option>=...)`. The overrides are
+    the flat option names of `session_options`, so they go through the same
     validation and normalisation the production session uses.
     """
-    return SessionSettings.from_arguments(
+    return SessionSettings.from_options(
         SimpleNamespace(),  # unrouted_layout: untouched by the unit tests below
         SimpleNamespace(),  # schematic: untouched by the unit tests below
-        **overrides,
+        session_options(**overrides),
     )
 
 
@@ -65,7 +99,7 @@ def state_for_test(**overrides: Any) -> SessionState:
     """Build a `SessionState` directly from its own keyword overrides.
 
     `SessionState`'s fields already default sensibly (unlike `SessionSettings`,
-    which normalises its arguments through `from_arguments`), so this is a thin
+    which normalises its options through `from_options`), so this is a thin
     alias -- it exists so a test that hands a fake session both its settings
     and its state can write `settings_for_test(...)`/`state_for_test(...)` as
     one paired convention.
@@ -84,28 +118,30 @@ class Pipeline:
         )
         monkeypatch.setattr(route_jobs_module, "get_port_from_instance", port_from_instance)
         layout = Component(f"routing_stage_layout_{uuid4().hex}")
-        self.settings = SessionSettings.from_arguments(
+        self.settings = SessionSettings.from_options(
             layout,
             three_net_schematic(),
-            obstacle_config=StaticObstacleMapConfig(
-                obstacle_mode="rasterized_polygons",
-                grid_size_um=1.0,
-                security_margin_um=0.0,
-                clearance_um=0.0,
-                port_open_radius_um=0.0,
-                die_bbox=(0.0, 0.0, float(GRID_WIDTH), float(GRID_HEIGHT)),
+            session_options(
+                obstacle_config=StaticObstacleMapConfig(
+                    obstacle_mode="rasterized_polygons",
+                    grid_size_um=1.0,
+                    security_margin_um=0.0,
+                    clearance_um=0.0,
+                    port_open_radius_um=0.0,
+                    die_bbox=(0.0, 0.0, float(GRID_WIDTH), float(GRID_HEIGHT)),
+                ),
+                route_width_um=0.5,
+                allow_45_degree_turns=True,
+                bend_radius_um=1.0,
+                # `pop`ped rather than fixed, so a test about the A* iteration
+                # budget itself can raise it above the Weighted-A* cap; every
+                # other caller still gets 20,000.
+                max_iterations=overrides.pop("max_iterations", 20_000),
+                # Turns the pipeline timers on, so the phases that carry a clock
+                # (5's search start, 7's elapsed search time) carry a real one.
+                collect_route_stats=True,
+                **overrides,
             ),
-            route_width_um=0.5,
-            allow_45_degree_turns=True,
-            bend_radius_um=1.0,
-            # `pop`ped rather than fixed, so a test about the A* iteration
-            # budget itself can raise it above the Weighted-A* cap; every
-            # other caller still gets 20,000.
-            max_iterations=overrides.pop("max_iterations", 20_000),
-            # Turns the pipeline timers on, so the phases that carry a clock
-            # (5's search start, 7's elapsed search time) carry a real one.
-            collect_route_stats=True,
-            **overrides,
         )
         rust_backend = _load_rust_backend()
         if rust_backend is None:  # pragma: no cover - the kernel is built in CI

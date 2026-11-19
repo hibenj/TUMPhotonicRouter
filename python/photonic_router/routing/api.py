@@ -11,7 +11,6 @@ from typing import Any
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
-from photonic_router.config import RoutingConfig
 from photonic_router.crossings.route_rust_crossing_components import (
     _place_realized_crossing_components,
 )
@@ -23,7 +22,6 @@ from photonic_router.crossings.route_rust_crossing_plan import (
 from photonic_router.crossings.route_rust_crossing_verification import (
     _verify_realized_route_intersections,
 )
-from photonic_router.placement_analysis import PlacementAnalysis
 from photonic_router.plm import route_rust_meanders as _meander_impl
 from photonic_router.plm.path_length_diagnostics import (
     analysis_to_info_dict,
@@ -50,15 +48,14 @@ from photonic_router.records.route_rust_obstacle_config import (
 from photonic_router.records.route_rust_realization import realize_routed_net_records
 from photonic_router.records.route_rust_records import build_port_alignment_diagnostics
 from photonic_router.records.route_rust_types import (
-    DEFAULT_MEANDER_MAX_HEIGHT_UM,
     MeanderInsertionConfig,
     OpticalRouteClearancePolicy,
-    RipupRerouteConfig,
     RouteRustPipelineResult,
     _as_float,
 )
 from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 from photonic_router.routing.obstacle_context import build_static_obstacle_context
+from photonic_router.routing.options import CircuitMetadata, MatchingOptions, SessionOptions
 from photonic_router.routing.route_jobs import build_route_jobs_and_fanout_clustering
 
 # re-exported here as part of the module-level routing API
@@ -85,64 +82,36 @@ def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
 def route_match_and_realize(
     unrouted_layout: Component,
     schematic: Schematic,
+    options: SessionOptions | None = None,
     *,
-    enable_path_length_matching: bool = False,
-    path_length_match_outputs: bool = False,
-    path_length_declared_unmatched_groups: tuple[str, ...] = (),
-    path_length_output_scope: str = "all",
-    input_ports_by_component: dict[str, tuple[str, ...]] | None = None,
-    node_types: dict[str, str] | None = None,
-    internal_delays_um: dict[str, float] | None = None,
-    enable_crossings: bool = False,
-    crossing_loss: float = 0.0,
-    crossing_mode: str = "lidar-pure",
-    crossing_half_size_cells: int = 0,
-    foreign_port_keepout_cells: int = 0,
-    fanout_access_mode: str | None = None,
-    crossing_guidance_net_names: frozenset[str] | None = None,
-    obstacle_config: object | None = None,
-    debug_dir: str | Path | None = None,
-    debug_prefix: str = "route",
-    debug_route_indices: set[int] | None = None,
-    debug_stop_after_route_index: int | None = None,
-    route_width_um: float = 0.5,
-    route_layer: tuple[int, int] = (1, 0),
-    allow_45_degree_turns: bool = True,
-    bend_radius_um: float | None = None,
-    use_indexed_heap: bool = False,
-    enable_simple_routes: bool = True,
-    primitive_ordering: str = "library",
-    heuristic_mode: str = "heading_aware",
-    net_order: str = "topological",
-    net_order_depth_by_node: dict[str, int] | None = None,
-    placement_analysis: PlacementAnalysis | None = None,
-    detour_pass_factor: float = 0.0,
-    heap_tie_breaker: str = "smaller_g",
-    proactive_congestion_weight: float = 0.0,
-    proactive_congestion_radius_cells: int = 0,
-    max_iterations: int = 500_000,
-    routing_window_scale: float | None = None,
-    debug_timing: bool = False,
-    verbose_route_diagnostics: bool = False,
-    collect_route_stats: bool = False,
-    collect_attempt_diagnostics: bool = False,
-    enable_internal_photonic_probe_verification: bool = False,
-    include_heater_obstacles: bool = False,
-    ripup_reroute_config: RipupRerouteConfig | None = None,
-    path_length_meander_height_um: float = DEFAULT_MEANDER_MAX_HEIGHT_UM,
-    enable_grid_endpoint_correction: bool = True,
-    config: RoutingConfig | None = None,
-    debug_meanders: bool = False,
+    matching: MatchingOptions | None = None,
+    metadata: CircuitMetadata | None = None,
 ) -> RouteRustPipelineResult:
-    """Run Phase A->(optional M1)->B entirely in route_rust.
+    """Route the nets, match the path lengths when asked to, and realize.
 
-    ``debug_meanders`` makes the meander planner build its profile (timers,
-    counters, per-candidate attempts); the plans do not depend on it.
+    The three steps are: the routing session (`route_nets_rust`, with the
+    realization deferred), the path-length analysis and the meander
+    insertion when `matching.enable_path_length_matching` is set, and the
+    realization of the routes into polygons.
+
+    Args:
+        unrouted_layout: the component with placed instances and no routes.
+        schematic: the schematic whose nets are routed.
+        options: the session's options; None is the default session.
+            `realization.defer_realization` is set by this function.
+        matching: what path-length matching does; None leaves it off.
+        metadata: what the benchmark declares about its circuit, for the
+            path-length analysis.
     """
-    route_obstacle_config = obstacle_config
-    if debug_dir is None:
+    options = options if options is not None else SessionOptions()
+    matching = matching if matching is not None else MatchingOptions()
+    metadata = metadata if metadata is not None else CircuitMetadata()
+    debug = options.debug
+    realization = options.realization
+    route_obstacle_config = options.obstacle_config
+    if debug.debug_dir is None:
         route_obstacle_config = _with_bbox_cell_materialization(
-            obstacle_config,
+            options.obstacle_config,
             materialize_bbox_cells=False,
             populate_obstacle_map=False,
         )
@@ -151,45 +120,11 @@ def route_match_and_realize(
     routed_layout, debug_artifacts = route_nets_rust(
         unrouted_layout,
         schematic,
-        obstacle_config=route_obstacle_config,
-        debug_dir=debug_dir,
-        debug_prefix=debug_prefix,
-        debug_route_indices=debug_route_indices,
-        debug_stop_after_route_index=debug_stop_after_route_index,
-        route_width_um=route_width_um,
-        route_layer=route_layer,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_um=bend_radius_um,
-        use_indexed_heap=use_indexed_heap,
-        enable_simple_routes=enable_simple_routes,
-        primitive_ordering=primitive_ordering,
-        heuristic_mode=heuristic_mode,
-        net_order=net_order,
-        net_order_depth_by_node=net_order_depth_by_node,
-        placement_analysis=placement_analysis,
-        detour_pass_factor=detour_pass_factor,
-        heap_tie_breaker=heap_tie_breaker,
-        proactive_congestion_weight=proactive_congestion_weight,
-        proactive_congestion_radius_cells=proactive_congestion_radius_cells,
-        max_iterations=max_iterations,
-        routing_window_scale=routing_window_scale,
-        debug_timing=debug_timing,
-        verbose_route_diagnostics=verbose_route_diagnostics,
-        collect_route_stats=collect_route_stats,
-        collect_attempt_diagnostics=collect_attempt_diagnostics,
-        enable_internal_photonic_probe_verification=(enable_internal_photonic_probe_verification),
-        include_heater_obstacles=include_heater_obstacles,
-        ripup_reroute_config=ripup_reroute_config,
-        enable_crossings=enable_crossings,
-        crossing_loss=crossing_loss,
-        crossing_mode=crossing_mode,
-        crossing_half_size_cells=crossing_half_size_cells,
-        foreign_port_keepout_cells=foreign_port_keepout_cells,
-        fanout_access_mode=fanout_access_mode,
-        crossing_guidance_net_names=crossing_guidance_net_names,
-        defer_realization=True,
-        enable_checked_endpoint_correction=enable_grid_endpoint_correction,
-        config=config,
+        replace(
+            options,
+            obstacle_config=route_obstacle_config,
+            realization=replace(realization, defer_realization=True),
+        ),
     )
     pipeline_timings_s: dict[str, float] = {
         "route_nets": time.perf_counter() - t_route_nets_start,
@@ -201,13 +136,13 @@ def route_match_and_realize(
                 pipeline_timings_s[f"route_nets.{name}"] = float(elapsed_s)
             except (TypeError, ValueError):
                 continue
-    if debug_timing and verbose_route_diagnostics:
+    if debug.debug_timing and debug.verbose_route_diagnostics:
         print(
             "      - Optical net routing phase "
             f"(obstacle map + A* + repairs): {pipeline_timings_s['route_nets']:.4f} s"
         )
 
-    if enable_grid_endpoint_correction:
+    if realization.enable_checked_endpoint_correction:
         t_endpoint_correction_start = time.perf_counter()
         # Endpoint correction is part of the live routing phase above, where the
         # router still owns the committed dynamic obstacle map. Do not run a
@@ -229,14 +164,14 @@ def route_match_and_realize(
     meander_report = None
     meander_report_info = None
     records_for_realization = debug_artifacts.routed_net_records
-    if enable_path_length_matching:
+    if matching.enable_path_length_matching:
         t_analysis_start = time.perf_counter()
         analysis, requirements = analyze_path_length_matching(
             schematic,
             routed_net_records=records_for_realization,
-            node_types=node_types,
-            internal_delays_um=internal_delays_um,
-            input_ports_by_component=input_ports_by_component,
+            node_types=metadata.node_types,
+            internal_delays_um=metadata.internal_delays_um,
+            input_ports_by_component=metadata.input_ports_by_component,
         )
         pipeline_timings_s["path_length_analysis"] = time.perf_counter() - t_analysis_start
         analysis_info = analysis_to_info_dict(analysis)
@@ -254,17 +189,17 @@ def route_match_and_realize(
         lifted_requirements = list(requirements)
         output_requirements: list[Any] = []
         output_matching_info = {
-            "enabled": bool(path_length_match_outputs),
+            "enabled": bool(matching.path_length_match_outputs),
             "target_output_arrival_um": 0.0,
             "output_count": 0,
             "requirements": [],
             "outputs": [],
         }
-        if path_length_match_outputs:
+        if matching.path_length_match_outputs:
             output_requirements, output_matching_info = compute_output_matching_requirements(
                 analysis,
                 existing_requirements=lifted_requirements,
-                scope=path_length_output_scope,
+                scope=matching.path_length_output_scope,
             )
             requirements = merge_missing_length_requirements(
                 lifted_requirements,
@@ -300,9 +235,9 @@ def route_match_and_realize(
             raise RuntimeError("Missing realization grid spec from routing phase.")
         t_meander_obstacle_start = time.perf_counter()
         resolved_user_obstacle_config = _resolve_obstacle_config(
-            obstacle_config,
-            route_layer=route_layer,
-            include_heater_obstacles=include_heater_obstacles,
+            options.obstacle_config,
+            route_layer=realization.route_layer,
+            include_heater_obstacles=options.include_heater_obstacles,
         )
         meander_route_clearance_um = max(
             0.0,
@@ -312,7 +247,7 @@ def route_match_and_realize(
             ),
         )
         meander_clearance_policy = OpticalRouteClearancePolicy.from_dimensions(
-            route_width_um=float(route_width_um),
+            route_width_um=float(realization.route_width_um),
             grid_size_um=float(debug_artifacts.realization_grid_spec[2]),
             route_clearance_um=meander_route_clearance_um,
         )
@@ -346,7 +281,7 @@ def route_match_and_realize(
 
         meander_config = MeanderInsertionConfig(
             enabled=True,
-            max_meander_height_um=float(path_length_meander_height_um),
+            max_meander_height_um=float(matching.path_length_meander_height_um),
         )
         analysis_info["meander_config"] = {
             "enabled": bool(meander_config.enabled),
@@ -383,7 +318,7 @@ def route_match_and_realize(
                 meander_clearance_policy.plm_candidate_box_clearance_radius_cells
             ),
             requirement_delay_candidates=requirement_delay_candidates,
-            debug_meanders=debug_meanders,
+            debug_meanders=matching.debug_meanders,
         )
         pipeline_timings_s["meander_planning"] = time.perf_counter() - t_meander_planning_start
         meander_report_info = meander_report.to_info_dict()
@@ -407,7 +342,7 @@ def route_match_and_realize(
             analysis_info["path_length_acceptance"] = acceptance_summary
             if not acceptance_summary["passed"]:
                 failure = format_path_length_acceptance_failure(acceptance_summary)
-                declared = frozenset(path_length_declared_unmatched_groups)
+                declared = frozenset(matching.path_length_declared_unmatched_groups)
                 undeclared = _undeclared_failed_groups(acceptance_summary, declared)
                 analysis_info["path_length_declared_unmatched_groups"] = sorted(declared)
                 if undeclared:
@@ -426,7 +361,7 @@ def route_match_and_realize(
         if isinstance(crossing_plan_info, dict)
         else None
     )
-    if plan_info is not None and enable_internal_photonic_probe_verification:
+    if plan_info is not None and options.enable_internal_photonic_probe_verification:
         final_records_by_net_id = _routed_records_by_net_id(records_for_realization)
         if final_records_by_net_id:
             illegal_realized_crossings = _verify_realized_route_intersections(
@@ -441,8 +376,10 @@ def route_match_and_realize(
             )
             if illegal_realized_crossings:
                 _write_crossing_debug_artifacts(
-                    debug_path=Path(debug_dir) if debug_dir is not None else Path("build"),
-                    debug_prefix=debug_prefix,
+                    debug_path=Path(debug.debug_dir)
+                    if debug.debug_dir is not None
+                    else Path("build"),
+                    debug_prefix=debug.debug_prefix,
                     crossing_plan_info=plan_info,
                 )
                 preview = "; ".join(
@@ -462,19 +399,19 @@ def route_match_and_realize(
     realize_routed_net_records(
         routed_layout,
         records_for_realization,
-        route_width_um=route_width_um,
-        route_layer=route_layer,
+        route_width_um=realization.route_width_um,
+        route_layer=realization.route_layer,
         realization_grid_spec=debug_artifacts.realization_grid_spec,
         allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
         bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
         crossing_plan_info=plan_info.to_dict() if plan_info is not None else None,
-        enable_endpoint_correction=enable_grid_endpoint_correction,
+        enable_endpoint_correction=realization.enable_checked_endpoint_correction,
     )
     if plan_info is not None:
         _place_realized_crossing_components(routed_layout, plan_info)
         _write_crossing_debug_artifacts(
-            debug_path=Path(debug_dir) if debug_dir is not None else None,
-            debug_prefix=debug_prefix,
+            debug_path=Path(debug.debug_dir) if debug.debug_dir is not None else None,
+            debug_prefix=debug.debug_prefix,
             crossing_plan_info=plan_info,
         )
         # The phases above wrote into `plan_info`, not into the mapping the
@@ -485,7 +422,7 @@ def route_match_and_realize(
         )
     t_realization_end = time.perf_counter()
     pipeline_timings_s["route_realization"] = t_realization_end - t_realization_start
-    if debug_timing and verbose_route_diagnostics:
+    if debug.debug_timing and debug.verbose_route_diagnostics:
         print(
             "      - Optical route realization phase: "
             f"{pipeline_timings_s['route_realization']:.4f} s"
@@ -505,7 +442,7 @@ def route_match_and_realize(
 def static_fanout_anchors_um(
     unrouted_layout: Component,
     schematic: Schematic,
-    **session_kwargs: Any,
+    options: SessionOptions | None = None,
 ) -> dict[str, tuple[float, float]]:
     """The router's static fan-out anchors for ``unrouted_layout`` WITHOUT routing.
 
@@ -514,13 +451,11 @@ def static_fanout_anchors_um(
     ``{port_spec: (x_um, y_um)}`` for every port that gets a static stub -- the
     point a route to/from that port actually starts from. Pre-placed crossing
     structures (contribution 2) put their entry tiles on these rows so the
-    stub and the tile line up without a jog. ``session_kwargs`` must match the
-    routing run's configuration (fanout_access_mode, bend radius, obstacle
-    config), otherwise the anchors differ.
+    stub and the tile line up without a jog. ``options`` must match the
+    routing run's (fan-out access mode, bend radius, obstacle configuration),
+    otherwise the anchors differ.
     """
-    session = _RouteNetsRustSession(
-        unrouted_layout=unrouted_layout, schematic=schematic, **session_kwargs
-    )
+    session = _RouteNetsRustSession(unrouted_layout, schematic, options)
     settings, state = session.settings, session.state
     context = build_static_obstacle_context(settings, state)
     configure_router_and_grid(settings, state, context.obstacle_map)
