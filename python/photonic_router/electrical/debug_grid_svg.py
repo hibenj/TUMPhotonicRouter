@@ -7,8 +7,8 @@ from html import escape
 from pathlib import Path
 from typing import Protocol
 
-from .svg_support import _all_port_accesses
-from .types import (
+from photonic_router.electrical.svg_support import _all_port_accesses
+from photonic_router.electrical.types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
     DetailedBundleRoutingResult,

@@ -5,20 +5,19 @@ from __future__ import annotations
 from gdsfactory.component import Component
 
 from photonic_router.benchmark_extractor import BBox, extract_benchmark
-from photonic_router.static_obstacle_builder import (
-    StaticObstacleMapConfig,
-    build_static_obstacle_map,
-)
-
-from .pitch_grid import bbox_to_grid_cells, disk_cells
-from .port_access import build_electrical_port_accesses
-from .terminal_contacts import terminal_contact_seed_point_for_side
-from .types import (
+from photonic_router.electrical.pitch_grid import bbox_to_grid_cells, disk_cells
+from photonic_router.electrical.port_access import build_electrical_port_accesses
+from photonic_router.electrical.terminal_contacts import terminal_contact_seed_point_for_side
+from photonic_router.electrical.types import (
     BusStripe,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,
     ElectricalTerminal,
     TerminalPairGroup,
+)
+from photonic_router.static_obstacle_builder import (
+    StaticObstacleMapConfig,
+    build_static_obstacle_map,
 )
 
 

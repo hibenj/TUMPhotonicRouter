@@ -5,10 +5,12 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable
 
+from photonic_router.electrical.port_access import (
+    choose_route_start_cell,
+    ordered_route_start_cells,
+)
+from photonic_router.electrical.types import ElectricalObstacleMap, ElectricalTerminal, GridCell
 from photonic_router.static_obstacle_builder import physical_to_grid
-
-from .port_access import choose_route_start_cell, ordered_route_start_cells
-from .types import ElectricalObstacleMap, ElectricalTerminal, GridCell
 
 
 def all_terminal_cells(obstacle_map: ElectricalObstacleMap) -> frozenset[GridCell]:

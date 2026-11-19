@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections import deque
 
-from .pad_slots import pad_access_cells
-from .types import (
+from photonic_router.electrical.pad_slots import pad_access_cells
+from photonic_router.electrical.types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
     ElectricalObstacleMap,

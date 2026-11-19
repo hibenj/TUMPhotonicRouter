@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .types import ElectricalObstacleMap, ElectricalPortAccess
+from photonic_router.electrical.types import ElectricalObstacleMap, ElectricalPortAccess
 
 
 def _all_port_accesses(

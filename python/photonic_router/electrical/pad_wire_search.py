@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections import deque
 from heapq import heappop, heappush
 
-from .types import (
+from photonic_router.electrical.types import (
     ElectricalObstacleMap,
     ElectricalPortAccess,
     ElectricalRoutingConfig,
     GridCell,
     GridPoint,
 )
-from .wire_geometry import (
+from photonic_router.electrical.wire_geometry import (
     cell_center,
     centerline_points,
     dedupe_path,

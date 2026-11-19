@@ -258,6 +258,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Imports are absolute everywhere (S2, slice 1; rule 4.10 of the coding
+  standards is in force). The 96 relative import statements of the package,
+  nearly all in `electrical/` and `gds/`, and those of the tests are
+  rewritten (`from .types import X` is `from photonic_router.electrical.types
+  import X`). ruff's `TID252` with `ban-relative-imports = "all"` is in the
+  lint set, so the measure `relative_imports` leaves the quality ratchet,
+  which holds 23 counts again.
 - `run_routing_flow` is gone (S1, slice 7). It was the compatibility wrapper
   that turned 50 keywords into the `FlowOptions` of `route_benchmark`, kept
   for 25 calls in tests and two scripts. **API change**: call

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from .metrics import min_rect_spacing, quality_metrics
-from .net_geometry import NetGeometry, build_net_geometries
-from .pad_slots import pad_access_bbox
-from .pitch_grid import bbox_to_grid_cells
-from .rect_geometry import rect_area, rect_intersection, rect_intersects, rect_is_covered_by_any
-from .terminal_contacts import terminal_contact_bboxes
-from .types import (
+from photonic_router.electrical.metrics import min_rect_spacing, quality_metrics
+from photonic_router.electrical.net_geometry import NetGeometry, build_net_geometries
+from photonic_router.electrical.pad_slots import pad_access_bbox
+from photonic_router.electrical.pitch_grid import bbox_to_grid_cells
+from photonic_router.electrical.rect_geometry import (
+    rect_area,
+    rect_intersection,
+    rect_intersects,
+    rect_is_covered_by_any,
+)
+from photonic_router.electrical.terminal_contacts import terminal_contact_bboxes
+from photonic_router.electrical.types import (
     BBox,
     CommonBusEscapeResult,
     CommonBusRoutingResult,

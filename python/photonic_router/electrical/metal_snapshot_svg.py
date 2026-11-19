@@ -7,9 +7,9 @@ from html import escape
 from pathlib import Path
 from typing import Any, cast
 
-from .svg_support import _all_port_accesses
-from .terminal_contacts import terminal_contact_bboxes
-from .types import (
+from photonic_router.electrical.svg_support import _all_port_accesses
+from photonic_router.electrical.terminal_contacts import terminal_contact_bboxes
+from photonic_router.electrical.types import (
     BBox,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,

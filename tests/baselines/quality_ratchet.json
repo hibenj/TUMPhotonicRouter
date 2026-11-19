@@ -2,7 +2,6 @@
   "mypy_errors": 285,
   "private_imports": 247,
   "python_exceptions": 0,
-  "relative_imports": 96,
   "ruff_ANN001": 218,
   "ruff_ANN201": 3,
   "ruff_ANN202": 6,

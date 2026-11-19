@@ -10,7 +10,12 @@ from typing import Any
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
-from .types import ElectricalPortRef, ElectricalRoutingConfig, ElectricalTerminal, TerminalPairGroup
+from photonic_router.electrical.types import (
+    ElectricalPortRef,
+    ElectricalRoutingConfig,
+    ElectricalTerminal,
+    TerminalPairGroup,
+)
 
 
 def extract_heater_terminal_pairs(

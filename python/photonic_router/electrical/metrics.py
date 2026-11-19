@@ -8,9 +8,9 @@ import math
 from collections import Counter
 from typing import Any
 
-from .net_geometry import NetGeometry, detailed_route_centerline_points
-from .rect_geometry import rect_area, rect_intersection, union_rect_area
-from .types import (
+from photonic_router.electrical.net_geometry import NetGeometry, detailed_route_centerline_points
+from photonic_router.electrical.rect_geometry import rect_area, rect_intersection, union_rect_area
+from photonic_router.electrical.types import (
     BBox,
     CommonBusRoutingResult,
     DetailedBundleRoutingResult,

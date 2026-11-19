@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .types import BBox, ElectricalPortRef, ElectricalTerminal, Point, Side
+from photonic_router.electrical.types import (
+    BBox,
+    ElectricalPortRef,
+    ElectricalTerminal,
+    Point,
+    Side,
+)
 
 
 @dataclass(frozen=True)

@@ -83,6 +83,7 @@ select = [
     "PYI",  # typing-stub-style rules, useful even outside .pyi files
     "TRY",  # exception-handling patterns
     "FURB", # modernize (refurb)
+    "TID252", # relative imports (docs/CODING_STANDARDS.md rule 4.10)
 ]
 ignore = [
     # single-line-implicit-string-concatenation: conflicts with the
@@ -100,6 +101,10 @@ ignore = [
     # columns is a string literal or a URL that wrapping would make worse.
     "E501",
 ]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Rule 4.10: imports are absolute, also from a sibling module.
+ban-relative-imports = "all"
 
 [tool.ruff.lint.per-file-ignores]
 # Scripts and the two shims insert the repository root into sys.path before

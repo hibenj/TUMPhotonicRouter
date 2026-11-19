@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from photonic_router.static_obstacle_builder import physical_to_grid
-
-from .bus_search import (
+from photonic_router.electrical.bus_search import (
     all_terminal_cells,
     axis_path,
     nearest_terminal_cell,
@@ -13,8 +11,8 @@ from .bus_search import (
     terminal_access_anchor_cell,
     terminal_open_cells,
 )
-from .pitch_grid import grid_cell_center_um
-from .types import (
+from photonic_router.electrical.pitch_grid import grid_cell_center_um
+from photonic_router.electrical.types import (
     BBox,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,
@@ -24,6 +22,7 @@ from .types import (
     TerminalPairGroup,
     terminal_exit_dx,
 )
+from photonic_router.static_obstacle_builder import physical_to_grid
 
 
 def route_column_trunks(

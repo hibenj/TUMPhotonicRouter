@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 import math
 
-from .types import (
+from photonic_router.electrical.types import (
     ElectricalObstacleMap,
     ElectricalPortAccess,
     ElectricalRoutingConfig,

@@ -8,14 +8,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from photonic_router.static_obstacle_builder import GridSpec, physical_to_grid
-
-from .pitch_grid import grid_cell_center_um
-from .terminal_contacts import (
+from photonic_router.electrical.pitch_grid import grid_cell_center_um
+from photonic_router.electrical.terminal_contacts import (
     port_contact_bbox,
     select_terminal_port_for_side,
 )
-from .types import (
+from photonic_router.electrical.types import (
     ElectricalPortAccess,
     ElectricalRoutingConfig,
     ElectricalTerminal,
@@ -24,6 +22,7 @@ from .types import (
     Side,
     TerminalPairGroup,
 )
+from photonic_router.static_obstacle_builder import GridSpec, physical_to_grid
 
 
 @dataclass(frozen=True)

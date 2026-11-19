@@ -52,7 +52,7 @@ from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SearchLog, SessionState
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, _load_rust_backend
 
-from .synthetic_layouts import (
+from tests.fixtures.synthetic_layouts import (
     GRID_HEIGHT,
     GRID_WIDTH,
     ObstacleMapStandIn,

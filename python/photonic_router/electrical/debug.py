@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .debug_grid_svg import export_electrical_debug_svg
-from .metal_snapshot_svg import export_electrical_metal_snapshot_svg
-from .types import (
+from photonic_router.electrical.debug_grid_svg import export_electrical_debug_svg
+from photonic_router.electrical.metal_snapshot_svg import export_electrical_metal_snapshot_svg
+from photonic_router.electrical.types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
     DetailedBundleRoutingResult,

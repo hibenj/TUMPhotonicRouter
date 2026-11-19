@@ -169,7 +169,8 @@ like the violation counts: a commit that adds one says why in its message.
    name, coordinates, the benchmark). `except Exception` needs a comment
    saying why nothing narrower works (ruff `BLE001`). *Tool, proposed.*
 10. Imports are absolute: `from photonic_router.records import x`, not
-    `from .records import x` (Google guide 2.2). *Tool, proposed.*
+    `from .records import x` (Google guide 2.2; ruff `TID252`). *Tool, in
+    force.*
 
 ## 5. Rust
 
@@ -235,7 +236,6 @@ are that file's on 2026-11-19, and the file is the current truth.
 | 4.6 | `print` calls in the package (`ruff_T201`) | 157 |
 | 4.7 | public classes, methods, functions without a docstring (`ruff_D101`, `ruff_D102`, `ruff_D103`) | 56, 136, 77 |
 | 4.9 | blind `except Exception` (`ruff_BLE001`) | 35 |
-| 4.10 | relative import statements (`relative_imports`) | 96 |
 | 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 |
 | 5.3 | `unwrap()` in the library of `router-core`, tests excluded (`rust_unwrap_used`) | 1 |
 | 5.4 | public items of `router-core` without a doc comment (`rust_missing_docs`) | 796 |

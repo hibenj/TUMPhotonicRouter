@@ -61,7 +61,7 @@ from typing import Protocol
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
-from .types import (
+from photonic_router.electrical.types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
     DetailedBundleRoutingResult,

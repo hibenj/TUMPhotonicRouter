@@ -6,8 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .pitch_grid import bbox_to_grid_cells, grid_cell_center_um
-from .rect_geometry import (
+from photonic_router.electrical.pitch_grid import bbox_to_grid_cells, grid_cell_center_um
+from photonic_router.electrical.rect_geometry import (
     clip_manhattan_path_at_first_bbox_entry,
     clip_manhattan_path_start_at_bbox,
     disjoint_union_rects,
@@ -15,8 +15,8 @@ from .rect_geometry import (
     union_rect_area,
     wire_rects_for_points,
 )
-from .terminal_contacts import terminal_access_path
-from .types import (
+from photonic_router.electrical.terminal_contacts import terminal_access_path
+from photonic_router.electrical.types import (
     BBox,
     CommonBusEscapeResult,
     CommonBusRoutingResult,

@@ -47,22 +47,25 @@ from pathlib import Path
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
-from .bundle_detail_router import route_detailed_bundles
-from .common_bus_router import route_common_bus, trim_common_bus_to_connections
-from .debug import write_debug_artifacts
-from .escape_router import route_common_bus_escape
-from .individual_topology import compute_individual_escape_topology
-from .metal_realization import realize_electrical_metal
-from .obstacle_extraction import build_electrical_obstacle_map
-from .pad_side_reconciliation import reconcile_pad_sides
-from .pad_slots import common_bus_stripe_reach_x_um, plan_pad_slots
-from .terminal_extraction import extract_heater_terminal_pairs
-from .types import (
+from photonic_router.electrical.bundle_detail_router import route_detailed_bundles
+from photonic_router.electrical.common_bus_router import (
+    route_common_bus,
+    trim_common_bus_to_connections,
+)
+from photonic_router.electrical.debug import write_debug_artifacts
+from photonic_router.electrical.escape_router import route_common_bus_escape
+from photonic_router.electrical.individual_topology import compute_individual_escape_topology
+from photonic_router.electrical.metal_realization import realize_electrical_metal
+from photonic_router.electrical.obstacle_extraction import build_electrical_obstacle_map
+from photonic_router.electrical.pad_side_reconciliation import reconcile_pad_sides
+from photonic_router.electrical.pad_slots import common_bus_stripe_reach_x_um, plan_pad_slots
+from photonic_router.electrical.terminal_extraction import extract_heater_terminal_pairs
+from photonic_router.electrical.types import (
     CommonBusRoutingResult,
     ElectricalRoutingConfig,
     ElectricalRoutingResult,
 )
-from .verification import verify_electrical_routing
+from photonic_router.electrical.verification import verify_electrical_routing
 
 
 def route_electrical_heaters(

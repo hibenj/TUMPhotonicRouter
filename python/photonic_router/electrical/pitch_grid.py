@@ -6,9 +6,8 @@ import math
 from collections.abc import Iterable
 
 from photonic_router.benchmark_extractor import BBox
+from photonic_router.electrical.types import GridCell
 from photonic_router.static_obstacle_builder import GridSpec, physical_to_grid
-
-from .types import GridCell
 
 
 def bbox_to_grid_cells(bbox: BBox, grid: GridSpec) -> frozenset[GridCell]:

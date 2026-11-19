@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Iterable
 
-from .types import BBox, Point
+from photonic_router.electrical.types import BBox, Point
 
 
 def wire_rects_for_points(

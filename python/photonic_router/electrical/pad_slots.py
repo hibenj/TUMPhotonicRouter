@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 from itertools import pairwise
 
-from .individual_topology import bundle_route_side
-from .pitch_grid import bbox_to_grid_cells
-from .river_routing import (
+from photonic_router.electrical.individual_topology import bundle_route_side
+from photonic_router.electrical.pitch_grid import bbox_to_grid_cells
+from photonic_router.electrical.river_routing import (
     ChannelWire,
     assign_tracks,
     bundle_opening_edge,
@@ -16,7 +16,7 @@ from .river_routing import (
     pad_column_cell,
     track_pitch_in_cells,
 )
-from .types import (
+from photonic_router.electrical.types import (
     CommonBusRoutingResult,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,
@@ -27,7 +27,7 @@ from .types import (
     PadSlot,
     Side,
 )
-from .wire_geometry import wire_reservation_radius_cells
+from photonic_router.electrical.wire_geometry import wire_reservation_radius_cells
 
 
 def plan_pad_slots(

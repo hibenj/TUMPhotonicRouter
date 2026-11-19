@@ -12,14 +12,17 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-from .individual_topology import bundle_route_side
-from .metal_realization import common_bus_escape_rects
-from .pad_slots import pad_access_cells
-from .pad_wire_search import route_full_grid_pad_wire
-from .pitch_grid import bbox_to_grid_cells
-from .river_routing import count_direction_changes, route_bundles_as_channels
-from .terminal_contacts import _orientation_distance
-from .types import (
+from photonic_router.electrical.individual_topology import bundle_route_side
+from photonic_router.electrical.metal_realization import common_bus_escape_rects
+from photonic_router.electrical.pad_slots import pad_access_cells
+from photonic_router.electrical.pad_wire_search import route_full_grid_pad_wire
+from photonic_router.electrical.pitch_grid import bbox_to_grid_cells
+from photonic_router.electrical.river_routing import (
+    count_direction_changes,
+    route_bundles_as_channels,
+)
+from photonic_router.electrical.terminal_contacts import _orientation_distance
+from photonic_router.electrical.types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
     DetailedBundleRoute,
@@ -36,7 +39,7 @@ from .types import (
     PadAssignment,
     PadPlan,
 )
-from .wire_geometry import (
+from photonic_router.electrical.wire_geometry import (
     cells_from_point_path,
     individual_terminal_open_cells,
     terminal_exit_direction_x,

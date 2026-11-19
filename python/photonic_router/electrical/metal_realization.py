@@ -5,7 +5,7 @@ from __future__ import annotations
 import klayout.db as kdb
 from gdsfactory.component import Component
 
-from .rect_geometry import (
+from photonic_router.electrical.rect_geometry import (
     clip_manhattan_path_at_first_bbox_entry,
     clip_manhattan_path_start_at_bbox,
     disjoint_union_rects,
@@ -13,8 +13,8 @@ from .rect_geometry import (
     union_rect_area,
     wire_rects_for_points,
 )
-from .terminal_contacts import terminal_access_path
-from .types import (
+from photonic_router.electrical.terminal_contacts import terminal_access_path
+from photonic_router.electrical.types import (
     CommonBusEscapeResult,
     CommonBusRoutingResult,
     DetailedBundleRoutingResult,

@@ -6,9 +6,7 @@ from dataclasses import dataclass, replace
 from statistics import median
 from typing import cast
 
-from photonic_router.static_obstacle_builder import physical_to_grid
-
-from .bus_search import (
+from photonic_router.electrical.bus_search import (
     all_terminal_cells,
     axis_path,
     forbidden_terminal_cells,
@@ -19,9 +17,9 @@ from .bus_search import (
     terminal_access_anchor_cell,
     terminal_open_cells,
 )
-from .column_trunks import route_column_trunks, straight_drop_to_bus
-from .pitch_grid import bbox_to_grid_cells, grid_cell_center_um
-from .types import (
+from photonic_router.electrical.column_trunks import route_column_trunks, straight_drop_to_bus
+from photonic_router.electrical.pitch_grid import bbox_to_grid_cells, grid_cell_center_um
+from photonic_router.electrical.types import (
     BusStripe,
     CommonBusRoutingResult,
     ElectricalObstacleMap,
@@ -31,7 +29,8 @@ from .types import (
     TerminalBusRoute,
     TerminalPairGroup,
 )
-from .wire_geometry import dilate_cells, wire_reservation_radius_cells
+from photonic_router.electrical.wire_geometry import dilate_cells, wire_reservation_radius_cells
+from photonic_router.static_obstacle_builder import physical_to_grid
 
 
 @dataclass(frozen=True)

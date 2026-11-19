@@ -17,14 +17,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from photonic_router.port_roles import INPUT, component_port_role
-
-from .gds_circuit_components import (
+from photonic_router.gds.gds_circuit_components import (
     arm_pair_path_length_um,
     directional_coupler_path_length_um,
     register_generic_components,
 )
-from .gds_circuit_extraction import ExtractedCircuit, ExtractedComponent, ExtractedPort
+from photonic_router.gds.gds_circuit_extraction import (
+    ExtractedCircuit,
+    ExtractedComponent,
+    ExtractedPort,
+)
+from photonic_router.port_roles import INPUT, component_port_role
 
 
 @dataclass(frozen=True)

@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from .bus_search import (
+from photonic_router.electrical.bus_search import (
     all_terminal_cells,
     forbidden_terminal_cells,
     route_uses_access_anchor,
     shortest_path_to_tree,
     terminal_access_anchor_cell,
 )
-from .column_trunks import straight_drop_to_bus
-from .common_bus_router import trim_common_bus_to_connections
-from .individual_topology import compute_individual_escape_topology
-from .pad_slots import common_bus_stripe_reach_x_um, plan_pad_slots
-from .types import (
+from photonic_router.electrical.column_trunks import straight_drop_to_bus
+from photonic_router.electrical.common_bus_router import trim_common_bus_to_connections
+from photonic_router.electrical.individual_topology import compute_individual_escape_topology
+from photonic_router.electrical.pad_slots import common_bus_stripe_reach_x_um, plan_pad_slots
+from photonic_router.electrical.types import (
     CommonBusRoutingResult,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,
@@ -26,7 +26,7 @@ from .types import (
     TerminalBusRoute,
     terminal_exit_dx,
 )
-from .wire_geometry import dilate_cells, wire_reservation_radius_cells
+from photonic_router.electrical.wire_geometry import dilate_cells, wire_reservation_radius_cells
 
 
 def reconcile_pad_sides(

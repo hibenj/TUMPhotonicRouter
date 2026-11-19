@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections import deque
 from typing import Literal
 
-from .port_access import ordered_route_start_cells
-from .types import (
+from photonic_router.electrical.port_access import ordered_route_start_cells
+from photonic_router.electrical.types import (
     CommonBusRoutingResult,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,

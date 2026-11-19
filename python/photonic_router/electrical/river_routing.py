@@ -31,7 +31,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal
 
-from .types import (
+from photonic_router.electrical.types import (
     ElectricalObstacleMap,
     ElectricalPortAccess,
     ElectricalRoutingConfig,
@@ -41,7 +41,7 @@ from .types import (
     GridPoint,
     PadAssignment,
 )
-from .wire_geometry import (
+from photonic_router.electrical.wire_geometry import (
     cell_center,
     dedupe_points,
     point_direction,

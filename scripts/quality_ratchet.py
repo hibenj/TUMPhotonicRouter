@@ -151,15 +151,6 @@ def private_imports(sources: Iterable[Path]) -> int:
     return count
 
 
-def relative_imports(sources: Iterable[Path]) -> int:
-    """Count `from . import x` and `from .module import x` statements (rule 4.10)."""
-    count = 0
-    for path in sources:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        count += sum(isinstance(node, ast.ImportFrom) and node.level > 0 for node in ast.walk(tree))
-    return count
-
-
 def untyped_dict_annotations(sources: Iterable[Path]) -> int:
     """Count `dict[str, object]` and `dict[str, Any]` in the sources (rule 4.3)."""
     return sum(len(_UNTYPED_DICT.findall(path.read_text(encoding="utf-8"))) for path in sources)
@@ -238,7 +229,6 @@ def measure() -> dict[str, int]:
     counts = ruff_counts()
     counts["mypy_errors"] = mypy_errors()
     counts["private_imports"] = private_imports(sources)
-    counts["relative_imports"] = relative_imports(sources)
     counts["untyped_dict_annotations"] = untyped_dict_annotations(sources)
     counts["session_state_fields"] = class_field_count(
         PACKAGE / "routing" / "state.py", "SessionState"
