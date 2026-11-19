@@ -108,7 +108,6 @@ class _RouteNetsRustSession:
         (`stages.py` names the types).
         """
         settings, state = self.settings, self.prepare()
-        context = state.obstacles
         jobs = route_jobs_stage.build_route_jobs_and_fanout_clustering(
             settings, state, settings.schematic.netlist.routes
         )
@@ -121,11 +120,7 @@ class _RouteNetsRustSession:
             jobs.dense_port_runway_length_by_spec,
         )
         final = handoff.finalize_route_jobs_and_static_handoff(
-            settings,
-            state,
-            planned.route_jobs,
-            planned.foreign_port_keepout_cells_by_instance,
-            context.obstacle_map,
+            settings, state, planned.route_jobs, planned.foreign_port_keepout_cells_by_instance
         )
         dispatch.dispatch_native_routing(settings, state, final.route_jobs)
         routed = finalize.finalize_routing_results(
@@ -137,14 +132,7 @@ class _RouteNetsRustSession:
             settings, state, routed.routed_net_records
         )
         debug_artifacts = realize.realize_and_assemble_debug_artifacts(
-            settings,
-            state,
-            final.route_jobs,
-            verified.routed_net_records,
-            verified.illegal_realized_crossings,
-            context.obstacle_map,
-            context.obstacle_svg,
-            routed.astar_elapsed_s,
+            settings, state, final.route_jobs, routed, verified
         )
         return state.routed_layout, debug_artifacts
 

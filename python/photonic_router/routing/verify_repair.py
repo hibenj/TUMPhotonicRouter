@@ -51,7 +51,7 @@ from photonic_router.routing.finalize import (
 )
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import VerifiedRecords
-from photonic_router.routing.state import SessionState
+from photonic_router.routing.state import ProbeCache, SessionState
 from photonic_router.static_obstacle_builder import physical_to_grid
 from photonic_router.verify.photonic_verification import (
     PhotonicVerificationIssue,
@@ -469,7 +469,7 @@ def _repair_final_illegal_crossings(
     state.kernel.router.add_static_cells(sorted(keepout_cells))
     for net_id in repair_net_ids:
         state.kernel.router.ripup_route(int(net_id))
-        state.route_bookkeeping.clear_route(int(net_id))
+        state.search.bookkeeping.clear_route(int(net_id))
 
     repair_jobs = native_route_jobs(
         settings, state, (state.run.route_jobs_by_id[net_id] for net_id in repair_net_ids)
@@ -503,7 +503,7 @@ def _repair_final_illegal_crossings(
         job = state.run.route_jobs_by_id[net_id]
         route_obj = entry["route"]
         _record_route(settings, state, job, route_obj, opened_by_id[net_id])
-        repaired_records.append(state.route_bookkeeping.records_by_id[net_id])
+        repaired_records.append(state.search.bookkeeping.records_by_id[net_id])
 
     if settings.enable_checked_endpoint_correction and repaired_records:
         repaired_net_ids = [
@@ -523,7 +523,7 @@ def _repair_final_illegal_crossings(
 def _net_id_by_name(settings, state) -> dict[str, int]:
     return {
         record.net_name: int(net_id)
-        for net_id, record in state.route_bookkeeping.records_by_id.items()
+        for net_id, record in state.search.bookkeeping.records_by_id.items()
     }
 
 
@@ -705,10 +705,10 @@ def _make_photonic_verification_probe_layout(
     records: Iterable[RoutedNetRecord],
 ) -> Component:
     t_probe_layout_total_start = timing.pipeline_timer_start(settings, state)
-    state.photonic_probe_index += 1
+    state.probe.index += 1
     t_probe_copy_start = timing.pipeline_timer_start(settings, state)
     probe_layout = settings.unrouted_layout.copy()
-    probe_layout.name = f"photonic_repair_probe_{time.time_ns()}_{state.photonic_probe_index}"
+    probe_layout.name = f"photonic_repair_probe_{time.time_ns()}_{state.probe.index}"
     timing.record_pipeline_timing(settings, state, "photonic_probe_copy", t_probe_copy_start)
     t_probe_realize_start = timing.pipeline_timer_start(settings, state)
     realize_routed_net_records(
@@ -750,10 +750,10 @@ def _refresh_photonic_verification(settings, state) -> PhotonicVerificationResul
     # between grid decisions and realized geometry, but do not treat it as
     # a mandatory always-on second full verification pass.
     t_refresh_start = timing.pipeline_timer_start(settings, state)
-    records = state.route_bookkeeping.ordered_records()
+    records = state.search.bookkeeping.ordered_records()
     probe_layout = _make_photonic_verification_probe_layout(settings, state, records)
-    state.last_photonic_probe_layout = probe_layout
-    state.last_photonic_probe_records = list(records)
+    state.probe.layout = probe_layout
+    state.probe.records = list(records)
     t_verify_start = timing.pipeline_timer_start(settings, state)
     result = verify_photonic_routing(
         probe_layout,
@@ -853,7 +853,7 @@ def _repair_final_photonic_issues(
     state.kernel.router.add_static_cells(sorted(keepout_cells))
     for net_id in repair_net_ids:
         state.kernel.router.ripup_route(int(net_id))
-        state.route_bookkeeping.clear_route(int(net_id))
+        state.search.bookkeeping.clear_route(int(net_id))
 
     repair_jobs = native_route_jobs(
         settings, state, (state.run.route_jobs_by_id[net_id] for net_id in repair_net_ids)
@@ -954,7 +954,7 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
         t_insertion_loss_start = timing.pipeline_timer_start(settings, state)
         _augment_insertion_loss_report(
             crossing_plan_info=state.crossing_plan_info,
-            routed_records_by_net_id=state.route_bookkeeping.records_by_id,
+            routed_records_by_net_id=state.search.bookkeeping.records_by_id,
             native_crossing_events=native_crossing_events,
         )
         timing.record_pipeline_timing(
@@ -967,14 +967,14 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
     if settings.enable_internal_photonic_probe_verification:
         illegal = _verify_realized_route_intersections(
             crossing_plan_info=state.crossing_plan_info,
-            routed_records_by_net_id=state.route_bookkeeping.records_by_id,
+            routed_records_by_net_id=state.search.bookkeeping.records_by_id,
             realization_grid_spec=state.run.realization_grid_spec,
             native_crossing_verdicts=native_crossing_verdicts,
         )
     else:
         illegal = _populate_realized_intersections_from_native_crossing_events(
             crossing_plan_info=state.crossing_plan_info,
-            routed_records_by_net_id=state.route_bookkeeping.records_by_id,
+            routed_records_by_net_id=state.search.bookkeeping.records_by_id,
             native_crossing_events=native_crossing_events,
             realization_grid_spec=state.run.realization_grid_spec,
             native_crossing_verdicts=native_crossing_verdicts,
@@ -988,7 +988,7 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
     t_realized_insertion_loss_start = timing.pipeline_timer_start(settings, state)
     _augment_insertion_loss_report_from_realized_intersections(
         crossing_plan_info=state.crossing_plan_info,
-        routed_records_by_net_id=state.route_bookkeeping.records_by_id,
+        routed_records_by_net_id=state.search.bookkeeping.records_by_id,
     )
     timing.record_pipeline_timing(
         settings,
@@ -1025,9 +1025,7 @@ def repair_and_verify_final_geometry(
     `illegal_realized_crossings` list (empty if geometry is clean) for the realization
     phase that follows.
     """
-    state.photonic_probe_index = 0
-    state.last_photonic_probe_layout: Component | None = None
-    state.last_photonic_probe_records: list[RoutedNetRecord] = []
+    state.probe = ProbeCache()
 
     final_crossing_repair_round_limit = 12
     t_final_verification_block_start = timing.pipeline_timer_start(settings, state)
@@ -1045,7 +1043,7 @@ def repair_and_verify_final_geometry(
             break
         if not _repair_final_illegal_crossings(settings, state, illegal_realized_crossings):
             break
-        routed_net_records = state.route_bookkeeping.ordered_records()
+        routed_net_records = state.search.bookkeeping.ordered_records()
         illegal_realized_crossings = _refresh_realized_crossing_verification(settings, state)
     if not illegal_realized_crossings and settings.enable_internal_photonic_probe_verification:
         final_photonic_verification = _refresh_photonic_verification(settings, state)
@@ -1065,7 +1063,7 @@ def repair_and_verify_final_geometry(
                 illegal_realized_crossings = _refresh_realized_crossing_verification(
                     settings, state
                 )
-            routed_net_records = state.route_bookkeeping.ordered_records()
+            routed_net_records = state.search.bookkeeping.ordered_records()
             if illegal_realized_crossings:
                 break
             final_photonic_verification = _refresh_photonic_verification(settings, state)
@@ -1082,10 +1080,9 @@ def repair_and_verify_final_geometry(
                 if state.obstacles.debug_path is not None
                 else Path("build"),
                 debug_prefix=settings.debug_prefix,
-                probe_layout=state.last_photonic_probe_layout,
+                probe_layout=state.probe.layout,
                 verification=final_photonic_verification,
-                records=state.last_photonic_probe_records
-                or state.route_bookkeeping.ordered_records(),
+                records=state.probe.records or state.search.bookkeeping.ordered_records(),
                 router=state.kernel.router,
                 realization_grid_spec=state.run.realization_grid_spec,
                 allow_unchecked_bumps=True,

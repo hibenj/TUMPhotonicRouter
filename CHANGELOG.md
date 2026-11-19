@@ -258,6 +258,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The session state names what is still mutable (S1, slice 6; a
+  restructuring). The seven fields the search writes while it runs (route
+  bookkeeping, attempt records, repair trace, timing buckets, three
+  counters) and the list of route SVGs are one record, `SearchLog`
+  (`state.search`), which phase 5 starts fresh; phase 8's three probe
+  fields are its own `ProbeCache` (`state.probe`). The detour pass returns
+  its re-route count in `RoutedRecords` instead of writing it to the state.
+  Phase 9 takes the products of phases 7 and 8 (`routed`, `verified`)
+  instead of five values picked out of them and of phase 1's, and phase 5
+  reads the obstacle map from phase 1's product instead of a parameter. The
+  state has 14 fields (24 before; 82 at the start of S1). Behaviour is
+  unchanged.
 - Routing phase 5 runs in steps with two frozen results (S1, slice 5; a
   restructuring). `finalize_route_jobs_and_static_handoff` (230 lines) is
   now `_in_routing_order`, `_hand_static_cells_to_kernel`,

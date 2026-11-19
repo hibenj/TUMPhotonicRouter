@@ -13,11 +13,14 @@ Phases 1 and 2 do not take the state. They return frozen products
 and `state.kernel`. That is the form the coding standards ask of every
 phase (rule 3.2: a stage hands its result on as a value).
 
-The fields below are what the phases from 3 on still write into the shared
-record, grouped by the phase that first writes each one, with the writing
-(`w`), mutating (`m`) and reading (`r`) phases named per field; `0` is the
-session before phase 3. A field written by more than one phase is marked
-`# shared writer`: that is real coupling between phases.
+Phases 3 to 5 store their results as frozen records of `products.py` in the
+slots below, each assigned once and as a whole. Three things are still
+mutated after their phase: the crossing plan (`crossing_plan_info`, which
+phases 7 to 9 extend with the realized crossings), the search's log
+(`SearchLog`) and the timing buckets of the pipeline. Per field the writing
+(`w`), mutating (`m`) and reading (`r`) phases are named; `0` is the session
+before phase 3, and `# shared writer` marks a field more than one phase
+writes.
 
 Apart from the four required fields the defaults are inert placeholders: a
 field is created by its phase, and reading it earlier gives a recognisable
@@ -55,6 +58,56 @@ if TYPE_CHECKING:  # `route_jobs` imports this module, so keep the edge annotati
 
 
 @dataclass
+class SearchLog:
+    """Everything the search writes down while it runs.
+
+    The one record several phases write: phase 5 starts a fresh one, phase 6
+    (and the detour pass, and phase 8's repairs) record routes and attempts
+    in it, phase 7 adds the endpoint-correction timings, phase 9 reads it
+    into the debug artifacts.
+    """
+
+    #: records, lengths and committed cells per net
+    bookkeeping: RouteBookkeeping = field(default_factory=lambda: RouteBookkeeping(route_order=[]))
+    #: per-attempt-kind timing buckets
+    timing_buckets: dict[str, RouteTimingBucket] = field(default_factory=dict)
+    #: one record per search attempt
+    attempt_records: list[RouteAttemptRecord] = field(default_factory=list)
+    #: the loop's per-attempt trace, as the kernel reported it
+    native_repair_trace: list[dict[str, object]] = field(default_factory=list)
+    #: per-route debug SVGs
+    route_svgs: list[Path] = field(default_factory=list)
+    repair_count: int = 0
+    #: nets served by the simple-route shortcut
+    simple_route_count: int = 0
+    total_expanded_states: int = 0
+
+    @classmethod
+    def start(cls, route_order: list[int], *, track_dynamic_cells: bool) -> SearchLog:
+        """A fresh log for the jobs of one run, with the four timing buckets."""
+        return cls(
+            bookkeeping=RouteBookkeeping(
+                route_order=route_order, diagnostics_enabled=track_dynamic_cells
+            ),
+            timing_buckets={
+                name: RouteTimingBucket()
+                for name in ("normal_route", "probe_route", "braid_ripup", "endpoint_correction")
+            },
+        )
+
+
+@dataclass
+class ProbeCache:
+    """The last internal photonic probe phase 8 built, for its failure artifacts."""
+
+    #: how many probe layouts this run has built
+    index: int = 0
+    layout: Component | None = None
+    #: the records that probe layout was built from
+    records: list[RoutedNetRecord] = field(default_factory=list)
+
+
+@dataclass
 class SessionState:
     """Everything one routing run computes, in the order the phases produce it."""
 
@@ -73,9 +126,6 @@ class SessionState:
 
     route_nets_timings_s: dict[str, float] = field(default_factory=dict)
     """Per-phase pipeline timings (`timing.py`). w:0 m:1,2,6 r:6,9  # shared writer"""
-
-    route_svgs: list[Path] = field(default_factory=list)
-    """Per-route debug SVGs. m:6 r:6,9"""
 
     # ---- phase 3, route_jobs: one slot per step, assigned once ---------------
     endpoints: EndpointIndex = field(default_factory=EndpointIndex.empty)
@@ -101,40 +151,12 @@ class SessionState:
     run: RunPlan = field(default_factory=RunPlan.empty)
     """The jobs of this run and what was precomputed for them. w:5 r:6,7,8,9"""
 
-    # ---- the search's bookkeeping: phase 5 resets it, phase 6 fills it --------
-    route_bookkeeping: RouteBookkeeping | None = None
-    """Records, opened cells and committed cells per net. w:5 r:6,7,8  # shared writer"""
+    # ---- the two records the later phases mutate ------------------------------
+    search: SearchLog = field(default_factory=SearchLog)
+    """What the search recorded. w:5 m:6,7,7b,8 r:6,7,8,9  # shared writer"""
 
-    detour_pass_reroutes: int | None = None
-    """Nets the detour pass (phase 7b) re-routed; None until the pass ran. w:7 r:9"""
-
-    route_timing_buckets: dict[str, RouteTimingBucket] = field(default_factory=dict)
-    """Per-attempt-kind timing buckets. w:5 m:6 r:6,7,9  # shared writer"""
-
-    route_attempt_records: list[RouteAttemptRecord] = field(default_factory=list)
-    """One record per search attempt. w:5 m:6 r:6,9  # shared writer"""
-
-    repair_count: int = 0
-    """Repair attempts the loop made. w:5,6 r:7,9  # shared writer"""
-
-    simple_route_count: int = 0
-    """Nets served by the Z-route shortcut. w:5,6 r:7,9  # shared writer"""
-
-    total_expanded_states: int = 0
-    """States the searches expanded in total. w:5,6 r:7  # shared writer"""
-
-    native_repair_trace_records: list[dict[str, object]] = field(default_factory=list)
-    """The loop's per-attempt trace, as the kernel reported it. w:5,6 r:6  # shared writer"""
-
-    # ---- phase 8, verify_repair -------------------------------------------
-    last_photonic_probe_layout: Component | None = None
-    """The most recent internal photonic probe layout. w:8 r:8"""
-
-    last_photonic_probe_records: list[RoutedNetRecord] = field(default_factory=list)
-    """The records that probe layout was built from. w:8 r:8"""
-
-    photonic_probe_index: int = 0
-    """How many probe layouts this run has built. w:8 r:8"""
+    probe: ProbeCache = field(default_factory=ProbeCache)
+    """Phase 8's own working record. w:8 m:8 r:8"""
 
     @classmethod
     def after_setup(

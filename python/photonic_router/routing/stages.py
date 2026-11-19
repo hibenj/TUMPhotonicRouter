@@ -15,10 +15,10 @@ own main input, and returns its product as a value:
     6 KernelDispatcher       (settings, state, final_jobs)  -> None
     7 ResultFinalizer        (settings, state, jobs, t0)    -> RoutedRecords
     8 GeometryVerifier       (settings, state, records)     -> VerifiedRecords
-    9 Realizer               (settings, state, ...)         -> RustRouteDebugArtifacts
+    9 Realizer               (settings, state, jobs, routed, verified) -> RustRouteDebugArtifacts
 
 Phase 6 has no product of its own and returns `None`: it runs the kernel and
-leaves the routed results in `state.route_bookkeeping` together with the
+leaves the routed results in `state.search.bookkeeping` together with the
 loop's counters (`repair_count`, `simple_route_count`,
 `total_expanded_states`, `native_repair_trace_records`,
 `route_attempt_records`, `route_timing_buckets`). Those writes are
@@ -37,7 +37,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Protocol
 
 from photonic_router.records.route_rust_types import (
@@ -81,6 +80,8 @@ class RoutedRecords:
 
     routed_net_records: list[RoutedNetRecord]
     astar_elapsed_s: float
+    #: nets the detour pass (phase 7b) re-routed; None when the pass did not run
+    detour_pass_reroutes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -141,7 +142,6 @@ class StaticHandoff(Protocol):
         state: SessionState,
         route_jobs: list[RouteJob],
         foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]],
-        obstacle_map: Any,
     ) -> FinalJobs: ...
 
 
@@ -149,7 +149,7 @@ class KernelDispatcher(Protocol):
     """Phase 6: run the kernel's negotiated loop over the final jobs.
 
     Returns nothing: it mutates the state. The routed results land in
-    `state.route_bookkeeping` and the loop's counters in the fields `state.py`
+    `state.search.bookkeeping` and the loop's counters in the fields `state.py`
     lists under phase 5/6 as shared writers.
     """
 
@@ -199,9 +199,6 @@ class Realizer(Protocol):
         settings: SessionSettings,
         state: SessionState,
         route_jobs: list[RouteJob],
-        routed_net_records: list[RoutedNetRecord],
-        illegal_realized_crossings: list[dict[str, object]],
-        obstacle_map: Any,
-        obstacle_svg: Path | None,
-        astar_elapsed_s: float,
+        routed: RoutedRecords,
+        verified: VerifiedRecords,
     ) -> RustRouteDebugArtifacts: ...

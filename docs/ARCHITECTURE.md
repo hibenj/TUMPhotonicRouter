@@ -467,12 +467,13 @@ obstacle configuration). `SessionSettings` (`routing/settings.py`,
 frozen inputs of the session. Phases 1 and 2 return frozen products
 (`routing/products.py`: `ObstacleContext`, `KernelSetup`), phase 3 stores
 three frozen step records, phase 4 one and phase 5 two. `SessionState`
-(`routing/state.py`) holds those eight, the crossing plan, and what the
-phases from 6 on still write into a shared record, one documented field per value with its
-writing, mutating and reading phases (`w:`, `m:`, `r:`). Nine fields are
-written by more than one phase and carry a `# shared writer` marker (the
-crossing plan, the search counters and timing
-buckets, the route bookkeeping); every other field has one writer.
+(`routing/state.py`, 14 fields) holds the layout, the kernel module, those
+eight records, and the three things that are still mutated after their
+phase: the crossing plan (phases 7 to 9 add the realized crossings), the
+search's log (`SearchLog`: bookkeeping, attempt records, counters, timing
+buckets; phase 5 starts it, phases 6 to 8 write to it) and the pipeline's
+timing buckets. `ProbeCache` is phase 8's own working record. Every field
+names its writing, mutating and reading phases (`w:`, `m:`, `r:`).
 
 
 ## 4. The search interface, and how to add an engine

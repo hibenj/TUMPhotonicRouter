@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 from photonic_router.crossings.route_rust_crossing_components import (
     _place_realized_crossing_components,
@@ -13,13 +12,13 @@ from photonic_router.crossings.route_rust_crossing_plan import _write_crossing_d
 from photonic_router.records.route_rust_realization import realize_routed_net_records
 from photonic_router.records.route_rust_records import build_route_debug_artifacts
 from photonic_router.records.route_rust_types import (
-    RoutedNetRecord,
     RouteJob,
     RustRouteDebugArtifacts,
     summarize_route_search,
 )
 from photonic_router.routing import timing
 from photonic_router.routing.settings import SessionSettings
+from photonic_router.routing.stages import RoutedRecords, VerifiedRecords
 from photonic_router.routing.state import SessionState
 
 
@@ -27,23 +26,30 @@ def realize_and_assemble_debug_artifacts(
     settings: SessionSettings,
     state: SessionState,
     route_jobs: list[RouteJob],
-    routed_net_records: list[RoutedNetRecord],
-    illegal_realized_crossings: list[dict[str, object]],
-    obstacle_map: Any,
-    obstacle_svg: Path | None,
-    astar_elapsed_s: float,
+    routed: RoutedRecords,
+    verified: VerifiedRecords,
 ) -> RustRouteDebugArtifacts:
-    """Realize final geometry (unless deferred), guard against any still-illegal crossing, and assemble debug artifacts.
+    """Phase 9: realize the routes into the layout and assemble the debug artifacts.
 
-    Performs direct geometry realization (`realize_routed_net_records`,
-    `_place_realized_crossing_components`) unless `self.defer_realization` is set,
-    writes crossing debug artifacts, raises a final `RuntimeError` if
-    `illegal_realized_crossings` is still non-empty after the repair loops in
-    `_repair_and_verify_final_geometry` (a second, separate guard from that method's
-    own mid-loop failure raise — this one covers the case where realization proceeds
-    with the same list unexpectedly still populated), then assembles and returns the
-    debug artifacts bundle.
+    Adds one polygon per net and the crossing components unless
+    `settings.defer_realization` is set, writes the crossing debug
+    artifacts, and builds the artifacts record from the verified records,
+    the search's log and the timings.
+
+    Args:
+        settings: the session's resolved inputs.
+        state: the session state.
+        route_jobs: the jobs of this run.
+        routed: phase 7's product (after the detour pass, when it ran), for
+            the search time and the detour count.
+        verified: phase 8's product.
+
+    Raises:
+        RuntimeError: a realized crossing is still illegal after phase 8's
+            repair loops; a second guard behind phase 8's own.
     """
+    routed_net_records = verified.routed_net_records
+    illegal_realized_crossings = verified.illegal_realized_crossings
     if not illegal_realized_crossings and not settings.defer_realization:
         t_direct_realization_start = timing.pipeline_timer_start(settings, state)
         realize_routed_net_records(
@@ -94,21 +100,21 @@ def realize_and_assemble_debug_artifacts(
 
     t_debug_artifact_start = timing.pipeline_timer_start(settings, state)
     debug_artifacts = build_route_debug_artifacts(
-        obstacle_svg=obstacle_svg,
-        route_svgs=state.route_svgs,
-        obstacle_map=obstacle_map,
+        obstacle_svg=state.obstacles.obstacle_svg,
+        route_svgs=state.search.route_svgs,
+        obstacle_map=state.obstacles.obstacle_map,
         routed_net_records=routed_net_records,
         realization_grid_spec=state.run.realization_grid_spec,
         allow_45_degree_turns=settings.allow_45_degree_turns,
         bend_radius_cells=state.kernel.radii.bend_radius_cells,
         route_search_summary=summarize_route_search(
-            state.route_timing_buckets,
+            state.search.timing_buckets,
             route_count=len(route_jobs),
-            simple_route_count=state.simple_route_count,
-            repair_count=state.repair_count,
-            astar_elapsed_s=astar_elapsed_s,
+            simple_route_count=state.search.simple_route_count,
+            repair_count=state.search.repair_count,
+            astar_elapsed_s=routed.astar_elapsed_s,
         ),
-        route_attempt_records=state.route_attempt_records,
+        route_attempt_records=state.search.attempt_records,
         route_nets_timings_s=state.route_nets_timings_s,
     )
     debug_artifacts = replace(
@@ -123,5 +129,5 @@ def realize_and_assemble_debug_artifacts(
             debug_artifacts,
             route_nets_timings_s=dict(state.route_nets_timings_s),
         )
-    debug_artifacts = replace(debug_artifacts, detour_pass_reroutes=state.detour_pass_reroutes)
+    debug_artifacts = replace(debug_artifacts, detour_pass_reroutes=routed.detour_pass_reroutes)
     return debug_artifacts

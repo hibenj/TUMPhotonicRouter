@@ -49,7 +49,7 @@ from photonic_router.routing.products import (
     StaticHandoffCells,
 )
 from photonic_router.routing.settings import SessionSettings
-from photonic_router.routing.state import SessionState
+from photonic_router.routing.state import SearchLog, SessionState
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, _load_rust_backend
 
 from .synthetic_layouts import (
@@ -169,8 +169,9 @@ def state_for_test(**overrides: Any) -> SessionState:
     A test names the few values it cares about. A name that belongs to the
     product of phase 1 or 2 (`grid`, `router`, `bend_radius_cells`, ...) goes
     into `state.obstacles` or `state.kernel`, a name of one of phase 3's step
-    records (`anchor_net_ids`, `ports_by_spec`, ...) into that record; every
-    other name is a field of the state itself. What is not named is an inert
+    records (`anchor_net_ids`, `ports_by_spec`, ...) or of the search's log
+    (`bookkeeping`, ...) into that record; every other name is a field of the
+    state itself. What is not named is an inert
     placeholder.
     """
     values = dict(overrides)
@@ -181,6 +182,9 @@ def state_for_test(**overrides: Any) -> SessionState:
         named = {item.name: values.pop(item.name) for item in fields(record) if item.name in values}
         if named:
             values[slot] = replace(record.empty(), **named)
+    logged = {item.name: values.pop(item.name) for item in fields(SearchLog) if item.name in values}
+    if logged:
+        values["search"] = SearchLog(**logged)
     values.setdefault("routed_layout", None)
     values.setdefault("rust_backend", None)
     return SessionState(obstacles=obstacles, kernel=kernel, **values)
@@ -285,7 +289,6 @@ class Pipeline:
                 state,
                 planned.route_jobs,
                 planned.foreign_port_keepout_cells_by_instance,
-                self.through(1).obstacle_map,
             )
         if phase == 6:
             return dispatch_module.dispatch_native_routing(
@@ -304,14 +307,7 @@ class Pipeline:
         if phase == 9:
             verified = self.through(8)
             return realize_module.realize_and_assemble_debug_artifacts(
-                settings,
-                state,
-                self.through(5).route_jobs,
-                verified.routed_net_records,
-                verified.illegal_realized_crossings,
-                self.through(1).obstacle_map,
-                self.through(1).obstacle_svg,
-                self.through(7).astar_elapsed_s,
+                settings, state, self.through(5).route_jobs, self.through(7), verified
             )
         raise AssertionError(f"no phase {phase}")
 

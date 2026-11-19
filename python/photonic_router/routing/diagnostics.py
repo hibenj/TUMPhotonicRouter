@@ -107,7 +107,7 @@ def _source_lower_bounds(
 def _committed_dynamic_cells(
     settings, state, *, exclude_net_id: int | None = None
 ) -> set[tuple[int, int]]:
-    return state.route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
+    return state.search.bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
 
 
 def _committed_dynamic_cells_for_attempt(
@@ -116,10 +116,10 @@ def _committed_dynamic_cells_for_attempt(
     *,
     exclude_net_id: int | None = None,
 ) -> set[tuple[int, int]]:
-    if state.route_bookkeeping.diagnostics_enabled:
-        return state.route_bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
+    if state.search.bookkeeping.diagnostics_enabled:
+        return state.search.bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
     merged: set[tuple[int, int]] = set()
-    for net_id in state.route_bookkeeping.records_by_id:
+    for net_id in state.search.bookkeeping.records_by_id:
         if exclude_net_id is not None and int(net_id) == int(exclude_net_id):
             continue
         merged.update(_route_cells_from_router(settings, state, net_id))
@@ -578,7 +578,7 @@ def _write_route_diagnostics(
         cells: set[tuple[int, int]],
     ) -> dict[int, list[tuple[int, int]]]:
         owners: dict[int, list[tuple[int, int]]] = {}
-        for net_id in state.route_bookkeeping.records_by_id:
+        for net_id in state.search.bookkeeping.records_by_id:
             if int(net_id) == int(job.net_id):
                 continue
             overlap = cells & _route_cells_from_router(settings, state, int(net_id))
@@ -946,7 +946,7 @@ def _export_route_svg(
     if "</svg>" in svg_text and 'id="route-length-label"' not in svg_text:
         svg_text = svg_text.replace("</svg>", label + "</svg>", 1)
     route_svg.write_text(svg_text, encoding="utf-8")
-    state.route_svgs.append(route_svg)
+    state.search.route_svgs.append(route_svg)
 
 
 def _route_engine_summary(settings, state, route_obj: Any) -> str:
@@ -1110,10 +1110,10 @@ def _write_failed_log(
     opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
     current_attempts = [
         ("current", record)
-        for record in state.route_attempt_records
+        for record in state.search.attempt_records
         if getattr(record, "net_id", None) == job.net_id
     ]
-    recent_attempts = [("recent", record) for record in state.route_attempt_records[-12:]]
+    recent_attempts = [("recent", record) for record in state.search.attempt_records[-12:]]
     root_cause_line = _format_illegal_crossing_root_causes_line(
         [error_text]
         + [
@@ -1169,7 +1169,7 @@ def _write_failed_log(
     ]
     if root_cause_line is not None:
         fail_lines.append(root_cause_line)
-    fail_lines.extend(_format_native_repair_trace_lines(state.native_repair_trace_records))
+    fail_lines.extend(_format_native_repair_trace_lines(state.search.native_repair_trace))
     for label, attempt in current_attempts[-8:] + recent_attempts:
         as_dict = attempt.as_dict()
         diagnostics = as_dict.get("diagnostics")

@@ -178,9 +178,9 @@ def test_phase6_kernel_dispatcher_leaves_the_routes_in_the_bookkeeping(
     assert pipeline.through(6) is None  # phase 6's product is the state
 
     state = pipeline.state
-    assert sorted(state.route_bookkeeping.records_by_id) == [1, 2, 3]
-    assert state.total_expanded_states >= 0
-    assert len(state.route_bookkeeping.ordered_records()) == 3
+    assert sorted(state.search.bookkeeping.records_by_id) == [1, 2, 3]
+    assert state.search.total_expanded_states >= 0
+    assert len(state.search.bookkeeping.ordered_records()) == 3
 
 
 def test_phase7_result_finalizer_returns_one_record_per_net(pipeline: Pipeline) -> None:
@@ -231,7 +231,7 @@ def test_phase5_stores_the_static_cells_and_the_run_plan(pipeline: Pipeline) -> 
     state = pipeline.state
 
     assert state.run.route_order == [job.net_id for job in final.route_jobs]
-    assert state.route_bookkeeping.route_order is state.run.route_order
+    assert state.search.bookkeeping.route_order is state.run.route_order
     # the blockers before port reservations: the raw static cells plus the runways
     assert (
         state.static_cells.blocked_cells_before_port_reservations

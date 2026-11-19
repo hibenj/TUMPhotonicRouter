@@ -1392,7 +1392,7 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
         stub_static_cells_by_spec={},
         collect_timing=False,
         router=SimpleNamespace(apply_checked_endpoint_corrections=_apply),
-        route_bookkeeping=SimpleNamespace(records_by_id={net_id: record}),
+        bookkeeping=SimpleNamespace(records_by_id={net_id: record}),
         route_jobs_by_id={net_id: job},
         commit_radius_cells=0,
         core_commit_radius_cells=0,
@@ -1466,7 +1466,7 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
             )
         },
     )
-    state.route_bookkeeping = SimpleNamespace(
+    state.search.bookkeeping = SimpleNamespace(
         records_by_id={
             plain_net_id: _record(),
             crossing_net_id: _record(),
@@ -1513,7 +1513,7 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
     # corrected centerline falls through to UNRESTRICTED, matching the
     # real pass 1 today (see _classify_net_for_endpoint_correction's own
     # docstring) -- not a bug, an explicit, tested edge case.
-    state.route_bookkeeping.records_by_id[source_stub_net_id] = _record()
+    state.search.bookkeeping.records_by_id[source_stub_net_id] = _record()
     not_yet_precorrected = classify(source_stub_net_id)
     assert not_yet_precorrected.category is route_rust.EndpointCorrectionCategory.UNRESTRICTED
 

@@ -80,7 +80,7 @@ def select_detoured_net_ids(
 def _route_lengths_um(state: SessionState, net_ids: Iterable[int]) -> dict[int, float]:
     """The recorded route lengths (the bookkeeping's, after endpoint correction)."""
 
-    lengths = state.route_bookkeeping.lengths_by_id
+    lengths = state.search.bookkeeping.lengths_by_id
     return {
         int(net_id): float(lengths[int(net_id)]) for net_id in net_ids if int(net_id) in lengths
     }
@@ -141,7 +141,7 @@ def run_detour_pass(
         )
         for net_id in detoured:
             state.kernel.router.ripup_route(int(net_id))
-            state.route_bookkeeping.clear_route(int(net_id))
+            state.search.bookkeeping.clear_route(int(net_id))
         batch_jobs = native_route_jobs(settings, state, (jobs_by_id[net_id] for net_id in detoured))
         opened_by_id = {int(job.net_id): job.opened_cells for job in batch_jobs}
         raw_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
@@ -177,5 +177,8 @@ def run_detour_pass(
             f"      - detour pass {pass_index}: re-routed {len(rerouted_ids)} net(s), "
             f"{before_um:.1f} -> {after_um:.1f} um"
         )
-    state.detour_pass_reroutes = total_reroutes
-    return RoutedRecords(state.route_bookkeeping.ordered_records(), routed.astar_elapsed_s)
+    return RoutedRecords(
+        state.search.bookkeeping.ordered_records(),
+        routed.astar_elapsed_s,
+        detour_pass_reroutes=total_reroutes,
+    )

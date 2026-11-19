@@ -272,7 +272,7 @@ def _record_route(
                 corrected_total_length_um = None
     target_anchor = state.fanout.anchor_by_port_spec.get(f"{job.inst2},{job.port2}")
     target_port_center_um_override = target_anchor.center_um if target_anchor is not None else None
-    state.route_bookkeeping.record_route(
+    state.search.bookkeeping.record_route(
         job,
         route_obj,
         opened_cells,
@@ -297,9 +297,9 @@ def _finalize_committed_route(
     debug_obstacle_cells: set[tuple[int, int]] | None = None,
 ) -> None:
     expanded_states = int(getattr(route_obj, "expanded_states", 0))
-    state.total_expanded_states += expanded_states
+    state.search.total_expanded_states += expanded_states
     if expanded_states == 0:
-        state.simple_route_count += 1
+        state.search.simple_route_count += 1
 
     if state.obstacles.diagnostics_enabled:
         source_state, target_state, opened_candidate_cells, opened_cells_set, _ = (
@@ -410,7 +410,7 @@ def dispatch_native_routing(
     timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
     t_batch_result_processing_start = timing.pipeline_timer_start(settings, state)
     batch_result = dict(raw_batch_result)
-    state.native_repair_trace_records = [
+    state.search.native_repair_trace = [
         dict(record)
         for record in cast(
             Iterable[Mapping[str, object]],
@@ -433,7 +433,7 @@ def dispatch_native_routing(
         error_text = str(attempt.get("error")) if attempt.get("error") is not None else None
         repair_round_raw = attempt.get("repair_round")
         repair_round = int(repair_round_raw) if repair_round_raw is not None else None
-        attempt_index = len(state.route_attempt_records) + 1
+        attempt_index = len(state.search.attempt_records) + 1
         candidate_blockers = [
             int(value) for value in cast(list[object], attempt.get("candidate_blockers", []))
         ]
@@ -456,7 +456,7 @@ def dispatch_native_routing(
                 suffix=f"_attempt{attempt_index}_{bucket_name}",
             )
         if state.run.collect_timing:
-            bucket = state.route_timing_buckets.setdefault(
+            bucket = state.search.timing_buckets.setdefault(
                 bucket_name,
                 RouteTimingBucket(),
             )
@@ -470,7 +470,7 @@ def dispatch_native_routing(
                     per_attempt_elapsed_s,
                     failed=failed,
                 )
-            state.route_attempt_records.append(
+            state.search.attempt_records.append(
                 route_attempt_record_from_route(
                     attempt_index=attempt_index,
                     bucket_name=bucket_name,
@@ -497,7 +497,7 @@ def dispatch_native_routing(
                 )
             )
 
-    state.repair_count += int(batch_result.get("repair_count", 0) or 0)
+    state.search.repair_count += int(batch_result.get("repair_count", 0) or 0)
     raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
     for raw_entry in raw_routes:
         entry = dict(raw_entry)

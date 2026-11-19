@@ -12,14 +12,13 @@ from gdsfactory.typings import Port
 
 from photonic_router.config import ALL_NETS
 from photonic_router.records.route_order import depth_by_node_from_jobs, order_route_jobs
-from photonic_router.records.route_rust_records import RouteBookkeeping
-from photonic_router.records.route_rust_types import RipupRerouteConfig, RouteJob, RouteTimingBucket
+from photonic_router.records.route_rust_types import RipupRerouteConfig, RouteJob
 from photonic_router.routing import timing
 from photonic_router.routing.products import RunPlan, StateOpenings, StaticHandoffCells
 from photonic_router.routing.route_jobs import _angle_to_step, _in_bounds, port_to_grid_state
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import FinalJobs
-from photonic_router.routing.state import SessionState
+from photonic_router.routing.state import SearchLog, SessionState
 from photonic_router.static_obstacle_builder import grid_cell_center
 
 
@@ -590,13 +589,13 @@ def _hand_static_cells_to_kernel(
     settings: SessionSettings,
     state: SessionState,
     keepout_cells_by_instance: dict[str, set[tuple[int, int]]],
-    obstacle_map: Any,
 ) -> StaticHandoffCells:
     """Step 2: give the kernel the static map, the port reservations and the die keep-out.
 
     Raises:
         RuntimeError: the loaded kernel lacks one of the static-geometry calls.
     """
+    obstacle_map = state.obstacles.obstacle_map
     port_runway_static_cells: set[tuple[int, int]] = set()
     for cells in state.ports.runway_cells_by_spec.values():
         port_runway_static_cells.update(cells)
@@ -775,20 +774,19 @@ def finalize_route_jobs_and_static_handoff(
     state: SessionState,
     route_jobs: list[RouteJob],
     foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]],
-    obstacle_map: Any,
 ) -> FinalJobs:
     """Phase 5: order the jobs, hand the static cells to the kernel, prepare the run.
 
     Stores two frozen records, `state.static_cells` (what the kernel was
     given beyond the obstacle map) and `state.run` (the jobs of this run
-    and what was precomputed for them), and resets the search's bookkeeping
-    and counters, which phase 6 fills. Returns the jobs of this run and the
+    and what was precomputed for them), and starts the search's log
+    (`state.search`), which phase 6 fills. Returns the jobs of this run and the
     clock reading from before the precomputation, so that the search time
     the caller measures covers it.
     """
     full_route_jobs = _in_routing_order(settings, state, route_jobs)
     state.static_cells = _hand_static_cells_to_kernel(
-        settings, state, foreign_port_keepout_cells_by_instance, obstacle_map
+        settings, state, foreign_port_keepout_cells_by_instance
     )
     route_jobs = _jobs_of_this_run(settings, full_route_jobs)
 
@@ -799,22 +797,10 @@ def finalize_route_jobs_and_static_handoff(
         or settings.collect_attempt_diagnostics
     )
     track_dynamic_cells = state.obstacles.diagnostics_enabled
-    state.route_bookkeeping = RouteBookkeeping(
-        route_order=route_order,
-        diagnostics_enabled=track_dynamic_cells,
-    )
+    state.search = SearchLog.start(route_order, track_dynamic_cells=track_dynamic_cells)
     t_astar_start = 0.0
     if collect_timing:
         t_astar_start = time.perf_counter()
-    state.total_expanded_states = 0
-    state.simple_route_count = 0
-    state.repair_count = 0
-    state.route_attempt_records = []
-    state.native_repair_trace_records = []
-    state.route_timing_buckets = {
-        name: RouteTimingBucket()
-        for name in ("normal_route", "probe_route", "braid_ripup", "endpoint_correction")
-    }
 
     state_openings_by_id, clearance_exempt_cells_by_id = _precompute_openings(
         settings, state, route_jobs
