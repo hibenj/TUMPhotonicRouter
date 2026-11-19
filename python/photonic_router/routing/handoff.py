@@ -63,7 +63,7 @@ def _snap_nearly_collinear_states(
     source_y_um = float(source_center[1])
     target_x_um = float(target_center[0])
     target_y_um = float(target_center[1])
-    grid_size = float(state.grid.grid_size_um)
+    grid_size = float(state.obstacles.grid.grid_size_um)
     max_snap_um = max(grid_size, 2.0 * grid_size)
     max_snap_cells = max(1, math.ceil(max_snap_um / grid_size))
 
@@ -138,7 +138,7 @@ def _snap_same_heading_minimum_bend_offset(
     if source_angle != target_angle:
         return source_state, target_state, extra_cells
 
-    min_offset_cells = 2 * int(state.bend_radius_cells)
+    min_offset_cells = 2 * int(state.kernel.radii.bend_radius_cells)
     if min_offset_cells <= 0:
         return source_state, target_state, extra_cells
 
@@ -197,10 +197,10 @@ def _filter_dense_port_opening(
     owner_group = state.dense_port_lateral_owner_groups.get(port_spec)
     if owner_group is not None and cells:
         lateral_x, lateral_y, owners = owner_group
-        grid_size = float(state.grid.grid_size_um)
+        grid_size = float(state.obstacles.grid.grid_size_um)
         filtered: set[tuple[int, int]] = set()
         for cell_x, cell_y in cells:
-            center_x, center_y = grid_cell_center(cell_x, cell_y, state.grid)
+            center_x, center_y = grid_cell_center(cell_x, cell_y, state.obstacles.grid)
             lateral_position = center_x * lateral_x + center_y * lateral_y
             nearest_spec = min(
                 owners,
@@ -214,13 +214,13 @@ def _filter_dense_port_opening(
     if window is None or not cells:
         return set(cells)
     lateral_x, lateral_y, lower, upper, lane_margin_um = window
-    grid_size = float(state.grid.grid_size_um)
+    grid_size = float(state.obstacles.grid.grid_size_um)
     lower -= lane_margin_um
     upper += lane_margin_um
     eps = max(1.0e-9, grid_size * 1.0e-9)
     filtered: set[tuple[int, int]] = set()
     for cell_x, cell_y in cells:
-        center_x, center_y = grid_cell_center(cell_x, cell_y, state.grid)
+        center_x, center_y = grid_cell_center(cell_x, cell_y, state.obstacles.grid)
         lateral_position = center_x * lateral_x + center_y * lateral_y
         if lower - eps <= lateral_position <= upper + eps:
             filtered.add((cell_x, cell_y))
@@ -311,18 +311,18 @@ def _route_job_grid_span(settings, state, route_job: RouteJob) -> int:
         settings,
         state,
         route_job.source_port,
-        state.origin_x_um,
-        state.origin_y_um,
-        float(state.grid.grid_size_um),
+        state.kernel.frame.origin_x_um,
+        state.kernel.frame.origin_y_um,
+        float(state.obstacles.grid.grid_size_um),
         as_target=False,
     )
     target_state = port_to_grid_state(
         settings,
         state,
         route_job.target_port,
-        state.origin_x_um,
-        state.origin_y_um,
-        float(state.grid.grid_size_um),
+        state.kernel.frame.origin_x_um,
+        state.kernel.frame.origin_y_um,
+        float(state.obstacles.grid.grid_size_um),
         as_target=True,
     )
     return abs(int(source_state.x) - int(target_state.x)) + abs(
@@ -376,7 +376,7 @@ def _endpoint_bump_candidate_open_cells_for_state(
     base_y = int(grid_state.y)
     step_x, step_y = _angle_to_step(settings, state, int(grid_state.angle) % 8)
     side_steps = ((-step_y, step_x), (step_y, -step_x))
-    reach = max(1, int(state.bend_radius_cells))
+    reach = max(1, int(state.kernel.radii.bend_radius_cells))
     axis_reach = 4 * reach
     lateral_reach = 2 * reach
     cells: set[tuple[int, int]] = set()
@@ -385,7 +385,7 @@ def _endpoint_bump_candidate_open_cells_for_state(
             continue
         x = base_x + step_x * forward
         y = base_y + step_y * forward
-        if 0 <= x < int(state.grid.width) and 0 <= y < int(state.grid.height):
+        if 0 <= x < int(state.obstacles.grid.width) and 0 <= y < int(state.obstacles.grid.height):
             cells.add((x, y))
     for side_x, side_y in side_steps:
         for lateral in range(1, lateral_reach + 1):
@@ -394,7 +394,9 @@ def _endpoint_bump_candidate_open_cells_for_state(
                     continue
                 x = base_x + step_x * forward + side_x * lateral
                 y = base_y + step_y * forward + side_y * lateral
-                if 0 <= x < int(state.grid.width) and 0 <= y < int(state.grid.height):
+                if 0 <= x < int(state.obstacles.grid.width) and 0 <= y < int(
+                    state.obstacles.grid.height
+                ):
                     cells.add((x, y))
     return cells
 
@@ -413,9 +415,9 @@ def _states_and_openings(
             settings,
             state,
             job.source_port,
-            state.origin_x_um,
-            state.origin_y_um,
-            float(state.grid.grid_size_um),
+            state.kernel.frame.origin_x_um,
+            state.kernel.frame.origin_y_um,
+            float(state.obstacles.grid.grid_size_um),
             as_target=False,
         )
     else:
@@ -429,9 +431,9 @@ def _states_and_openings(
             settings,
             state,
             job.target_port,
-            state.origin_x_um,
-            state.origin_y_um,
-            float(state.grid.grid_size_um),
+            state.kernel.frame.origin_x_um,
+            state.kernel.frame.origin_y_um,
+            float(state.obstacles.grid.grid_size_um),
             as_target=True,
         )
     else:
@@ -610,7 +612,7 @@ def finalize_route_jobs_and_static_handoff(
     state.debug_port_keepout_cells = set(port_runway_static_cells)
     state.debug_port_keepout_cells.update(state.foreign_port_keepout_static_cells)
     state.debug_port_keepout_cells.update(state.fanout_stub_static_cells)
-    state.static_blocked_cells_before_port_reservations = set(state.raw_static_cells)
+    state.static_blocked_cells_before_port_reservations = set(state.kernel.static.raw_static_cells)
     state.static_blocked_cells_before_port_reservations.update(port_runway_static_cells)
     state.static_blocked_cells_before_port_reservations.update(
         state.foreign_port_keepout_static_cells
@@ -630,31 +632,31 @@ def finalize_route_jobs_and_static_handoff(
             blocked_static_rects.append((int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])))
         state.blocked_static_rects_for_diagnostics = list(blocked_static_rects)
         if blocked_static_rects:
-            if not hasattr(state.router, "set_static_rects"):
+            if not hasattr(state.kernel.router, "set_static_rects"):
                 raise RuntimeError(
                     "The loaded photonic_router._rust extension does not expose "
                     "PyPhotonicRouter.set_static_rects. Rebuild it with "
                     "`maturin develop --release`; otherwise bounding_boxes mode "
                     "cannot use compact static rectangles."
                 )
-            state.router.set_static_rects(blocked_static_rects)
+            state.kernel.router.set_static_rects(blocked_static_rects)
         else:
-            state.router.set_static_cells(sorted(state.raw_static_cells))
+            state.kernel.router.set_static_cells(sorted(state.kernel.static.raw_static_cells))
     else:
-        sorted_static_cells = sorted(state.raw_static_cells)
-        state.router.set_static_cells(sorted_static_cells)
+        sorted_static_cells = sorted(state.kernel.static.raw_static_cells)
+        state.kernel.router.set_static_cells(sorted_static_cells)
     if (
         port_runway_static_cells
         or state.foreign_port_keepout_static_cells
         or state.fanout_stub_static_cells
     ):
-        if not hasattr(state.router, "add_static_cells"):
+        if not hasattr(state.kernel.router, "add_static_cells"):
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
                 "PyPhotonicRouter.add_static_cells. Rebuild it with "
                 "`maturin develop --release`."
             )
-        state.router.add_static_cells(
+        state.kernel.router.add_static_cells(
             sorted(
                 port_runway_static_cells
                 | state.foreign_port_keepout_static_cells
@@ -671,13 +673,13 @@ def finalize_route_jobs_and_static_handoff(
     ]
     state.chip_boundary_static_rects: list[tuple[int, int, int, int]] = chip_boundary_rects
     if chip_boundary_rects:
-        if not hasattr(state.router, "add_static_rects"):
+        if not hasattr(state.kernel.router, "add_static_rects"):
             raise RuntimeError(
                 "The loaded photonic_router._rust extension does not expose "
                 "PyPhotonicRouter.add_static_rects. Rebuild it with "
                 "`maturin develop --release`."
             )
-        state.router.add_static_rects(chip_boundary_rects)
+        state.kernel.router.add_static_rects(chip_boundary_rects)
         state.blocked_static_rects_for_diagnostics.extend(chip_boundary_rects)
         if settings.verbose_route_diagnostics:
             print(
@@ -725,7 +727,7 @@ def finalize_route_jobs_and_static_handoff(
         or settings.collect_route_stats
         or settings.collect_attempt_diagnostics
     )
-    state.track_dynamic_cells = state.diagnostics_enabled
+    state.track_dynamic_cells = state.obstacles.diagnostics_enabled
     state.route_bookkeeping = RouteBookkeeping(
         route_order=state.route_order,
         diagnostics_enabled=state.track_dynamic_cells,
@@ -744,7 +746,7 @@ def finalize_route_jobs_and_static_handoff(
         for name in ("normal_route", "probe_route", "braid_ripup", "endpoint_correction")
     }
 
-    if not hasattr(state.router, "build_dynamic_clearance_exempt_cells_for_routes"):
+    if not hasattr(state.kernel.router, "build_dynamic_clearance_exempt_cells_for_routes"):
         extension_path = getattr(state.rust_backend, "__file__", "<unknown>")
         raise RuntimeError(
             "The loaded photonic_router._rust extension does not expose "
@@ -770,10 +772,10 @@ def finalize_route_jobs_and_static_handoff(
     t_clearance_exempt_batch_start = timing.pipeline_timer_start(settings, state)
     state.batch_clearance_exempt_cells_by_id = {
         int(net_id): [(int(cell[0]), int(cell[1])) for cell in cells]
-        for net_id, cells in state.router.build_dynamic_clearance_exempt_cells_for_routes(
+        for net_id, cells in state.kernel.router.build_dynamic_clearance_exempt_cells_for_routes(
             clearance_exempt_inputs,
-            int(state.commit_radius_cells),
-            int(state.port_lane_length_cells),
+            int(state.kernel.radii.commit_radius_cells),
+            int(state.kernel.lanes.port_lane_length_cells),
         )
     }
     timing.record_pipeline_timing(
@@ -784,11 +786,11 @@ def finalize_route_jobs_and_static_handoff(
     )
 
     state.realization_grid_spec = (
-        int(state.grid.width),
-        int(state.grid.height),
-        float(state.grid.grid_size_um),
-        float(state.origin_x_um),
-        float(state.origin_y_um),
+        int(state.obstacles.grid.width),
+        int(state.obstacles.grid.height),
+        float(state.obstacles.grid.grid_size_um),
+        float(state.kernel.frame.origin_x_um),
+        float(state.kernel.frame.origin_y_um),
     )
 
     return FinalJobs(route_jobs, t_astar_start)

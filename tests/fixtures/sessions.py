@@ -34,6 +34,14 @@ from photonic_router.routing import route_jobs as route_jobs_module
 from photonic_router.routing import router_setup as router_setup_module
 from photonic_router.routing import verify_repair as verify_repair_module
 from photonic_router.routing.options import SessionOptions
+from photonic_router.routing.products import (
+    ClearanceRadii,
+    GridFrame,
+    KernelSetup,
+    ObstacleContext,
+    PortLanes,
+    RawStaticGeometry,
+)
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SessionState
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, _load_rust_backend
@@ -95,16 +103,64 @@ def settings_for_test(**overrides: Any) -> SessionSettings:
     )
 
 
-def state_for_test(**overrides: Any) -> SessionState:
-    """Build a `SessionState` directly from its own keyword overrides.
+_PRODUCT_GROUPS: dict[str, type] = {
+    "frame": GridFrame,
+    "radii": ClearanceRadii,
+    "lanes": PortLanes,
+    "static": RawStaticGeometry,
+}
 
-    `SessionState`'s fields already default sensibly (unlike `SessionSettings`,
-    which normalises its options through `from_options`), so this is a thin
-    alias -- it exists so a test that hands a fake session both its settings
-    and its state can write `settings_for_test(...)`/`state_for_test(...)` as
-    one paired convention.
+
+def _placeholders() -> dict[str, Any]:
+    """Fresh placeholders for a state that never ran phases 1 and 2.
+
+    A field that is not listed is a cell count and defaults to 0.
     """
-    return SessionState(**overrides)
+    return {
+        "obstacle_map": None,
+        "crossing_device_info": {},
+        "obstacle_svg": None,
+        "grid": None,
+        "resolved_obstacle_config": None,
+        "debug_path": None,
+        "router": None,
+        "primitive_cfg": None,
+        "astar_cfg": None,
+        "clearance_policy": None,
+        "route_clearance_um": 0.0,
+        "origin_x_um": 0.0,
+        "origin_y_um": 0.0,
+        "raw_static_cells": set(),
+        "raw_static_rects_for_openings": [],
+        "heater_opening_rects_for_openings": [],
+    }
+
+
+def _product(record: type, values: dict[str, Any], **nested: Any) -> Any:
+    """Build one product record, taking its fields out of `values`."""
+    placeholders = _placeholders()
+    own: dict[str, Any] = dict(nested)
+    for item in fields(record):
+        if item.name not in own:
+            own[item.name] = values.pop(item.name, placeholders.get(item.name, 0))
+    return record(**own)
+
+
+def state_for_test(**overrides: Any) -> SessionState:
+    """Build a `SessionState` from flat field names, without running a phase.
+
+    A test names the few values it cares about. A name that belongs to the
+    product of phase 1 or 2 (`grid`, `router`, `bend_radius_cells`, ...) goes
+    into `state.obstacles` or `state.kernel`; every other name is a field of
+    the state itself. What is not named is an inert placeholder.
+    """
+    values = dict(overrides)
+    obstacles = _product(ObstacleContext, values)
+    groups = {name: _product(record, values) for name, record in _PRODUCT_GROUPS.items()}
+    kernel = _product(KernelSetup, values, **groups)
+    values.setdefault("routed_layout", None)
+    values.setdefault("rust_backend", None)
+    return SessionState(obstacles=obstacles, kernel=kernel, **values)
 
 
 class Pipeline:
@@ -146,8 +202,24 @@ class Pipeline:
         rust_backend = _load_rust_backend()
         if rust_backend is None:  # pragma: no cover - the kernel is built in CI
             pytest.skip("Rust router backend unavailable.")
-        self.state = state_for_test(rust_backend=rust_backend, routed_layout=layout.copy())
+        self._rust_backend = rust_backend
+        self._routed_layout = layout.copy()
+        self._timings_s: dict[str, float] = {}
+        self._state: SessionState | None = None
         self._products: dict[int, Any] = {}
+
+    @property
+    def state(self) -> SessionState:
+        """The shared state, built from the products of phases 1 and 2."""
+        if self._state is None:
+            self._state = SessionState.after_setup(
+                routed_layout=self._routed_layout,
+                rust_backend=self._rust_backend,
+                timings_s=self._timings_s,
+                obstacles=self.through(1),
+                kernel=self.through(2),
+            )
+        return self._state
 
     def through(self, phase: int) -> Any:
         """The product of `phase`, running the phases before it once each."""
@@ -158,13 +230,16 @@ class Pipeline:
         return self._products[phase]
 
     def _run(self, phase: int) -> Any:
-        settings, state = self.settings, self.state
+        settings = self.settings
         if phase == 1:
-            return obstacle_context_module.build_static_obstacle_context(settings, state)
+            return obstacle_context_module.build_static_obstacle_context(
+                settings, self._rust_backend, self._timings_s
+            )
         if phase == 2:
             return router_setup_module.configure_router_and_grid(
-                settings, state, self.through(1).obstacle_map
+                settings, self._rust_backend, self.through(1), self._timings_s
             )
+        state = self.state
         if phase == 3:
             jobs = route_jobs_module.build_route_jobs_and_fanout_clustering(
                 settings, state, settings.schematic.netlist.routes

@@ -1,33 +1,27 @@
-"""The routing session's per-run state: one mutable record the nine phases share.
+"""The routing session's per-run state: the record the phases from 3 on share.
 
-Milestone 5 Slice 2b (see the ExecPlan's Decision Log entry of 2026-09-24 for why
-the slice was reshaped): the session used to carry this as ~80 loose attributes
-created wherever a phase happened to need them, so which phase produced a value
-and which phase consumed it was only discoverable by reading all nine stage
-modules. It is now one dataclass, grouped by the phase that FIRST writes each
-field, with the writing and reading phases named per field. A stage function
-takes `(settings, state)`: `settings` is the frozen `SessionSettings` of Slice 2a
-(the run's inputs), `state` is this record (everything the run computes).
-
-The phase numbers are the nine `run()` steps:
+A phase takes `(settings, state)`: `settings` is the frozen `SessionSettings`
+(the run's inputs), `state` is this record. The phase numbers are the steps
+of `session.run()`:
 
     1 obstacle_context   2 router_setup   3 route_jobs   4 crossing_plan_stage
     5 handoff   6 dispatch   7 finalize   8 verify_repair   9 realize
 
-`0` is the session constructor. A field written by more than one phase is marked
-`# shared writer`: that is real coupling between phases, not an accident of the
-old attribute soup, and it is the reason this slice documents the state instead
-of forcing a single owner on every field. The 19 shared writers are the concrete
-list Milestone 8 negotiates (the reshaping note counted 16; the three extra are
-`route_attempt_records`, `route_svgs` and `route_timing_buckets`, which phase 5
-creates and phase 6 appends to, plus `route_bookkeeping`, whose phase-7 writes go
-through its own attributes rather than a rebinding of the field).
+Phases 1 and 2 do not take the state. They return frozen products
+(`products.py`), and the session builds the state from them with
+`SessionState.after_setup`; the later phases read them as `state.obstacles`
+and `state.kernel`. That is the form the coding standards ask of every
+phase (rule 3.2: a stage hands its result on as a value).
 
-Defaults are inert placeholders only. Every field is still created by the same
-statement in the same phase as before, so nothing is computed earlier than it
-used to be; the defaults exist so that `SessionState()` is constructible and so
-that reading a field before its phase has run is a recognisable empty value
-rather than an `AttributeError`.
+The fields below are what the phases from 3 on still write into the shared
+record, grouped by the phase that first writes each one, with the writing
+(`w`), mutating (`m`) and reading (`r`) phases named per field; `0` is the
+session before phase 3. A field written by more than one phase is marked
+`# shared writer`: that is real coupling between phases.
+
+Apart from the four required fields the defaults are inert placeholders: a
+field is created by its phase, and reading it earlier gives a recognisable
+empty value.
 """
 
 from __future__ import annotations
@@ -41,7 +35,6 @@ from gdsfactory.typings import Port
 
 from photonic_router.records.route_rust_records import RouteBookkeeping
 from photonic_router.records.route_rust_types import (
-    OpticalRouteClearancePolicy,
     RipupRerouteConfig,
     RouteAttemptRecord,
     RoutedNetRecord,
@@ -49,7 +42,7 @@ from photonic_router.records.route_rust_types import (
     RouteTimingBucket,
 )
 from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
-from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
+from photonic_router.routing.products import KernelSetup, ObstacleContext
 
 if TYPE_CHECKING:  # `route_jobs` imports this module, so keep the edge annotation-only
     from photonic_router.routing.route_jobs import _FanoutAnchor
@@ -59,107 +52,37 @@ if TYPE_CHECKING:  # `route_jobs` imports this module, so keep the edge annotati
 class SessionState:
     """Everything one routing run computes, in the order the phases produce it."""
 
-    # ---- phase 0, the session constructor ---------------------------------
-    routed_layout: Component | None = None
+    # ---- what the session has before the first phase that takes the state ---
+    routed_layout: Component
     """The layout the run fills with routed geometry. w:0 r:3,4,9"""
 
-    rust_backend: Any = None
-    """The loaded `photonic_router._rust` module (PyO3). w:0 r:1,2,3,4,5"""
+    rust_backend: Any
+    """The loaded `photonic_router._rust` module (PyO3). w:0 r:3,4,5"""
+
+    obstacles: ObstacleContext
+    """Phase 1's product (`products.py`), never rebound. r:3,4,5,6,7,8,9"""
+
+    kernel: KernelSetup
+    """Phase 2's product (`products.py`), never rebound. r:3,4,5,6,7,8,9"""
 
     route_nets_timings_s: dict[str, float] = field(default_factory=dict)
-    """Per-phase pipeline timings (`timing.py`). w:0 m:6 r:1,6,9  # shared writer"""
-
-    # ---- phase 1, obstacle_context ----------------------------------------
-    grid: GridSpec | None = None
-    """The routing grid of the static obstacle map. w:1 r:1,2,3,4,5,6,7,8"""
-
-    resolved_obstacle_config: StaticObstacleMapConfig | None = None
-    """The obstacle configuration actually used. w:1 r:1,2,4"""
-
-    resolved_crossing_half_size_cells: int = 0
-    """Crossing footprint half-size after resolution. w:1 r:4,8"""
-
-    debug_path: Path | None = None
-    """The debug artifact directory, or None. w:1 r:1,6,8,9"""
-
-    diagnostics_enabled: bool = False
-    """Whether debug diagnostics are collected (debug_path is set). w:1 r:5,6,7"""
+    """Per-phase pipeline timings (`timing.py`). w:0 m:1,2,6 r:6,9  # shared writer"""
 
     route_svgs: list[Path] = field(default_factory=list)
-    """Per-route debug SVGs. w:1 m:6 r:6,9  # shared writer"""
+    """Per-route debug SVGs. m:6 r:6,9"""
 
-    # ---- phase 2, router_setup --------------------------------------------
-    grid_width: int = 0
-    """Grid width in cells. w:2 r:4,6"""
-
-    grid_height: int = 0
-    """Grid height in cells. w:2 r:4,6"""
-
-    origin_x_um: float = 0.0
-    """Grid origin x in micrometres. w:2 r:2,3,4,5,8"""
-
-    origin_y_um: float = 0.0
-    """Grid origin y in micrometres. w:2 r:2,3,4,5,8"""
-
-    raw_static_cells: set[tuple[int, int]] = field(default_factory=set)
-    """Static blocked cells before any clearance inflation. w:2 r:2,4,5"""
-
-    raw_static_rects_for_openings: list[tuple[int, int, int, int]] = field(default_factory=list)
-    """Raw static geometry as rectangles, for port openings. w:2 r:2,4"""
-
-    heater_opening_rects_for_openings: list[tuple[int, int, int, int]] = field(default_factory=list)
-    """Raw plus heater-layer rectangles, for heater openings. w:2 r:4"""
-
+    # ---- indexes of phase 2's raw static geometry, built on demand ----------
     raw_static_cells_by_y: dict[int, set[int]] | None = None
-    """Row index of `raw_static_cells`, built on demand. w:2,4 r:4  # shared writer"""
+    """Row index of `kernel.static.raw_static_cells`, built on demand. w:4 r:4"""
 
     raw_static_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
-    """Row index of the raw static rectangles, built on demand. w:2,4 r:4  # shared writer"""
+    """Row index of the raw static rectangles, built on demand. w:4 r:4"""
 
     heater_opening_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
-    """Row index of the heater opening rectangles, on demand. w:2,4 r:4  # shared writer"""
+    """Row index of the heater opening rectangles, on demand. w:4 r:4"""
 
     static_blocked_cells_before_port_reservations: set[tuple[int, int]] = field(default_factory=set)
-    """Static blockers as of before port reservations. w:2,5 m:5 r:5,6  # shared writer"""
-
-    clearance_policy: OpticalRouteClearancePolicy | None = None
-    """The derived clearance radii for this route width and grid. w:2 r:2,6"""
-
-    route_clearance_um: float = 0.0
-    """Clearance of the resolved obstacle configuration. w:2 r:2,4"""
-
-    bend_radius_cells: int = 0
-    """Bend radius in grid cells. w:2 r:2,3,4,5,6,7,8,9"""
-
-    commit_radius_cells: int = 0
-    """Keepout radius committed around a routed net. w:2 r:2,3,5,6,7,8"""
-
-    core_commit_radius_cells: int = 0
-    """Core (waveguide) radius of a committed route. w:2 r:6,7,8"""
-
-    block_radius_cells: int = 0
-    """Search expansion radius around dynamic obstacles. w:2 r:6,8"""
-
-    port_lane_length_cells: int = 0
-    """Length of a generic port access lane. w:2 r:4,5,6"""
-
-    port_lane_half_width_cells: int = 0
-    """Half width of a generic port access lane. w:2 r:3,4,6"""
-
-    stub_port_lane_length_cells: int = 0
-    """Length of a dense-fan-out stub port lane. w:2 r:4"""
-
-    stub_port_lane_half_width_cells: int = 0
-    """Half width of a dense-fan-out stub port lane. w:2 r:4"""
-
-    primitive_cfg: Any = None
-    """The kernel's `PrimitiveLibraryConfig` (PyO3). w:2 r:2,6"""
-
-    astar_cfg: Any = None
-    """The kernel's `AStarConfig` (PyO3). w:2 r:2,6"""
-
-    router: Any = None
-    """The kernel's `PyPhotonicRouter` (PyO3). w:2 r:2,4,5,6,7,8"""
+    """Static blockers as of before port reservations; starts as the raw static cells. w:0,5 m:5 r:5,6  # shared writer"""
 
     # ---- phase 3, route_jobs ----------------------------------------------
     endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = field(default_factory=dict)
@@ -291,9 +214,10 @@ class SessionState:
     """The rip-up / reroute configuration the loop runs with. w:5 r:6,8"""
 
     route_bookkeeping: RouteBookkeeping | None = None
-    #: nets the detour pass (phase 7b) re-routed; None until the pass ran
-    detour_pass_reroutes: int | None = None
     """Records, opened cells and committed cells per net. w:5 r:6,7,8  # shared writer"""
+
+    detour_pass_reroutes: int | None = None
+    """Nets the detour pass (phase 7b) re-routed; None until the pass ran. w:7 r:9"""
 
     collect_timing: bool = False
     """Whether per-net timing buckets are filled. w:5 r:5,6,7"""
@@ -328,3 +252,26 @@ class SessionState:
 
     photonic_probe_index: int = 0
     """How many probe layouts this run has built. w:8 r:8"""
+
+    @classmethod
+    def after_setup(
+        cls,
+        *,
+        routed_layout: Component,
+        rust_backend: Any,
+        timings_s: dict[str, float],
+        obstacles: ObstacleContext,
+        kernel: KernelSetup,
+    ) -> SessionState:
+        """Build the state the phases from 3 on share, from the products of 1 and 2.
+
+        `timings_s` is the bucket phases 1 and 2 already wrote to.
+        """
+        return cls(
+            routed_layout=routed_layout,
+            rust_backend=rust_backend,
+            obstacles=obstacles,
+            kernel=kernel,
+            route_nets_timings_s=timings_s,
+            static_blocked_cells_before_port_reservations=kernel.static.raw_static_cells,
+        )

@@ -57,7 +57,7 @@ def _endpoint_correction_crossing_net_ids(settings, state) -> set[int]:
     two is out of this milestone's additive scope.
     """
     crossing_net_ids: set[int] = set()
-    if settings.enable_crossings and hasattr(state.router, "crossing_events"):
+    if settings.enable_crossings and hasattr(state.kernel.router, "crossing_events"):
         # No broad `except Exception` here: Milestone 0 of the
         # restructuring ExecPlan confirmed via git history that this
         # used to swallow any error from `router.crossing_events()`
@@ -67,7 +67,7 @@ def _endpoint_correction_crossing_net_ids(settings, state) -> set[int]:
         # broken, which should stop the run loudly, not be silently
         # treated as "no crossings" and let every net fall through to
         # the unrestricted corrector as if crossings were disabled.
-        for raw_event in cast(Iterable[Any], state.router.crossing_events()):
+        for raw_event in cast(Iterable[Any], state.kernel.router.crossing_events()):
             if not isinstance(raw_event, Mapping):
                 try:
                     raw_event = dict(cast(Any, raw_event))
@@ -175,7 +175,7 @@ def _apply_checked_endpoint_corrections_for_net_ids(
 ) -> list[int]:
     if not settings.enable_checked_endpoint_correction:
         return []
-    if not hasattr(state.router, "apply_checked_endpoint_corrections"):
+    if not hasattr(state.kernel.router, "apply_checked_endpoint_corrections"):
         raise RuntimeError(
             "The loaded photonic_router._rust extension does not expose "
             "PyPhotonicRouter.apply_checked_endpoint_corrections. "
@@ -234,11 +234,11 @@ def _apply_checked_endpoint_corrections_for_net_ids(
         return []
 
     correction_start = _timing_start(settings, state)
-    raw_corrections = state.router.apply_checked_endpoint_corrections(
+    raw_corrections = state.kernel.router.apply_checked_endpoint_corrections(
         correction_jobs,
         float(settings.route_width_um),
-        int(state.commit_radius_cells),
-        int(state.core_commit_radius_cells),
+        int(state.kernel.radii.commit_radius_cells),
+        int(state.kernel.radii.core_commit_radius_cells),
         True,
     )
     correction_elapsed_s = time.perf_counter() - correction_start if state.collect_timing else 0.0
@@ -345,7 +345,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
 ) -> list[int]:
     if not settings.enable_checked_endpoint_correction or not state.fanout_anchor_net_ids:
         return []
-    if not hasattr(state.router, "apply_checked_endpoint_corrections"):
+    if not hasattr(state.kernel.router, "apply_checked_endpoint_corrections"):
         raise RuntimeError(
             "The loaded photonic_router._rust extension does not expose "
             "PyPhotonicRouter.apply_checked_endpoint_corrections. "
@@ -446,11 +446,11 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         return []
 
     correction_start = _timing_start(settings, state)
-    raw_corrections = state.router.apply_checked_endpoint_corrections(
+    raw_corrections = state.kernel.router.apply_checked_endpoint_corrections(
         correction_jobs,
         float(settings.route_width_um),
-        int(state.commit_radius_cells),
-        int(state.core_commit_radius_cells),
+        int(state.kernel.radii.commit_radius_cells),
+        int(state.kernel.radii.core_commit_radius_cells),
         True,
     )
     correction_elapsed_s = time.perf_counter() - correction_start if state.collect_timing else 0.0
@@ -494,7 +494,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         corrected_route = _dedupe_centerline(_centerline_tuple(correction.get("centerline")))
         route_baseline = _primitive_centerline_for_record(
             record,
-            router=state.router,
+            router=state.kernel.router,
             prefer_corrected_baseline=False,
         )
         existing_baseline = _dedupe_centerline(record.corrected_centerline_um)
@@ -543,7 +543,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
             state.route_timing_buckets["endpoint_correction"].record_elapsed(
                 correction_elapsed_per_job_s,
             )
-        centerline_length = getattr(state.router, "centerline_length_um", None)
+        centerline_length = getattr(state.kernel.router, "centerline_length_um", None)
         if centerline_length is not None:
             try:
                 corrected_total_length_um = float(centerline_length(list(merged_centerline)))
@@ -574,17 +574,17 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
 
 
 def _current_crossing_points_by_net_id(settings, state) -> dict[int, list[tuple[float, float]]]:
-    if not settings.enable_crossings or not hasattr(state.router, "crossing_events"):
+    if not settings.enable_crossings or not hasattr(state.kernel.router, "crossing_events"):
         return {}
     try:
-        raw_events = list(cast(Iterable[Any], state.router.crossing_events()))
+        raw_events = list(cast(Iterable[Any], state.kernel.router.crossing_events()))
     except Exception:
         return {}
     if not raw_events:
         return {}
     raw_verdicts: list[Any] = []
-    if hasattr(state.router, "crossing_verdicts"):
-        raw_verdicts = list(cast(Iterable[Any], state.router.crossing_verdicts()))
+    if hasattr(state.kernel.router, "crossing_verdicts"):
+        raw_verdicts = list(cast(Iterable[Any], state.kernel.router.crossing_verdicts()))
     _populate_realized_intersections_from_native_crossing_events(
         crossing_plan_info=state.crossing_plan_info,
         routed_records_by_net_id=state.route_bookkeeping.records_by_id,
@@ -654,11 +654,11 @@ def _record_terminal_bump_distance_check_candidates(
 
     trace_tokens = settings.config.diagnostics.trace_terminal_bump_distance_checks
     trace_all = "*" in trace_tokens
-    grid_size = float(state.grid.grid_size_um)
+    grid_size = float(state.obstacles.grid.grid_size_um)
     eps = max(1e-6, grid_size * 1e-6)
     axis_eps = max(1e-6, grid_size * 0.25)
     crossing_half_um = float(state.crossing_plan_info.crossing_half_size_cells or 0) * grid_size
-    required_bump_um = 4.0 * float(state.bend_radius_cells) * grid_size
+    required_bump_um = 4.0 * float(state.kernel.radii.bend_radius_cells) * grid_size
 
     target_x_offset_nets: list[dict[str, object]] = []
     target_y_offset_nets: list[dict[str, object]] = []
@@ -847,7 +847,7 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
         start_s = _timing_start(settings, state)
         updated = _apply_crossing_aware_endpoint_correction_to_record(
             record,
-            router=cast(EndpointCorrectionRouter, state.router),
+            router=cast(EndpointCorrectionRouter, state.kernel.router),
             crossing_points=crossing_points,
             realization_grid_spec=state.realization_grid_spec,
             route_width_um=float(settings.route_width_um),
@@ -876,8 +876,8 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
             ),
             opened_cells=opened_candidate_cells,
             clearance_exempt_cells=clearance_exempt_cells,
-            clearance_radius_cells=int(state.commit_radius_cells),
-            core_radius_cells=int(state.core_commit_radius_cells),
+            clearance_radius_cells=int(state.kernel.radii.commit_radius_cells),
+            core_radius_cells=int(state.kernel.radii.core_commit_radius_cells),
             config=settings.config.diagnostics,
         )
         failed = updated.endpoint_correction_error is not None
@@ -1074,7 +1074,7 @@ def finalize_routing_results(
             list(state.route_bookkeeping.route_order),
             print_warnings=(
                 settings.collect_attempt_diagnostics
-                or state.diagnostics_enabled
+                or state.obstacles.diagnostics_enabled
                 or settings.verbose_route_diagnostics
             ),
         )

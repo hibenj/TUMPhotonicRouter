@@ -42,9 +42,9 @@ def _rect_ranges_by_y(
     ranges_by_y: dict[int, list[tuple[int, int]]] = {}
     for rect_min_x, rect_min_y, rect_max_x, rect_max_y in rects:
         min_x = max(0, rect_min_x)
-        max_x = min(state.grid_width - 1, rect_max_x)
+        max_x = min(state.kernel.frame.grid_width - 1, rect_max_x)
         min_y = max(0, rect_min_y)
-        max_y = min(state.grid_height - 1, rect_max_y)
+        max_y = min(state.kernel.frame.grid_height - 1, rect_max_y)
         if min_x > max_x or min_y > max_y:
             continue
         for y in range(min_y, max_y + 1):
@@ -65,7 +65,9 @@ def _rect_ranges_by_y(
 def _raw_static_rect_ranges_by_y(settings, state) -> dict[int, list[tuple[int, int]]]:
     if state.raw_static_rect_ranges_by_y is not None:
         return state.raw_static_rect_ranges_by_y
-    ranges_by_y = _rect_ranges_by_y(settings, state, state.raw_static_rects_for_openings)
+    ranges_by_y = _rect_ranges_by_y(
+        settings, state, state.kernel.static.raw_static_rects_for_openings
+    )
     state.raw_static_rect_ranges_by_y = ranges_by_y
     return ranges_by_y
 
@@ -73,7 +75,9 @@ def _raw_static_rect_ranges_by_y(settings, state) -> dict[int, list[tuple[int, i
 def _heater_opening_rect_ranges_by_y(settings, state) -> dict[int, list[tuple[int, int]]]:
     if state.heater_opening_rect_ranges_by_y is not None:
         return state.heater_opening_rect_ranges_by_y
-    ranges_by_y = _rect_ranges_by_y(settings, state, state.heater_opening_rects_for_openings)
+    ranges_by_y = _rect_ranges_by_y(
+        settings, state, state.kernel.static.heater_opening_rects_for_openings
+    )
     state.heater_opening_rect_ranges_by_y = ranges_by_y
     return ranges_by_y
 
@@ -82,14 +86,14 @@ def _raw_static_cells_by_y(settings, state) -> dict[int, set[int]]:
     if state.raw_static_cells_by_y is not None:
         return state.raw_static_cells_by_y
     cells_by_y: dict[int, set[int]] = {}
-    for cell_x, cell_y in state.raw_static_cells:
+    for cell_x, cell_y in state.kernel.static.raw_static_cells:
         cells_by_y.setdefault(int(cell_y), set()).add(int(cell_x))
     state.raw_static_cells_by_y = cells_by_y
     return cells_by_y
 
 
 def _cell_in_raw_static(settings, state, cell: tuple[int, int]) -> bool:
-    if cell in state.raw_static_cells:
+    if cell in state.kernel.static.raw_static_cells:
         return True
     x, y = cell
     return any(
@@ -123,7 +127,7 @@ def _resolve_port_footprint_cells(
         port=port,
     )
     if rule is not None:
-        grid_size = float(state.grid.grid_size_um)
+        grid_size = float(state.obstacles.grid.grid_size_um)
         length_cells = max(
             1,
             math.ceil(max(0.0, float(rule.access_length_um)) / grid_size),
@@ -135,7 +139,9 @@ def _resolve_port_footprint_cells(
         return length_cells, half_width_cells
 
     if _is_dense_source_fanout_instance(settings, state, instance_name):
-        return int(state.stub_port_lane_length_cells), int(state.stub_port_lane_half_width_cells)
+        return int(state.kernel.lanes.stub_port_lane_length_cells), int(
+            state.kernel.lanes.stub_port_lane_half_width_cells
+        )
     # A dense TARGET port with a real, pre-committed static stub
     # (`_build_static_fanout_target_anchors`) is in exactly the same
     # position as a dense source port with one: the stub's own committed
@@ -146,8 +152,12 @@ def _resolve_port_footprint_cells(
     # than introducing separate target-only ones -- see
     # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
     if f"{instance_name},{port_name}" in getattr(state, "fanout_anchor_by_port_spec", {}):
-        return int(state.stub_port_lane_length_cells), int(state.stub_port_lane_half_width_cells)
-    return int(state.port_lane_length_cells), int(state.port_lane_half_width_cells)
+        return int(state.kernel.lanes.stub_port_lane_length_cells), int(
+            state.kernel.lanes.stub_port_lane_half_width_cells
+        )
+    return int(state.kernel.lanes.port_lane_length_cells), int(
+        state.kernel.lanes.port_lane_half_width_cells
+    )
 
 
 def _instance_ref_by_name(settings, state, instance_name: str) -> Any | None:
@@ -190,7 +200,7 @@ def _instance_static_geometry_open_cells(
     if bounds is None:
         return set()
     left, bottom, right, top = bounds
-    grid_size = float(state.grid.grid_size_um)
+    grid_size = float(state.obstacles.grid.grid_size_um)
     if grid_size <= 0.0:
         return set()
 
@@ -204,19 +214,19 @@ def _instance_static_geometry_open_cells(
     min_bbox_cell = physical_to_grid(
         float(left) - bbox_margin,
         float(bottom) - bbox_margin,
-        state.grid,
+        state.obstacles.grid,
     )
     max_bbox_cell = physical_to_grid(
         float(right) + bbox_margin,
         float(top) + bbox_margin,
-        state.grid,
+        state.obstacles.grid,
     )
     min_x = max(
         0,
         min_bbox_cell[0],
     )
     max_x = min(
-        state.grid_width - 1,
+        state.kernel.frame.grid_width - 1,
         max_bbox_cell[0],
     )
     min_y = max(
@@ -224,22 +234,24 @@ def _instance_static_geometry_open_cells(
         min_bbox_cell[1],
     )
     max_y = min(
-        state.grid_height - 1,
+        state.kernel.frame.grid_height - 1,
         max_bbox_cell[1],
     )
     if min_x > max_x or min_y > max_y:
         return set()
 
-    heater_clearance_um = getattr(state.resolved_obstacle_config, "heater_clearance_um", None)
+    heater_clearance_um = getattr(
+        state.obstacles.resolved_obstacle_config, "heater_clearance_um", None
+    )
     opening_margin_um = max(
-        float(state.route_clearance_um),
+        float(state.kernel.radii.route_clearance_um),
         0.0 if heater_clearance_um is None else float(heater_clearance_um),
     )
     opening_margin_cells = math.ceil(opening_margin_um / grid_size) + 1
     search_min_x = max(0, min_x - opening_margin_cells)
-    search_max_x = min(state.grid_width - 1, max_x + opening_margin_cells)
+    search_max_x = min(state.kernel.frame.grid_width - 1, max_x + opening_margin_cells)
     search_min_y = max(0, min_y - opening_margin_cells)
-    search_max_y = min(state.grid_height - 1, max_y + opening_margin_cells)
+    search_max_y = min(state.kernel.frame.grid_height - 1, max_y + opening_margin_cells)
     opening_margin_distance = float(opening_margin_cells) * grid_size + bbox_margin
     opening_left = float(left) - opening_margin_distance
     opening_right = float(right) + opening_margin_distance
@@ -289,9 +301,9 @@ def _endpoint_state_for_lane_assignment(settings, state, port: Port, *, as_targe
         settings,
         state,
         port,
-        state.origin_x_um,
-        state.origin_y_um,
-        float(state.grid.grid_size_um),
+        state.kernel.frame.origin_x_um,
+        state.kernel.frame.origin_y_um,
+        float(state.obstacles.grid.grid_size_um),
         as_target=as_target,
     )
 
@@ -324,7 +336,7 @@ def build_crossing_plan_and_port_footprints(
     state.crossing_plan_info = CrossingPlanInfo.from_dict(
         _build_crossing_plan_info(
             rust_backend=state.rust_backend,
-            router=state.router,
+            router=state.kernel.router,
             schematic=settings.schematic,
             unrouted_layout=settings.unrouted_layout,
             placement_analysis=settings.placement_analysis,
@@ -333,7 +345,7 @@ def build_crossing_plan_and_port_footprints(
             crossing_mode=settings.crossing_mode,
             crossing_loss=float(settings.crossing_loss),
             crossing_search_loss=float(settings.crossing_search_loss),
-            crossing_half_size_cells=int(state.resolved_crossing_half_size_cells),
+            crossing_half_size_cells=int(state.obstacles.resolved_crossing_half_size_cells),
             guidance_net_names=settings.crossing_guidance_net_names,
             config=settings.config.crossing_plan,
         )
@@ -355,13 +367,15 @@ def build_crossing_plan_and_port_footprints(
             f" search_loss={float(state.crossing_plan_info.crossing_search_loss):.1f}"
             f"{guidance_text}"
         )
-    state.crossing_plan_info.bend_runout_cells_per_crossing = int(state.bend_radius_cells)
+    state.crossing_plan_info.bend_runout_cells_per_crossing = int(
+        state.kernel.radii.bend_radius_cells
+    )
     state.crossing_plan_info.fanout_stub_bend_degrees = 45 * int(
         _fanout_stub_bend_steps(settings, state)
     )
     state.crossing_plan_info.required_straight_margin_cells_per_crossing = int(
-        state.resolved_crossing_half_size_cells
-    ) + int(state.bend_radius_cells)
+        state.obstacles.resolved_crossing_half_size_cells
+    ) + int(state.kernel.radii.bend_radius_cells)
     state.crossing_plan_info.fanout_access_mode = settings.fanout_access_mode_normalized
     state.crossing_plan_info.fanout_anchor_port_count = len(state.fanout_anchor_by_port_spec)
     state.crossing_plan_info.fanout_anchor_net_ids = sorted(state.fanout_anchor_net_ids)
@@ -390,7 +404,7 @@ def build_crossing_plan_and_port_footprints(
     state.crossing_plan_info.crossing_device = crossing_device_info
     timing.record_pipeline_timing(settings, state, "crossing_context", t_crossing_context_start)
 
-    if not hasattr(state.router, "build_port_footprint_cells"):
+    if not hasattr(state.kernel.router, "build_port_footprint_cells"):
         extension_path = getattr(state.rust_backend, "__file__", "<unknown>")
         raise RuntimeError(
             "The loaded photonic_router._rust extension does not expose "
@@ -487,7 +501,9 @@ def build_crossing_plan_and_port_footprints(
             )
         )
 
-    for port_spec, raw_cells in state.router.build_port_footprint_cells(port_footprint_inputs):
+    for port_spec, raw_cells in state.kernel.router.build_port_footprint_cells(
+        port_footprint_inputs
+    ):
         raw_footprint_cells_by_spec[str(port_spec)] = {
             (int(cell[0]), int(cell[1])) for cell in raw_cells
         }

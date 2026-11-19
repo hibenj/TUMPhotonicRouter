@@ -12,8 +12,15 @@ from photonic_router.records.route_rust_types import (
     bend_radius_cells_from_um,
 )
 from photonic_router.routing import timing
+from photonic_router.routing.products import (
+    ClearanceRadii,
+    GridFrame,
+    KernelSetup,
+    ObstacleContext,
+    PortLanes,
+    RawStaticGeometry,
+)
 from photonic_router.routing.settings import SessionSettings
-from photonic_router.routing.state import SessionState
 
 DENSE_OBSTACLE_CELL_CAP_MARGIN = 2
 
@@ -26,71 +33,77 @@ def _fanout_int_or_default(value: int | None, default: int) -> int:
 
 
 def configure_router_and_grid(
-    settings: SessionSettings, state: SessionState, obstacle_map: Any
-) -> None:
-    """Build the Rust grid/primitive/A* configs, construct `self.router`, and extract raw static geometry.
+    settings: SessionSettings,
+    rust_backend: Any,
+    context: ObstacleContext,
+    timings_s: dict[str, float],
+) -> KernelSetup:
+    """Phase 2: build the kernel's router and everything derived for it.
 
-    Tunes `self.astar_cfg` (heuristic mode, bend weight, heap tie-breaker,
-    proactive congestion, routing-window sizing) based on `self.allow_45_degree_turns`,
-    `self.crossing_mode`, and related settings, resolves `self.clearance_policy` and the
-    block/commit/core radii, constructs `self.router` (`PyPhotonicRouter`), and extracts
-    `self.raw_static_cells`/`self.raw_static_rects_for_openings`/
-    `self.heater_opening_rects_for_openings` from `obstacle_map` for later phases to
-    consume when computing port openings and keepouts.
+    Builds the kernel's grid, primitive and A* configurations and tunes the
+    A* one from the settings (heuristic mode, bend weight, heap tie-breaker,
+    proactive congestion, routing window), derives the clearance radii and
+    the port lane sizes, constructs the `PyPhotonicRouter`, and reads the raw
+    static geometry out of the obstacle map for the port openings of phase 4.
+
+    Args:
+        settings: the session's resolved inputs.
+        rust_backend: the loaded kernel module.
+        context: phase 1's product.
+        timings_s: the pipeline timing buckets; "router_setup" is added.
     """
-    t_router_setup_start = timing.pipeline_timer_start(settings, state)
-    state.origin_x_um, state.origin_y_um = _grid_origin_xy(state.grid)
+    obstacle_map = context.obstacle_map
+    t_router_setup_start = timing.pipeline_timer_start(settings)
+    origin_x_um, origin_y_um = _grid_origin_xy(context.grid)
     if settings.config.diagnostics.trace_grid:
         # Path-investigation harness: the grid<->um mapping must come from
         # the tool, never from a hand conversion (see
         # .agent/PATH_INVESTIGATION_HARNESS.md). um = origin + (cell + 0.5) * grid_size.
         print(
-            f"      - grid: origin=({state.origin_x_um:.3f}, {state.origin_y_um:.3f}) um "
-            f"size={float(state.grid.grid_size_um):.3f} um "
-            f"cells={int(state.grid.width)}x{int(state.grid.height)}",
+            f"      - grid: origin=({origin_x_um:.3f}, {origin_y_um:.3f}) um "
+            f"size={float(context.grid.grid_size_um):.3f} um "
+            f"cells={int(context.grid.width)}x{int(context.grid.height)}",
             flush=True,
         )
-    grid_spec = state.rust_backend.GridSpec(
-        int(state.grid.width),
-        int(state.grid.height),
-        float(state.grid.grid_size_um),
-        state.origin_x_um,
-        state.origin_y_um,
+    grid_spec = rust_backend.GridSpec(
+        int(context.grid.width),
+        int(context.grid.height),
+        float(context.grid.grid_size_um),
+        origin_x_um,
+        origin_y_um,
     )
-    state.bend_radius_cells = bend_radius_cells_from_um(
+    bend_radius_cells = bend_radius_cells_from_um(
         settings.bend_radius_um,
-        grid_size_um=float(state.grid.grid_size_um),
+        grid_size_um=float(context.grid.grid_size_um),
     )
-    state.primitive_cfg = state.rust_backend.PrimitiveLibraryConfig(
-        grid_size_um=float(state.grid.grid_size_um),
-        bend_radius_cells=state.bend_radius_cells,
+    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=float(context.grid.grid_size_um),
+        bend_radius_cells=bend_radius_cells,
         allow_45_degree_turns=settings.allow_45_degree_turns,
     )
-    state.bend_radius_cells = int(state.primitive_cfg.bend_radius_cells)
-    state.astar_cfg = state.rust_backend.AStarConfig(max_iterations=int(settings.max_iterations))
+    bend_radius_cells = int(primitive_cfg.bend_radius_cells)
+    astar_cfg = rust_backend.AStarConfig(max_iterations=int(settings.max_iterations))
     # The crossing search (lidar modes) builds a dense grid over the full
     # routing bounds and panics when that exceeds the kernel's cap
     # (default 10M cells; benes_64x64 needs 29M, multiportmmi_64x64 83M,
     # 2026-09-13). Size the cap from the obstacle map so the whole die
     # always fits; dies below the default keep the default.
-    state.astar_cfg.max_dense_obstacle_cells = dense_obstacle_cell_cap(
-        int(state.grid.width), int(state.grid.height), int(state.astar_cfg.max_dense_obstacle_cells)
+    astar_cfg.max_dense_obstacle_cells = dense_obstacle_cell_cap(
+        int(context.grid.width), int(context.grid.height), int(astar_cfg.max_dense_obstacle_cells)
     )
-    state.astar_cfg.enable_simple_routes = bool(settings.enable_simple_routes)
-    state.astar_cfg.use_indexed_heap = bool(
-        settings.use_indexed_heap or settings.allow_45_degree_turns
-    )
-    state.astar_cfg.collect_detailed_timing = bool(
+    astar_cfg.enable_simple_routes = bool(settings.enable_simple_routes)
+    astar_cfg.use_indexed_heap = bool(settings.use_indexed_heap or settings.allow_45_degree_turns)
+    astar_cfg.collect_detailed_timing = bool(
         settings.debug_timing
         or settings.collect_route_stats
         or settings.collect_attempt_diagnostics
     )
-    state.astar_cfg.primitive_ordering = str(settings.primitive_ordering)
+    astar_cfg.primitive_ordering = str(settings.primitive_ordering)
     effective_heuristic_mode = str(settings.heuristic_mode)
     if settings.allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
         effective_heuristic_mode = "diagonal_aware"
-    state.astar_cfg.heuristic_mode = effective_heuristic_mode
-    if settings.allow_45_degree_turns and hasattr(state.astar_cfg, "bend_weight"):
+    astar_cfg.heuristic_mode = effective_heuristic_mode
+    if settings.allow_45_degree_turns and hasattr(astar_cfg, "bend_weight"):
         # A bend costs bend_weight per angle-eighth of turn (see
         # src/primitives.rs's bend_cost field); boosting it keeps 45-degree
         # A* from spending work on short zig-zag variants. This applies
@@ -102,7 +115,7 @@ def configure_router_and_grid(
         # magnitude 12.0 has no recorded derivation; the env var lets the
         # neutral-value ladder run without a code edit. Default unchanged.
         min_bend_weight = float(settings.config.search.min_bend_weight)
-        state.astar_cfg.bend_weight = max(float(state.astar_cfg.bend_weight), min_bend_weight)
+        astar_cfg.bend_weight = max(float(astar_cfg.bend_weight), min_bend_weight)
     effective_heap_tie_breaker = str(settings.heap_tie_breaker)
     if settings.allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":
         effective_heap_tie_breaker = "larger_g"
@@ -111,68 +124,64 @@ def configure_router_and_grid(
     env_tie_breaker = settings.config.search.heap_tie_breaker
     if env_tie_breaker is not None:
         effective_heap_tie_breaker = env_tie_breaker
-    state.astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
-    if hasattr(state.astar_cfg, "proactive_congestion_weight"):
-        state.astar_cfg.proactive_congestion_weight = float(settings.proactive_congestion_weight)
-    if hasattr(state.astar_cfg, "proactive_congestion_radius_cells"):
-        state.astar_cfg.proactive_congestion_radius_cells = int(
+    astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
+    if hasattr(astar_cfg, "proactive_congestion_weight"):
+        astar_cfg.proactive_congestion_weight = float(settings.proactive_congestion_weight)
+    if hasattr(astar_cfg, "proactive_congestion_radius_cells"):
+        astar_cfg.proactive_congestion_radius_cells = int(
             settings.proactive_congestion_radius_cells
         )
     if settings.routing_window_scale is not None:
-        state.astar_cfg.routing_window_scale = float(settings.routing_window_scale)
+        astar_cfg.routing_window_scale = float(settings.routing_window_scale)
     # Speed pass S4 (2026-11-05): the window ladder's length and its
     # full-grid fallback, env-only strategy switches; unset keeps the
     # kernel's defaults (3 expansions, fallback on).
     search_tuning = settings.config.search
     if search_tuning.routing_window_max_expansions is not None:
-        state.astar_cfg.routing_window_max_expansions = int(
-            search_tuning.routing_window_max_expansions
-        )
+        astar_cfg.routing_window_max_expansions = int(search_tuning.routing_window_max_expansions)
     if search_tuning.routing_window_fallback_full_grid is not None:
-        state.astar_cfg.routing_window_fallback_full_grid = bool(
+        astar_cfg.routing_window_fallback_full_grid = bool(
             search_tuning.routing_window_fallback_full_grid
         )
 
-    state.route_clearance_um = max(
+    route_clearance_um = max(
         0.0,
-        _as_float(getattr(state.resolved_obstacle_config, "clearance_um", 0.0), 0.0),
+        _as_float(getattr(context.resolved_obstacle_config, "clearance_um", 0.0), 0.0),
     )
-    state.clearance_policy = OpticalRouteClearancePolicy.from_dimensions(
+    clearance_policy = OpticalRouteClearancePolicy.from_dimensions(
         route_width_um=float(settings.route_width_um),
-        grid_size_um=float(state.grid.grid_size_um),
-        route_clearance_um=state.route_clearance_um,
+        grid_size_um=float(context.grid.grid_size_um),
+        route_clearance_um=route_clearance_um,
     )
-    state.block_radius_cells = state.clearance_policy.dynamic_obstacle_search_expansion_radius_cells
-    state.commit_radius_cells = state.clearance_policy.dynamic_route_commit_keepout_radius_cells
-    state.core_commit_radius_cells = state.clearance_policy.dynamic_route_core_radius_cells
+    block_radius_cells = clearance_policy.dynamic_obstacle_search_expansion_radius_cells
+    commit_radius_cells = clearance_policy.dynamic_route_commit_keepout_radius_cells
+    core_commit_radius_cells = clearance_policy.dynamic_route_core_radius_cells
     routing_window_min_margin_cells = max(
-        int(getattr(state.astar_cfg, "routing_window_min_margin_cells", 12)),
-        int((2 * state.bend_radius_cells) + state.commit_radius_cells + 2),
+        int(getattr(astar_cfg, "routing_window_min_margin_cells", 12)),
+        int((2 * bend_radius_cells) + commit_radius_cells + 2),
     )
-    state.astar_cfg.routing_window_min_margin_cells = max(
-        int(getattr(state.astar_cfg, "routing_window_min_margin_cells", 12)),
+    astar_cfg.routing_window_min_margin_cells = max(
+        int(getattr(astar_cfg, "routing_window_min_margin_cells", 12)),
         routing_window_min_margin_cells,
     )
-    state.astar_cfg.simple_route_max_offset_cells = max(
-        int(getattr(state.astar_cfg, "simple_route_max_offset_cells", 96)),
-        int(12 * state.bend_radius_cells + 2 * state.commit_radius_cells),
+    astar_cfg.simple_route_max_offset_cells = max(
+        int(getattr(astar_cfg, "simple_route_max_offset_cells", 96)),
+        int(12 * bend_radius_cells + 2 * commit_radius_cells),
     )
-    state.router = state.rust_backend.PyPhotonicRouter(
+    router = rust_backend.PyPhotonicRouter(
         grid_spec,
-        state.primitive_cfg,
-        state.astar_cfg,
-        settings.router_config.to_rust(state.rust_backend),
+        primitive_cfg,
+        astar_cfg,
+        settings.router_config.to_rust(rust_backend),
     )
-    if hasattr(state.router, "set_route_width_um"):
+    if hasattr(router, "set_route_width_um"):
         # The commit validation's parallel-overlap check needs the
         # physical waveguide width (see py_router.rs `route_width_um`).
-        state.router.set_route_width_um(float(settings.route_width_um))
-    timing.record_pipeline_timing(settings, state, "router_setup", t_router_setup_start)
+        router.set_route_width_um(float(settings.route_width_um))
+    timing.record_elapsed(settings, timings_s, "router_setup", t_router_setup_start)
 
-    state.port_lane_length_cells = max(3, 2 * state.bend_radius_cells + 2)
-    state.port_lane_half_width_cells = max(
-        1, state.bend_radius_cells + state.commit_radius_cells + 1
-    )
+    port_lane_length_cells = max(3, 2 * bend_radius_cells + 2)
+    port_lane_half_width_cells = max(1, bend_radius_cells + commit_radius_cells + 1)
     # Separate override scoped to dense-source-fanout instances only
     # (`_is_dense_source_fanout_instance`) -- e.g. a multi-port MMI
     # splitter with many stubbed ports stacked close together, where the
@@ -195,11 +204,11 @@ def configure_router_and_grid(
     # stable baseline with both knobs at `0` (previously `half_width=2`,
     # `length=port_lane_length_cells`): still routes 111/111, 0 errors,
     # 0 self-intersections, 0 cross-net overlaps.
-    state.stub_port_lane_length_cells = _fanout_int_or_default(
+    stub_port_lane_length_cells = _fanout_int_or_default(
         settings.config.fanout.stub_port_lane_length_cells,
         0,
     )
-    state.stub_port_lane_half_width_cells = _fanout_int_or_default(
+    stub_port_lane_half_width_cells = _fanout_int_or_default(
         settings.config.fanout.stub_port_lane_half_width_cells,
         0,
     )
@@ -210,16 +219,15 @@ def configure_router_and_grid(
     else:
         raw_blocked_obj = obstacle_map.blocked_cells
     raw_blocked_cells = cast(Iterable[tuple[int, int]], raw_blocked_obj)
-    state.raw_static_cells = {(int(cell[0]), int(cell[1])) for cell in raw_blocked_cells}
-    state.static_blocked_cells_before_port_reservations = state.raw_static_cells
-    state.raw_static_rects_for_openings: list[tuple[int, int, int, int]] = []
+    raw_static_cells = {(int(cell[0]), int(cell[1])) for cell in raw_blocked_cells}
+    raw_static_rects_for_openings: list[tuple[int, int, int, int]] = []
     if hasattr(obstacle_map, "raw_static_rects"):
         for rect in cast(
             Iterable[tuple[int, int, int, int]],
             obstacle_map.raw_static_rects,
         ):
             if len(rect) == 4:
-                state.raw_static_rects_for_openings.append(
+                raw_static_rects_for_openings.append(
                     (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
                 )
     blocked_static_rects_for_openings: list[tuple[int, int, int, int]] = []
@@ -232,14 +240,39 @@ def configure_router_and_grid(
                 blocked_static_rects_for_openings.append(
                     (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
                 )
-    state.heater_opening_rects_for_openings = (
-        state.raw_static_rects_for_openings + blocked_static_rects_for_openings
+    heater_opening_rects_for_openings = (
+        raw_static_rects_for_openings + blocked_static_rects_for_openings
     )
-    state.grid_width = int(state.grid.width)
-    state.grid_height = int(state.grid.height)
-    state.raw_static_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
-    state.heater_opening_rect_ranges_by_y: dict[int, list[tuple[int, int]]] | None = None
-    state.raw_static_cells_by_y: dict[int, set[int]] | None = None
+    return KernelSetup(
+        router=router,
+        primitive_cfg=primitive_cfg,
+        astar_cfg=astar_cfg,
+        frame=GridFrame(
+            grid_width=int(context.grid.width),
+            grid_height=int(context.grid.height),
+            origin_x_um=origin_x_um,
+            origin_y_um=origin_y_um,
+        ),
+        radii=ClearanceRadii(
+            clearance_policy=clearance_policy,
+            route_clearance_um=route_clearance_um,
+            bend_radius_cells=bend_radius_cells,
+            commit_radius_cells=commit_radius_cells,
+            core_commit_radius_cells=core_commit_radius_cells,
+            block_radius_cells=block_radius_cells,
+        ),
+        lanes=PortLanes(
+            port_lane_length_cells=port_lane_length_cells,
+            port_lane_half_width_cells=port_lane_half_width_cells,
+            stub_port_lane_length_cells=stub_port_lane_length_cells,
+            stub_port_lane_half_width_cells=stub_port_lane_half_width_cells,
+        ),
+        static=RawStaticGeometry(
+            raw_static_cells=raw_static_cells,
+            raw_static_rects_for_openings=raw_static_rects_for_openings,
+            heater_opening_rects_for_openings=heater_opening_rects_for_openings,
+        ),
+    )
 
 
 def dense_obstacle_cell_cap(grid_width: int, grid_height: int, default_cap: int) -> int:

@@ -1,7 +1,7 @@
 """Phase 6 diagnostics: the route, attempt and failure write-ups behind the debug path.
 
 Nothing in here takes a routing decision. `dispatch.py` calls these writers
-when `state.debug_path` or the attempt-diagnostics flag is set; the two small
+when `state.obstacles.debug_path` or the attempt-diagnostics flag is set; the two small
 state readers `_state_openings_for_job` and `_route_cells_from_router` live
 here because both the dispatch and the writers need them.
 """
@@ -78,15 +78,15 @@ def _source_lower_bounds(
     target_y: int,
     target_angle: int,
 ) -> tuple[float, float]:
-    grid_size_um = float(state.grid.grid_size_um)
+    grid_size_um = float(state.obstacles.grid.grid_size_um)
     dx = target_x - source_x
     dy = target_y - source_y
     distance = math.hypot(float(dx), float(dy)) * grid_size_um
     heading_lower_bound = distance
     if str(settings.heuristic_mode) == "heading_aware":
-        target_angle_ok = not bool(getattr(state.astar_cfg, "require_target_angle", True)) or (
-            source_angle % 8 == target_angle % 8
-        )
+        target_angle_ok = not bool(
+            getattr(state.kernel.astar_cfg, "require_target_angle", True)
+        ) or (source_angle % 8 == target_angle % 8)
         reaches_target_ray = _direction_reaches_target_ray(
             settings,
             state,
@@ -95,11 +95,11 @@ def _source_lower_bounds(
             source_angle=source_angle,
             target_x=target_x,
             target_y=target_y,
-            tolerance=max(0, int(getattr(state.astar_cfg, "target_tolerance_cells", 0))),
+            tolerance=max(0, int(getattr(state.kernel.astar_cfg, "target_tolerance_cells", 0))),
         )
         if not target_angle_ok or not reaches_target_ray:
             minimum_bend_units = 1.0 if settings.allow_45_degree_turns else 2.0
-            bend_weight = float(getattr(state.astar_cfg, "bend_weight", 1.0))
+            bend_weight = float(getattr(state.kernel.astar_cfg, "bend_weight", 1.0))
             heading_lower_bound += minimum_bend_units * bend_weight
     return distance, heading_lower_bound
 
@@ -127,7 +127,7 @@ def _committed_dynamic_cells_for_attempt(
 
 
 def _route_cells_from_router(settings, state, net_id: int) -> set[tuple[int, int]]:
-    return {(int(cell[0]), int(cell[1])) for cell in state.router.get_net_cells(int(net_id))}
+    return {(int(cell[0]), int(cell[1])) for cell in state.kernel.router.get_net_cells(int(net_id))}
 
 
 def _state_openings_for_job(
@@ -284,20 +284,22 @@ def _route_attempt_diagnostics(
     raw_core_cells: set[tuple[int, int]] = set()
     raw_core_refcount_gt1_cells: set[tuple[int, int]] = set()
     raw_net_route_cells: set[tuple[int, int]] = set()
-    if hasattr(state.router, "raw_dynamic_obstacle_cells"):
+    if hasattr(state.kernel.router, "raw_dynamic_obstacle_cells"):
         raw_dynamic_entries = [
-            (int(x), int(y), int(refs)) for x, y, refs in state.router.raw_dynamic_obstacle_cells()
+            (int(x), int(y), int(refs))
+            for x, y, refs in state.kernel.router.raw_dynamic_obstacle_cells()
         ]
         raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
         raw_dynamic_refcount_gt1_cells = {(x, y) for x, y, refs in raw_dynamic_entries if refs > 1}
-    if hasattr(state.router, "raw_dynamic_core_cells"):
+    if hasattr(state.kernel.router, "raw_dynamic_core_cells"):
         raw_core_entries = [
-            (int(x), int(y), int(refs)) for x, y, refs in state.router.raw_dynamic_core_cells()
+            (int(x), int(y), int(refs))
+            for x, y, refs in state.kernel.router.raw_dynamic_core_cells()
         ]
         raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
         raw_core_refcount_gt1_cells = {(x, y) for x, y, refs in raw_core_entries if refs > 1}
-    if hasattr(state.router, "all_net_route_cells"):
-        for _, cells in state.router.all_net_route_cells():
+    if hasattr(state.kernel.router, "all_net_route_cells"):
+        for _, cells in state.kernel.router.all_net_route_cells():
             raw_net_route_cells.update((int(cell[0]), int(cell[1])) for cell in cells)
     raw_dynamic_without_owner = raw_dynamic_cells - raw_net_route_cells
     raw_net_route_without_dynamic = raw_net_route_cells - raw_dynamic_cells
@@ -334,15 +336,17 @@ def _route_attempt_diagnostics(
             else None
         ),
         "opened_cells_count": len(opened_cells),
-        "block_radius_cells": state.block_radius_cells,
+        "block_radius_cells": state.kernel.radii.block_radius_cells,
         "dynamic_obstacle_search_expansion_radius_cells": (
-            state.clearance_policy.dynamic_obstacle_search_expansion_radius_cells
+            state.kernel.radii.clearance_policy.dynamic_obstacle_search_expansion_radius_cells
         ),
         "dynamic_route_commit_keepout_radius_cells": (
-            state.clearance_policy.dynamic_route_commit_keepout_radius_cells
+            state.kernel.radii.clearance_policy.dynamic_route_commit_keepout_radius_cells
         ),
-        "dynamic_route_core_radius_cells": (state.clearance_policy.dynamic_route_core_radius_cells),
-        "bend_radius_cells": state.bend_radius_cells,
+        "dynamic_route_core_radius_cells": (
+            state.kernel.radii.clearance_policy.dynamic_route_core_radius_cells
+        ),
+        "bend_radius_cells": state.kernel.radii.bend_radius_cells,
         "window_width_cells": max(0, window_max_x - window_min_x + 1),
         "window_height_cells": max(0, window_max_y - window_min_y + 1),
         "window_area_cells": window_area,
@@ -437,7 +441,7 @@ def _write_route_diagnostics(
     source_anchor_cell = (int(source_state.x), int(source_state.y))
     target_anchor_cell = (int(target_state.x), int(target_state.y))
     committed_dynamic_cells = _committed_dynamic_cells(settings, state, exclude_net_id=job.net_id)
-    if state.diagnostics_enabled:
+    if state.obstacles.diagnostics_enabled:
         opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
         opened_candidate_static_overlap = _cells_in_raw_static_geometry(
             settings, state, opened_candidate_cells
@@ -549,7 +553,7 @@ def _write_route_diagnostics(
         else:
             end_angle = (int(source_angle) + int(delta)) % 8
             end_dir = _angle_to_step(settings, state, end_angle)
-            radius = max(0, int(state.bend_radius_cells))
+            radius = max(0, int(state.kernel.radii.bend_radius_cells))
             first_leg = _relative_line_cells(
                 start=(0, 0),
                 direction=start_dir,
@@ -583,7 +587,7 @@ def _write_route_diagnostics(
         return owners
 
     def _format_post_crossing_orthogonal_candidates() -> list[str]:
-        if not state.diagnostics_enabled or not route_dynamic_overlap:
+        if not state.obstacles.diagnostics_enabled or not route_dynamic_overlap:
             return []
         if int(source_state.angle) != 0 or int(target_state.angle) != 0:
             return []
@@ -597,7 +601,7 @@ def _write_route_diagnostics(
         dx_sign = 1 if target_anchor_cell[0] > cross_x else -1
         if dx_sign != 1:
             return []
-        radius = max(1, int(state.bend_radius_cells))
+        radius = max(1, int(state.kernel.radii.bend_radius_cells))
         routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
         routing_static_cells.update(state.debug_port_keepout_cells)
         routing_static_cells.update(state.foreign_port_keepout_static_cells)
@@ -647,9 +651,9 @@ def _write_route_diagnostics(
         return lines
 
     def _format_target_bend_footprints() -> list[str]:
-        if not state.diagnostics_enabled:
+        if not state.obstacles.diagnostics_enabled:
             return []
-        radius = max(1, int(state.bend_radius_cells))
+        radius = max(1, int(state.kernel.radii.bend_radius_cells))
         routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
         routing_static_cells.update(state.debug_port_keepout_cells)
         routing_static_cells.update(state.foreign_port_keepout_static_cells)
@@ -724,7 +728,7 @@ def _write_route_diagnostics(
         return lines
 
     def _format_first_move_debug() -> list[str]:
-        if not state.diagnostics_enabled:
+        if not state.obstacles.diagnostics_enabled:
             return []
         source = source_anchor_cell
         source_angle = int(source_state.angle)
@@ -740,8 +744,8 @@ def _write_route_diagnostics(
         routing_static_cells.update(state.foreign_port_keepout_static_cells)
         routing_static_cells.update(state.fanout_stub_static_cells)
         primitive_specs: list[tuple[str, str, int, int]] = [
-            ("straight_short", "straight", int(state.primitive_cfg.straight_short_cells), 0),
-            ("straight_long", "straight", int(state.primitive_cfg.straight_long_cells), 0),
+            ("straight_short", "straight", int(state.kernel.primitive_cfg.straight_short_cells), 0),
+            ("straight_long", "straight", int(state.kernel.primitive_cfg.straight_long_cells), 0),
             ("turn45_left", "turn", 0, 1),
             ("turn45_right", "turn", 0, -1),
             ("turn90_left", "turn", 0, 2),
@@ -886,21 +890,23 @@ def _export_route_svg(
     obstacle_cells: set[tuple[int, int]] | None = None,
     opened_cells: list[tuple[int, int]] | None = None,
 ) -> None:
-    should_export = state.debug_path is not None and (
+    should_export = state.obstacles.debug_path is not None and (
         settings.debug_route_indices is None or job.route_index in settings.debug_route_indices
     )
     if not should_export:
         return
-    route_dir = state.debug_path / "routes"
+    route_dir = state.obstacles.debug_path / "routes"
     _ensure_dir(route_dir)
     route_svg = route_dir / f"{settings.debug_prefix}_{job.net_name}{suffix}.svg"
-    if obstacle_cells is not None and hasattr(state.router, "export_debug_svg_with_obstacle_cells"):
-        svg_text = state.router.export_debug_svg_with_obstacle_cells(
+    if obstacle_cells is not None and hasattr(
+        state.kernel.router, "export_debug_svg_with_obstacle_cells"
+    ):
+        svg_text = state.kernel.router.export_debug_svg_with_obstacle_cells(
             route_obj,
             sorted(obstacle_cells),
         )
     else:
-        svg_text = state.router.export_debug_svg(route_obj)
+        svg_text = state.kernel.router.export_debug_svg(route_obj)
     if opened_cells is None:
         try:
             _, _, _, _, opened_cells = _state_openings_for_job(settings, state, job)
@@ -921,8 +927,8 @@ def _export_route_svg(
     if red_keepout_cells:
         overlay = ['<g id="port-keepout-cells">']
         for gx, gy in sorted(red_keepout_cells):
-            if 0 <= gx < state.grid_width and 0 <= gy < state.grid_height:
-                svg_y = state.grid_height - gy - 1
+            if 0 <= gx < state.kernel.frame.grid_width and 0 <= gy < state.kernel.frame.grid_height:
+                svg_y = state.kernel.frame.grid_height - gy - 1
                 overlay.append(
                     f'<rect class="port-keepout" x="{gx}" y="{svg_y}" '
                     'width="1" height="1" fill="#d93025" opacity="0.38" />'
@@ -935,7 +941,7 @@ def _export_route_svg(
     # before meanders: the path-length matching runs after dispatch, the
     # realized lengths are in the routes overview SVG and the meander report).
     routed_length_um = float(getattr(route_obj, "total_length_um", 0.0) or 0.0)
-    font_size = max(1.0, float(state.grid_height) * 0.025)
+    font_size = max(1.0, float(state.kernel.frame.grid_height) * 0.025)
     label = (
         f'<text id="route-length-label" x="{font_size * 0.5:.2f}" y="{font_size * 1.2:.2f}" '
         f'font-size="{font_size:.2f}" font-family="sans-serif" fill="#111827" '
@@ -966,7 +972,11 @@ def _corridor_clearance_diagnostic(
     *,
     max_radius: int | None = None,
 ) -> dict[str, Any]:
-    max_radius = max(4, int(state.bend_radius_cells) + 2) if max_radius is None else int(max_radius)
+    max_radius = (
+        max(4, int(state.kernel.radii.bend_radius_cells) + 2)
+        if max_radius is None
+        else int(max_radius)
+    )
 
     source = (int(source_state.x), int(source_state.y))
     target = (int(target_state.x), int(target_state.y))
@@ -999,7 +1009,9 @@ def _corridor_clearance_diagnostic(
         blocked: set[tuple[int, int]],
     ) -> set[tuple[int, int]]:
         sx, sy = start
-        if not (0 <= sx < state.grid_width and 0 <= sy < state.grid_height):
+        if not (
+            0 <= sx < state.kernel.frame.grid_width and 0 <= sy < state.kernel.frame.grid_height
+        ):
             return set()
         if start in blocked:
             return set()
@@ -1012,8 +1024,8 @@ def _corridor_clearance_diagnostic(
                 ny = y + dy
                 neighbor = (nx, ny)
                 if (
-                    0 <= nx < state.grid_width
-                    and 0 <= ny < state.grid_height
+                    0 <= nx < state.kernel.frame.grid_width
+                    and 0 <= ny < state.kernel.frame.grid_height
                     and neighbor not in blocked
                     and neighbor not in reached
                 ):
@@ -1077,9 +1089,9 @@ def _write_failed_log(
     opened_cells: list[tuple[int, int]],
     error_text: str,
 ) -> None:
-    if state.debug_path is None:
+    if state.obstacles.debug_path is None:
         return
-    route_dir = state.debug_path / "routes"
+    route_dir = state.obstacles.debug_path / "routes"
     _ensure_dir(route_dir)
     port1_spec = f"{job.inst1},{job.port1}"
     port2_spec = f"{job.inst2},{job.port2}"
@@ -1121,19 +1133,19 @@ def _write_failed_log(
         f"source_state=({int(source_state.x)}, {int(source_state.y)}, {int(source_state.angle)})",
         f"target_state=({int(target_state.x)}, {int(target_state.y)}, {int(target_state.angle)})",
         f"allow_45_degree_turns={settings.allow_45_degree_turns}",
-        f"block_radius_cells={state.block_radius_cells}",
+        f"block_radius_cells={state.kernel.radii.block_radius_cells}",
         (
             "dynamic_obstacle_search_expansion_radius_cells="
-            f"{state.clearance_policy.dynamic_obstacle_search_expansion_radius_cells}"
+            f"{state.kernel.radii.clearance_policy.dynamic_obstacle_search_expansion_radius_cells}"
         ),
         (
             "dynamic_route_commit_keepout_radius_cells="
-            f"{state.clearance_policy.dynamic_route_commit_keepout_radius_cells}"
+            f"{state.kernel.radii.clearance_policy.dynamic_route_commit_keepout_radius_cells}"
         ),
-        f"dynamic_route_core_radius_cells={state.clearance_policy.dynamic_route_core_radius_cells}",
-        f"bend_radius_cells={state.bend_radius_cells}",
-        f"port_lane_length_cells={state.port_lane_length_cells}",
-        f"port_lane_half_width_cells={state.port_lane_half_width_cells}",
+        f"dynamic_route_core_radius_cells={state.kernel.radii.clearance_policy.dynamic_route_core_radius_cells}",
+        f"bend_radius_cells={state.kernel.radii.bend_radius_cells}",
+        f"port_lane_length_cells={state.kernel.lanes.port_lane_length_cells}",
+        f"port_lane_half_width_cells={state.kernel.lanes.port_lane_half_width_cells}",
         f"opened_candidate_cells_count={len(opened_candidate_cells)}",
         f"opened_candidate_static_overlap_count={len(opened_candidate_static_overlap)}",
         f"opened_candidate_static_overlap_bbox={_cells_bbox(opened_candidate_static_overlap)}",

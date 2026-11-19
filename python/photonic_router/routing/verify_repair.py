@@ -70,7 +70,7 @@ def _grid_cell_from_raw_point(settings, state, raw_point: object) -> tuple[int, 
         return None
     if not math.isfinite(point_x) or not math.isfinite(point_y):
         return None
-    return physical_to_grid(point_x, point_y, state.grid)
+    return physical_to_grid(point_x, point_y, state.obstacles.grid)
 
 
 def _illegal_crossing_grid_cell(
@@ -112,7 +112,7 @@ def _repair_reason(item: Mapping[str, object]) -> str:
 def _illegal_crossing_keepout_radius(settings, state, item: Mapping[str, object]) -> int:
     reason = _repair_reason(item)
     if reason == "not_perpendicular":
-        return max(1, int(state.resolved_crossing_half_size_cells) + 1)
+        return max(1, int(state.obstacles.resolved_crossing_half_size_cells) + 1)
     if reason == "collinear_route_overlap":
         return 1
     blockers = item.get("crossing_footprint_blockers")
@@ -124,13 +124,13 @@ def _illegal_crossing_keepout_radius(settings, state, item: Mapping[str, object]
         )
         and any(isinstance(blocker, Mapping) for blocker in blockers)
     ):
-        return max(1, int(state.resolved_crossing_half_size_cells) + 1)
+        return max(1, int(state.obstacles.resolved_crossing_half_size_cells) + 1)
     if reason in {
         "crossing_footprint_contains_route_geometry",
         "crossing_footprint_overlap",
     }:
-        return max(1, int(state.resolved_crossing_half_size_cells) + 1)
-    return max(1, min(4, int(state.resolved_crossing_half_size_cells) + 1))
+        return max(1, int(state.obstacles.resolved_crossing_half_size_cells) + 1)
+    return max(1, min(4, int(state.obstacles.resolved_crossing_half_size_cells) + 1))
 
 
 def _add_keepout_square(
@@ -143,7 +143,9 @@ def _add_keepout_square(
 ) -> None:
     for y in range(center[1] - radius, center[1] + radius + 1):
         for x in range(center[0] - radius, center[0] + radius + 1):
-            if 0 <= x < int(state.grid.width) and 0 <= y < int(state.grid.height):
+            if 0 <= x < int(state.obstacles.grid.width) and 0 <= y < int(
+                state.obstacles.grid.height
+            ):
                 keepout_cells.add((x, y))
 
 
@@ -403,8 +405,8 @@ def _repair_final_illegal_crossings(
         not selected_illegal_crossings
         or not state.crossing_plan_info.enabled
         or not state.repair_config.enabled
-        or not hasattr(state.router, "add_static_cells")
-        or not hasattr(state.router, "ripup_route")
+        or not hasattr(state.kernel.router, "add_static_cells")
+        or not hasattr(state.kernel.router, "ripup_route")
     ):
         return False
     repair_net_ids = _final_crossing_repair_net_ids(settings, state, selected_illegal_crossings)
@@ -464,9 +466,9 @@ def _repair_final_illegal_crossings(
         attempts.append(attempt)
         return False
 
-    state.router.add_static_cells(sorted(keepout_cells))
+    state.kernel.router.add_static_cells(sorted(keepout_cells))
     for net_id in repair_net_ids:
-        state.router.ripup_route(int(net_id))
+        state.kernel.router.ripup_route(int(net_id))
         state.route_bookkeeping.clear_route(int(net_id))
 
     repair_jobs = native_route_jobs(
@@ -474,11 +476,11 @@ def _repair_final_illegal_crossings(
     )
     opened_by_id = {int(job.net_id): job.opened_cells for job in repair_jobs}
 
-    raw_repair_result = state.router.route_many_with_negotiated_repair_and_commit(
+    raw_repair_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
         repair_jobs,
-        state.block_radius_cells,
-        state.commit_radius_cells,
-        state.core_commit_radius_cells,
+        state.kernel.radii.block_radius_cells,
+        state.kernel.radii.commit_radius_cells,
+        state.kernel.radii.core_commit_radius_cells,
         NEGOTIATED_MAX_ROUNDS,
         float(state.repair_config.history_weight),
         int(state.repair_config.history_increment),
@@ -545,13 +547,13 @@ def _grid_rect_from_um_bbox(
         min_x_um, max_x_um = max_x_um, min_x_um
     if max_y_um < min_y_um:
         min_y_um, max_y_um = max_y_um, min_y_um
-    grid_size = float(state.grid.grid_size_um)
-    min_cell = physical_to_grid(min_x_um, min_y_um, state.grid)
+    grid_size = float(state.obstacles.grid.grid_size_um)
+    min_cell = physical_to_grid(min_x_um, min_y_um, state.obstacles.grid)
     return (
         min_cell[0],
-        math.ceil((max_x_um - float(state.origin_x_um)) / grid_size),
+        math.ceil((max_x_um - float(state.kernel.frame.origin_x_um)) / grid_size),
         min_cell[1],
-        math.ceil((max_y_um - float(state.origin_y_um)) / grid_size),
+        math.ceil((max_y_um - float(state.kernel.frame.origin_y_um)) / grid_size),
     )
 
 
@@ -569,10 +571,10 @@ def _add_keepout_rect(
     if min_y > max_y:
         min_y, max_y = max_y, min_y
     for y in range(min_y - radius, max_y + radius + 1):
-        if y < 0 or y >= int(state.grid.height):
+        if y < 0 or y >= int(state.obstacles.grid.height):
             continue
         for x in range(min_x - radius, max_x + radius + 1):
-            if 0 <= x < int(state.grid.width):
+            if 0 <= x < int(state.obstacles.grid.width):
                 keepout_cells.add((x, y))
 
 
@@ -638,7 +640,7 @@ def _photonic_issue_keepout_cells(
     state,
     issue: PhotonicVerificationIssue,
 ) -> set[tuple[int, int]]:
-    radius = max(1, int(state.core_commit_radius_cells) + 1)
+    radius = max(1, int(state.kernel.radii.core_commit_radius_cells) + 1)
     if issue.code == "endpoint_correction_error":
         cells: set[tuple[int, int]] = set()
         for bbox_name in ("static_bbox", "core_bbox"):
@@ -716,7 +718,7 @@ def _make_photonic_verification_probe_layout(
         route_layer=settings.route_layer,
         realization_grid_spec=state.realization_grid_spec,
         allow_45_degree_turns=settings.allow_45_degree_turns,
-        bend_radius_cells=state.bend_radius_cells,
+        bend_radius_cells=state.kernel.radii.bend_radius_cells,
         crossing_plan_info=state.crossing_plan_info.to_dict(),
         enable_endpoint_correction=settings.enable_checked_endpoint_correction,
     )
@@ -766,7 +768,7 @@ def _refresh_photonic_verification(settings, state) -> PhotonicVerificationResul
         ),
         realization_grid_spec=state.realization_grid_spec,
         allow_45_degree_turns=settings.allow_45_degree_turns,
-        bend_radius_cells=state.bend_radius_cells,
+        bend_radius_cells=state.kernel.radii.bend_radius_cells,
         legal_overlap_polygons_by_net_id_pair_um=(
             _legal_crossing_overlap_polygons_for_verification(state.crossing_plan_info)
         ),
@@ -819,8 +821,8 @@ def _repair_final_photonic_issues(
     if (
         not selected_issues
         or not state.repair_config.enabled
-        or not hasattr(state.router, "add_static_cells")
-        or not hasattr(state.router, "ripup_route")
+        or not hasattr(state.kernel.router, "add_static_cells")
+        or not hasattr(state.kernel.router, "ripup_route")
     ):
         return False
 
@@ -848,9 +850,9 @@ def _repair_final_photonic_issues(
         attempts.append(attempt)
         return False
 
-    state.router.add_static_cells(sorted(keepout_cells))
+    state.kernel.router.add_static_cells(sorted(keepout_cells))
     for net_id in repair_net_ids:
-        state.router.ripup_route(int(net_id))
+        state.kernel.router.ripup_route(int(net_id))
         state.route_bookkeeping.clear_route(int(net_id))
 
     repair_jobs = native_route_jobs(
@@ -858,11 +860,11 @@ def _repair_final_photonic_issues(
     )
     opened_by_id = {int(job.net_id): job.opened_cells for job in repair_jobs}
 
-    raw_repair_result = state.router.route_many_with_negotiated_repair_and_commit(
+    raw_repair_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
         repair_jobs,
-        state.block_radius_cells,
-        state.commit_radius_cells,
-        state.core_commit_radius_cells,
+        state.kernel.radii.block_radius_cells,
+        state.kernel.radii.commit_radius_cells,
+        state.kernel.radii.core_commit_radius_cells,
         NEGOTIATED_MAX_ROUNDS,
         float(state.repair_config.history_weight),
         int(state.repair_config.history_increment),
@@ -925,18 +927,22 @@ def _refresh_realized_crossing_verification(settings, state) -> list[dict[str, o
     t_refresh_crossings_start = timing.pipeline_timer_start(settings, state)
     native_crossing_events: list[Any] = []
     native_crossing_verdicts: list[Any] = []
-    if hasattr(state.router, "crossing_events"):
+    if hasattr(state.kernel.router, "crossing_events"):
         t_native_events_start = timing.pipeline_timer_start(settings, state)
         try:
-            native_crossing_events = list(cast(Iterable[Any], state.router.crossing_events()))
+            native_crossing_events = list(
+                cast(Iterable[Any], state.kernel.router.crossing_events())
+            )
         except Exception:
             native_crossing_events = []
         state.crossing_plan_info.native_crossing_events = native_crossing_events
         state.crossing_plan_info.native_crossing_event_count = len(native_crossing_events)
-        if hasattr(state.router, "crossing_verdicts"):
+        if hasattr(state.kernel.router, "crossing_verdicts"):
             # The Rust predicate's verdicts, which the classification below
             # reports instead of re-deciding.
-            native_crossing_verdicts = list(cast(Iterable[Any], state.router.crossing_verdicts()))
+            native_crossing_verdicts = list(
+                cast(Iterable[Any], state.kernel.router.crossing_verdicts())
+            )
             state.crossing_plan_info.native_crossing_verdicts = native_crossing_verdicts
             state.crossing_plan_info.native_crossing_verdict_count = len(native_crossing_verdicts)
         timing.record_pipeline_timing(
@@ -1065,18 +1071,22 @@ def repair_and_verify_final_geometry(
             final_photonic_verification = _refresh_photonic_verification(settings, state)
         if not illegal_realized_crossings and not final_photonic_verification.success:
             _write_crossing_debug_artifacts(
-                debug_path=state.debug_path if state.debug_path is not None else Path("build"),
+                debug_path=state.obstacles.debug_path
+                if state.obstacles.debug_path is not None
+                else Path("build"),
                 debug_prefix=settings.debug_prefix,
                 crossing_plan_info=state.crossing_plan_info,
             )
             probe_failure_artifacts = _dump_photonic_probe_failure_artifacts(
-                debug_path=state.debug_path if state.debug_path is not None else Path("build"),
+                debug_path=state.obstacles.debug_path
+                if state.obstacles.debug_path is not None
+                else Path("build"),
                 debug_prefix=settings.debug_prefix,
                 probe_layout=state.last_photonic_probe_layout,
                 verification=final_photonic_verification,
                 records=state.last_photonic_probe_records
                 or state.route_bookkeeping.ordered_records(),
-                router=state.router,
+                router=state.kernel.router,
                 realization_grid_spec=state.realization_grid_spec,
                 allow_unchecked_bumps=True,
             )

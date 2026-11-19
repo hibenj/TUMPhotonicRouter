@@ -69,7 +69,7 @@ def _angle_to_step(settings, state, angle: int) -> tuple[int, int]:
 
 
 def _in_bounds(settings, state, gx: int, gy: int) -> bool:
-    return 0 <= gx < int(state.grid.width) and 0 <= gy < int(state.grid.height)
+    return 0 <= gx < int(state.obstacles.grid.width) and 0 <= gy < int(state.obstacles.grid.height)
 
 
 def port_to_grid_state(
@@ -216,7 +216,7 @@ def _is_dense_target_fanout_group(settings, state, instance_name: str, angle: in
 
 
 def _grid_cell_center_um(settings, state, cell_x: int, cell_y: int) -> tuple[float, float]:
-    return grid_cell_center(cell_x, cell_y, state.grid)
+    return grid_cell_center(cell_x, cell_y, state.obstacles.grid)
 
 
 def _centerline_grid_cells(
@@ -236,9 +236,9 @@ def _centerline_grid_cells(
     def append_point(point: tuple[float, float]) -> None:
         cell = _physical_point_to_grid_cell(
             point,
-            grid_size_um=float(state.grid.grid_size_um),
-            origin_x_um=float(state.origin_x_um),
-            origin_y_um=float(state.origin_y_um),
+            grid_size_um=float(state.obstacles.grid.grid_size_um),
+            origin_x_um=float(state.kernel.frame.origin_x_um),
+            origin_y_um=float(state.kernel.frame.origin_y_um),
         )
         if cell is None:
             return
@@ -249,7 +249,7 @@ def _centerline_grid_cells(
         cells.append(cell)
 
     append_point(points[0])
-    sample_step_um = max(float(state.grid.grid_size_um) / 4.0, 1.0e-6)
+    sample_step_um = max(float(state.obstacles.grid.grid_size_um) / 4.0, 1.0e-6)
     for start, end in itertools.pairwise(points):
         dx = float(end[0]) - float(start[0])
         dy = float(end[1]) - float(start[1])
@@ -344,7 +344,9 @@ def _append_arc_from_tangencies(
     end_angle: int,
     angle_delta: int,
 ) -> None:
-    radius_um = float(state.bend_radius_cells) * float(state.grid.grid_size_um)
+    radius_um = float(state.kernel.radii.bend_radius_cells) * float(
+        state.obstacles.grid.grid_size_um
+    )
     if radius_um <= 0.0 or not math.isfinite(radius_um):
         _append_stub_point(settings, state, out, t_out)
         return
@@ -404,7 +406,7 @@ def _append_realized_stub_bend(
     start_angle: int,
     angle_delta: int,
 ) -> tuple[float, float]:
-    arm_um = float(state.bend_radius_cells) * float(state.grid.grid_size_um)
+    arm_um = float(state.kernel.radii.bend_radius_cells) * float(state.obstacles.grid.grid_size_um)
     radius_um = arm_um
     turn_abs = abs(int(angle_delta)) * (math.pi / 4.0)
     trim = radius_um * math.tan(turn_abs / 2.0)
@@ -493,20 +495,22 @@ def _two_bend_static_stub_centerline_um(
     ) -> float | None:
         if direction == 0:
             return None
-        origin = state.origin_x_um if axis == "x" else state.origin_y_um
-        rel = (float(value) - float(origin)) / float(state.grid.grid_size_um) - 0.5
+        origin = state.kernel.frame.origin_x_um if axis == "x" else state.kernel.frame.origin_y_um
+        rel = (float(value) - float(origin)) / float(state.obstacles.grid.grid_size_um) - 0.5
         eps = 1.0e-9
         index = math.ceil(rel - eps) if direction > 0 else math.floor(rel + eps)
         center = grid_cell_center(
             int(index) if axis == "x" else 0,
             int(index) if axis == "y" else 0,
-            state.grid,
+            state.obstacles.grid,
         )
         return center[0] if axis == "x" else center[1]
 
     points: list[tuple[float, float]] = [port_point]
     bend_start = port_point
-    initial_forward_um = float(max(0, int(initial_forward_cells))) * float(state.grid.grid_size_um)
+    initial_forward_um = float(max(0, int(initial_forward_cells))) * float(
+        state.obstacles.grid.grid_size_um
+    )
     if initial_forward_um > 1.0e-9:
         bend_start = (
             port_point[0] + float(final_step[0]) * initial_forward_um,
@@ -532,7 +536,8 @@ def _two_bend_static_stub_centerline_um(
             settings,
             state,
             0,
-            int(target_anchor_y_cell) - int(intermediate_step[1]) * int(state.bend_radius_cells),
+            int(target_anchor_y_cell)
+            - int(intermediate_step[1]) * int(state.kernel.radii.bend_radius_cells),
         )[1]
     if target_intermediate_y is None:
         fail("no_target_intermediate_y")
@@ -570,7 +575,7 @@ def _two_bend_static_stub_centerline_um(
             max(0, int(min_forward_cells))
             + max(0, int(initial_forward_cells))
             + max(0, int(extra_final_forward_cells))
-        ) * float(state.grid.grid_size_um)
+        ) * float(state.obstacles.grid.grid_size_um)
         if int(final_step[0]) > 0:
             if float(target_final_x) < float(min_forward_x):
                 snapped_min_forward_x = _next_grid_axis_value(
@@ -613,23 +618,31 @@ def _two_bend_static_stub_centerline_um(
             return None
         anchor_point = (float(second_end[0]), float(target_final_y))
     _append_stub_point(settings, state, points, anchor_point)
-    anchor_x = round((anchor_point[0] - state.origin_x_um) / float(state.grid.grid_size_um) - 0.5)
-    anchor_y = round((anchor_point[1] - state.origin_y_um) / float(state.grid.grid_size_um) - 0.5)
+    anchor_x = round(
+        (anchor_point[0] - state.kernel.frame.origin_x_um)
+        / float(state.obstacles.grid.grid_size_um)
+        - 0.5
+    )
+    anchor_y = round(
+        (anchor_point[1] - state.kernel.frame.origin_y_um)
+        / float(state.obstacles.grid.grid_size_um)
+        - 0.5
+    )
     snapped_anchor = _grid_cell_center_um(settings, state, anchor_x, anchor_y)
     snap_error_um = math.hypot(
         float(snapped_anchor[0]) - float(anchor_point[0]),
         float(snapped_anchor[1]) - float(anchor_point[1]),
     )
-    if snap_error_um > max(1.0e-6, 0.05 * float(state.grid.grid_size_um)):
+    if snap_error_um > max(1.0e-6, 0.05 * float(state.obstacles.grid.grid_size_um)):
         fail(
             f"snap_error:{snap_error_um:.6g}",
             " "
             f"anchor_point=({anchor_point[0]:.6g},{anchor_point[1]:.6g}) "
             f"anchor_cell=({anchor_x},{anchor_y}) "
             f"snapped=({snapped_anchor[0]:.6g},{snapped_anchor[1]:.6g}) "
-            f"origin=({state.origin_x_um:.6g},{state.origin_y_um:.6g}) "
-            f"grid={float(state.grid.grid_size_um):.6g} "
-            f"bend_radius_cells={state.bend_radius_cells}",
+            f"origin=({state.kernel.frame.origin_x_um:.6g},{state.kernel.frame.origin_y_um:.6g}) "
+            f"grid={float(state.obstacles.grid.grid_size_um):.6g} "
+            f"bend_radius_cells={state.kernel.radii.bend_radius_cells}",
         )
         return None
     if not _in_bounds(settings, state, anchor_x, anchor_y):
@@ -690,9 +703,9 @@ def _straight_static_stub_centerline_um(
         return None
     port_cell = _physical_point_to_grid_cell(
         port_center_um,
-        grid_size_um=float(state.grid.grid_size_um),
-        origin_x_um=state.origin_x_um,
-        origin_y_um=state.origin_y_um,
+        grid_size_um=float(state.obstacles.grid.grid_size_um),
+        origin_x_um=state.kernel.frame.origin_x_um,
+        origin_y_um=state.kernel.frame.origin_y_um,
     )
     if port_cell is None:
         return None
@@ -710,9 +723,9 @@ def _straight_static_stub_centerline_um(
     # and `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
     anchor_point_um = (
         float(port_center_um[0])
-        + float(step_x) * float(forward_cells) * float(state.grid.grid_size_um),
+        + float(step_x) * float(forward_cells) * float(state.obstacles.grid.grid_size_um),
         float(port_center_um[1])
-        + float(step_y) * float(forward_cells) * float(state.grid.grid_size_um),
+        + float(step_y) * float(forward_cells) * float(state.obstacles.grid.grid_size_um),
     )
     centerline = _compress_centerline((tuple(port_center_um), anchor_point_um))
     if len(centerline) < 2:
@@ -723,7 +736,7 @@ def _straight_static_stub_centerline_um(
 def _build_static_fanout_anchors(settings, state) -> dict[str, _FanoutAnchor]:
     if settings.fanout_access_mode_normalized != "static-stubs":
         return {}
-    default_forward_cells = max(3, int(state.bend_radius_cells) + 3)
+    default_forward_cells = max(3, int(state.kernel.radii.bend_radius_cells) + 3)
     default_lane_spacing_cells = 11
     forward_cells = _fanout_int_or_default(
         settings.config.fanout.fanout_stub_forward_cells,
@@ -770,9 +783,9 @@ def _build_static_fanout_anchors(settings, state) -> dict[str, _FanoutAnchor]:
                     settings,
                     state,
                     port,
-                    state.origin_x_um,
-                    state.origin_y_um,
-                    float(state.grid.grid_size_um),
+                    state.kernel.frame.origin_x_um,
+                    state.kernel.frame.origin_y_um,
+                    float(state.obstacles.grid.grid_size_um),
                     as_target=False,
                 )
                 lateral_cell = int(grid_state.x) * lateral_x + int(grid_state.y) * lateral_y
@@ -928,7 +941,7 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnc
     """
     if settings.fanout_access_mode_normalized != "static-stubs":
         return {}
-    default_forward_cells = max(3, int(state.bend_radius_cells) + 3)
+    default_forward_cells = max(3, int(state.kernel.radii.bend_radius_cells) + 3)
     forward_cells = _fanout_int_or_default(
         settings.config.fanout.fanout_stub_forward_cells,
         default_forward_cells,
@@ -1190,7 +1203,7 @@ def _equalize_dense_runway_reach(
     """
     if not port_specs:
         return
-    half_width_cells = int(state.port_lane_half_width_cells)
+    half_width_cells = int(state.kernel.lanes.port_lane_half_width_cells)
     max_reach = max(int(lengths_by_spec[spec]) + half_width_cells - 1 for spec in port_specs)
     equalized_length = max_reach - half_width_cells + 1
     for spec in port_specs:
@@ -1214,7 +1227,7 @@ def _dense_target_port_runway_lengths(
         )
         grouped.setdefault((run_job.inst2, int(angle)), []).append(run_job)
 
-    base_cells = max(1, int(state.bend_radius_cells) + 1)
+    base_cells = max(1, int(state.kernel.radii.bend_radius_cells) + 1)
     spacing_cells = _fanout_int_or_default(
         settings.config.fanout.target_protected_lane_spacing_cells,
         _fanout_int_or_default(
@@ -1372,7 +1385,7 @@ def build_route_jobs_and_fanout_clustering(
                 )
     state.fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = {
         port_spec: _inflated_cells(
-            settings, state, anchor.stub_center_cells, int(state.commit_radius_cells)
+            settings, state, anchor.stub_center_cells, int(state.kernel.radii.commit_radius_cells)
         )
         for port_spec, anchor in state.fanout_anchor_by_port_spec.items()
     }
@@ -1486,8 +1499,8 @@ def apply_long_straight_fanout_exemption(settings: SessionSettings, state: Sessi
         exempt_ids = sorted(
             set(state.fanout_anchor_source_net_ids) | set(state.fanout_anchor_target_net_ids)
         )
-        if hasattr(state.router, "set_long_straight_exempt_net_ids"):
-            state.router.set_long_straight_exempt_net_ids(exempt_ids)
+        if hasattr(state.kernel.router, "set_long_straight_exempt_net_ids"):
+            state.kernel.router.set_long_straight_exempt_net_ids(exempt_ids)
             print(
                 f"      - long-straight penalty exempt for {len(exempt_ids)} dense fan-out net(s)"
             )

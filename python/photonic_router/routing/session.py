@@ -1,21 +1,13 @@
-"""The routing session shell: construction, the nine-phase `run` and the
-module-level `route_nets_rust` entry point.
+"""The routing session shell: construction, `prepare`, the nine-phase `run`
+and the module-level `route_nets_rust` entry point.
 
-Milestone 5 Slice 1 moved every phase body and its stage-private helpers into
-the sibling stage modules of this package, as module-level functions taking the
-session as their first argument, with a one-line forwarder per moved method on
-this class. Slice 2b removed those 123 forwarders: a stage calls a helper of its
-own module by name and a helper of another stage through an import from that
-stage's module, so the only entry points left on the class are `__init__` and
-`run`. The pipeline timers moved to `timing.py` for the same reason.
-
-Slice 2b also split what the session carried into the two records a stage now
-takes: `self.settings` (frozen `settings.SessionSettings`, Slice 2a) is the run's
-inputs, `self.state` (mutable `state.SessionState`) is everything the run
-computes -- one documented field per per-run attribute, with the writing and
-reading phases named. The class itself owns nothing else: it validates the
-options (`options.SessionOptions`), builds the two records and calls the nine phases of `stages.py`, whose
-Protocols declare each phase's inputs and its product."""
+The phase bodies and their helpers live in the sibling stage modules as
+module-level functions. The session validates the options
+(`options.SessionOptions`) into `self.settings` (frozen
+`settings.SessionSettings`), runs phases 1 and 2, builds the shared record
+(`state.SessionState`) from their products and calls the remaining phases
+of `stages.py`, whose Protocols declare each phase's inputs and its product.
+"""
 
 from __future__ import annotations
 
@@ -80,23 +72,43 @@ class _RouteNetsRustSession:
                 "or `maturin develop` so photonic_router._rust can be imported."
             )
 
-        routed_layout = self.settings.unrouted_layout.copy()
-        routed_layout.name = "routed_layout_rust"
+        self._rust_backend = rust_backend
 
-        # Slice 2b: everything the run computes lives in one typed record, so a
-        # stage takes `(settings, state)` instead of the session itself. The
-        # remaining two fields are what the constructor produces.
-        self.state = SessionState(rust_backend=rust_backend, routed_layout=routed_layout)
+    def prepare(self) -> SessionState:
+        """Run phases 1 and 2 and return the state the later phases share.
+
+        Everything a session sets up before its first search that does not
+        depend on the nets: the static obstacle map, the grid and the
+        kernel's router.
+        """
+        settings = self.settings
+        timings_s: dict[str, float] = {}
+        context = obstacle_context.build_static_obstacle_context(
+            settings, self._rust_backend, timings_s
+        )
+        kernel = router_setup.configure_router_and_grid(
+            settings, self._rust_backend, context, timings_s
+        )
+        routed_layout = settings.unrouted_layout.copy()
+        routed_layout.name = "routed_layout_rust"
+        return SessionState.after_setup(
+            routed_layout=routed_layout,
+            rust_backend=self._rust_backend,
+            timings_s=timings_s,
+            obstacles=context,
+            kernel=kernel,
+        )
 
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
         """The routing phases of `stages.py`, in order (nine, plus the optional detour pass).
 
-        Each takes the run's frozen inputs and its mutable state; the value a
-        phase returns is the input of a later one (`stages.py` names the types).
+        Phases 1 and 2 return the products the state is built from
+        (`prepare`); each later phase takes the run's frozen inputs and its
+        state, and the value a phase returns is the input of a later one
+        (`stages.py` names the types).
         """
-        settings, state = self.settings, self.state
-        context = obstacle_context.build_static_obstacle_context(settings, state)
-        router_setup.configure_router_and_grid(settings, state, context.obstacle_map)
+        settings, state = self.settings, self.prepare()
+        context = state.obstacles
         jobs = route_jobs_stage.build_route_jobs_and_fanout_clustering(
             settings, state, settings.schematic.netlist.routes
         )

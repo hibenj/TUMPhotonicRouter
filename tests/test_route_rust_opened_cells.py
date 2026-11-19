@@ -25,7 +25,7 @@ from photonic_router.routing.state import SessionState
 from photonic_router.routing_layers import ComponentPortAccessRule
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
 
-from tests.fixtures.sessions import settings_for_test
+from tests.fixtures.sessions import settings_for_test, state_for_test
 from tests.fixtures.synthetic_layouts import (
     DummyBundle as _DummyBundle,
 )
@@ -78,7 +78,7 @@ def _diagnostic_opened_cells(text: str) -> set[tuple[int, int]]:
 
 
 def _corridor_state(width: int, height: int, bend_radius_cells: int = 2) -> SessionState:
-    return SessionState(
+    return state_for_test(
         grid_width=width,
         grid_height=height,
         bend_radius_cells=bend_radius_cells,
@@ -242,9 +242,13 @@ def _footprint_resolver_state(
     access_rule: ComponentPortAccessRule | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        grid=SimpleNamespace(grid_size_um=grid_size_um),
-        port_lane_length_cells=max(3, 2 * bend_radius_cells + 2),
-        port_lane_half_width_cells=max(1, bend_radius_cells + commit_radius_cells + 1),
+        obstacles=SimpleNamespace(grid=SimpleNamespace(grid_size_um=grid_size_um)),
+        kernel=SimpleNamespace(
+            lanes=SimpleNamespace(
+                port_lane_length_cells=max(3, 2 * bend_radius_cells + 2),
+                port_lane_half_width_cells=max(1, bend_radius_cells + commit_radius_cells + 1),
+            )
+        ),
         access_rule=access_rule,
         dense_source_fanout_instances=frozenset(),
     )
@@ -273,12 +277,12 @@ def test_resolve_port_footprint_cells_uses_lane_sized_optical_default(
     )
 
     assert small_footprint == (
-        small_bend_state.port_lane_length_cells,
-        small_bend_state.port_lane_half_width_cells,
+        small_bend_state.kernel.lanes.port_lane_length_cells,
+        small_bend_state.kernel.lanes.port_lane_half_width_cells,
     )
     assert large_footprint == (
-        large_bend_state.port_lane_length_cells,
-        large_bend_state.port_lane_half_width_cells,
+        large_bend_state.kernel.lanes.port_lane_length_cells,
+        large_bend_state.kernel.lanes.port_lane_half_width_cells,
     )
     assert large_footprint[1] > small_footprint[1]
 
@@ -307,11 +311,15 @@ def test_resolve_port_footprint_cells_uses_stub_override_only_for_dense_fanout_i
     port = SimpleNamespace(port_type="optical")
 
     state = SimpleNamespace(
-        grid=SimpleNamespace(grid_size_um=1.0),
-        port_lane_length_cells=8,
-        port_lane_half_width_cells=4,
-        stub_port_lane_length_cells=8,
-        stub_port_lane_half_width_cells=2,
+        obstacles=SimpleNamespace(grid=SimpleNamespace(grid_size_um=1.0)),
+        kernel=SimpleNamespace(
+            lanes=SimpleNamespace(
+                port_lane_length_cells=8,
+                port_lane_half_width_cells=4,
+                stub_port_lane_length_cells=8,
+                stub_port_lane_half_width_cells=2,
+            )
+        ),
         access_rule=None,
         dense_source_fanout_instances=frozenset({"mmi0_multiport_0_0"}),
     )
@@ -1365,7 +1373,7 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
         enable_crossings=False,
         route_width_um=0.5,
     )
-    state = SessionState(
+    state = state_for_test(
         fanout_anchor_net_ids={net_id},
         fanout_anchor_source_net_ids={net_id},
         fanout_anchor_target_net_ids={net_id},
@@ -1431,7 +1439,7 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
         return SimpleNamespace(corrected_centerline_um=corrected_centerline_um)
 
     settings = settings_for_test(enable_crossings=True)
-    state = SessionState()
+    state = state_for_test()
     state.fanout_anchor_source_net_ids = {source_stub_net_id, both_stub_net_id}
     state.fanout_anchor_target_net_ids = {target_stub_net_id, both_stub_net_id}
     state.fanout_anchor_net_ids = (
@@ -1513,7 +1521,7 @@ def test_endpoint_correction_crossing_net_ids_propagates_real_failures():
             raise RuntimeError("crossing_events backend failure")
 
     settings = settings_for_test(enable_crossings=True)
-    state = SessionState(router=_BrokenCrossingEventsRouter())
+    state = state_for_test(router=_BrokenCrossingEventsRouter())
 
     with pytest.raises(RuntimeError, match="crossing_events backend failure"):
         routing_finalize._endpoint_correction_crossing_net_ids(settings, state)
@@ -1761,7 +1769,7 @@ def test_only_rules_flagged_for_instance_geometry_open_the_heater_pad(monkeypatc
     )
     monkeypatch.setattr(routing_layers, "REGISTERED_PORT_ACCESS_RULES", [grid_rule])
     settings = SimpleNamespace(schematic=object())
-    state = SessionState()
+    state = state_for_test()
     rule_for = routing_route_jobs._port_access_rule_for
     port = SimpleNamespace(port_type="optical")
 

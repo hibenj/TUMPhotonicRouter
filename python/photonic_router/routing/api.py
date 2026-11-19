@@ -54,7 +54,6 @@ from photonic_router.records.route_rust_types import (
     _as_float,
 )
 from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
-from photonic_router.routing.obstacle_context import build_static_obstacle_context
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions, SessionOptions
 from photonic_router.routing.route_jobs import build_route_jobs_and_fanout_clustering
 
@@ -456,10 +455,8 @@ def static_fanout_anchors_um(
     otherwise the anchors differ.
     """
     session = _RouteNetsRustSession(unrouted_layout, schematic, options)
-    settings, state = session.settings, session.state
-    context = build_static_obstacle_context(settings, state)
-    configure_router_and_grid(settings, state, context.obstacle_map)
-    build_route_jobs_and_fanout_clustering(settings, state, schematic.netlist.routes)
+    state = session.prepare()
+    build_route_jobs_and_fanout_clustering(session.settings, state, schematic.netlist.routes)
     return {
         spec: (float(anchor.center_um[0]), float(anchor.center_um[1]))
         for spec, anchor in state.fanout_anchor_by_port_spec.items()

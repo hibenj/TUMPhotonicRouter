@@ -41,6 +41,7 @@ from photonic_router.routing import router_setup as router_setup_module
 from photonic_router.routing import stages
 from photonic_router.routing import verify_repair as verify_repair_module
 from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
+from photonic_router.routing.products import KernelSetup
 
 from tests.fixtures.sessions import Pipeline
 from tests.fixtures.synthetic_layouts import GRID_HEIGHT, GRID_WIDTH, LINKS, ObstacleMapStandIn
@@ -57,25 +58,31 @@ def test_phase1_obstacle_context_builder_returns_the_map_and_the_grid(pipeline: 
         "derived_from_component": False,
         "half_size_cells": 0,
     }
-    assert pipeline.state.resolved_crossing_half_size_cells == 0
-    # The grid the map defines is what the later phases measure against; the
-    # cell counts themselves are phase 2's (see state.py).
-    assert pipeline.state.grid is context.obstacle_map.grid
-    assert (pipeline.state.grid_width, pipeline.state.grid_height) == (0, 0)
+    assert context.resolved_crossing_half_size_cells == 0
+    # The grid the map defines is what the later phases measure against.
+    assert context.grid is context.obstacle_map.grid
+    assert context.debug_path is None and not context.diagnostics_enabled
 
 
-def test_phase2_router_setup_builds_the_kernel_router_into_the_state(pipeline: Pipeline) -> None:
-    assert pipeline.through(2) is None  # phase 2's product is the state
+def test_phase2_router_setup_returns_the_kernel_setup(pipeline: Pipeline) -> None:
+    kernel = pipeline.through(2)
 
+    assert isinstance(kernel, KernelSetup)
     state = pipeline.state
-    assert state.router is not None
-    assert hasattr(state.router, "route_many_with_negotiated_repair_and_commit")
-    assert state.primitive_cfg is not None
-    assert state.astar_cfg is not None
-    assert (state.grid_width, state.grid_height) == (GRID_WIDTH, GRID_HEIGHT)
-    assert (state.origin_x_um, state.origin_y_um) == (0.0, 0.0)
-    assert state.bend_radius_cells == 1  # bend_radius_um=1.0 over a 1 um grid
-    assert state.raw_static_cells == set()  # the stand-in map blocks nothing
+    assert state.kernel is kernel and state.obstacles is pipeline.through(1)
+    # the blockers before port reservations start as the raw static cells
+    assert state.static_blocked_cells_before_port_reservations is kernel.static.raw_static_cells
+    assert state.kernel.router is not None
+    assert hasattr(state.kernel.router, "route_many_with_negotiated_repair_and_commit")
+    assert state.kernel.primitive_cfg is not None
+    assert state.kernel.astar_cfg is not None
+    assert (state.kernel.frame.grid_width, state.kernel.frame.grid_height) == (
+        GRID_WIDTH,
+        GRID_HEIGHT,
+    )
+    assert (state.kernel.frame.origin_x_um, state.kernel.frame.origin_y_um) == (0.0, 0.0)
+    assert state.kernel.radii.bend_radius_cells == 1  # bend_radius_um=1.0 over a 1 um grid
+    assert state.kernel.static.raw_static_cells == set()  # the stand-in map blocks nothing
     # The realization grid spec is phase 5's, not this phase's (see state.py).
     assert state.realization_grid_spec is None
 
@@ -118,7 +125,7 @@ def test_phase4_crossing_planner_types_the_plan_and_passes_the_jobs_through(
     assert plan.enabled is False  # crossings are off by default in this session
     assert plan.crossing_mode == pipeline.settings.crossing_mode
     assert plan.crossing_device == pipeline.through(1).crossing_device_info
-    assert plan.bend_runout_cells_per_crossing == pipeline.state.bend_radius_cells
+    assert plan.bend_runout_cells_per_crossing == pipeline.state.kernel.radii.bend_radius_cells
     assert plan.fanout_access_mode == pipeline.settings.fanout_access_mode_normalized
     assert plan.events == []
     # The mapping the artifacts carry has exactly the keys that were written.

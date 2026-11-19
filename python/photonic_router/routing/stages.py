@@ -1,13 +1,14 @@
 """The nine routing phases as declared interfaces.
 
-Milestone 5 Slice 2b: one `typing.Protocol` per phase of `session.run()`, plus a
-small frozen dataclass wherever a phase used to return a bare tuple. Every phase
-has the same first two parameters -- the run's frozen inputs (`SessionSettings`,
-Slice 2a) and its mutable record (`SessionState`, this slice) -- followed by that
-phase's own main input, and returns that phase's product as a value:
+One `typing.Protocol` per phase of `session.run()`, plus a small frozen
+dataclass for each product that is not one of `products.py`. Phases 1 and 2
+run before the session state exists and return the two products the state
+is built from; every later phase takes the run's frozen inputs
+(`SessionSettings`) and its shared record (`SessionState`), followed by its
+own main input, and returns its product as a value:
 
-    1 ObstacleContextBuilder (settings, state)             -> ObstacleContext
-    2 RouterSetup            (settings, state, obstacle_map) -> None
+    1 ObstacleContextBuilder (settings, backend, timings)          -> ObstacleContext
+    2 RouterSetup            (settings, backend, context, timings) -> KernelSetup
     3 RouteJobBuilder        (settings, state, nets)        -> RouteJobsResult
     4 CrossingPlanner        (settings, state, jobs, ...)   -> PlannedJobs
     5 StaticHandoff          (settings, state, jobs, ...)   -> FinalJobs
@@ -16,23 +17,20 @@ phase's own main input, and returns that phase's product as a value:
     8 GeometryVerifier       (settings, state, records)     -> VerifiedRecords
     9 Realizer               (settings, state, ...)         -> RustRouteDebugArtifacts
 
-Two of the nine have no product of their own and return `None` because their
-whole effect is on the state and on the kernel: phase 2 builds the router and its
-configuration objects into `state` (`router`, `primitive_cfg`, `astar_cfg`, the
-clearance radii, the raw static geometry), and phase 6 runs the kernel and leaves
-the routed results in `state.route_bookkeeping` together with the loop's counters
-(`repair_count`, `simple_route_count`, `total_expanded_states`,
-`native_repair_trace_records`, `route_attempt_records`, `route_timing_buckets`).
-Those writes are documented per field in `state.py`.
+Phase 6 has no product of its own and returns `None`: it runs the kernel and
+leaves the routed results in `state.route_bookkeeping` together with the
+loop's counters (`repair_count`, `simple_route_count`,
+`total_expanded_states`, `native_repair_trace_records`,
+`route_attempt_records`, `route_timing_buckets`). Those writes are
+documented per field in `state.py`.
 
 The Protocols are declared here, not next to the implementations, so that the
 flow reads as a list of interfaces and so a second implementation of a phase (a
 different crossing planner, say) has one place to answer to -- the same pattern
 `photonic_router.static_obstacle_builder.ObstacleMapBuilder` already sets.
-Slice 2c typed the last untyped thing the phases share, the crossing plan itself:
-`state.crossing_plan_info` is a `CrossingPlanInfo` dataclass
-(`python/photonic_router/routing/crossing_plan_info.py`), one field per key, and `to_dict()`
-is what reaches the mapping consumers outside the session.
+The crossing plan the phases share is typed as well: `state.crossing_plan_info`
+is a `CrossingPlanInfo` dataclass (`crossing_plan_info.py`), and `to_dict()` is
+what reaches the mapping consumers outside the session.
 """
 
 from __future__ import annotations
@@ -47,17 +45,9 @@ from photonic_router.records.route_rust_types import (
     RouteJob,
     RustRouteDebugArtifacts,
 )
+from photonic_router.routing.products import KernelSetup, ObstacleContext
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SessionState
-
-
-@dataclass(frozen=True)
-class ObstacleContext:
-    """Phase 1's product: the static obstacle map and what phases 4 to 9 need of it."""
-
-    obstacle_map: Any  # the obstacle builder's result object
-    crossing_device_info: dict[str, Any]
-    obstacle_svg: Path | None
 
 
 @dataclass(frozen=True)
@@ -104,19 +94,21 @@ class VerifiedRecords:
 class ObstacleContextBuilder(Protocol):
     """Phase 1: build the static obstacle map and the grid it defines."""
 
-    def __call__(self, settings: SessionSettings, state: SessionState) -> ObstacleContext: ...
+    def __call__(
+        self, settings: SessionSettings, rust_backend: Any, timings_s: dict[str, float]
+    ) -> ObstacleContext: ...
 
 
 class RouterSetup(Protocol):
-    """Phase 2: build the kernel's router and its configuration objects.
-
-    Returns nothing: its product is `state.router` and the derived grid,
-    clearance and static-geometry fields listed in `state.py` under phase 2.
-    """
+    """Phase 2: build the kernel's router and its configuration objects."""
 
     def __call__(
-        self, settings: SessionSettings, state: SessionState, obstacle_map: Any
-    ) -> None: ...
+        self,
+        settings: SessionSettings,
+        rust_backend: Any,
+        context: ObstacleContext,
+        timings_s: dict[str, float],
+    ) -> KernelSetup: ...
 
 
 class RouteJobBuilder(Protocol):

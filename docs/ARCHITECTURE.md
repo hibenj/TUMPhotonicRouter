@@ -161,15 +161,22 @@ bounding boxes (`bounding_boxes`, the default) or rasterized polygons
 (`rasterized_polygons`), clearance inflation, port openings, and a
 `StaticCellSet` handle that stays in Rust. A chip-boundary keep-out band is
 added outside the routable box. The product is an `ObstacleContext`
-(obstacle map data, crossing device info, the obstacle debug SVG path).
+(`routing/products.py`: the obstacle map, the grid, the resolved obstacle
+configuration and crossing footprint, the debug directory and the obstacle
+SVG path). The phase does not take the session state.
 
 ### 2.5 Phase 2: router setup
 
 `routing/router_setup.py` builds the `PyPhotonicRouter` (`GridSpec`,
 `PrimitiveLibraryConfig`, `AStarConfig`, the flat `RouterConfig` from
-`RoutingConfig.router.to_rust`), installs the static cells and rectangles,
-and records the grid origin and the clearance radii on the session state.
-The bend radius is rounded up to whole grid cells.
+`RoutingConfig.router.to_rust`) and reads the raw static cells and
+rectangles out of the obstacle map. The product is a `KernelSetup`
+(`routing/products.py`): the router and its two configuration objects, the
+grid frame, the clearance radii, the port lane sizes and the raw static
+geometry. The bend radius is rounded up to whole grid cells. Like phase 1
+it does not take the session state; the session builds the state from the
+two products (`SessionState.after_setup`), and the later phases read them as
+`state.obstacles` and `state.kernel`.
 
 ### 2.6 Phase 3: route jobs
 
@@ -446,13 +453,14 @@ and from what the earlier stages decided (`OpticalStageInputs`: the
 negotiated crossing setup with the placement analysis, the net order, the
 obstacle configuration). `SessionSettings` (`routing/settings.py`,
 `from_options`) validates the options and holds the resolved,
-frozen inputs of the session; `SessionState` (`routing/state.py`)
-everything it computes, one documented field per value with its writing,
-mutating and reading phases (`w:`, `m:`, `r:`). Eighteen fields are written
-by more than one phase and carry a `# shared writer` marker (the crossing
-plan, the port-access tables, the static row indexes, the search counters
-and timing buckets, the route bookkeeping); every other field has one
-writer.
+frozen inputs of the session. Phases 1 and 2 return frozen products
+(`routing/products.py`: `ObstacleContext`, `KernelSetup`). `SessionState`
+(`routing/state.py`) holds those two and what the phases from 3 on still
+write into a shared record, one documented field per value with its
+writing, mutating and reading phases (`w:`, `m:`, `r:`). Fourteen fields are
+written by more than one phase and carry a `# shared writer` marker (the
+crossing plan, the port-access tables, the search counters and timing
+buckets, the route bookkeeping); every other field has one writer.
 
 
 ## 4. The search interface, and how to add an engine
@@ -716,7 +724,7 @@ Sub-packages:
 
 | package | files, lines | responsibility |
 | --- | --- | --- |
-| `routing/` | 20, 10,100 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `crossing_plan_info.py`, `timing.py`, `api.py` (`route_match_and_realize`), `route_rust.py` (a re-export shim for older import paths) |
+| `routing/` | 20, 10,100 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `products.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `crossing_plan_info.py`, `timing.py`, `api.py` (`route_match_and_realize`), `route_rust.py` (a re-export shim for older import paths) |
 | `crossings/` | 12, 6,000 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,400, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 1,300 for verification), `crossing_verification_report.py`, `topology_analysis.py` (test oracle) |
 | `plm/` | 5, 3,600 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,850) |
 | `verify/` | 3, 2,150 | `photonic_verification.py` (1,240, the geometry verifier), `route_rust_endpoint_correction.py` (900) |

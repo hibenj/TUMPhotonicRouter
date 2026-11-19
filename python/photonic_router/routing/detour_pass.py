@@ -89,8 +89,10 @@ def _route_lengths_um(state: SessionState, net_ids: Iterable[int]) -> dict[int, 
 def _bend_radius_um(settings: SessionSettings, state: SessionState) -> float:
     if settings.bend_radius_um is not None:
         return float(settings.bend_radius_um)
-    grid = state.grid
-    return float(state.bend_radius_cells) * (float(grid.grid_size_um) if grid is not None else 1.0)
+    grid = state.obstacles.grid
+    return float(state.kernel.radii.bend_radius_cells) * (
+        float(grid.grid_size_um) if grid is not None else 1.0
+    )
 
 
 def run_detour_pass(
@@ -138,15 +140,15 @@ def run_detour_pass(
             f"{factor:g}x their free lower bound: {names}; ripping up and re-routing"
         )
         for net_id in detoured:
-            state.router.ripup_route(int(net_id))
+            state.kernel.router.ripup_route(int(net_id))
             state.route_bookkeeping.clear_route(int(net_id))
         batch_jobs = native_route_jobs(settings, state, (jobs_by_id[net_id] for net_id in detoured))
         opened_by_id = {int(job.net_id): job.opened_cells for job in batch_jobs}
-        raw_result = state.router.route_many_with_negotiated_repair_and_commit(
+        raw_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
             batch_jobs,
-            state.block_radius_cells,
-            state.commit_radius_cells,
-            state.core_commit_radius_cells,
+            state.kernel.radii.block_radius_cells,
+            state.kernel.radii.commit_radius_cells,
+            state.kernel.radii.core_commit_radius_cells,
             NEGOTIATED_MAX_ROUNDS,
             float(state.repair_config.history_weight),
             int(state.repair_config.history_increment),

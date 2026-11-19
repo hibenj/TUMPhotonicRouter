@@ -164,7 +164,7 @@ def _fanout_stubbed_centerline(
     source_anchor = state.fanout_anchor_by_port_spec.get(f"{job.inst1},{job.port1}")
     if source_anchor is None:
         return ()
-    route_primitive_centerline = getattr(state.router, "route_primitive_centerline", None)
+    route_primitive_centerline = getattr(state.kernel.router, "route_primitive_centerline", None)
     try:
         if route_primitive_centerline is not None:
             route_centerline = _centerline_tuple(route_primitive_centerline(route_obj))
@@ -255,18 +255,18 @@ def _record_route(
     if (
         not corrected_centerline_um
         and not settings.enable_checked_endpoint_correction
-        and hasattr(state.router, "route_primitive_centerline")
+        and hasattr(state.kernel.router, "route_primitive_centerline")
     ):
         try:
             corrected_centerline_um = _centerline_tuple(
-                state.router.route_primitive_centerline(route_obj)
+                state.kernel.router.route_primitive_centerline(route_obj)
             )
         except Exception:
             corrected_centerline_um = ()
-        if corrected_centerline_um and hasattr(state.router, "centerline_length_um"):
+        if corrected_centerline_um and hasattr(state.kernel.router, "centerline_length_um"):
             try:
                 corrected_total_length_um = float(
-                    state.router.centerline_length_um(list(corrected_centerline_um))
+                    state.kernel.router.centerline_length_um(list(corrected_centerline_um))
                 )
             except Exception:
                 corrected_total_length_um = None
@@ -301,7 +301,7 @@ def _finalize_committed_route(
     if expanded_states == 0:
         state.simple_route_count += 1
 
-    if state.diagnostics_enabled:
+    if state.obstacles.diagnostics_enabled:
         source_state, target_state, opened_candidate_cells, opened_cells_set, _ = (
             _state_openings_for_job(settings, state, job)
         )
@@ -348,7 +348,7 @@ def dispatch_native_routing(
     repair_enabled = bool(state.repair_config.enabled)
     max_rounds = NEGOTIATED_MAX_ROUNDS if repair_enabled else 1
     no_ripup = not repair_enabled
-    if not hasattr(state.router, "route_many_with_negotiated_repair_and_commit"):
+    if not hasattr(state.kernel.router, "route_many_with_negotiated_repair_and_commit"):
         raise RuntimeError(
             "The loaded photonic_router._rust extension does not expose "
             "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. Rebuild it "
@@ -371,10 +371,14 @@ def dispatch_native_routing(
                 f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
                 end=" ",
             )
-        route_dir = state.debug_path / "routes" if state.debug_path is not None else None
+        route_dir = (
+            state.obstacles.debug_path / "routes"
+            if state.obstacles.debug_path is not None
+            else None
+        )
         diag_txt: Path | None = None
         if (
-            state.debug_path is not None
+            state.obstacles.debug_path is not None
             and (route_selected_for_debug or settings.collect_attempt_diagnostics)
             and route_dir is not None
         ):
@@ -392,11 +396,11 @@ def dispatch_native_routing(
     # engine since Milestone 8 of
     # .agent/execplans/2026-09-22-modular-readable-router-restructure.md
     # deleted the older 17-strategy chain and its engine switch.
-    raw_batch_result = state.router.route_many_with_negotiated_repair_and_commit(
+    raw_batch_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
         batch_jobs,
-        state.block_radius_cells,
-        state.commit_radius_cells,
-        state.core_commit_radius_cells,
+        state.kernel.radii.block_radius_cells,
+        state.kernel.radii.commit_radius_cells,
+        state.kernel.radii.core_commit_radius_cells,
         max_rounds,
         float(state.repair_config.history_weight),
         int(state.repair_config.history_increment),
@@ -438,7 +442,7 @@ def dispatch_native_routing(
             route_obj is not None
             and not failed
             and bucket_name != "normal_route"
-            and state.debug_path is not None
+            and state.obstacles.debug_path is not None
             and (
                 settings.debug_route_indices is None
                 or job.route_index in settings.debug_route_indices

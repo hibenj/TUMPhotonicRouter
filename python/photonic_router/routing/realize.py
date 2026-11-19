@@ -53,7 +53,7 @@ def realize_and_assemble_debug_artifacts(
             route_layer=settings.route_layer,
             realization_grid_spec=state.realization_grid_spec,
             allow_45_degree_turns=settings.allow_45_degree_turns,
-            bend_radius_cells=state.bend_radius_cells,
+            bend_radius_cells=state.kernel.radii.bend_radius_cells,
             crossing_plan_info=state.crossing_plan_info.to_dict(),
             enable_endpoint_correction=settings.enable_checked_endpoint_correction,
         )
@@ -67,7 +67,9 @@ def realize_and_assemble_debug_artifacts(
         if state.crossing_plan_info.realized_crossing_component_count is None:
             state.crossing_plan_info.realized_crossing_component_count = 0
     _write_crossing_debug_artifacts(
-        debug_path=state.debug_path if state.debug_path is not None else Path("build"),
+        debug_path=state.obstacles.debug_path
+        if state.obstacles.debug_path is not None
+        else Path("build"),
         debug_prefix=settings.debug_prefix,
         crossing_plan_info=state.crossing_plan_info,
     )
@@ -98,7 +100,7 @@ def realize_and_assemble_debug_artifacts(
         routed_net_records=routed_net_records,
         realization_grid_spec=state.realization_grid_spec,
         allow_45_degree_turns=settings.allow_45_degree_turns,
-        bend_radius_cells=state.bend_radius_cells,
+        bend_radius_cells=state.kernel.radii.bend_radius_cells,
         route_search_summary=summarize_route_search(
             state.route_timing_buckets,
             route_count=len(route_jobs),

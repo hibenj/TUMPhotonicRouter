@@ -258,6 +258,19 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Routing phases 1 and 2 return their results as values (S1, slice 2; a
+  restructuring). `build_static_obstacle_context` and
+  `configure_router_and_grid` no longer take the session state: they return
+  the frozen `ObstacleContext` and `KernelSetup` of the new
+  `python/photonic_router/routing/products.py`, and the session builds the
+  state from them (`_RouteNetsRustSession.prepare`,
+  `SessionState.after_setup`). The 25 fields the two phases used to write
+  into the shared state are gone from it; the later phases read
+  `state.obstacles.grid`, `state.kernel.router`,
+  `state.kernel.radii.bend_radius_cells` and so on. The state has 59 fields
+  (82 before) and four of them are required, so a state without a grid or a
+  router cannot be built; mypy's errors fall from 346 to 320 because the
+  grid and the layout are no longer optional. Behaviour is unchanged.
 - The options of a routing session are one typed argument (S1, slice 1 of
   the data flow between the stages; a restructuring). New
   `python/photonic_router/routing/options.py`: `SessionOptions` with the
