@@ -35,13 +35,13 @@ from typing import TYPE_CHECKING, Any
 
 from gdsfactory.component import Component
 
+from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 from photonic_router.records.route_rust_records import RouteBookkeeping
 from photonic_router.records.route_rust_types import (
     RouteAttemptRecord,
     RoutedNetRecord,
     RouteTimingBucket,
 )
-from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 from photonic_router.routing.products import (
     DenseRunways,
     EndpointIndex,

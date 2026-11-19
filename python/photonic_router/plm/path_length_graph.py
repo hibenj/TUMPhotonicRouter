@@ -10,6 +10,7 @@ from graphlib import TopologicalSorter
 from typing import Any, Protocol
 
 from photonic_router.port_roles import INPUT, OUTPUT, PortRole, component_port_sides
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 
 
 class SchematicLike(Protocol):
@@ -31,19 +32,6 @@ class NodeType(str, Enum):
 class PortDirection(str, Enum):
     INPUT = "input"
     OUTPUT = "output"
-
-
-@dataclass(frozen=True)
-class PortRef:
-    instance: str
-    port: str
-
-
-@dataclass(frozen=True)
-class RoutedEdgeKey:
-    net_name: str
-    source: PortRef
-    target: PortRef
 
 
 @dataclass

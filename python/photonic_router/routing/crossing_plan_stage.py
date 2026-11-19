@@ -12,10 +12,10 @@ from photonic_router.crossings.route_rust_crossing_plan import (
     _port_center_um,
     build_crossing_plan_info,
 )
+from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 from photonic_router.records.route_rust_obstacle_config import port_type_name
 from photonic_router.records.route_rust_types import RouteJob
 from photonic_router.routing import timing
-from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 from photonic_router.routing.products import PortFootprints
 from photonic_router.routing.route_jobs import (
     _grid_cell_center_um,

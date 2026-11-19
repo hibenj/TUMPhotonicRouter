@@ -20,8 +20,8 @@ from types import SimpleNamespace
 from typing import Any, Protocol
 
 import pytest
-from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
 from photonic_router.plm.route_rust_meanders import _MeanderSearchConfig
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import (
     MeanderEdgeReport,
     MeanderInsertionReport,

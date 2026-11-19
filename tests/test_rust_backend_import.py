@@ -118,9 +118,9 @@ def test_crossing_verdicts_match_the_events_and_the_python_verifier():
         populate_realized_intersections_from_native_crossing_events,
         verify_realized_route_intersections,
     )
-    from photonic_router.plm.path_length_graph import PortRef
+    from photonic_router.records.crossing_plan_info import CrossingPlanInfo
+    from photonic_router.records.route_keys import PortRef
     from photonic_router.records.route_rust_types import RoutedNetRecord
-    from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 
     backend, router = _collision_crossing_router(crossing_half_size_cells=1)
     assert router.crossing_verdicts() == []

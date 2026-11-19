@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import cast
 
 from gdsfactory.typings import Port
-from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_records import (
     RouteBookkeeping,
     routed_edge_lengths_from_records,

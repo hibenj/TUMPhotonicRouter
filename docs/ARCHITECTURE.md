@@ -205,7 +205,7 @@ only. The phase runs in five steps: the crossing plan, one footprint per
 port and what the port's own net may open of it, the foreign-port keep-outs,
 the lateral windows of dense port groups, and the lane offsets of endpoints
 that share a grid state. The plan's typed record is `CrossingPlanInfo`
-(`routing/crossing_plan_info.py`), which later phases extend with the
+(`records/crossing_plan_info.py`), which later phases extend with the
 realized crossings; everything about the ports is one frozen
 `PortFootprints` (`routing/products.py`, `state.ports`). `crossings/topology_analysis.py` (graph depth and port
 rank) is the older plan, kept as the test oracle
@@ -737,7 +737,7 @@ Sub-packages:
 
 | package | files, lines | responsibility |
 | --- | --- | --- |
-| `routing/` | 20, 10,100 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `products.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `crossing_plan_info.py`, `timing.py`, `api.py` (`route_match_and_realize`) |
+| `routing/` | 20, 10,100 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `products.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `timing.py`, `api.py` (`route_match_and_realize`) |
 | `crossings/` | 12, 6,000 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,400, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 1,300 for verification), `crossing_verification_report.py`, `topology_analysis.py` (test oracle) |
 | `plm/` | 5, 3,600 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,850) |
 | `verify/` | 3, 2,150 | `photonic_verification.py` (1,240, the geometry verifier), `route_rust_endpoint_correction.py` (900) |

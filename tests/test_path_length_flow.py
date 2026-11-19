@@ -12,11 +12,8 @@ import pytest
 from gdsfactory.component import Component
 from photonic_router import flow as routing_flow
 from photonic_router import flow_optical
-from photonic_router.plm.path_length_graph import (
-    MissingLengthRequirement,
-    PortRef,
-    RoutedEdgeKey,
-)
+from photonic_router.plm.path_length_graph import MissingLengthRequirement
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import (
     MeanderEdgeReport,
     MeanderInsertionReport,

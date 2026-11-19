@@ -12,7 +12,7 @@ from pathlib import Path
 from gdsfactory.component import Component
 from gdsfactory.typings import Port
 
-from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 
 PRIMITIVE_TRANSITION_CLASSES = (
     "straight_short",

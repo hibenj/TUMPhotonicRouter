@@ -13,7 +13,7 @@ from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.static_obstacle_builder import floor_snap_to_grid
 
 if TYPE_CHECKING:
-    from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
+    from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 
 _ILLEGAL_REALIZED_CROSSING_RE = re.compile(
     r"Illegal realized crossing:\s*net\s+"

@@ -10,9 +10,9 @@ from photonic_router.plm.path_length_graph import (
     PathLengthAnalysisResult,
     PathLengthGraphAnnotations,
     PhotonicRoutingGraph,
-    RoutedEdgeKey,
     build_graph_from_schematic,
 )
+from photonic_router.records.route_keys import RoutedEdgeKey
 
 
 class SchematicLike(Protocol):

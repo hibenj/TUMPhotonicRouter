@@ -8,7 +8,7 @@
   "ruff_BLE001": 35,
   "ruff_C901": 68,
   "ruff_D100": 0,
-  "ruff_D101": 52,
+  "ruff_D101": 50,
   "ruff_D102": 127,
   "ruff_D103": 67,
   "ruff_D104": 0,
@@ -21,5 +21,5 @@
   "rust_workspace_debt_allows": 2,
   "session_state_fields": 14,
   "untyped_dict_annotations": 216,
-  "upward_imports": 3
+  "upward_imports": 0
 }

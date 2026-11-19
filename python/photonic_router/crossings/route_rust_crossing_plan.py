@@ -23,7 +23,7 @@ from photonic_router.records.route_rust_records import route_edge_key
 from photonic_router.records.route_rust_types import RoutedNetRecord, RouteJob
 
 if TYPE_CHECKING:
-    from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
+    from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 
 
 def _ensure_dir(path: Path) -> None:

@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from photonic_router.plm.path_length_graph import RoutedEdgeKey
+from photonic_router.records.route_keys import RoutedEdgeKey
 
 
 @dataclass(frozen=True)

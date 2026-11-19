@@ -9,12 +9,9 @@ import pytest
 from photonic_router.plm.path_length_diagnostics import (
     analysis_to_info_dict,
 )
-from photonic_router.plm.path_length_graph import (
-    PortRef,
-    RoutedEdgeKey,
-    build_graph_from_schematic,
-)
+from photonic_router.plm.path_length_graph import build_graph_from_schematic
 from photonic_router.plm.path_length_requirements import analyze_path_length_matching
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import RoutedNetRecord
 
 from tests.fixtures.path_length import (

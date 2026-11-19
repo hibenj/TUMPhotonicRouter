@@ -264,6 +264,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- No module of `records/` imports from a stage package any more (rule 3.4
+  of the coding standards is in force for Python). `PortRef` and
+  `RoutedEdgeKey` move from `plm/path_length_graph.py` to the new
+  `records/route_keys.py`, and `routing/crossing_plan_info.py` moves to
+  `records/crossing_plan_info.py`; both were records that lower layers
+  needed. **API change**: import them from the new modules (23 files of
+  the package and the tests are updated). `upward_imports` is pinned at 0.
 - No `unwrap()` in library code of the Rust workspace (rule 5.3 of the coding
   standards is in force). The two calls outside tests are gone: the one in
   the search's diagnostics dump is an index, the one in the bindings'

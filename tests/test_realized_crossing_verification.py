@@ -16,9 +16,9 @@ from photonic_router.crossings.route_rust_crossing_plan import (
 from photonic_router.crossings.route_rust_crossing_verification import (
     verify_realized_route_intersections,
 )
-from photonic_router.plm.path_length_graph import PortRef
+from photonic_router.records.crossing_plan_info import CrossingPlanInfo
+from photonic_router.records.route_keys import PortRef
 from photonic_router.records.route_rust_types import RoutedNetRecord
-from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 
 
 def _record(

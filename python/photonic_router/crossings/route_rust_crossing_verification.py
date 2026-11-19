@@ -33,7 +33,7 @@ from photonic_router.records.route_rust_geometry import (
 from photonic_router.records.route_rust_types import RoutedNetRecord
 
 if TYPE_CHECKING:
-    from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
+    from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 
 
 def _planned_pairs_from_plan_info(

@@ -30,8 +30,8 @@ from photonic_router.crossings.crossing_demand import (
 from photonic_router.crossings.crossing_plan import build_crossing_plan
 from photonic_router.crossings.routing_regions import Column, build_region_graph, cluster_columns
 from photonic_router.crossings.topology_analysis import analyze_schematic_topology
-from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
 from photonic_router.records.layout_from_schematic import layout_from_schematic
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

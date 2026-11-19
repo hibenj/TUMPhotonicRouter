@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from photonic_router.plm.path_length_graph import PortRef
+from photonic_router.records.route_keys import PortRef
 from photonic_router.records.route_rust_records import (
     apply_port_endpoint_corrections,
     build_port_alignment_diagnostics,

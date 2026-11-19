@@ -11,11 +11,8 @@ from photonic_router.plm.path_length_diagnostics import (
     output_matching_diagnostics_to_info,
     path_length_acceptance_summary,
 )
-from photonic_router.plm.path_length_graph import (
-    PortRef,
-    RoutedEdgeKey,
-)
 from photonic_router.plm.path_length_requirements import analyze_path_length_matching
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import MeanderEdgeReport, RoutedNetRecord
 
 from tests.fixtures.path_length import (

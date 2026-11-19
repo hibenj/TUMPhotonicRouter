@@ -74,12 +74,11 @@ from photonic_router.plm.path_length_graph import (
     PathLengthGraphAnnotations,
     PhotonicRoutingGraph,
     PortDirection,
-    PortRef,
-    RoutedEdgeKey,
     annotate_edge_lengths,
     build_graph_from_schematic,
     list_edges_requiring_meander,
 )
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.routing_layers import (
     HEATER_METAL_OBSTACLE_LAYERS,
     HEATER_OPTICAL_PORT_ACCESS_RULES,

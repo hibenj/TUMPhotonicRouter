@@ -14,7 +14,7 @@ from gdsfactory.component import Component
 from photonic_router.records.route_rust_geometry import rounded_point
 
 if TYPE_CHECKING:
-    from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
+    from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 
 
 def _bbox_size_um(component: Component) -> tuple[float, float] | None:

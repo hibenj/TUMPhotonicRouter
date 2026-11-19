@@ -63,7 +63,7 @@ from photonic_router.crossings.routing_regions import (
     cluster_columns,
     crossing_chords,
 )
-from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 
 ORIENTATION_TOLERANCE_DEG = 1.0
 

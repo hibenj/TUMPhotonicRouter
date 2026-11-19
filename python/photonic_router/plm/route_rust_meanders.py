@@ -24,11 +24,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
-from photonic_router.plm.path_length_graph import (
-    DelayInsertionCandidate,
-    MissingLengthRequirement,
-    RoutedEdgeKey,
-)
+from photonic_router.plm.path_length_graph import DelayInsertionCandidate, MissingLengthRequirement
+from photonic_router.records.route_keys import RoutedEdgeKey
 from photonic_router.records.route_rust_types import (
     DEFAULT_MEANDER_MIN_STRAIGHT_UM,
     MeanderEdgeReport,

@@ -19,11 +19,11 @@ from photonic_router.plm.path_length_graph import (
     PathLengthAnalysisResult,
     PathLengthGraphAnnotations,
     PhotonicRoutingGraph,
-    RoutedEdgeKey,
     SchematicLike,
     build_graph_from_schematic,
     list_edges_requiring_meander,
 )
+from photonic_router.records.route_keys import RoutedEdgeKey
 from photonic_router.records.route_rust_types import (
     DEFAULT_MEANDER_MIN_STRAIGHT_UM,
     RoutedNetRecord,

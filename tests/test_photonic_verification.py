@@ -10,7 +10,7 @@ import klayout.db as kdb
 import photonic_router.verify.photonic_verification as photonic_verification_module
 from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
-from photonic_router.plm.path_length_graph import PortRef
+from photonic_router.records.route_keys import PortRef
 from photonic_router.records.route_rust_realization import (
     build_realization_router,
     realize_routed_net_records,

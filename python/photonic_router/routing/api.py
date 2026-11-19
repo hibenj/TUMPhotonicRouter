@@ -40,6 +40,7 @@ from photonic_router.plm.path_length_requirements import (
     minimum_four_bend_extra_length_um,
     requirement_to_dict,
 )
+from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 from photonic_router.records.route_rust_obstacle_config import (
     resolve_obstacle_config,
     with_bbox_cell_materialization,
@@ -53,7 +54,6 @@ from photonic_router.records.route_rust_types import (
     RouteRustPipelineResult,
     _as_float,
 )
-from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions, SessionOptions
 from photonic_router.routing.route_jobs import build_route_jobs_and_fanout_clustering
 

@@ -16,8 +16,6 @@ import pytest
 from photonic_router.benchmark_metadata import load_benchmark_metadata
 from photonic_router.plm.path_length_graph import (
     PathLengthGraphAnnotations,
-    PortRef,
-    RoutedEdgeKey,
     build_graph_from_schematic,
 )
 from photonic_router.plm.path_length_requirements import (
@@ -27,6 +25,7 @@ from photonic_router.plm.path_length_requirements import (
     node_depths,
 )
 from photonic_router.port_roles import component_port_role, generic_port_roles, no_port_roles
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import RoutedNetRecord
 
 COMPONENTS = {

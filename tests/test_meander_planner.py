@@ -8,12 +8,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
-from photonic_router.plm.path_length_graph import (
-    DelayInsertionCandidate,
-    MissingLengthRequirement,
-    PortRef,
-    RoutedEdgeKey,
-)
+from photonic_router.plm.path_length_graph import DelayInsertionCandidate, MissingLengthRequirement
 from photonic_router.plm.route_rust_meanders import (
     _axis_aligned_centerline_run_lengths_um,
     _build_planner_context,
@@ -23,6 +18,7 @@ from photonic_router.plm.route_rust_meanders import (
     _MeanderPlannerContext,
     _normalize_minimum_insertable_request,
 )
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import MeanderInsertionConfig, RoutedNetRecord
 from photonic_router.routing import api as routing_api
 from photonic_router.routing.api import analyze_meander_insertion_for_requirements

@@ -31,6 +31,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
+from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 from photonic_router.routing import crossing_plan_stage as crossing_plan_stage_module
 from photonic_router.routing import dispatch as dispatch_module
 from photonic_router.routing import finalize as finalize_module
@@ -41,7 +42,6 @@ from photonic_router.routing import route_jobs as route_jobs_module
 from photonic_router.routing import router_setup as router_setup_module
 from photonic_router.routing import stages
 from photonic_router.routing import verify_repair as verify_repair_module
-from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
 from photonic_router.routing.products import KernelSetup, RawStaticGeometry
 
 from tests.fixtures.sessions import Pipeline

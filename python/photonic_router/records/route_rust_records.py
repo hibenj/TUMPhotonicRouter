@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from photonic_router.plm.path_length_graph import PortRef, RoutedEdgeKey
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import (
     RouteAttemptRecord,
     RoutedNetRecord,

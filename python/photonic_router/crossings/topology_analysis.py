@@ -20,12 +20,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from photonic_router.crossings.crossing_plan import LaneRank
-from photonic_router.plm.path_length_graph import (
-    PhotonicRoutingGraph,
-    PortRef,
-    RoutedEdgeKey,
-    build_graph_from_schematic,
-)
+from photonic_router.plm.path_length_graph import PhotonicRoutingGraph, build_graph_from_schematic
+from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 
 
 class SchematicLike(Protocol):
