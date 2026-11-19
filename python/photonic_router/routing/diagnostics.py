@@ -474,14 +474,14 @@ def _write_route_diagnostics(
     current_port_runway_cells = set(state.port_runway_cells_by_spec.get(port1_spec, set()))
     current_port_runway_cells.update(state.port_runway_cells_by_spec.get(port2_spec, set()))
     source_sibling_port_runway_cells: set[tuple[int, int]] = set()
-    for cluster_port_spec in state.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()):
+    for cluster_port_spec in state.runways.source_cluster_specs_by_port_spec.get(port1_spec, set()):
         if cluster_port_spec == port1_spec:
             continue
         source_sibling_port_runway_cells.update(
             state.port_runway_cells_by_spec.get(cluster_port_spec, set())
         )
     target_sibling_port_runway_cells: set[tuple[int, int]] = set()
-    for cluster_port_spec in state.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()):
+    for cluster_port_spec in state.runways.source_cluster_specs_by_port_spec.get(port2_spec, set()):
         if cluster_port_spec == port2_spec:
             continue
         target_sibling_port_runway_cells.update(
@@ -605,7 +605,7 @@ def _write_route_diagnostics(
         routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
         routing_static_cells.update(state.debug_port_keepout_cells)
         routing_static_cells.update(state.foreign_port_keepout_static_cells)
-        routing_static_cells.update(state.fanout_stub_static_cells)
+        routing_static_cells.update(state.fanout.stub_static_cells)
         opened_search_cells = set(opened_cells_set)
         allowed_dynamic_cells = set(route_dynamic_overlap)
         lines: list[str] = []
@@ -657,7 +657,7 @@ def _write_route_diagnostics(
         routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
         routing_static_cells.update(state.debug_port_keepout_cells)
         routing_static_cells.update(state.foreign_port_keepout_static_cells)
-        routing_static_cells.update(state.fanout_stub_static_cells)
+        routing_static_cells.update(state.fanout.stub_static_cells)
         opened_search_cells = set(opened_cells_set)
 
         def turn_cells(
@@ -742,7 +742,7 @@ def _write_route_diagnostics(
         routing_static_cells = set(state.static_blocked_cells_before_port_reservations)
         routing_static_cells.update(state.debug_port_keepout_cells)
         routing_static_cells.update(state.foreign_port_keepout_static_cells)
-        routing_static_cells.update(state.fanout_stub_static_cells)
+        routing_static_cells.update(state.fanout.stub_static_cells)
         primitive_specs: list[tuple[str, str, int, int]] = [
             ("straight_short", "straight", int(state.kernel.primitive_cfg.straight_short_cells), 0),
             ("straight_long", "straight", int(state.kernel.primitive_cfg.straight_long_cells), 0),
@@ -801,26 +801,20 @@ def _write_route_diagnostics(
         f"foreign_port_keepout_cells={int(settings.foreign_port_keepout_cells)}",
         f"fanout_access_mode={settings.fanout_access_mode_normalized}",
         f"fanout_stub_bend_degrees={45 * int(_fanout_stub_bend_steps(settings, state))}",
-        f"fanout_anchor_port_count={len(state.fanout_anchor_by_port_spec)}",
-        f"fanout_stub_center_cell_count={len(state.fanout_stub_center_cells)}",
-        f"fanout_stub_static_cell_count={len(state.fanout_stub_static_cells)}",
-        f"source_fanout_anchor={f'{job.inst1},{job.port1}' in state.fanout_anchor_by_port_spec}",
-        f"target_fanout_anchor={f'{job.inst2},{job.port2}' in state.fanout_anchor_by_port_spec}",
-        (
-            "source_dense_port_runway_cells="
-            f"{state.dense_source_port_runway_length_by_spec.get(port1_spec)}"
-        ),
-        (
-            "target_dense_port_runway_cells="
-            f"{state.dense_target_port_runway_length_by_spec.get(port2_spec)}"
-        ),
+        f"fanout_anchor_port_count={len(state.fanout.anchor_by_port_spec)}",
+        f"fanout_stub_center_cell_count={len(state.fanout.stub_center_cells)}",
+        f"fanout_stub_static_cell_count={len(state.fanout.stub_static_cells)}",
+        f"source_fanout_anchor={f'{job.inst1},{job.port1}' in state.fanout.anchor_by_port_spec}",
+        f"target_fanout_anchor={f'{job.inst2},{job.port2}' in state.fanout.anchor_by_port_spec}",
+        (f"source_dense_port_runway_cells={state.runways.source_length_by_spec.get(port1_spec)}"),
+        (f"target_dense_port_runway_cells={state.runways.target_length_by_spec.get(port2_spec)}"),
         (
             "source_dense_source_cluster_size="
-            f"{len(state.dense_source_cluster_specs_by_port_spec.get(port1_spec, set()))}"
+            f"{len(state.runways.source_cluster_specs_by_port_spec.get(port1_spec, set()))}"
         ),
         (
             "target_dense_source_cluster_size="
-            f"{len(state.dense_source_cluster_specs_by_port_spec.get(port2_spec, set()))}"
+            f"{len(state.runways.source_cluster_specs_by_port_spec.get(port2_spec, set()))}"
         ),
         f"foreign_port_keepout_static_count={len(state.foreign_port_keepout_static_cells)}",
         f"foreign_port_keepout_open_count={len(foreign_keepout_open_cells)}",

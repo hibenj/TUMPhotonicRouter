@@ -56,7 +56,7 @@ def _foreign_keepout_cleanup_cells_for_spec(
     if not cells:
         return set()
     cells.difference_update(state.normal_port_runway_cells)
-    cells.difference_update(state.fanout_stub_static_cells)
+    cells.difference_update(state.fanout.stub_static_cells)
     cells.difference_update(_cells_in_raw_static_geometry(settings, state, cells))
     return cells
 
@@ -161,7 +161,7 @@ def _fanout_stubbed_centerline(
     has completed. See
     `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
     """
-    source_anchor = state.fanout_anchor_by_port_spec.get(f"{job.inst1},{job.port1}")
+    source_anchor = state.fanout.anchor_by_port_spec.get(f"{job.inst1},{job.port1}")
     if source_anchor is None:
         return ()
     route_primitive_centerline = getattr(state.kernel.router, "route_primitive_centerline", None)
@@ -190,10 +190,10 @@ def _routing_endpoint_center_um(
 ) -> tuple[float, float] | None:
     if source:
         port_spec = f"{job.inst1},{job.port1}"
-        anchor = state.fanout_anchor_by_port_spec.get(port_spec)
+        anchor = state.fanout.anchor_by_port_spec.get(port_spec)
         return anchor.center_um if anchor is not None else _port_center_um(job.source_port)
     port_spec = f"{job.inst2},{job.port2}"
-    anchor = state.fanout_anchor_by_port_spec.get(port_spec)
+    anchor = state.fanout.anchor_by_port_spec.get(port_spec)
     return anchor.center_um if anchor is not None else _port_center_um(job.target_port)
 
 
@@ -270,7 +270,7 @@ def _record_route(
                 )
             except Exception:
                 corrected_total_length_um = None
-    target_anchor = state.fanout_anchor_by_port_spec.get(f"{job.inst2},{job.port2}")
+    target_anchor = state.fanout.anchor_by_port_spec.get(f"{job.inst2},{job.port2}")
     target_port_center_um_override = target_anchor.center_um if target_anchor is not None else None
     state.route_bookkeeping.record_route(
         job,

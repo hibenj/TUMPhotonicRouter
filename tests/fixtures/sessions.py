@@ -36,6 +36,9 @@ from photonic_router.routing import verify_repair as verify_repair_module
 from photonic_router.routing.options import SessionOptions
 from photonic_router.routing.products import (
     ClearanceRadii,
+    DenseRunways,
+    EndpointIndex,
+    FanoutStubs,
     GridFrame,
     KernelSetup,
     ObstacleContext,
@@ -111,6 +114,14 @@ _PRODUCT_GROUPS: dict[str, type] = {
 }
 
 
+#: the slots of phase 3's step records (`products.py`)
+_STEP_RECORDS: dict[str, Any] = {
+    "endpoints": EndpointIndex,
+    "fanout": FanoutStubs,
+    "runways": DenseRunways,
+}
+
+
 def _placeholders() -> dict[str, Any]:
     """Fresh placeholders for a state that never ran phases 1 and 2.
 
@@ -151,13 +162,19 @@ def state_for_test(**overrides: Any) -> SessionState:
 
     A test names the few values it cares about. A name that belongs to the
     product of phase 1 or 2 (`grid`, `router`, `bend_radius_cells`, ...) goes
-    into `state.obstacles` or `state.kernel`; every other name is a field of
-    the state itself. What is not named is an inert placeholder.
+    into `state.obstacles` or `state.kernel`, a name of one of phase 3's step
+    records (`anchor_net_ids`, `ports_by_spec`, ...) into that record; every
+    other name is a field of the state itself. What is not named is an inert
+    placeholder.
     """
     values = dict(overrides)
     obstacles = _product(ObstacleContext, values)
     groups = {name: _product(record, values) for name, record in _PRODUCT_GROUPS.items()}
     kernel = _product(KernelSetup, values, **groups)
+    for slot, record in _STEP_RECORDS.items():
+        named = {item.name: values.pop(item.name) for item in fields(record) if item.name in values}
+        if named:
+            values[slot] = replace(record.empty(), **named)
     values.setdefault("routed_layout", None)
     values.setdefault("rust_backend", None)
     return SessionState(obstacles=obstacles, kernel=kernel, **values)

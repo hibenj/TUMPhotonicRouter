@@ -184,7 +184,11 @@ two products (`SessionState.after_setup`), and the later phases read them as
 grid `State`s (cell plus heading, from the port position and orientation),
 the cells opened for each port's access, clearance-exempt cells, and for
 dense multi-port instances the fan-out access (`--fanout-access-mode`:
-runways, static stubs, virtual anchor ports). Phase 3b
+runways, static stubs, virtual anchor ports). It runs in three steps, each
+returning one frozen record of `routing/products.py` that the phase stores in
+its slot of the state before the next step reads it there: `EndpointIndex`
+(`state.endpoints`), `FanoutStubs` (`state.fanout`) and `DenseRunways`
+(`state.runways`). Phase 3b
 (`apply_long_straight_fanout_exemption`) marks the nets that contribution 2
 searches without the long-straight congestion penalty.
 
@@ -454,12 +458,12 @@ negotiated crossing setup with the placement analysis, the net order, the
 obstacle configuration). `SessionSettings` (`routing/settings.py`,
 `from_options`) validates the options and holds the resolved,
 frozen inputs of the session. Phases 1 and 2 return frozen products
-(`routing/products.py`: `ObstacleContext`, `KernelSetup`). `SessionState`
-(`routing/state.py`) holds those two and what the phases from 3 on still
-write into a shared record, one documented field per value with its
-writing, mutating and reading phases (`w:`, `m:`, `r:`). Fourteen fields are
+(`routing/products.py`: `ObstacleContext`, `KernelSetup`), and phase 3
+stores three frozen step records. `SessionState` (`routing/state.py`) holds
+those five and what the phases from 4 on still write into a shared record, one documented field per value with its
+writing, mutating and reading phases (`w:`, `m:`, `r:`). Ten fields are
 written by more than one phase and carry a `# shared writer` marker (the
-crossing plan, the port-access tables, the search counters and timing
+crossing plan, the search counters and timing
 buckets, the route bookkeeping); every other field has one writer.
 
 

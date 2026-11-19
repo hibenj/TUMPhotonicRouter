@@ -258,6 +258,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Routing phase 3 runs in three steps with frozen results (S1, slice 3; a
+  restructuring). `build_route_jobs_and_fanout_clustering` was one function
+  of 190 lines that filled 19 fields of the shared state as it went. It is
+  now `_build_jobs_and_endpoint_index`, `_build_fanout_stubs` and
+  `_build_dense_runways`, each returning one record of
+  `routing/products.py` (`EndpointIndex`, `FanoutStubs`, `DenseRunways`)
+  that the phase stores in its slot of the state (`state.endpoints`,
+  `state.fanout`, `state.runways`). The fields inside lose their repeated
+  prefixes (`state.fanout.anchor_by_port_spec` was
+  `state.fanout_anchor_by_port_spec`). The four port-access tables are no
+  longer re-initialised by phase 3; phase 4 is their only writer. The state
+  has 47 fields (59 before). Behaviour is unchanged.
 - Routing phases 1 and 2 return their results as values (S1, slice 2; a
   restructuring). `build_static_obstacle_context` and
   `configure_router_and_grid` no longer take the session state: they return

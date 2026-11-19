@@ -4,8 +4,16 @@ Phase 1 (`obstacle_context.py`) returns an `ObstacleContext` and phase 2
 (`router_setup.py`) a `KernelSetup`. Neither phase writes to the session
 state: the session builds the state from the two products
 (`SessionState.after_setup`), and the later phases read them as
-`state.obstacles` and `state.kernel`. Nothing rebinds a field of these
-records after its phase returned.
+`state.obstacles` and `state.kernel`.
+
+Phase 3 (`route_jobs.py`) runs in three steps, each returning one record:
+`EndpointIndex`, `FanoutStubs`, `DenseRunways`. A later step reads the
+earlier records through the state, so the phase stores each one in its slot
+(`state.endpoints`, `state.fanout`, `state.runways`) as soon as the step
+returned. A slot is assigned once and as a whole; until then it holds the
+record's `empty()` value.
+
+Nothing rebinds a field of these records after its step returned.
 
 The records are frozen, their members are not all immutable: the kernel
 objects are PyO3 handles that the later phases call, and the cell sets are
@@ -16,10 +24,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from photonic_router.records.route_rust_types import OpticalRouteClearancePolicy
 from photonic_router.static_obstacle_builder import GridSpec
+
+if TYPE_CHECKING:  # annotation-only: `route_jobs` imports this module
+    from gdsfactory.typings import Port
+
+    from photonic_router.routing.route_jobs import _FanoutAnchor
 
 
 @dataclass(frozen=True)
@@ -113,3 +126,62 @@ class KernelSetup:
     radii: ClearanceRadii
     lanes: PortLanes
     static: RawStaticGeometry
+
+
+@dataclass(frozen=True)
+class EndpointIndex:
+    """Phase 3, step 1: the ports the nets end on, indexed for the fan-out rules."""
+
+    #: `"inst,port"` -> (instance, port name, port)
+    ports_by_spec: dict[str, tuple[str, str, Port]]
+    source_specs_by_instance: dict[str, set[str]]
+    target_specs_by_instance: dict[str, set[str]]
+    #: source port specs per (instance, outgoing angle)
+    source_specs_by_instance_angle: dict[tuple[str, int], set[str]]
+    #: target port specs per (instance, incoming angle)
+    target_specs_by_instance_angle: dict[tuple[str, int], set[str]]
+
+    @classmethod
+    def empty(cls) -> EndpointIndex:
+        """The index of a session whose phase 3 has not run."""
+        return cls({}, {}, {}, {}, {})
+
+
+@dataclass(frozen=True)
+class FanoutStubs:
+    """Phase 3, step 2: the static fan-out stubs and the nets that use them."""
+
+    #: the stub's anchor per port spec; a route to that port starts there
+    anchor_by_port_spec: dict[str, _FanoutAnchor]
+    #: nets with a stub on either side, on the source side, on the target side
+    anchor_net_ids: set[int]
+    anchor_source_net_ids: set[int]
+    anchor_target_net_ids: set[int]
+    #: all cells the stubs occupy, inflated by the commit radius
+    stub_static_cells: set[tuple[int, int]]
+    #: the centerline cells of the stubs
+    stub_center_cells: set[tuple[int, int]]
+    #: the inflated cells per port spec
+    stub_static_cells_by_spec: dict[str, set[tuple[int, int]]]
+
+    @classmethod
+    def empty(cls) -> FanoutStubs:
+        """The stubs of a session whose phase 3 has not run."""
+        return cls({}, set(), set(), set(), set(), set(), {})
+
+
+@dataclass(frozen=True)
+class DenseRunways:
+    """Phase 3, step 3: the staggered runways of the dense ports and their clusters."""
+
+    #: runway length in cells per dense source port spec
+    source_length_by_spec: dict[str, int]
+    #: runway length in cells per dense target port spec
+    target_length_by_spec: dict[str, int]
+    #: the dense fan-out cluster each source port belongs to
+    source_cluster_specs_by_port_spec: dict[str, set[str]]
+
+    @classmethod
+    def empty(cls) -> DenseRunways:
+        """The runways of a session whose phase 3 has not run."""
+        return cls({}, {}, {})

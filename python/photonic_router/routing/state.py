@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from gdsfactory.component import Component
-from gdsfactory.typings import Port
 
 from photonic_router.records.route_rust_records import RouteBookkeeping
 from photonic_router.records.route_rust_types import (
@@ -42,10 +41,16 @@ from photonic_router.records.route_rust_types import (
     RouteTimingBucket,
 )
 from photonic_router.routing.crossing_plan_info import CrossingPlanInfo
-from photonic_router.routing.products import KernelSetup, ObstacleContext
+from photonic_router.routing.products import (
+    DenseRunways,
+    EndpointIndex,
+    FanoutStubs,
+    KernelSetup,
+    ObstacleContext,
+)
 
 if TYPE_CHECKING:  # `route_jobs` imports this module, so keep the edge annotation-only
-    from photonic_router.routing.route_jobs import _FanoutAnchor
+    pass
 
 
 @dataclass
@@ -84,69 +89,30 @@ class SessionState:
     static_blocked_cells_before_port_reservations: set[tuple[int, int]] = field(default_factory=set)
     """Static blockers as of before port reservations; starts as the raw static cells. w:0,5 m:5 r:5,6  # shared writer"""
 
-    # ---- phase 3, route_jobs ----------------------------------------------
-    endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = field(default_factory=dict)
-    """`"inst,port"` -> (instance, port name, port). w:3 r:3,4,7"""
+    # ---- phase 3, route_jobs: one slot per step, assigned once ---------------
+    endpoints: EndpointIndex = field(default_factory=EndpointIndex.empty)
+    """Step 1's record: the ports the nets end on. w:3 r:3,4,7"""
 
-    source_port_specs_by_instance: dict[str, set[str]] = field(default_factory=dict)
-    """Source port specs per instance. w:3 r:3"""
+    fanout: FanoutStubs = field(default_factory=FanoutStubs.empty)
+    """Step 2's record: the static fan-out stubs. w:3 r:3,4,5,6,7"""
 
-    target_port_specs_by_instance: dict[str, set[str]] = field(default_factory=dict)
-    """Target port specs per instance. w:3 r:3"""
+    runways: DenseRunways = field(default_factory=DenseRunways.empty)
+    """Step 3's record: dense runway lengths and clusters. w:3 r:5,6"""
 
-    source_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = field(
-        default_factory=dict
-    )
-    """Source port specs per (instance, outgoing angle). w:3 r:3"""
-
-    target_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = field(
-        default_factory=dict
-    )
-    """Target port specs per (instance, incoming angle). w:3 r:3"""
-
-    dense_source_cluster_specs_by_port_spec: dict[str, set[str]] = field(default_factory=dict)
-    """The dense fan-out cluster each source port belongs to. w:3 r:3,5,6"""
-
+    # ---- the port-access tables phase 4 fills ---------------------------------
     port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = field(default_factory=dict)
-    """Cells opened for each port's access. w:3 m:4 r:4,5  # shared writer"""
+    """Cells opened for each port's access. w:4 r:4,5"""
 
     port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = field(
         default_factory=dict
     )
-    """Cells a port's access rule may open. w:3 m:4 r:4,5  # shared writer"""
+    """Cells a port's access rule may open. w:4 r:4,5"""
 
     port_access_rule_by_spec: dict[str, str | None] = field(default_factory=dict)
-    """Name of the access rule applied per port spec. w:3 m:4 r:4,6  # shared writer"""
+    """Name of the access rule applied per port spec. w:4 r:4,6"""
 
     port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = field(default_factory=dict)
-    """Runway (approach lane) cells per port spec. w:3 m:4 r:4,5,6  # shared writer"""
-
-    fanout_anchor_by_port_spec: dict[str, _FanoutAnchor] = field(default_factory=dict)
-    """Static fan-out stub anchor per port spec. w:3 r:3,4,5,6,7"""
-
-    fanout_anchor_net_ids: set[int] = field(default_factory=set)
-    """Nets with a static fan-out stub on either side. w:3 r:4,7"""
-
-    fanout_anchor_source_net_ids: set[int] = field(default_factory=set)
-    """Nets with a static fan-out stub on the source side. w:3 r:4,7"""
-
-    fanout_anchor_target_net_ids: set[int] = field(default_factory=set)
-    """Nets with a static fan-out stub on the target side. w:3 r:4,7"""
-
-    fanout_stub_static_cells: set[tuple[int, int]] = field(default_factory=set)
-    """All cells the static fan-out stubs occupy. w:3 r:3,4,5,6"""
-
-    fanout_stub_center_cells: set[tuple[int, int]] = field(default_factory=set)
-    """Centerline cells of the static fan-out stubs. w:3 r:3,4,6"""
-
-    fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = field(default_factory=dict)
-    """Inflated stub cells per port spec. w:3 r:3,5,7"""
-
-    dense_source_port_runway_length_by_spec: dict[str, int] = field(default_factory=dict)
-    """Staggered source runway length per dense port spec. w:3 r:3,6"""
-
-    dense_target_port_runway_length_by_spec: dict[str, int] = field(default_factory=dict)
-    """Staggered target runway length per dense port spec. w:3 r:3,6"""
+    """Runway (approach lane) cells per port spec. w:4 r:4,5,6"""
 
     # ---- phase 4, crossing_plan_stage -------------------------------------
     crossing_plan_info: CrossingPlanInfo = field(default_factory=CrossingPlanInfo)

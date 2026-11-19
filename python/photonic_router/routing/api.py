@@ -459,7 +459,7 @@ def static_fanout_anchors_um(
     build_route_jobs_and_fanout_clustering(session.settings, state, schematic.netlist.routes)
     return {
         spec: (float(anchor.center_um[0]), float(anchor.center_um[1]))
-        for spec, anchor in state.fanout_anchor_by_port_spec.items()
+        for spec, anchor in state.fanout.anchor_by_port_spec.items()
     }
 
 

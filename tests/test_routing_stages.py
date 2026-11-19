@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +103,25 @@ def test_phase3_route_job_builder_turns_the_netlist_into_jobs(pipeline: Pipeline
     assert result.endpoint_port_specs_by_instance["right0"] == {"right0,o1"}
     # Only the three-port instance is dense enough for a runway.
     assert set(result.dense_port_runway_length_by_spec) == {"left,o1", "left,o2", "left,o3"}
+
+
+def test_phase3_stores_one_frozen_record_per_step(pipeline: Pipeline) -> None:
+    pipeline.through(3)
+    state = pipeline.state
+
+    assert set(state.endpoints.ports_by_spec) == {
+        "left,o1",
+        "left,o2",
+        "left,o3",
+        "right0,o1",
+        "right1,o1",
+        "right2,o1",
+    }
+    assert state.endpoints.source_specs_by_instance == {"left": {"left,o1", "left,o2", "left,o3"}}
+    assert set(state.runways.source_length_by_spec) == {"left,o1", "left,o2", "left,o3"}
+    # a record is assigned as a whole; its fields cannot be rebound afterwards
+    with pytest.raises(FrozenInstanceError):
+        state.fanout.anchor_net_ids = set()  # type: ignore[misc]
 
 
 def test_phase4_crossing_planner_types_the_plan_and_passes_the_jobs_through(

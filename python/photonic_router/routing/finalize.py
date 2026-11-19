@@ -114,8 +114,8 @@ def _classify_net_for_endpoint_correction(
     if record is None or job is None:
         return None
 
-    source_has_fanout_stub = net_id in state.fanout_anchor_source_net_ids
-    target_has_fanout_stub = net_id in state.fanout_anchor_target_net_ids
+    source_has_fanout_stub = net_id in state.fanout.anchor_source_net_ids
+    target_has_fanout_stub = net_id in state.fanout.anchor_target_net_ids
     has_crossing = settings.enable_crossings and net_id in crossing_net_ids
 
     if has_crossing:
@@ -134,7 +134,7 @@ def _classify_net_for_endpoint_correction(
     # this point -- falls through to UNRESTRICTED below instead, the
     # same as it does in the real pass 1 today; that is preserved
     # exactly, not treated as a bug, since Milestone 1 is additive.
-    already_fanout_precorrected = net_id in state.fanout_anchor_net_ids and bool(
+    already_fanout_precorrected = net_id in state.fanout.anchor_net_ids and bool(
         record.corrected_centerline_um
     )
     if already_fanout_precorrected:
@@ -343,7 +343,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
     record_pipeline_timing: bool = True,
     print_warnings: bool = False,
 ) -> list[int]:
-    if not settings.enable_checked_endpoint_correction or not state.fanout_anchor_net_ids:
+    if not settings.enable_checked_endpoint_correction or not state.fanout.anchor_net_ids:
         return []
     if not hasattr(state.kernel.router, "apply_checked_endpoint_corrections"):
         raise RuntimeError(
@@ -412,11 +412,11 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         _, _, opened_candidate_cells, _, _ = _state_openings_for_job(settings, state, job)
         if source_has_fanout_stub:
             opened_candidate_cells.update(
-                state.fanout_stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
+                state.fanout.stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
             )
         if target_has_fanout_stub:
             opened_candidate_cells.update(
-                state.fanout_stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
+                state.fanout.stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
             )
         clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
         correction_jobs.append(
@@ -824,24 +824,24 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
             # actually need it are let through here, keeping every other
             # net's existing behavior (and this function's own
             # early-return-on-nothing-to-do intent) unchanged.
-            if net_id not in state.fanout_anchor_net_ids:
+            if net_id not in state.fanout.anchor_net_ids:
                 continue
         record = state.route_bookkeeping.records_by_id.get(net_id)
         job = state.route_jobs_by_id.get(net_id)
         if record is None or job is None:
             continue
 
-        source_has_fanout_stub = net_id in state.fanout_anchor_source_net_ids
-        target_has_fanout_stub = net_id in state.fanout_anchor_target_net_ids
-        record_has_fanout_stub = net_id in state.fanout_anchor_net_ids
+        source_has_fanout_stub = net_id in state.fanout.anchor_source_net_ids
+        target_has_fanout_stub = net_id in state.fanout.anchor_target_net_ids
+        record_has_fanout_stub = net_id in state.fanout.anchor_net_ids
         _, _, opened_candidate_cells, _, _ = _state_openings_for_job(settings, state, job)
         if source_has_fanout_stub:
             opened_candidate_cells.update(
-                state.fanout_stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
+                state.fanout.stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
             )
         if target_has_fanout_stub:
             opened_candidate_cells.update(
-                state.fanout_stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
+                state.fanout.stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
             )
         clearance_exempt_cells = _clearance_exempt_cells_for_job(settings, state, job)
         start_s = _timing_start(settings, state)
@@ -1015,13 +1015,13 @@ def _append_target_fanout_stubs_after_correction(settings, state) -> None:
     """
     for net_id, record in list(state.route_bookkeeping.records_by_id.items()):
         target_spec = f"{record.target.instance},{record.target.port}"
-        anchor = state.fanout_anchor_by_port_spec.get(target_spec)
+        anchor = state.fanout.anchor_by_port_spec.get(target_spec)
         if anchor is None:
             continue
         centerline = list(record.corrected_centerline_um)
         if len(centerline) < 2:
             continue
-        endpoint_entry = state.endpoint_ports_by_spec.get(target_spec)
+        endpoint_entry = state.endpoints.ports_by_spec.get(target_spec)
         if endpoint_entry is None:
             continue
         _inst, _port_name, port = endpoint_entry

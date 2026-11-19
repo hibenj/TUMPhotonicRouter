@@ -23,6 +23,7 @@ from photonic_router.records.route_rust_obstacle_config import (
 )
 from photonic_router.records.route_rust_types import RouteJob
 from photonic_router.routing import timing
+from photonic_router.routing.products import DenseRunways, EndpointIndex, FanoutStubs
 from photonic_router.routing.router_setup import _fanout_int_or_default
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import RouteJobsResult
@@ -149,7 +150,7 @@ def _dense_fanout_group_size(settings, state, port_specs: set[str]) -> int:
     """
     count = 0
     for spec in port_specs:
-        endpoint = state.endpoint_ports_by_spec.get(spec)
+        endpoint = state.endpoints.ports_by_spec.get(spec)
         if endpoint is None:
             count += 1
             continue
@@ -182,7 +183,7 @@ def _is_dense_source_fanout_instance(settings, state, instance_name: str) -> boo
         for (
             group_instance,
             _angle,
-        ), port_specs in state.source_port_specs_by_instance_angle.items()
+        ), port_specs in state.endpoints.source_specs_by_instance_angle.items()
         if group_instance == instance_name
     )
 
@@ -191,7 +192,7 @@ def _is_dense_source_fanout_group(settings, state, instance_name: str, angle: in
     return _dense_fanout_group_size(
         settings,
         state,
-        state.source_port_specs_by_instance_angle.get((instance_name, int(angle)), set()),
+        state.endpoints.source_specs_by_instance_angle.get((instance_name, int(angle)), set()),
     ) >= _dense_fanout_min_ports_for(settings, state, instance_name)
 
 
@@ -202,7 +203,7 @@ def _is_dense_target_fanout_instance(settings, state, instance_name: str) -> boo
         for (
             group_instance,
             _angle,
-        ), port_specs in state.target_port_specs_by_instance_angle.items()
+        ), port_specs in state.endpoints.target_specs_by_instance_angle.items()
         if group_instance == instance_name
     )
 
@@ -211,7 +212,7 @@ def _is_dense_target_fanout_group(settings, state, instance_name: str, angle: in
     return _dense_fanout_group_size(
         settings,
         state,
-        state.target_port_specs_by_instance_angle.get((instance_name, int(angle)), set()),
+        state.endpoints.target_specs_by_instance_angle.get((instance_name, int(angle)), set()),
     ) >= _dense_fanout_min_ports(settings, state)
 
 
@@ -754,12 +755,12 @@ def _build_static_fanout_anchors(settings, state) -> dict[str, _FanoutAnchor]:
         return {}
 
     anchors: dict[str, _FanoutAnchor] = {}
-    for instance_name, port_specs in state.source_port_specs_by_instance.items():
+    for instance_name, port_specs in state.endpoints.source_specs_by_instance.items():
         if not _is_dense_source_fanout_instance(settings, state, instance_name):
             continue
         by_angle: dict[int, list[str]] = {}
         for port_spec in port_specs:
-            _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+            _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
             angle = _orientation_to_angle(
                 settings, state, getattr(port, "orientation", None), flip=False
             )
@@ -778,7 +779,7 @@ def _build_static_fanout_anchors(settings, state) -> dict[str, _FanoutAnchor]:
             lateral_x, lateral_y = -step_y, step_x
             ordered_items: list[tuple[str, int, Any]] = []
             for port_spec in group_specs:
-                _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+                _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
                 grid_state = port_to_grid_state(
                     settings,
                     state,
@@ -804,7 +805,7 @@ def _build_static_fanout_anchors(settings, state) -> dict[str, _FanoutAnchor]:
                 angle: int = angle,
             ) -> tuple[int, int] | None:
                 port_spec, _current_lateral, _grid_state = item
-                _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+                _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
                 real_center = _port_center_um(port)
                 if real_center is None:
                     return None
@@ -960,12 +961,12 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnc
         return {}
 
     anchors: dict[str, _FanoutAnchor] = {}
-    for instance_name, port_specs in state.target_port_specs_by_instance.items():
+    for instance_name, port_specs in state.endpoints.target_specs_by_instance.items():
         if not _is_dense_target_fanout_instance(settings, state, instance_name):
             continue
         by_angle: dict[int, list[str]] = {}
         for port_spec in port_specs:
-            _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+            _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
             angle = _orientation_to_angle(
                 settings, state, getattr(port, "orientation", None), flip=False
             )
@@ -988,7 +989,7 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnc
             def _lateral_position(
                 port_spec: str, lateral_x: int = lateral_x, lateral_y: int = lateral_y
             ) -> float:
-                _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+                _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
                 center = _port_center_um(port)
                 if center is None:
                     return 0.0
@@ -1020,7 +1021,7 @@ def _build_static_fanout_target_anchors(settings, state) -> dict[str, _FanoutAnc
                 ranked = [(ordered[0], 1), (ordered[1], 2)]
 
             for port_spec, rank in ranked:
-                _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
+                _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
                 real_center = _port_center_um(port)
                 if real_center is None:
                     continue
@@ -1064,10 +1065,10 @@ def _dense_source_port_runway_lengths(
         source_specs = {
             f"{run_job.inst1},{run_job.port1}"
             for run_job in jobs
-            if f"{run_job.inst1},{run_job.port1}" in state.fanout_anchor_by_port_spec
+            if f"{run_job.inst1},{run_job.port1}" in state.fanout.anchor_by_port_spec
         }
         for port_spec in source_specs:
-            anchor = state.fanout_anchor_by_port_spec[port_spec]
+            anchor = state.fanout.anchor_by_port_spec[port_spec]
             instance_name = port_spec.split(",", 1)[0]
             grouped_specs.setdefault(
                 (instance_name, int(anchor.physical_angle) % 8),
@@ -1083,7 +1084,7 @@ def _dense_source_port_runway_lengths(
             def anchor_lateral_position(
                 port_spec: str, lateral_x: int = lateral_x, lateral_y: int = lateral_y
             ) -> int:
-                anchor = state.fanout_anchor_by_port_spec[port_spec]
+                anchor = state.fanout.anchor_by_port_spec[port_spec]
                 return int(anchor.state_x) * lateral_x + int(anchor.state_y) * lateral_y
 
             ordered_specs = sorted(
@@ -1267,7 +1268,7 @@ def _dense_target_port_runway_lengths(
         group_port_specs: list[str] = []
         for port_index, run_job in enumerate(lower_jobs):
             port_spec = f"{run_job.inst2},{run_job.port2}"
-            if port_spec in state.fanout_anchor_by_port_spec:
+            if port_spec in state.fanout.anchor_by_port_spec:
                 # A real, pre-committed static stub already exists for
                 # this port (see `_build_static_fanout_target_anchors`):
                 # the abstract reservation this function computes is
@@ -1282,7 +1283,7 @@ def _dense_target_port_runway_lengths(
         upper_count = len(upper_jobs)
         for port_index, run_job in enumerate(upper_jobs):
             port_spec = f"{run_job.inst2},{run_job.port2}"
-            if port_spec in state.fanout_anchor_by_port_spec:
+            if port_spec in state.fanout.anchor_by_port_spec:
                 lengths_by_spec[port_spec] = 0
                 continue
             lengths_by_spec[port_spec] = base_cells + spacing_cells * (
@@ -1293,26 +1294,17 @@ def _dense_target_port_runway_lengths(
     return lengths_by_spec
 
 
-def build_route_jobs_and_fanout_clustering(
+def _build_jobs_and_endpoint_index(
     settings: SessionSettings, state: SessionState, nets: Mapping[str, Any]
-) -> RouteJobsResult:
-    """Build the per-net `RouteJob` list from the schematic netlist and compute fanout/dense-port clustering.
+) -> tuple[list[RouteJob], dict[str, set[str]], EndpointIndex]:
+    """Step 1: one `RouteJob` per link of the netlist, and the index of their ports.
 
-    Populates `self.endpoint_ports_by_spec`, `self.source_port_specs_by_instance`
-    (and its angle-keyed variant), `self.fanout_anchor_by_port_spec` and the related
-    fanout-stub cell sets, and `self.dense_source_cluster_specs_by_port_spec` (which
-    source ports on a dense multi-port instance share a lateral cluster). Returns the
-    route jobs plus two locals the next phase (port-opening/footprint computation)
-    still needs: `endpoint_port_specs_by_instance` and
-    `dense_port_runway_length_by_spec` (the merged source+target runway-length map).
+    Returns the jobs, the port specs per instance that phase 4 consumes, and
+    the endpoint index.
     """
     route_jobs: list[RouteJob] = []
-    state.endpoint_ports_by_spec: dict[str, tuple[str, str, Port]] = {}
+    ports_by_spec: dict[str, tuple[str, str, Port]] = {}
     endpoint_port_specs_by_instance: dict[str, set[str]] = {}
-    state.port_access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
-    state.port_access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
-    state.port_runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
-    state.port_access_rule_by_spec: dict[str, str | None] = {}
     next_net_id = 1
     t_route_job_build_start = timing.pipeline_timer_start(settings, state)
     for net_name, bundle in nets.items():
@@ -1336,147 +1328,196 @@ def build_route_jobs_and_fanout_clustering(
                 )
             )
             next_net_id += 1
-            state.endpoint_ports_by_spec.setdefault(port1_spec, (inst1, port1, source_port))
-            state.endpoint_ports_by_spec.setdefault(port2_spec, (inst2, port2, target_port))
+            ports_by_spec.setdefault(port1_spec, (inst1, port1, source_port))
+            ports_by_spec.setdefault(port2_spec, (inst2, port2, target_port))
             endpoint_port_specs_by_instance.setdefault(inst1, set()).add(port1_spec)
             endpoint_port_specs_by_instance.setdefault(inst2, set()).add(port2_spec)
     timing.record_pipeline_timing(settings, state, "route_job_build", t_route_job_build_start)
 
-    state.source_port_specs_by_instance: dict[str, set[str]] = {}
-    state.source_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
-    state.target_port_specs_by_instance: dict[str, set[str]] = {}
-    state.target_port_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
+    source_specs_by_instance: dict[str, set[str]] = {}
+    source_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
+    target_specs_by_instance: dict[str, set[str]] = {}
+    target_specs_by_instance_angle: dict[tuple[str, int], set[str]] = {}
     for run_job in route_jobs:
         port_spec = f"{run_job.inst1},{run_job.port1}"
-        state.source_port_specs_by_instance.setdefault(run_job.inst1, set()).add(port_spec)
+        source_specs_by_instance.setdefault(run_job.inst1, set()).add(port_spec)
         angle = _orientation_to_angle(
             settings,
             state,
             getattr(run_job.source_port, "orientation", None),
             flip=False,
         )
-        state.source_port_specs_by_instance_angle.setdefault(
-            (run_job.inst1, int(angle)), set()
-        ).add(port_spec)
+        source_specs_by_instance_angle.setdefault((run_job.inst1, int(angle)), set()).add(port_spec)
         target_port_spec = f"{run_job.inst2},{run_job.port2}"
-        state.target_port_specs_by_instance.setdefault(run_job.inst2, set()).add(target_port_spec)
+        target_specs_by_instance.setdefault(run_job.inst2, set()).add(target_port_spec)
         target_angle = _orientation_to_angle(
             settings,
             state,
             getattr(run_job.target_port, "orientation", None),
             flip=False,
         )
-        state.target_port_specs_by_instance_angle.setdefault(
-            (run_job.inst2, int(target_angle)), set()
-        ).add(target_port_spec)
+        target_specs_by_instance_angle.setdefault((run_job.inst2, int(target_angle)), set()).add(
+            target_port_spec
+        )
+    index = EndpointIndex(
+        ports_by_spec=ports_by_spec,
+        source_specs_by_instance=source_specs_by_instance,
+        target_specs_by_instance=target_specs_by_instance,
+        source_specs_by_instance_angle=source_specs_by_instance_angle,
+        target_specs_by_instance_angle=target_specs_by_instance_angle,
+    )
+    return route_jobs, endpoint_port_specs_by_instance, index
 
-    state.fanout_anchor_by_port_spec = {
+
+def _build_fanout_stubs(
+    settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
+) -> FanoutStubs:
+    """Step 2: the static fan-out stubs of the dense instances.
+
+    Reads `state.endpoints`, so step 1's index must be stored first.
+    """
+    anchor_by_port_spec = {
         **_build_static_fanout_anchors(settings, state),
         **_build_static_fanout_target_anchors(settings, state),
     }
     traced_instance = settings.config.diagnostics.trace_runway_instance
     if traced_instance:
-        for port_spec, anchor in sorted(state.fanout_anchor_by_port_spec.items()):
+        for port_spec, anchor in sorted(anchor_by_port_spec.items()):
             if port_spec.startswith(f"{traced_instance},"):
                 print(
                     f"anchor_trace {port_spec} state=({anchor.state_x},{anchor.state_y}) "
                     f"angle={anchor.physical_angle} "
                     f"centerline={anchor.stub_centerline_um}"
                 )
-    state.fanout_stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = {
+    stub_static_cells_by_spec: dict[str, set[tuple[int, int]]] = {
         port_spec: _inflated_cells(
             settings, state, anchor.stub_center_cells, int(state.kernel.radii.commit_radius_cells)
         )
-        for port_spec, anchor in state.fanout_anchor_by_port_spec.items()
+        for port_spec, anchor in anchor_by_port_spec.items()
     }
-    state.fanout_stub_center_cells: set[tuple[int, int]] = set()
-    for anchor in state.fanout_anchor_by_port_spec.values():
-        state.fanout_stub_center_cells.update(anchor.stub_center_cells)
-    state.fanout_stub_static_cells: set[tuple[int, int]] = set()
-    for cells in state.fanout_stub_static_cells_by_spec.values():
-        state.fanout_stub_static_cells.update(cells)
-    state.fanout_anchor_net_ids = {
-        int(job.net_id)
-        for job in route_jobs
-        if f"{job.inst1},{job.port1}" in state.fanout_anchor_by_port_spec
-        or f"{job.inst2},{job.port2}" in state.fanout_anchor_by_port_spec
-    }
-    state.fanout_anchor_source_net_ids = {
-        int(job.net_id)
-        for job in route_jobs
-        if f"{job.inst1},{job.port1}" in state.fanout_anchor_by_port_spec
-    }
-    state.fanout_anchor_target_net_ids = {
-        int(job.net_id)
-        for job in route_jobs
-        if f"{job.inst2},{job.port2}" in state.fanout_anchor_by_port_spec
-    }
+    stub_center_cells: set[tuple[int, int]] = set()
+    for anchor in anchor_by_port_spec.values():
+        stub_center_cells.update(anchor.stub_center_cells)
+    stub_static_cells: set[tuple[int, int]] = set()
+    for cells in stub_static_cells_by_spec.values():
+        stub_static_cells.update(cells)
+    return FanoutStubs(
+        anchor_by_port_spec=anchor_by_port_spec,
+        anchor_net_ids={
+            int(job.net_id)
+            for job in route_jobs
+            if f"{job.inst1},{job.port1}" in anchor_by_port_spec
+            or f"{job.inst2},{job.port2}" in anchor_by_port_spec
+        },
+        anchor_source_net_ids={
+            int(job.net_id)
+            for job in route_jobs
+            if f"{job.inst1},{job.port1}" in anchor_by_port_spec
+        },
+        anchor_target_net_ids={
+            int(job.net_id)
+            for job in route_jobs
+            if f"{job.inst2},{job.port2}" in anchor_by_port_spec
+        },
+        stub_static_cells=stub_static_cells,
+        stub_center_cells=stub_center_cells,
+        stub_static_cells_by_spec=stub_static_cells_by_spec,
+    )
 
-    state.dense_source_port_runway_length_by_spec = _dense_source_port_runway_lengths(
-        settings, state, route_jobs
-    )
-    state.dense_target_port_runway_length_by_spec = _dense_target_port_runway_lengths(
-        settings, state, route_jobs
-    )
-    traced_instance = settings.config.diagnostics.trace_runway_instance
-    if traced_instance:
-        for port_spec, runway_length in sorted(
-            state.dense_target_port_runway_length_by_spec.items()
-        ):
-            if port_spec.startswith(f"{traced_instance},"):
-                print(f"runway_trace target {port_spec} length={runway_length}")
-        for port_spec, runway_length in sorted(
-            state.dense_source_port_runway_length_by_spec.items()
-        ):
-            if port_spec.startswith(f"{traced_instance},"):
-                print(f"runway_trace source {port_spec} length={runway_length}")
-    dense_port_runway_length_by_spec: dict[str, int] = dict(
-        state.dense_source_port_runway_length_by_spec
-    )
-    for port_spec, runway_length in state.dense_target_port_runway_length_by_spec.items():
-        existing_length = dense_port_runway_length_by_spec.get(port_spec)
-        dense_port_runway_length_by_spec[port_spec] = max(
-            int(existing_length) if existing_length is not None else 0,
-            int(runway_length),
-        )
-    state.dense_source_cluster_specs_by_port_spec: dict[str, set[str]] = {}
+
+def _source_clusters(
+    route_jobs: list[RouteJob],
+    source_length_by_spec: dict[str, int],
+    anchor_by_port_spec: Mapping[str, _FanoutAnchor],
+) -> dict[str, set[str]]:
+    """The dense fan-out cluster of each source port: runs of jobs, then stub groups."""
+    cluster_specs_by_port_spec: dict[str, set[str]] = {}
     index = 0
     while index < len(route_jobs):
         job = route_jobs[index]
-        if f"{job.inst1},{job.port1}" not in state.dense_source_port_runway_length_by_spec:
+        if f"{job.inst1},{job.port1}" not in source_length_by_spec:
             index += 1
             continue
         run_end = index + 1
         while (
             run_end < len(route_jobs)
             and route_jobs[run_end].inst1 == job.inst1
-            and f"{route_jobs[run_end].inst1},{route_jobs[run_end].port1}"
-            in state.dense_source_port_runway_length_by_spec
+            and f"{route_jobs[run_end].inst1},{route_jobs[run_end].port1}" in source_length_by_spec
         ):
             run_end += 1
         cluster_specs = {
             f"{run_job.inst1},{run_job.port1}"
             for run_job in route_jobs[index:run_end]
-            if f"{run_job.inst1},{run_job.port1}" in state.dense_source_port_runway_length_by_spec
+            if f"{run_job.inst1},{run_job.port1}" in source_length_by_spec
         }
         if len(cluster_specs) > 1:
             for port_spec in cluster_specs:
-                state.dense_source_cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
+                cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
         index = run_end
-    if state.fanout_anchor_by_port_spec:
-        static_stub_groups: dict[tuple[str, int], set[str]] = {}
-        for port_spec, anchor in state.fanout_anchor_by_port_spec.items():
-            instance_name = port_spec.split(",", 1)[0]
-            static_stub_groups.setdefault(
-                (instance_name, int(anchor.physical_angle) % 8),
-                set(),
-            ).add(port_spec)
-        for cluster_specs in static_stub_groups.values():
-            if len(cluster_specs) <= 1:
-                continue
-            for port_spec in cluster_specs:
-                state.dense_source_cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
+    static_stub_groups: dict[tuple[str, int], set[str]] = {}
+    for port_spec, anchor in anchor_by_port_spec.items():
+        instance_name = port_spec.split(",", 1)[0]
+        static_stub_groups.setdefault(
+            (instance_name, int(anchor.physical_angle) % 8),
+            set(),
+        ).add(port_spec)
+    for cluster_specs in static_stub_groups.values():
+        if len(cluster_specs) <= 1:
+            continue
+        for port_spec in cluster_specs:
+            cluster_specs_by_port_spec[port_spec] = set(cluster_specs)
+    return cluster_specs_by_port_spec
 
+
+def _build_dense_runways(
+    settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
+) -> DenseRunways:
+    """Step 3: the staggered runway lengths of the dense ports and their clusters.
+
+    Reads `state.endpoints` and `state.fanout`, so both must be stored first.
+    """
+    source_length_by_spec = _dense_source_port_runway_lengths(settings, state, route_jobs)
+    target_length_by_spec = _dense_target_port_runway_lengths(settings, state, route_jobs)
+    traced_instance = settings.config.diagnostics.trace_runway_instance
+    if traced_instance:
+        for port_spec, runway_length in sorted(target_length_by_spec.items()):
+            if port_spec.startswith(f"{traced_instance},"):
+                print(f"runway_trace target {port_spec} length={runway_length}")
+        for port_spec, runway_length in sorted(source_length_by_spec.items()):
+            if port_spec.startswith(f"{traced_instance},"):
+                print(f"runway_trace source {port_spec} length={runway_length}")
+    return DenseRunways(
+        source_length_by_spec=source_length_by_spec,
+        target_length_by_spec=target_length_by_spec,
+        source_cluster_specs_by_port_spec=_source_clusters(
+            route_jobs, source_length_by_spec, state.fanout.anchor_by_port_spec
+        ),
+    )
+
+
+def build_route_jobs_and_fanout_clustering(
+    settings: SessionSettings, state: SessionState, nets: Mapping[str, Any]
+) -> RouteJobsResult:
+    """Phase 3: turn the netlist into route jobs and cluster the dense fan-out ports.
+
+    Runs the three steps and stores each one's record in its slot of the
+    state (`endpoints`, `fanout`, `runways`) before the next step, which
+    reads it there. Returns the jobs and the two per-spec maps phase 4
+    consumes: the port specs per instance and the runway length per dense
+    port (the longer of the source and the target one).
+    """
+    route_jobs, endpoint_port_specs_by_instance, state.endpoints = _build_jobs_and_endpoint_index(
+        settings, state, nets
+    )
+    state.fanout = _build_fanout_stubs(settings, state, route_jobs)
+    state.runways = _build_dense_runways(settings, state, route_jobs)
+    dense_port_runway_length_by_spec: dict[str, int] = dict(state.runways.source_length_by_spec)
+    for port_spec, runway_length in state.runways.target_length_by_spec.items():
+        existing_length = dense_port_runway_length_by_spec.get(port_spec)
+        dense_port_runway_length_by_spec[port_spec] = max(
+            int(existing_length) if existing_length is not None else 0,
+            int(runway_length),
+        )
     return RouteJobsResult(
         route_jobs, endpoint_port_specs_by_instance, dense_port_runway_length_by_spec
     )
@@ -1497,7 +1538,7 @@ def apply_long_straight_fanout_exemption(settings: SessionSettings, state: Sessi
         # keeps the configured weight. See PyPhotonicRouter's
         # `long_straight_exempt_net_ids`.
         exempt_ids = sorted(
-            set(state.fanout_anchor_source_net_ids) | set(state.fanout_anchor_target_net_ids)
+            set(state.fanout.anchor_source_net_ids) | set(state.fanout.anchor_target_net_ids)
         )
         if hasattr(state.kernel.router, "set_long_straight_exempt_net_ids"):
             state.kernel.router.set_long_straight_exempt_net_ids(exempt_ids)

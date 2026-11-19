@@ -242,7 +242,7 @@ def _opened_cells_for_spec(
 
 
 def _foreign_keepout_open_cells_for_spec(settings, state, port_spec: str) -> set[tuple[int, int]]:
-    cluster_specs = state.dense_source_cluster_specs_by_port_spec.get(port_spec)
+    cluster_specs = state.runways.source_cluster_specs_by_port_spec.get(port_spec)
     if cluster_specs:
         cells: set[tuple[int, int]] = set()
         for cluster_port_spec in cluster_specs:
@@ -280,7 +280,7 @@ def _topological_net_route_order(settings, state, jobs: list[RouteJob]) -> list[
         for job in jobs:
             lengths = []
             for spec in (f"{job.inst1},{job.port1}", f"{job.inst2},{job.port2}"):
-                anchor = state.fanout_anchor_by_port_spec.get(spec)
+                anchor = state.fanout.anchor_by_port_spec.get(spec)
                 if anchor is not None:
                     lengths.append(len(anchor.stub_center_cells))
             stub_by_net_id[int(job.net_id)] = max(lengths) if lengths else 0
@@ -408,8 +408,8 @@ def _states_and_openings(
 ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
     port1_spec = f"{job.inst1},{job.port1}"
     port2_spec = f"{job.inst2},{job.port2}"
-    source_fanout_anchor = state.fanout_anchor_by_port_spec.get(port1_spec)
-    target_fanout_anchor = state.fanout_anchor_by_port_spec.get(port2_spec)
+    source_fanout_anchor = state.fanout.anchor_by_port_spec.get(port1_spec)
+    target_fanout_anchor = state.fanout.anchor_by_port_spec.get(port2_spec)
     if source_fanout_anchor is None:
         source_state = port_to_grid_state(
             settings,
@@ -507,13 +507,13 @@ def _states_and_openings(
     opened_cells_set.update(endpoint_foreign_keepout_open_cells)
     opened_cells_set.update(original_anchor_cells)
     opened_cells_set.update({source_anchor_cell, target_anchor_cell})
-    if state.fanout_stub_static_cells:
+    if state.fanout.stub_static_cells:
         current_fanout_stub_open_cells: set[tuple[int, int]] = set()
         current_fanout_stub_open_cells.update(
-            state.fanout_stub_static_cells_by_spec.get(port1_spec, set())
+            state.fanout.stub_static_cells_by_spec.get(port1_spec, set())
         )
         current_fanout_stub_open_cells.update(
-            state.fanout_stub_static_cells_by_spec.get(port2_spec, set())
+            state.fanout.stub_static_cells_by_spec.get(port2_spec, set())
         )
         allowed_fanout_stub_open_cells = (
             current_fanout_stub_open_cells
@@ -521,7 +521,7 @@ def _states_and_openings(
             | {source_anchor_cell, target_anchor_cell}
         )
         foreign_fanout_stub_static_cells = (
-            state.fanout_stub_static_cells - allowed_fanout_stub_open_cells
+            state.fanout.stub_static_cells - allowed_fanout_stub_open_cells
         )
         opened_candidate_cells.difference_update(foreign_fanout_stub_static_cells)
         opened_cells_set.difference_update(foreign_fanout_stub_static_cells)
@@ -611,13 +611,13 @@ def finalize_route_jobs_and_static_handoff(
         state.foreign_port_keepout_static_cells.update(cells)
     state.debug_port_keepout_cells = set(port_runway_static_cells)
     state.debug_port_keepout_cells.update(state.foreign_port_keepout_static_cells)
-    state.debug_port_keepout_cells.update(state.fanout_stub_static_cells)
+    state.debug_port_keepout_cells.update(state.fanout.stub_static_cells)
     state.static_blocked_cells_before_port_reservations = set(state.kernel.static.raw_static_cells)
     state.static_blocked_cells_before_port_reservations.update(port_runway_static_cells)
     state.static_blocked_cells_before_port_reservations.update(
         state.foreign_port_keepout_static_cells
     )
-    state.static_blocked_cells_before_port_reservations.update(state.fanout_stub_static_cells)
+    state.static_blocked_cells_before_port_reservations.update(state.fanout.stub_static_cells)
 
     t_static_handoff_start = timing.pipeline_timer_start(settings, state)
     state.blocked_static_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
@@ -648,7 +648,7 @@ def finalize_route_jobs_and_static_handoff(
     if (
         port_runway_static_cells
         or state.foreign_port_keepout_static_cells
-        or state.fanout_stub_static_cells
+        or state.fanout.stub_static_cells
     ):
         if not hasattr(state.kernel.router, "add_static_cells"):
             raise RuntimeError(
@@ -660,7 +660,7 @@ def finalize_route_jobs_and_static_handoff(
             sorted(
                 port_runway_static_cells
                 | state.foreign_port_keepout_static_cells
-                | state.fanout_stub_static_cells
+                | state.fanout.stub_static_cells
             )
         )
     # Chip-boundary keepout: the grid padding outside the routable die

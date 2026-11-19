@@ -377,16 +377,16 @@ def build_crossing_plan_and_port_footprints(
         state.obstacles.resolved_crossing_half_size_cells
     ) + int(state.kernel.radii.bend_radius_cells)
     state.crossing_plan_info.fanout_access_mode = settings.fanout_access_mode_normalized
-    state.crossing_plan_info.fanout_anchor_port_count = len(state.fanout_anchor_by_port_spec)
-    state.crossing_plan_info.fanout_anchor_net_ids = sorted(state.fanout_anchor_net_ids)
+    state.crossing_plan_info.fanout_anchor_port_count = len(state.fanout.anchor_by_port_spec)
+    state.crossing_plan_info.fanout_anchor_net_ids = sorted(state.fanout.anchor_net_ids)
     state.crossing_plan_info.fanout_anchor_source_net_ids = sorted(
-        state.fanout_anchor_source_net_ids
+        state.fanout.anchor_source_net_ids
     )
     state.crossing_plan_info.fanout_anchor_target_net_ids = sorted(
-        state.fanout_anchor_target_net_ids
+        state.fanout.anchor_target_net_ids
     )
-    state.crossing_plan_info.fanout_stub_center_cell_count = len(state.fanout_stub_center_cells)
-    state.crossing_plan_info.fanout_stub_static_cell_count = len(state.fanout_stub_static_cells)
+    state.crossing_plan_info.fanout_stub_center_cell_count = len(state.fanout.stub_center_cells)
+    state.crossing_plan_info.fanout_stub_static_cell_count = len(state.fanout.stub_static_cells)
     state.crossing_plan_info.fanout_stub_centerlines_um = [
         {
             "port_spec": anchor.port_spec,
@@ -397,7 +397,7 @@ def build_crossing_plan_and_port_footprints(
             ],
         }
         for anchor in sorted(
-            state.fanout_anchor_by_port_spec.values(),
+            state.fanout.anchor_by_port_spec.values(),
             key=lambda item: item.port_spec,
         )
     ]
@@ -417,8 +417,8 @@ def build_crossing_plan_and_port_footprints(
     port_opening_inputs: list[
         tuple[str, float, float, float | None, str | None, float | None, float | None]
     ] = []
-    for port_spec, (instance_name, port_name, port) in state.endpoint_ports_by_spec.items():
-        fanout_anchor = state.fanout_anchor_by_port_spec.get(port_spec)
+    for port_spec, (instance_name, port_name, port) in state.endpoints.ports_by_spec.items():
+        fanout_anchor = state.fanout.anchor_by_port_spec.get(port_spec)
         center = fanout_anchor.center_um if fanout_anchor is not None else _port_center_um(port)
         if center is None:
             raise ValueError(f"Port {port_spec!r} has no finite center coordinate")
@@ -476,7 +476,7 @@ def build_crossing_plan_and_port_footprints(
         port_spec = str(item[0])
         raw_footprint_cells_by_spec[port_spec] = set()
         _spec, x_um, y_um, orientation, port_type, access_length_um, access_width_um = item
-        instance_name, port_name, port = state.endpoint_ports_by_spec[port_spec]
+        instance_name, port_name, port = state.endpoints.ports_by_spec[port_spec]
         custom_access = access_length_um is not None or access_width_um is not None
         if not custom_access and port_type is not None and str(port_type) != "optical":
             continue
@@ -560,8 +560,8 @@ def build_crossing_plan_and_port_footprints(
             continue
         groups: dict[int, list[tuple[str, float]]] = {}
         for port_spec in port_specs:
-            _inst, _port_name, port = state.endpoint_ports_by_spec[port_spec]
-            fanout_anchor = state.fanout_anchor_by_port_spec.get(port_spec)
+            _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
+            fanout_anchor = state.fanout.anchor_by_port_spec.get(port_spec)
             angle = (
                 int(fanout_anchor.physical_angle) % 8
                 if fanout_anchor is not None

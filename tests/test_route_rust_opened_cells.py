@@ -1374,10 +1374,10 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
         route_width_um=0.5,
     )
     state = state_for_test(
-        fanout_anchor_net_ids={net_id},
-        fanout_anchor_source_net_ids={net_id},
-        fanout_anchor_target_net_ids={net_id},
-        fanout_stub_static_cells_by_spec={},
+        anchor_net_ids={net_id},
+        anchor_source_net_ids={net_id},
+        anchor_target_net_ids={net_id},
+        stub_static_cells_by_spec={},
         collect_timing=False,
         router=SimpleNamespace(apply_checked_endpoint_corrections=_apply),
         route_bookkeeping=SimpleNamespace(records_by_id={net_id: record}),
@@ -1439,11 +1439,10 @@ def test_classify_net_for_endpoint_correction_covers_every_category():
         return SimpleNamespace(corrected_centerline_um=corrected_centerline_um)
 
     settings = settings_for_test(enable_crossings=True)
-    state = state_for_test()
-    state.fanout_anchor_source_net_ids = {source_stub_net_id, both_stub_net_id}
-    state.fanout_anchor_target_net_ids = {target_stub_net_id, both_stub_net_id}
-    state.fanout_anchor_net_ids = (
-        state.fanout_anchor_source_net_ids | state.fanout_anchor_target_net_ids
+    state = state_for_test(
+        anchor_source_net_ids={source_stub_net_id, both_stub_net_id},
+        anchor_target_net_ids={target_stub_net_id, both_stub_net_id},
+        anchor_net_ids={source_stub_net_id, target_stub_net_id, both_stub_net_id},
     )
     state.route_bookkeeping = SimpleNamespace(
         records_by_id={
