@@ -242,6 +242,12 @@ def _opened_cells_for_spec(
 
 
 def foreign_keepout_open_cells_for_spec(settings, state, port_spec: str) -> set[tuple[int, int]]:
+    """Return the foreign keep-out cells opened for a port spec, without the normal runway cells.
+
+    For a port in a source cluster these are the foreign keep-out cells of all ports
+    of the cluster. Otherwise they are the port's own, after the dense-port opening
+    filter.
+    """
     cluster_specs = state.runways.source_cluster_specs_by_port_spec.get(port_spec)
     if cluster_specs:
         cells: set[tuple[int, int]] = set()
@@ -408,6 +414,19 @@ def states_and_openings(
     state,
     job: RouteJob,
 ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
+    """Compute the two grid states of a job and the cells opened for its endpoints.
+
+    A state comes from the port's fan-out anchor if it has one (the heading reversed
+    for the target), otherwise from the port, shifted by its lane offset; two states
+    without anchors may then be snapped onto a common line.
+
+    Returns:
+        The source state, the target state, the opened candidate cells (the access
+        candidate cells of both ports plus the endpoint-bump cells), the opened cells
+        (the access cells of both ports) and the opened cells as a sorted list. Both
+        cell sets also contain the opened foreign keep-out cells and the anchor cells,
+        and exclude the fan-out stub cells of other ports.
+    """
     port1_spec = f"{job.inst1},{job.port1}"
     port2_spec = f"{job.inst2},{job.port2}"
     source_fanout_anchor = state.fanout.anchor_by_port_spec.get(port1_spec)

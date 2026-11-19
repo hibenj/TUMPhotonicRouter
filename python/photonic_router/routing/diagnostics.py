@@ -127,6 +127,7 @@ def _committed_dynamic_cells_for_attempt(
 
 
 def route_cells_from_router(settings, state, net_id: int) -> set[tuple[int, int]]:
+    """Return the cells the kernel router holds for a net as a set of (x, y) integer pairs."""
     return {(int(cell[0]), int(cell[1])) for cell in state.kernel.router.get_net_cells(int(net_id))}
 
 
@@ -135,6 +136,11 @@ def state_openings_for_job(
     state,
     job: RouteJob,
 ) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
+    """Return the states and opened cells precomputed for a job in the static hand-off.
+
+    The tuple has the layout that `states_and_openings` returns. Raises KeyError if
+    the job's net has no entry in ``state.run.state_openings_by_id``.
+    """
     return state.run.state_openings_by_id[int(job.net_id)]
 
 
@@ -183,6 +189,18 @@ def route_attempt_diagnostics(
     candidate_blockers: list[int] | None = None,
     ripup_ids: list[int] | None = None,
 ) -> dict[str, object]:
+    """Collect the diagnostic figures of one route attempt of a job as a flat dict.
+
+    All sizes are in cells. The dict holds the two grid states and their span, the
+    search window and the bounding box of the route with their areas and ratios, the
+    static and the committed dynamic cells in the window and in the span box, the
+    route cost against the Euclidean and the heading lower bound, consistency counts
+    of the kernel's raw dynamic cells against the cells of its nets, and the net ids
+    and route indices of the candidate blockers and the rip-up victims.
+
+    ``route_obj`` is None for an attempt without a route; window and route box are
+    then empty and the cost is None.
+    """
     dynamic_cells_before = _committed_dynamic_cells_for_attempt(
         settings, state, exclude_net_id=job.net_id
     )
@@ -434,6 +452,15 @@ def write_route_diagnostics(
     route_obj: Any | None = None,
     repair_note: str | None = None,
 ) -> None:
+    """Write the diagnostics text file of one routed or failed job to ``diag_txt``.
+
+    The file has one ``key=value`` line per item: the job, ``status``, the two grid
+    states, the opened cells, and how the opened cells and the route cells overlap the
+    raw static geometry, the committed cells of the other nets, the runways of the
+    job's own ports and of their sibling ports, and the clearance-exempt cells; then
+    the route segments, ``repair_note`` and ``error_text`` where given. Does nothing
+    if ``diag_txt`` is None.
+    """
     if diag_txt is None:
         return
     port1_spec = f"{job.inst1},{job.port1}"
@@ -884,6 +911,15 @@ def export_route_svg(
     obstacle_cells: set[tuple[int, int]] | None = None,
     opened_cells: list[tuple[int, int]] | None = None,
 ) -> None:
+    """Write the debug SVG of one route and add its path to ``state.search.route_svgs``.
+
+    The file is ``<debug_path>/routes/<debug_prefix>_<net_name><suffix>.svg``. On top of
+    the kernel's drawing it marks in red the port keep-out cells that are not opened
+    for the job, and labels the net with its routed length in um. ``obstacle_cells``
+    replaces the obstacles the kernel draws, if the kernel supports that.
+    ``opened_cells`` defaults to the job's precomputed opened cells. Does nothing
+    without a debug path or if ``settings.debug_route_indices`` excludes the job.
+    """
     should_export = state.obstacles.debug_path is not None and (
         settings.debug_route_indices is None or job.route_index in settings.debug_route_indices
     )
@@ -950,6 +986,11 @@ def export_route_svg(
 
 
 def route_engine_summary(settings, state, route_obj: Any) -> str:
+    """Summarize a route object in one line: kind, length in um, cost and expanded states.
+
+    The kind is ``simple`` if the route was found without expanding a search state,
+    ``astar`` otherwise.
+    """
     expanded_states = int(getattr(route_obj, "expanded_states", 0))
     route_kind = "simple" if expanded_states == 0 else "astar"
     length_um = _as_float(getattr(route_obj, "total_length_um", 0.0), 0.0)
@@ -1083,6 +1124,15 @@ def write_failed_log(
     opened_cells: list[tuple[int, int]],
     error_text: str,
 ) -> None:
+    """Write ``<debug_prefix>_<net_name>_FAILED.txt`` for a net that could not be routed.
+
+    The file goes to ``<debug_path>/routes`` and has one ``key=value`` line per item:
+    the two port specs and grid states, the radii and lane sizes in cells, the overlap
+    of the opened cells with static and committed dynamic cells, the corridor
+    clearance diagnostic, the error, the illegal-crossing root causes and the repair
+    trace if any, and the last attempts of this net and of the run. Does nothing
+    without a debug path.
+    """
     if state.obstacles.debug_path is None:
         return
     route_dir = state.obstacles.debug_path / "routes"

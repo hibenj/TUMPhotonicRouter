@@ -365,6 +365,10 @@ def _contact_access_width(
 
 
 def orientation_distance(left: float | None, right: float) -> float:
+    """Return the smallest angle between two orientations in degrees, in the range 0 to 180.
+
+    A missing ``left`` gives 360.0, which is larger than any real distance.
+    """
     if left is None:
         return 360.0
     delta = abs((float(left) - right) % 360.0)

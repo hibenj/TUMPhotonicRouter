@@ -49,6 +49,13 @@ def _bbox_center_um(ref: Any) -> tuple[float, float] | None:
 
 
 def bbox_bounds_um(ref: Any) -> tuple[float, float, float, float] | None:
+    """Return the bounding box of a reference as (left, bottom, right, top) in um, or None.
+
+    Reads ``dbbox`` and falls back to ``bbox``; each may be an attribute or a method,
+    and the box may be an object with ``left``/``right``/``bottom``/``top`` or a
+    4-tuple in the returned order. None if there is no box, a value is not finite or
+    the box is inverted.
+    """
     try:
         bbox = ref.dbbox() if callable(ref.dbbox) else ref.dbbox
     except (AttributeError, TypeError):
@@ -115,6 +122,10 @@ def _active_crossing_component() -> Component | None:
 
 
 def crossing_component_bbox_size_um() -> tuple[str, float, float] | None:
+    """Return (name, width, height) of the active PDK's crossing component, sizes in um.
+
+    None if the crossing component cannot be built or has no usable bounding box.
+    """
     component = _active_crossing_component()
     if component is None:
         return None
@@ -125,6 +136,11 @@ def crossing_component_bbox_size_um() -> tuple[str, float, float] | None:
 
 
 def point_um_from_mapping(value: object) -> tuple[float, float] | None:
+    """Coerce a raw point of a record to a finite (x, y) float pair, or None.
+
+    Accepts a list or tuple; only the first two entries are read. None for any other
+    type, for fewer than two entries, and for non-numeric or non-finite values.
+    """
     if not isinstance(value, (tuple, list)) or len(value) < 2:
         return None
     try:
@@ -230,6 +246,11 @@ def _shared_crossing_component_clusters(
 def crossing_footprint_polygon_metadata(
     raw_crossing: Mapping[str, object],
 ) -> list[list[float]] | None:
+    """Read ``crossing_footprint_polygon_um`` of a raw crossing record as a list of [x, y] in um.
+
+    None if the key is missing or not a sequence of points, if a point is not a pair of
+    numbers, or if there are fewer than three points.
+    """
     raw_polygon = raw_crossing.get("crossing_footprint_polygon_um")
     if not isinstance(raw_polygon, IterableABC) or isinstance(
         raw_polygon,
@@ -370,6 +391,14 @@ def place_realized_crossing_components(
 def legal_crossing_overlap_polygons_for_verification(
     crossing_plan_info: CrossingPlanInfo | None,
 ) -> dict[tuple[int, int], tuple[tuple[tuple[float, float], ...], ...]]:
+    """Collect the footprint polygons of the legal realized crossings per pair of nets.
+
+    Reads ``realized_intersections`` of the crossing plan. The key is the pair of net
+    ids, smaller id first; each polygon is a tuple of (x, y) in um. An intersection is
+    skipped if its classification does not start with ``legal_``, if it has no integer
+    net ids, or if its polygon is not at least three finite points. Returns an empty
+    dict without plan info.
+    """
     if crossing_plan_info is None:
         return {}
     raw_crossings: object = crossing_plan_info.realized_intersections or ()
@@ -420,6 +449,13 @@ def legal_crossing_overlap_polygons_for_verification(
 def legal_crossing_component_footprints_for_verification(
     crossing_plan_info: CrossingPlanInfo | None,
 ) -> tuple[dict[str, object], ...]:
+    """Return the records of the realized crossing components as a tuple of dicts.
+
+    Uses ``realized_crossing_components`` of the crossing plan when it holds at least
+    one mapping. Otherwise falls back to the ``realized_intersections`` whose
+    classification starts with ``legal_`` and whose ``crossing_footprint_polygon_um``
+    has at least three points. Returns an empty tuple without plan info.
+    """
     if crossing_plan_info is None:
         return ()
     raw_components: object = crossing_plan_info.realized_crossing_components or ()

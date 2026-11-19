@@ -284,8 +284,9 @@ class PortFootprints:
         return cls({}, {}, {}, {}, set(), {}, {}, {}, {})
 
 
-#: per net: the source state, the target state (kernel `State` handles), the
-#: cells opened for the source and for the target, the clearance-exempt cells
+#: per net, as `handoff.states_and_openings` returns it: the source state, the
+#: target state (kernel `State` handles), the candidate cells the net may
+#: open, the cells it opens, and those cells as a sorted list
 StateOpenings = tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]
 
 

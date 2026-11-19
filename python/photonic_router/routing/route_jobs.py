@@ -37,6 +37,14 @@ from photonic_router.static_obstacle_builder import grid_cell_center
 
 @dataclass(frozen=True)
 class FanoutAnchor:
+    """The far end of a pre-routed fan-out stub, where a route starts or ends in place of the port.
+
+    ``state_x``/``state_y`` is the anchor's cell and ``physical_angle`` the port's
+    outward heading in eighths of a turn. ``center_um`` is the anchor's position, and
+    ``stub_centerline_um`` the stub's centerline from the port to the anchor, both in
+    um; ``stub_center_cells`` are the grid cells of that centerline.
+    """
+
     port_spec: str
     state_x: int
     state_y: int
@@ -47,6 +55,11 @@ class FanoutAnchor:
 
 
 def orientation_to_angle(settings, state, orientation: float | None, *, flip: bool = False) -> int:
+    """Convert an orientation in degrees to a heading in eighths of a turn (0 east, 2 north).
+
+    The orientation is rounded to the nearest 45 degrees; None gives 0. ``flip``
+    reverses the heading.
+    """
     angle = 0 if orientation is None else round(float(orientation) % 360.0 / 45.0) % 8
 
     if flip:
@@ -56,6 +69,7 @@ def orientation_to_angle(settings, state, orientation: float | None, *, flip: bo
 
 
 def angle_to_step(settings, state, angle: int) -> tuple[int, int]:
+    """Return the (dx, dy) cell step of a heading in eighths of a turn (0 east, 2 north, y up)."""
     steps = [
         (1, 0),  # 0 east
         (1, 1),  # 1 northeast
@@ -84,6 +98,13 @@ def port_to_grid_state(
     as_target: bool = False,
     outward_cells: int = 1,
 ):
+    """Return the kernel ``State`` (cell and heading) at which a route leaves or reaches a port.
+
+    The cell is the one ``outward_cells`` cells in front of the port along its
+    orientation, so that the state is not inside the component. The heading points
+    away from the port for a source and toward it with ``as_target``. Origin and grid
+    size are in um.
+    """
     port_angle = orientation_to_angle(settings, state, port.orientation, flip=False)
 
     # For choosing the grid cell, always move outward from the physical port.
@@ -177,6 +198,11 @@ def _dense_fanout_min_ports_for(settings, state, instance_name: str) -> int:
 
 
 def is_dense_source_fanout_instance(settings, state, instance_name: str) -> bool:
+    """Whether a group of source ports of the instance reaches its dense fan-out threshold.
+
+    The groups are the instance's source port specs by heading; one group whose dense
+    fan-out size is at least the minimum port count for this instance suffices.
+    """
     return any(
         _dense_fanout_group_size(settings, state, port_specs)
         >= _dense_fanout_min_ports_for(settings, state, instance_name)
@@ -266,6 +292,11 @@ def _centerline_grid_cells(
 
 
 def fanout_stub_bend_steps(settings, state) -> int:
+    """Return the bend of the fan-out stubs in eighths of a turn: 1 for 45 degrees, 2 for 90.
+
+    Read from ``settings.config.fanout.fanout_stub_bend_degrees``, 90 if unset. Raises
+    ValueError for a value that is neither 45 nor 90 (or one of their aliases).
+    """
     raw_value = settings.config.fanout.fanout_stub_bend_degrees
     if raw_value is None:
         raw_value = "90"

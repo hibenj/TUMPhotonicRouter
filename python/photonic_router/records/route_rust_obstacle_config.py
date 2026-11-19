@@ -14,6 +14,11 @@ StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
 
 
 def grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
+    """Return the origin (x, y) of a grid spec in um.
+
+    Reads ``grid.origin`` if present, otherwise ``origin_x_um`` and ``origin_y_um``,
+    each 0.0 if missing.
+    """
     if hasattr(grid, "origin"):
         origin = grid.origin
         return float(origin[0]), float(origin[1])
@@ -28,6 +33,11 @@ def default_obstacle_layers(
     *,
     include_heater_obstacles: bool = False,
 ) -> tuple[tuple[int, int], ...]:
+    """Return the layers whose shapes are obstacles for routes on ``route_layer``.
+
+    For the layer (1, 0) these are the layers of `get_routing_obstacle_layers`, with
+    the heater layers if asked for. For any other route layer it is that layer alone.
+    """
     if route_layer == (1, 0):
         return get_routing_obstacle_layers(include_heaters=include_heater_obstacles)
     return ((int(route_layer[0]), int(route_layer[1])),)
@@ -73,6 +83,12 @@ def with_bbox_cell_materialization(
     materialize_bbox_cells: bool,
     populate_obstacle_map: bool = True,
 ) -> object | None:
+    """Return the obstacle config with ``materialize_bbox_cells`` and ``populate_obstacle_map`` set.
+
+    None gives a new dict with the two keys, a dict a changed copy, a dataclass
+    instance a changed copy made with ``dataclasses.replace``. A dataclass that
+    rejects the fields and any other object are returned unchanged.
+    """
     if obstacle_config is None:
         return {
             "materialize_bbox_cells": materialize_bbox_cells,
@@ -106,6 +122,13 @@ def with_obstacle_mode(
     populate_obstacle_map: bool | None = None,
     materialize_cell_sets: bool | None = None,
 ) -> object | None:
+    """Return the obstacle config with ``obstacle_mode`` set, plus the optional flags given.
+
+    A flag left at None is not written. None gives a new dict with the updates, a dict
+    a changed copy, a dataclass instance a changed copy made with
+    ``dataclasses.replace``. A dataclass that rejects the fields and any other object
+    are returned unchanged.
+    """
     updates: dict[str, object] = {"obstacle_mode": obstacle_mode}
     if clear_port_open_cells_from_static is not None:
         updates["clear_port_open_cells_from_static"] = clear_port_open_cells_from_static
@@ -147,6 +170,11 @@ def schematic_instance_component_name(
     schematic: object,
     instance_name: str,
 ) -> str | None:
+    """Return the component name of an instance of a schematic, or None.
+
+    None if the schematic's netlist has no instance dict, if it has no instance of
+    that name, or if no name can be read from the instance.
+    """
     netlist = getattr(schematic, "netlist", None)
     instances = getattr(netlist, "instances", None)
     if not isinstance(instances, dict):
@@ -158,6 +186,7 @@ def schematic_instance_component_name(
 
 
 def port_type_name(port: object) -> str | None:
+    """Return the ``port_type`` of a port as a string, or None if the port has none."""
     port_type = getattr(port, "port_type", None)
     if port_type is None:
         return None

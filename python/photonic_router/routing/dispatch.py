@@ -70,6 +70,7 @@ def _foreign_keepout_cleanup_cells_for_job(settings, state, job: RouteJob) -> li
 
 
 def timing_start(settings, state) -> float:
+    """Return a ``time.perf_counter`` start time, or 0.0 if the run does not collect timing."""
     return time.perf_counter() if state.run.collect_timing else 0.0
 
 
@@ -129,6 +130,7 @@ def append_centerline_points(
     out: list[tuple[float, float]],
     points: Iterable[tuple[float, float]],
 ) -> None:
+    """Append points to ``out`` in place, skipping a point within 1e-9 of the last one in it."""
     for raw_x, raw_y in points:
         point = (float(raw_x), float(raw_y))
         if out:
@@ -188,6 +190,11 @@ def routing_endpoint_center_um(
     *,
     source: bool,
 ) -> tuple[float, float] | None:
+    """Return the position in um at which the route of a job starts (``source``) or ends.
+
+    This is the center of the port's fan-out anchor if it has one, otherwise the
+    center of the port itself, which is None if the port has no center.
+    """
     if source:
         port_spec = f"{job.inst1},{job.port1}"
         anchor = state.fanout.anchor_by_port_spec.get(port_spec)
@@ -198,6 +205,7 @@ def routing_endpoint_center_um(
 
 
 def clearance_exempt_cells_for_job(settings, state, job: RouteJob) -> list[tuple[int, int]]:
+    """Return the clearance-exempt cells computed for the job's net, or an empty list."""
     return state.run.clearance_exempt_cells_by_id.get(int(job.net_id), [])
 
 
@@ -250,6 +258,15 @@ def record_route(
     corrected_centerline_um: tuple[tuple[float, float], ...] = (),
     corrected_total_length_um: float | None = None,
 ) -> None:
+    """Record a committed route in the run's bookkeeping, with a centerline in um if one is known.
+
+    Without a ``corrected_centerline_um`` the stub of a source fan-out anchor is
+    joined in front of the route's own centerline. If that gives nothing and checked
+    endpoint correction is off, the kernel's primitive centerline and its length are
+    recorded. For a target port with a fan-out anchor the anchor's center is recorded
+    as the target port center. The route's cells are recorded only if the run tracks
+    dynamic cells.
+    """
     if not corrected_centerline_um:
         corrected_centerline_um = _fanout_stubbed_centerline(settings, state, job, route_obj)
     if (
@@ -339,6 +356,16 @@ def _finalize_committed_route(
 def dispatch_native_routing(
     settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
 ) -> None:
+    """Route the jobs in one kernel batch with negotiated rip-up repair and record the results.
+
+    With repair disabled the batch runs one round without rip-up, which is plain
+    in-order routing. Every attempt and every committed route of the batch is recorded
+    in ``state.search``, with timing and the per-route debug files where enabled.
+
+    Raises:
+        RuntimeError: If the Rust extension lacks the batch entry point, or if a net
+            could not be routed; its diagnostics and failed log are written first.
+    """
     # Repair on (the default, every benchmark needs it): the negotiated
     # rip-up loop over NEGOTIATED_MAX_ROUNDS rounds. Repair off (a
     # diagnostic/test baseline): the same loop with one round and

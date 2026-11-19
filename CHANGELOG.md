@@ -258,6 +258,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Docstrings for the 14 modules whose helpers became public in S2 slice 3:
+  94 public functions, methods and classes say what they are for and what
+  they assume (units, the degenerate case, what is raised). Docstrings
+  only; an AST comparison that ignores docstrings shows no other change.
 - 88 helpers that other modules import lose their leading underscore (S2,
   slice 3; rule 3.5: a name starting with an underscore stays in its
   module). `_grid_cell_center_um`-style names that several modules used

@@ -49,6 +49,11 @@ def cells_in_raw_static_geometry(
     state,
     cells: set[tuple[int, int]],
 ) -> set[tuple[int, int]]:
+    """Return those of ``cells`` that lie in the raw static obstacle geometry of the kernel state.
+
+    A cell counts if it is one of the raw static cells or lies inside one of the raw
+    static rectangles.
+    """
     return {cell for cell in cells if _cell_in_raw_static(settings, state, cell)}
 
 

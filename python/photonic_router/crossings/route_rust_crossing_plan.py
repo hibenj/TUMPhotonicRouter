@@ -68,6 +68,16 @@ def resolve_crossing_half_size_cells(
     grid_size_um: float,
     clearance_um: float,
 ) -> tuple[int, dict[str, object]]:
+    """Resolve the half size of a crossing in cells, derived from the component if not given.
+
+    A positive request is returned unchanged, as is any request when crossings are
+    disabled. Otherwise the half size is half the larger bounding-box side of the
+    active crossing component plus ``clearance_um``, divided by ``grid_size_um`` and
+    rounded up; it is 0 if the component is unavailable.
+
+    Returns:
+        The half size in cells and an info dict that says how it was obtained.
+    """
     info: dict[str, object] = {
         "requested_half_size_cells": int(requested_half_size_cells),
         "derived_from_component": False,
@@ -435,6 +445,16 @@ def augment_insertion_loss_report(
     propagation_loss_per_um: float = 0.0,
     bend_loss_per_90deg: float = 0.0,
 ) -> None:
+    """Write the insertion-loss report into the crossing plan from the kernel's crossing events.
+
+    Every event with a ``net_id`` and a ``partner_net_id`` counts as one crossing for
+    both nets; events without them are skipped. The loss of a net is its length in um
+    times ``propagation_loss_per_um``, plus its bends in units of 90 degrees times
+    ``bend_loss_per_90deg``, plus its crossings times the plan's crossing loss; device
+    loss is not included. Sets ``insertion_loss_model``, ``insertion_loss_summary`` and
+    ``insertion_loss_by_net`` of ``crossing_plan_info``. Does nothing if the plan is
+    not enabled.
+    """
     if not crossing_plan_info.enabled:
         return
     crossing_counts_by_net_id: Counter[int] = Counter()
@@ -464,6 +484,12 @@ def augment_insertion_loss_report_from_realized_intersections(
     propagation_loss_per_um: float = 0.0,
     bend_loss_per_90deg: float = 0.0,
 ) -> None:
+    """Write the insertion-loss report into the crossing plan, counting realized intersections.
+
+    Like `augment_insertion_loss_report`, but the crossings per net are counted from
+    the plan's ``realized_intersections`` whose classification starts with ``legal_``.
+    Does nothing if the plan is not enabled.
+    """
     if not crossing_plan_info.enabled:
         return
     crossing_counts_by_net_id: Counter[int] = Counter()
@@ -503,6 +529,13 @@ def write_crossing_debug_artifacts(
     debug_prefix: str,
     crossing_plan_info: CrossingPlanInfo,
 ) -> None:
+    """Write the crossing plan as JSON and as text under ``<debug_path>/crossings``.
+
+    The files are ``<debug_prefix>_crossings.json`` (the plan info as a dict) and
+    ``<debug_prefix>_crossings.txt`` (the plan text, the planned and the kernel's
+    event counts, and one line per illegal realized crossing). Does nothing without a
+    debug path or if the plan is not enabled.
+    """
     if debug_path is None or not crossing_plan_info.enabled:
         return
     crossing_dir = debug_path / "crossings"

@@ -106,6 +106,13 @@ def format_port_endpoint_correction_error(
     *,
     realization_grid_spec: tuple[int, int, float, float, float] | None = None,
 ) -> str:
+    """Build the error message for a failed grid-to-port endpoint correction of one net.
+
+    The message names the net and its two ports, gives ``reason``, the port centers
+    in um and the first and last cell of the route. With a ``realization_grid_spec``
+    (width, height, cell size in um, origin x, origin y) it also gives the centers of
+    those two cells in um; without one they are reported as None.
+    """
     source_cell, target_cell = _route_endpoint_cells(record.route_obj)
     source_center = None
     target_center = None
@@ -199,6 +206,7 @@ def build_port_alignment_diagnostics(
 
 
 def route_edge_key(job: RouteJob) -> RoutedEdgeKey:
+    """Return the key that identifies the routed edge of a job: net name, source and target port."""
     return RoutedEdgeKey(
         net_name=job.net_name,
         source=PortRef(instance=job.inst1, port=job.port1),
@@ -209,6 +217,7 @@ def route_edge_key(job: RouteJob) -> RoutedEdgeKey:
 def routed_edge_lengths_from_records(
     records: list[RoutedNetRecord],
 ) -> dict[RoutedEdgeKey, float]:
+    """Map the edge key of each record to the record's total length in um."""
     return {
         RoutedEdgeKey(
             net_name=record.net_name,
@@ -220,6 +229,11 @@ def routed_edge_lengths_from_records(
 
 
 def centerline_tuple(points: object) -> tuple[tuple[float, float], ...]:
+    """Convert a list of (x, y) points to a tuple of float pairs.
+
+    Returns an empty tuple if ``points`` is not a list (a tuple is not accepted) or
+    if any point is not a pair of numbers.
+    """
     if not isinstance(points, list):
         return ()
     out: list[tuple[float, float]] = []
@@ -234,6 +248,8 @@ def centerline_tuple(points: object) -> tuple[tuple[float, float], ...]:
 
 
 class EndpointCorrectionRouter(Protocol):
+    """The router methods that the endpoint correction (the bumps) calls."""
+
     def route_port_corrected_centerline(
         self,
         route: object,
@@ -241,9 +257,13 @@ class EndpointCorrectionRouter(Protocol):
         source_port_um: tuple[float, float] | None = None,
         target_port_um: tuple[float, float] | None = None,
         allow_unchecked_bumps: bool = True,
-    ) -> object: ...
+    ) -> object:
+        """Return the centerline of ``route`` in um with its ends corrected to the port centers."""
+        ...
 
-    def centerline_length_um(self, centerline: list[tuple[float, float]]) -> float: ...
+    def centerline_length_um(self, centerline: list[tuple[float, float]]) -> float:
+        """Return the length in um of a centerline given in um."""
+        ...
 
 
 def apply_port_endpoint_corrections(
@@ -315,6 +335,12 @@ def apply_port_endpoint_corrections(
 
 @dataclass
 class RouteBookkeeping:
+    """The records, lengths and committed cells of the routed nets of a run, by net id.
+
+    ``route_order`` lists the net ids in the order in which records are reported. The
+    committed cells are kept only if ``diagnostics_enabled`` is set.
+    """
+
     route_order: list[int]
     diagnostics_enabled: bool = False
     records_by_id: dict[int, RoutedNetRecord] = field(default_factory=dict)
@@ -332,6 +358,15 @@ class RouteBookkeeping:
         corrected_total_length_um: float | None = None,
         target_port_center_um_override: tuple[float, float] | None = None,
     ) -> None:
+        """Store the record of a routed job, replacing an earlier one of the same net.
+
+        The recorded length is ``corrected_total_length_um`` if given, otherwise the
+        length of the route object; with a corrected centerline the route object's own
+        length is kept as the record's base length. ``target_port_center_um_override``
+        (um) replaces the center of the job's target port in the record. ``route_cells``
+        become the net's committed cells if diagnostics are enabled; otherwise the net's
+        committed cells are dropped.
+        """
         edge_key = route_edge_key(job)
         route_total_length_um = float(route_obj.total_length_um)
         total_length_um = (
@@ -366,11 +401,16 @@ class RouteBookkeeping:
             self.committed_dynamic_cells_by_id.pop(job.net_id, None)
 
     def clear_route(self, net_id: int) -> None:
+        """Forget the record, length and committed cells of a net; an unknown id is ignored."""
         self.records_by_id.pop(net_id, None)
         self.lengths_by_id.pop(net_id, None)
         self.committed_dynamic_cells_by_id.pop(net_id, None)
 
     def set_committed_cells(self, net_id: int, cells: set[tuple[int, int]]) -> None:
+        """Replace the committed cells of a net with a copy of ``cells``.
+
+        With diagnostics disabled the net's committed cells are dropped instead.
+        """
         if self.diagnostics_enabled:
             self.committed_dynamic_cells_by_id[net_id] = set(cells)
         else:
@@ -381,6 +421,10 @@ class RouteBookkeeping:
         *,
         exclude_net_id: int | None = None,
     ) -> set[tuple[int, int]]:
+        """Return the union of the committed cells of all nets, optionally leaving one net out.
+
+        Returns an empty set if diagnostics are disabled.
+        """
         if not self.diagnostics_enabled:
             return set()
         merged: set[tuple[int, int]] = set()
@@ -395,10 +439,15 @@ class RouteBookkeeping:
         snapshot_records: dict[int, RoutedNetRecord],
         snapshot_lengths: dict[int, float],
     ) -> None:
+        """Put back the records and lengths of a snapshot, overwriting those of the same net ids.
+
+        Records of other nets and all committed cells are left as they are.
+        """
         self.records_by_id.update(snapshot_records)
         self.lengths_by_id.update(snapshot_lengths)
 
     def ordered_records(self) -> list[RoutedNetRecord]:
+        """Return the records in route order, leaving out nets that have no record."""
         return [
             self.records_by_id[net_id]
             for net_id in self.route_order
@@ -406,10 +455,16 @@ class RouteBookkeeping:
         ]
 
     def routed_edge_lengths(self) -> dict[RoutedEdgeKey, float]:
+        """Map the edge key of each recorded net to its total length in um."""
         return routed_edge_lengths_from_records(self.ordered_records())
 
 
 def static_obstacle_count_from_map(obstacle_map: object) -> int:
+    """Return the number of blocked cells of an obstacle map.
+
+    The integer ``blocked_cell_count`` of the map's ``build_stats`` is used if there is
+    one, otherwise the size of ``blocked_cells``.
+    """
     blocked_cells = getattr(obstacle_map, "blocked_cells", ())
     static_obstacle_count = len(blocked_cells)
     build_stats = getattr(obstacle_map, "build_stats", None)
@@ -421,6 +476,11 @@ def static_obstacle_count_from_map(obstacle_map: object) -> int:
 
 
 def static_port_open_count_from_map(obstacle_map: object) -> int:
+    """Return the number of port-open cells of an obstacle map.
+
+    The integer ``port_open_cell_count`` of the map's ``build_stats`` is used if there
+    is one, otherwise the size of ``port_open_cells``.
+    """
     port_open_cells = getattr(obstacle_map, "port_open_cells", ())
     port_open_count = len(port_open_cells)
     build_stats = getattr(obstacle_map, "build_stats", None)
@@ -444,6 +504,15 @@ def build_route_debug_artifacts(
     route_attempt_records: list[RouteAttemptRecord] | None = None,
     route_nets_timings_s: dict[str, float] | None = None,
 ) -> RustRouteDebugArtifacts:
+    """Assemble the `RustRouteDebugArtifacts` of a routing run from its records and obstacle map.
+
+    The edge lengths, the static blocked cells and their counts, the port alignment
+    diagnostics and the routable bounding box are derived here; the other arguments
+    are passed through, with empty defaults for those left at None. The static blocked
+    cells are the ``blocked_cells`` of the obstacle map only, without the port-access
+    reservations. ``realization_grid_spec`` is (width, height, cell size in um,
+    origin x, origin y).
+    """
     return RustRouteDebugArtifacts(
         obstacle_svg=obstacle_svg,
         route_svgs=route_svgs,

@@ -120,6 +120,13 @@ class CrossingGridGeometry:
 
 @dataclass
 class CrossingGridBuildResult:
+    """A built crossing component with its crossing count, size in um and per-net lane data.
+
+    The three maps are keyed by net name: the lane's length inside the component in um
+    and the names of its input and output port. The single crossing tile is cached with
+    empty maps.
+    """
+
     component: Component
     crossing_count: int
     lane_length_um_by_net_name: dict[str, float]
@@ -131,6 +138,14 @@ class CrossingGridBuildResult:
 
 @dataclass
 class DerivedCrossingLayout:
+    """The derived schematic and unrouted layout with the crossing tiles placed as instances.
+
+    The result of the derivation described in the module docstring. Besides the two
+    it carries the names of the placed tile instances, the stub nets each original net
+    was split into, the length inside the tiles per original net in um, and the expected
+    and the placed crossing counts.
+    """
+
     schematic: Schematic
     unrouted_layout: Component
     grid_instance_names: list[str]
@@ -277,6 +292,11 @@ def crossing_grid_geometry_from_config(
 
 
 def net_endpoints(schematic: Schematic, net_name: str) -> tuple[str, str]:
+    """Return the two endpoints of a net's only link as strings.
+
+    Raises ValueError if the net does not have exactly one link, KeyError if the
+    schematic has no net of that name.
+    """
     bundle = schematic.netlist.routes[net_name]
     links = dict(bundle.links)
     if len(links) != 1:

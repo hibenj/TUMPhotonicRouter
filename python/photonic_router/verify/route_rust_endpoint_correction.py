@@ -100,6 +100,7 @@ def _centerline_length_um(points: tuple[tuple[float, float], ...]) -> float:
 def dedupe_centerline(
     points: tuple[tuple[float, float], ...],
 ) -> tuple[tuple[float, float], ...]:
+    """Remove consecutive repeated points from a centerline."""
     out: list[tuple[float, float]] = []
     for point in points:
         if not out or out[-1] != point:
@@ -284,6 +285,12 @@ def _terminal_anchor_matches(
 def legal_crossing_points_by_net_id(
     crossing_plan_info: Mapping[str, object] | None,
 ) -> dict[int, list[tuple[float, float]]]:
+    """Collect the points in um of the legal realized crossings per net id.
+
+    Reads ``realized_intersections`` of the crossing plan info given as a mapping; a
+    crossing whose classification starts with ``legal_`` is listed under both of its
+    nets. Returns an empty dict if the info is missing or not enabled.
+    """
     if not isinstance(crossing_plan_info, Mapping) or not crossing_plan_info.get(
         "enabled",
     ):
@@ -398,6 +405,12 @@ def primitive_centerline_for_record(
     router: EndpointCorrectionRouter,
     prefer_corrected_baseline: bool = False,
 ) -> tuple[tuple[float, float], ...]:
+    """Return the centerline in um of a record before endpoint correction, without repeated points.
+
+    This is the router's primitive centerline of the route object. The record's
+    corrected centerline is used if the router gives none, and first of all with
+    ``prefer_corrected_baseline``. Returns an empty tuple if there is neither.
+    """
     if prefer_corrected_baseline and record.corrected_centerline_um:
         return dedupe_centerline(record.corrected_centerline_um)
     route_primitive_centerline = getattr(router, "route_primitive_centerline", None)

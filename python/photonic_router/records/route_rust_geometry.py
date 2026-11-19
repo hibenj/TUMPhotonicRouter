@@ -25,6 +25,10 @@ _ILLEGAL_REALIZED_CROSSING_RE = re.compile(
 
 
 def format_route_indices(indices: set[int]) -> str:
+    """Format a set of indices as sorted, comma-separated ranges such as ``1-3,7``.
+
+    Returns ``<none>`` for an empty set.
+    """
     if not indices:
         return "<none>"
     ranges: list[str] = []
@@ -78,6 +82,11 @@ def _illegal_crossing_root_causes_from_texts(
 def format_illegal_crossing_root_causes_line(
     texts: Iterable[str | None],
 ) -> str | None:
+    """Build the ``root_cause_illegal_crossings=`` log line from error texts, or None.
+
+    The line lists as JSON every illegal realized crossing the texts mention (the two
+    net ids, the point in um, the reason), each once. None if they mention none.
+    """
     root_causes = _illegal_crossing_root_causes_from_texts(texts)
     if not root_causes:
         return None
@@ -89,6 +98,13 @@ def format_native_repair_trace_lines(
     *,
     tail: int = 16,
 ) -> list[str]:
+    """Format the kernel's repair trace as two log lines.
+
+    The first line gives the number of usable records, the second the last ``tail``
+    of them as JSON. Only the known keys of a record are kept, coerced to str, int,
+    list of int or bool; a value that cannot be coerced is left out. Returns an empty
+    list if no record has a usable key.
+    """
     normalized: list[dict[str, object]] = []
     for record in records:
         entry: dict[str, object] = {}
@@ -127,6 +143,12 @@ def format_native_repair_trace_lines(
 
 
 def route_waypoints_from_obj(route_obj: object | None) -> tuple[tuple[float, float], ...]:
+    """Return the waypoints of a kernel route object as (x, y) floats in grid coordinates.
+
+    Takes the first of ``compressed_waypoints`` and ``cells`` that holds at least two
+    well-formed points, otherwise the x and y of ``states``. Returns an empty tuple for
+    None and when fewer than two points can be read.
+    """
     if route_obj is None:
         return ()
 
@@ -162,6 +184,7 @@ def route_waypoints_from_obj(route_obj: object | None) -> tuple[tuple[float, flo
 def route_segments_from_waypoints(
     waypoints: tuple[tuple[float, float], ...],
 ) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+    """Pair consecutive waypoints into (start, end) segments, leaving out zero-length ones."""
     segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
     for start, end in itertools.pairwise(waypoints):
         if start == end:
@@ -185,6 +208,10 @@ def _points_are_collinear(
 def compress_centerline(
     points: tuple[tuple[float, float], ...],
 ) -> tuple[tuple[float, float], ...]:
+    """Remove consecutive repeated points and points collinear with their two neighbours.
+
+    A centerline of fewer than three points is returned unchanged.
+    """
     if len(points) < 3:
         return points
     out: list[tuple[float, float]] = []
@@ -202,6 +229,12 @@ def segment_intersection_with_params(
     b0: tuple[float, float],
     b1: tuple[float, float],
 ) -> tuple[float, float, float, float] | None:
+    """Intersect two segments and return (x, y, t, u), or None.
+
+    ``t`` and ``u`` are the positions of the point along ``a0 -> a1`` and ``b0 -> b1``,
+    0 at the start and 1 at the end. Endpoints count as part of a segment (tolerance
+    1e-9). None if the segments are parallel, collinear ones included, or do not meet.
+    """
     ax = a1[0] - a0[0]
     ay = a1[1] - a0[1]
     bx = b1[0] - b0[0]
@@ -236,6 +269,13 @@ def collinear_segment_overlap_with_params(
     ]
     | None
 ):
+    """Return the stretch that two collinear segments share, or None.
+
+    The result is (start, end, t_start, t_end, u_start, u_end): the two end points of
+    the shared stretch, their positions along ``a0 -> a1`` (0 to 1) and along
+    ``b0 -> b1``. None if a segment has no length, if the two are not collinear, or if
+    they share at most a point (tolerance 1e-9).
+    """
     ax = a1[0] - a0[0]
     ay = a1[1] - a0[1]
     bx = b1[0] - b0[0]
@@ -275,6 +315,7 @@ def collinear_segment_overlap_with_params(
 def segment_bbox_um(
     segment: tuple[tuple[float, float], tuple[float, float]],
 ) -> tuple[float, float, float, float]:
+    """Return the bounding box of a segment as (min_x, min_y, max_x, max_y) in um."""
     start, end = segment
     return (
         min(float(start[0]), float(end[0])),
@@ -290,6 +331,7 @@ def um_bboxes_overlap(
     *,
     eps: float = 1.0e-9,
 ) -> bool:
+    """Whether two (min_x, min_y, max_x, max_y) boxes overlap; touching within ``eps`` counts."""
     return not (
         bbox_a[2] < bbox_b[0] - eps
         or bbox_b[2] < bbox_a[0] - eps
@@ -316,6 +358,12 @@ def record_centerline_um(
     origin_x_um: float,
     origin_y_um: float,
 ) -> tuple[tuple[float, float], ...]:
+    """Return the centerline of a routed net in um, compressed with `compress_centerline`.
+
+    Uses the record's corrected centerline if it has one. Otherwise the waypoints of
+    its route object are mapped to ``origin + coordinate * grid_size_um``. Returns an
+    empty tuple if the route object has no waypoints.
+    """
     if record.corrected_centerline_um:
         return compress_centerline(record.corrected_centerline_um)
     waypoints = route_waypoints_from_obj(record.route_obj)
@@ -339,6 +387,10 @@ def physical_point_to_grid_cell(
     origin_x_um: float,
     origin_y_um: float,
 ) -> tuple[int, int] | None:
+    """Return the grid cell that contains a point given in um, or None.
+
+    None if the grid size is not positive or a coordinate is not finite.
+    """
     if grid_size_um <= 0.0:
         return None
     x, y = float(point[0]), float(point[1])
@@ -357,6 +409,11 @@ def grid_point_to_physical_um(
     origin_x_um: float,
     origin_y_um: float,
 ) -> tuple[float, float]:
+    """Map a point in grid coordinates to um as ``origin + coordinate * grid_size_um``.
+
+    No half-cell offset is added: an integer coordinate maps to the lower-left corner
+    of its cell, not to its center.
+    """
     return (
         float(origin_x_um) + float(point[0]) * float(grid_size_um),
         float(origin_y_um) + float(point[1]) * float(grid_size_um),
@@ -368,6 +425,10 @@ def grid_cell_neighborhood(
     *,
     radius: int,
 ) -> set[tuple[int, int]]:
+    """Return the square block of cells within ``radius`` cells of ``cell`` in x and in y.
+
+    The cell itself is included; a negative radius counts as 0.
+    """
     cx, cy = int(cell[0]), int(cell[1])
     r = max(0, int(radius))
     return {(cx + dx, cy + dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1)}
@@ -377,6 +438,7 @@ def point_distance_um(
     a: tuple[float, float],
     b: tuple[float, float],
 ) -> float:
+    """Return the Euclidean distance between two points; in um for points in um."""
     return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
 
 
@@ -386,6 +448,10 @@ def point_near_route_endpoint(
     *,
     tolerance_um: float,
 ) -> bool:
+    """Whether a point is within ``tolerance_um`` of the first or the last point of a centerline.
+
+    False for an empty centerline.
+    """
     if not centerline:
         return False
     return point_distance_um(point, centerline[0]) <= float(tolerance_um) or point_distance_um(
@@ -397,6 +463,7 @@ def point_route_endpoint_distance_um(
     point: tuple[float, float],
     centerline: tuple[tuple[float, float], ...],
 ) -> float | None:
+    """Return the distance in um from a point to the nearer end of a centerline; None if empty."""
     if not centerline:
         return None
     return min(
@@ -411,6 +478,10 @@ def point_near_record_port_endpoint(
     *,
     tolerance_um: float,
 ) -> bool:
+    """Whether a point is within ``tolerance_um`` of the record's source or target port center.
+
+    A port center the record does not have is skipped.
+    """
     for endpoint in (record.source_port_center_um, record.target_port_center_um):
         if endpoint is None:
             continue
@@ -423,6 +494,10 @@ def point_record_port_endpoint_distance_um(
     point: tuple[float, float],
     record: RoutedNetRecord,
 ) -> float | None:
+    """Return the distance in um from a point to the nearer port center of a record.
+
+    None if the record has neither a source nor a target port center.
+    """
     distances = [
         point_distance_um(point, endpoint)
         for endpoint in (record.source_port_center_um, record.target_port_center_um)
@@ -434,12 +509,14 @@ def point_record_port_endpoint_distance_um(
 
 
 def rounded_point(point: tuple[float, float]) -> list[float]:
+    """Return a point as the list [x, y], rounded to six decimals."""
     return [round(float(point[0]), 6), round(float(point[1]), 6)]
 
 
 def rounded_segment(
     segment: tuple[tuple[float, float], tuple[float, float]],
 ) -> list[list[float]]:
+    """Return a segment as [[x, y], [x, y]], rounded to six decimals."""
     return [rounded_point(segment[0]), rounded_point(segment[1])]
 
 
@@ -448,6 +525,11 @@ def crossing_footprint_half_extent_um(
     crossing_plan_info: CrossingPlanInfo,
     grid_size_um: float,
 ) -> float:
+    """Return half the side length of the square crossing footprint in um.
+
+    Half the larger side of ``component_bbox_um`` if the plan's crossing device records
+    a positive one, otherwise ``crossing_half_size_cells * grid_size_um``.
+    """
     crossing_device = crossing_plan_info.crossing_device
     if isinstance(crossing_device, Mapping):
         component_bbox = crossing_device.get("component_bbox_um")
@@ -466,6 +548,7 @@ def crossing_footprint_half_extent_um(
 def segment_length_um(
     segment: tuple[tuple[float, float], tuple[float, float]],
 ) -> float:
+    """Return the length of a segment; in um for a segment in um."""
     start, end = segment
     return math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
 
@@ -473,6 +556,10 @@ def segment_length_um(
 def segment_unit_vector(
     segment: tuple[tuple[float, float], tuple[float, float]],
 ) -> tuple[float, float] | None:
+    """Return the unit vector from the start to the end of a segment.
+
+    None if the segment is shorter than 1e-9.
+    """
     start, end = segment
     dx = float(end[0]) - float(start[0])
     dy = float(end[1]) - float(start[1])
@@ -489,6 +576,12 @@ def crossing_footprint_polygon(
     axis_v: tuple[float, float],
     half_extent_um: float,
 ) -> list[tuple[float, float]]:
+    """Return the four corners of the square crossing footprint in um.
+
+    The square is centered at ``center`` and has sides of ``2 * half_extent_um`` along
+    ``axis_u`` and ``axis_v``, which are assumed to be orthogonal unit vectors. The
+    corners are in the order (-u, -v), (+u, -v), (+u, +v), (-u, +v).
+    """
     cx, cy = center
     ux, uy = axis_u
     vx, vy = axis_v
@@ -527,6 +620,11 @@ def convex_polygons_overlap_with_area(
     *,
     eps: float = 1e-9,
 ) -> bool:
+    """Whether two convex polygons share an area, by the separating-axis test.
+
+    Polygons that only touch at an edge or a corner (within ``eps``) do not overlap.
+    The result is not meaningful for non-convex polygons.
+    """
     for axis in _polygon_axes(polygon_a) + _polygon_axes(polygon_b):
         min_a, max_a = _project_polygon(polygon_a, axis)
         min_b, max_b = _project_polygon(polygon_b, axis)
@@ -564,6 +662,13 @@ def segment_intersects_crossing_footprint_interior(
     half_extent_um: float,
     eps: float = 1e-9,
 ) -> bool:
+    """Whether a segment passes through the interior of a square crossing footprint.
+
+    The footprint is the square of `crossing_footprint_polygon` (same ``center``,
+    axes and ``half_extent_um``, in um). A segment that only touches the boundary or
+    runs along it, within ``eps``, does not count.
+    """
+
     def to_local(point: tuple[float, float]) -> tuple[float, float]:
         dx = float(point[0]) - float(center[0])
         dy = float(point[1]) - float(center[1])

@@ -166,6 +166,19 @@ def dump_photonic_probe_failure_artifacts(
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_unchecked_bumps: bool,
 ) -> dict[str, str]:
+    """Write the debug files of a failed photonic verification probe and return their paths.
+
+    The files go to ``<debug_path>/photonic_probe_failures``: the probe layout as GDS
+    (if a layout is given), the verification result as JSON, the primitive and the
+    corrected centerlines in um of every net named in an issue as JSON, an SVG of those
+    centerlines around the first reported overlap box (or around the centerlines if no
+    issue has one), and a text summary with the first ten issues. A centerline the
+    router cannot produce is recorded as an error string in the JSON, not raised.
+
+    Returns:
+        The written paths as strings, keyed ``probe_gds``, ``issues_json``,
+        ``centerlines_json``, ``centerlines_svg`` and ``summary_txt``.
+    """
     probe_dir = debug_path / "photonic_probe_failures"
     _ensure_dir(probe_dir)
     stem = f"{debug_prefix}_photonic_probe_failure"
@@ -299,6 +312,7 @@ def rect_cell_count(
     min_y: int,
     max_y: int,
 ) -> int:
+    """Count the cells of a rectangle with inclusive bounds; 0 if a maximum is below its minimum."""
     width = max(0, max_x - min_x + 1)
     height = max(0, max_y - min_y + 1)
     return width * height
@@ -312,6 +326,11 @@ def rect_overlap_cell_count(
     min_y: int,
     max_y: int,
 ) -> int:
+    """Count the cells that ``rect`` shares with the rectangle given by the keyword bounds.
+
+    ``rect`` is (min_x, min_y, max_x, max_y); all bounds are inclusive cell indices.
+    Returns 0 if the two do not overlap.
+    """
     rect_min_x, rect_min_y, rect_max_x, rect_max_y = rect
     overlap_min_x = max(min_x, rect_min_x)
     overlap_max_x = min(max_x, rect_max_x)
@@ -326,6 +345,7 @@ def rect_overlap_cell_count(
 
 
 def route_cells_bbox(cells: Iterable[tuple[int, int]]) -> tuple[int, int, int, int] | None:
+    """Return the bounding box of cells as (min_x, max_x, min_y, max_y), or None without cells."""
     normalized = [(int(cell[0]), int(cell[1])) for cell in cells]
     if not normalized:
         return None
