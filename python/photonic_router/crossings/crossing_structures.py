@@ -31,6 +31,7 @@ import itertools
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
@@ -38,6 +39,9 @@ from gdsfactory.schematic import Schematic
 from photonic_router.config import CrossingGridConfig
 from photonic_router.crossings.crossing_plan import CrossingStagePlan
 from photonic_router.gds.route_gds import get_port_from_instance
+
+if TYPE_CHECKING:  # annotation-only: `preplaced_crossing_grids` imports this module
+    from photonic_router.crossings.preplaced_crossing_grids import CrossingGridGeometry
 
 X_ARRAY = "x-array"
 COLUMN_GRID = "column-grid"
@@ -87,9 +91,14 @@ class LayerDecision:
         )
 
 
+#: per net the source row and the target row in um, then the source and the
+#: target x positions of the layer's nets
+LayerGeometry = tuple[dict[str, float], dict[str, float], list[float], list[float]]
+
+
 def _layer_geometry(
     schematic: Schematic, unrouted_layout: Component, stage_plan: CrossingStagePlan
-) -> tuple[dict[str, float], dict[str, float], list[float], list[float]]:
+) -> LayerGeometry:
     from photonic_router.crossings.preplaced_crossing_grids import net_endpoints
 
     rows: dict[str, float] = {}
@@ -111,7 +120,7 @@ def evaluate_x_array(
     schematic: Schematic,
     unrouted_layout: Component,
     stage_plan: CrossingStagePlan,
-    geometry,
+    geometry: CrossingGridGeometry,
 ) -> StructureCandidate:
     """Feasibility and cost of the X array on one layer (no anchors needed)."""
     from photonic_router.crossings.preplaced_crossing_grids import lane_movement
@@ -175,7 +184,7 @@ def evaluate_column_grid(
     schematic: Schematic,
     unrouted_layout: Component,
     stage_plan: CrossingStagePlan,
-    geometry,
+    geometry: CrossingGridGeometry,
     anchors: Mapping[str, tuple[float, float]],
 ) -> StructureCandidate:
     """Feasibility and cost of the column grid on one layer (needs the
@@ -216,7 +225,7 @@ def select_layer_structure(
     schematic: Schematic,
     unrouted_layout: Component,
     stage_plan: CrossingStagePlan,
-    geometry,
+    geometry: CrossingGridGeometry,
     anchors: Mapping[str, tuple[float, float]],
     *,
     stage_key: tuple[int, int],

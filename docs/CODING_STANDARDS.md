@@ -146,9 +146,10 @@ like the violation counts: a commit that adds one says why in its message.
 
 1. Formatting and the lint set of `pyproject.toml` (`ruff format`,
    `ruff check`). *Tool, in force.*
-2. Every function has annotated parameters and an annotated return type;
-   `mypy` passes on the package. *Tool, proposed (mypy runs today but does
-   not fail the build).*
+2. Every function of the package has annotated parameters and an annotated
+   return type (ruff `ANN001`, `ANN201`, `ANN202`). *Tool, in force.* `mypy`
+   passes on the package. *Tool, proposed: the ratchet holds its error
+   count.*
 3. A record that crosses a module boundary is a dataclass, not a
    `dict[str, object]`. A dictionary is for a mapping whose keys are data.
    *Review, proposed.*
@@ -225,16 +226,15 @@ Production Python under `python/photonic_router/` (46,110 lines, 109 files)
 and `crates/router-core`. `scripts/quality_ratchet.py` measures the counts
 below and `tests/baselines/quality_ratchet.json` pins them. The table shows
 the first measurement and the counts after the first two work packages (both
-2026-11-19); the file is the current truth. Rules 4.10 (absolute imports) and 5.3 (no `unwrap()`) left the
-table when their counts reached zero and the lint sets took them over.
+2026-11-19); the file is the current truth. Rules 4.2 (annotations), 4.10 (absolute imports) and 5.3 (no `unwrap()`)
+left the table when their counts reached zero and the lint sets took them
+over.
 
 | Rule | Measure (name in the pin) | at the first measurement | after S1 and S2 slice 3 |
 | --- | --- | --- | --- |
 | 3.2 | fields of the shared session state (`session_state_fields`) | 82 | 14 |
 | 3.4 | imports from a lower layer into a higher one (`upward_imports`) | 3 | 0 |
 | 3.5 | underscore names imported from another module (`private_imports`) | 247 | 27 |
-| 4.2 | parameters without an annotation (`ruff_ANN001`) | 230 | 218 |
-| 4.2 | functions without a return annotation (`ruff_ANN201`, `ruff_ANN202`) | 3, 6 | 3, 6 |
 | 4.2 | mypy errors on the whole package (`mypy_errors`) | 348 | 285 |
 | 4.3 | `dict[str, object]` / `dict[str, Any]` annotations (`untyped_dict_annotations`) | 222 | 216 |
 | 4.4 | functions over 7 parameters (`ruff_PLR0913`) | 58; the largest 50 | 50 |

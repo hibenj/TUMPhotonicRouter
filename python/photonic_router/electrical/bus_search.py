@@ -9,7 +9,12 @@ from photonic_router.electrical.port_access import (
     choose_route_start_cell,
     ordered_route_start_cells,
 )
-from photonic_router.electrical.types import ElectricalObstacleMap, ElectricalTerminal, GridCell
+from photonic_router.electrical.types import (
+    ElectricalObstacleMap,
+    ElectricalPortAccess,
+    ElectricalTerminal,
+    GridCell,
+)
 from photonic_router.electrical.wire_geometry import in_bounds
 from photonic_router.static_obstacle_builder import physical_to_grid
 
@@ -56,7 +61,7 @@ def terminal_access_anchor_cell(
 def _terminal_access(
     obstacle_map: ElectricalObstacleMap,
     terminal_id: str,
-):
+) -> ElectricalPortAccess | None:
     return obstacle_map.common_bus_port_accesses.get(terminal_id)
 
 

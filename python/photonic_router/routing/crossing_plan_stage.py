@@ -258,7 +258,7 @@ class _PortAccess(NamedTuple):
 
 def _endpoint_state_for_lane_assignment(
     settings: SessionSettings, state: SessionState, port: Port, *, as_target: bool
-):
+) -> Any:
     return port_to_grid_state(
         settings,
         state,

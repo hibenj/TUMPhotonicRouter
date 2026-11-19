@@ -264,6 +264,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Every function of the package is annotated (S4, slice 2; the annotation
+  half of rule 4.2 is in force). The last 13 functions without a parameter
+  or return annotation have one, and ruff's `ANN001`, `ANN201` and `ANN202`
+  are in the lint set for the package (tests and scripts are exempt). The
+  three measures leave the quality ratchet, which holds 20 counts. mypy's
+  error count, the other half of the rule, stays in the ratchet at 277.
 - The helpers of the routing phases declare what they take (S4, slice 1).
   214 parameters named `settings` and `state` in seven modules of
   `routing/` are annotated `SessionSettings` and `SessionState`, so mypy

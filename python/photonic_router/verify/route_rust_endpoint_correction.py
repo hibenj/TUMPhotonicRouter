@@ -7,6 +7,7 @@ import math
 from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
 from dataclasses import replace
+from typing import Any
 
 from photonic_router.config import FlowDiagnostics
 from photonic_router.crossings.route_rust_crossing_components import (
@@ -30,7 +31,7 @@ from photonic_router.records.route_rust_records import (
 from photonic_router.records.route_rust_types import RoutedNetRecord, RustRouteDebugArtifacts
 
 
-def _load_rust_backend():
+def _load_rust_backend() -> Any | None:
     from photonic_router.routing.session import _load_rust_backend as route_rust_load_backend
 
     return route_rust_load_backend()

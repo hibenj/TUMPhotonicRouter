@@ -50,7 +50,9 @@ from photonic_router.records.route_rust_realization import realize_routed_net_re
 from photonic_router.records.route_rust_records import build_port_alignment_diagnostics
 from photonic_router.records.route_rust_types import (
     MeanderInsertionConfig,
+    MeanderInsertionReport,
     OpticalRouteClearancePolicy,
+    RoutedNetRecord,
     RouteRustPipelineResult,
     as_float,
 )
@@ -73,7 +75,10 @@ from photonic_router.static_obstacle_builder import (
 )
 
 
-def analyze_meander_insertion_for_requirements(*args: Any, **kwargs: Any):
+def analyze_meander_insertion_for_requirements(
+    *args: Any, **kwargs: Any
+) -> tuple[list[RoutedNetRecord], MeanderInsertionReport]:
+    """Plan the meanders with this module's backend loader; see the function in `plm`."""
     _meander_impl._load_rust_backend = _load_rust_backend
     return _meander_impl.analyze_meander_insertion_for_requirements(*args, **kwargs)
 

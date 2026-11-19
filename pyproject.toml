@@ -84,6 +84,9 @@ select = [
     "TRY",  # exception-handling patterns
     "FURB", # modernize (refurb)
     "TID252", # relative imports (docs/CODING_STANDARDS.md rule 4.10)
+    "ANN001", # rule 4.2: every parameter is annotated ...
+    "ANN201", # ... and every public function ...
+    "ANN202", # ... and private function declares its return type
 ]
 ignore = [
     # single-line-implicit-string-concatenation: conflicts with the
@@ -109,7 +112,8 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 # Scripts and the two shims insert the repository root into sys.path before
 # importing from it, so their imports cannot be at the top of the file.
-"scripts/**" = ["E402"]
+# Rule 4.2 (annotations) is about the package.
+"scripts/**" = ["E402", "ANN"]
 "python/photonic_router/__init__.py" = ["E402"]
 # The 2026-09 path-investigation harness is exploratory code kept as the
 # record of that investigation (PATH_INVESTIGATION_HARNESS.md in the private
@@ -117,11 +121,11 @@ ban-relative-imports = "all"
 # not held to the package's naming and resource rules.
 "scripts/path_investigation/*" = ["E741", "B007", "F841", "F821", "SIM115", "E731"]
 # Test fakes use plain class attributes as fixtures on purpose.
-"tests/**" = ["RUF012"]
+"tests/**" = ["RUF012", "ANN"]
 # Measurement scripts of closed experiments (experiments/README.md) are kept
 # as written for their record; they patch the flow in place after inserting
 # the repository root into sys.path.
-"experiments/*/scripts/*" = ["E402", "C401", "C408", "SIM105", "E741"]
+"experiments/*/scripts/*" = ["E402", "C401", "C408", "SIM105", "E741", "ANN"]
 
 # The limits of docs/CODING_STANDARDS.md section 4. The rules that read them
 # (PLR0913, PLR0915, C901) are not selected above yet: scripts/quality_ratchet.py

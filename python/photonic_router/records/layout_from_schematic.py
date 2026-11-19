@@ -5,11 +5,12 @@ from __future__ import annotations
 from uuid import uuid4
 
 import gdsfactory as gf
+import klayout.db as kdb
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
 
 
-def _anchor_point_from_bbox(bbox, anchor: str) -> tuple[float, float]:
+def _anchor_point_from_bbox(bbox: kdb.DBox, anchor: str) -> tuple[float, float]:
     """Return a dbbox anchor point using gdsfactory placement anchor names."""
     left = float(bbox.left)
     right = float(bbox.right)

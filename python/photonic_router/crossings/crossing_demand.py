@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from photonic_router.crossings.crossing_plan import (
+    CrossingEvent,
     CrossingPlan,
     CrossingStagePlan,
     LaneRank,
@@ -249,7 +250,8 @@ class CrossingDemand:
         )
 
     @property
-    def events(self):
+    def events(self) -> tuple[CrossingEvent, ...]:
+        """The crossing events of the plan, in stage order."""
         return self.plan.events
 
     def to_text(self, *, include_orders: bool = True) -> str:

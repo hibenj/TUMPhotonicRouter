@@ -100,7 +100,7 @@ def port_to_grid_state(
     *,
     as_target: bool = False,
     outward_cells: int = 1,
-):
+) -> Any:
     """Return the kernel ``State`` (cell and heading) at which a route leaves or reaches a port.
 
     The cell is the one ``outward_cells`` cells in front of the port along its

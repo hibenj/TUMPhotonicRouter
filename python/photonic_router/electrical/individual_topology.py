@@ -9,6 +9,7 @@ from photonic_router.electrical.port_access import ordered_route_start_cells
 from photonic_router.electrical.types import (
     CommonBusRoutingResult,
     ElectricalObstacleMap,
+    ElectricalPortAccess,
     ElectricalRoutingConfig,
     ElectricalTerminal,
     EscapeBundle,
@@ -619,5 +620,5 @@ def _terminal_access_anchor_cell(
 def _terminal_access(
     obstacle_map: ElectricalObstacleMap,
     terminal_id: str,
-):
+) -> ElectricalPortAccess | None:
     return obstacle_map.individual_port_accesses.get(terminal_id)

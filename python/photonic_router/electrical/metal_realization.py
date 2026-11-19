@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import klayout.db as kdb
 from gdsfactory.component import Component
 
@@ -31,11 +33,11 @@ BBox = tuple[float, float, float, float]
 RectList = list[BBox]
 
 
-def _kdb_region(*args):
+def _kdb_region(*args: Any) -> kdb.Region:
     return kdb.Region(*args)
 
 
-def _kdb_box(*args):
+def _kdb_box(*args: Any) -> kdb.Box:
     return kdb.Box(*args)
 
 
