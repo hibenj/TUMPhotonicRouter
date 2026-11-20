@@ -77,36 +77,60 @@ class PhotonicVerificationResult:
         }
 
 
+@dataclass(frozen=True)
+class RealizedRouteGeometry:
+    """How the routes under verification were realized into polygons, and where."""
+
+    #: (width cells, height cells, grid size um, origin x um, origin y um)
+    realization_grid_spec: tuple[int, int, float, float, float]
+    route_width_um: float = 0.5
+    route_layer: Layer = (1, 0)
+    #: layers whose shapes a route must not touch
+    obstacle_layers: Iterable[Layer] = ((1, 0),)
+    allow_45_degree_turns: bool = True
+    bend_radius_cells: int = 4
+    #: the die the routes may use; None does not check it
+    routable_bbox_um: tuple[float, float, float, float] | None = None
+
+
+@dataclass(frozen=True)
+class LegalCrossings:
+    """Where two routes may overlap: the crossings the plan placed."""
+
+    #: polygons any pair of routes may overlap in
+    overlap_polygons_um: Iterable[Iterable[tuple[float, float]]] = ()
+    #: polygons one pair of nets may overlap in
+    overlap_polygons_by_net_id_pair_um: (
+        Mapping[NetIdPair, Iterable[Iterable[tuple[float, float]]]] | None
+    ) = None
+    #: the placed crossing components, as a record or as the footprint polygon
+    component_footprints_um: Iterable[Mapping[str, object] | Iterable[tuple[float, float]]] = ()
+
+
+@dataclass(frozen=True)
+class VerificationChecks:
+    """Which checks run, and the areas and radii below which a finding is ignored."""
+
+    check_route_coverage: bool = True
+    check_endpoint_connectivity: bool = True
+    #: None uses the larger of the route width and the grid size
+    port_contact_radius_um: float | None = None
+    port_obstacle_exemption_radius_um: float = 25.0
+    min_route_overlap_area_um2: float = 0.05
+    min_obstacle_overlap_area_um2: float = 2.0
+    min_crossing_component_route_overlap_area_um2: float = 0.25
+    min_crossing_component_overlap_area_um2: float = 0.25
+
+
 def verify_photonic_routing(
     routed_layout: Component,
     schematic: Any,
     *,
     routed_net_records: Iterable[RoutedNetRecord],
+    geometry: RealizedRouteGeometry,
     unrouted_layout: Component | None = None,
-    route_width_um: float = 0.5,
-    route_layer: Layer = (1, 0),
-    obstacle_layers: Iterable[Layer] = ((1, 0),),
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool = True,
-    bend_radius_cells: int = 4,
-    port_contact_radius_um: float | None = None,
-    port_obstacle_exemption_radius_um: float = 25.0,
-    legal_overlap_polygons_um: Iterable[Iterable[tuple[float, float]]] = (),
-    legal_overlap_polygons_by_net_id_pair_um: Mapping[
-        NetIdPair,
-        Iterable[Iterable[tuple[float, float]]],
-    ]
-    | None = None,
-    crossing_component_footprints_um: Iterable[
-        Mapping[str, object] | Iterable[tuple[float, float]]
-    ] = (),
-    check_route_coverage: bool = True,
-    min_route_overlap_area_um2: float = 0.05,
-    min_obstacle_overlap_area_um2: float = 2.0,
-    min_crossing_component_route_overlap_area_um2: float = 0.25,
-    min_crossing_component_overlap_area_um2: float = 0.25,
-    check_endpoint_connectivity: bool = True,
-    routable_bbox_um: tuple[float, float, float, float] | None = None,
+    crossings: LegalCrossings | None = None,
+    checks: VerificationChecks | None = None,
 ) -> PhotonicVerificationResult:
     """Verify routed optical topology and realized waveguide geometry.
 
@@ -115,7 +139,28 @@ def verify_photonic_routing(
     polygons for each route, so post-processing such as endpoint correction and
     path-length meanders is covered.
     """
-    route_width_um = float(route_width_um)
+    crossings = crossings if crossings is not None else LegalCrossings()
+    checks = checks if checks is not None else VerificationChecks()
+    realization_grid_spec = geometry.realization_grid_spec
+    route_layer = geometry.route_layer
+    obstacle_layers = geometry.obstacle_layers
+    allow_45_degree_turns = geometry.allow_45_degree_turns
+    bend_radius_cells = geometry.bend_radius_cells
+    routable_bbox_um = geometry.routable_bbox_um
+    legal_overlap_polygons_um = crossings.overlap_polygons_um
+    legal_overlap_polygons_by_net_id_pair_um = crossings.overlap_polygons_by_net_id_pair_um
+    crossing_component_footprints_um = crossings.component_footprints_um
+    check_route_coverage = checks.check_route_coverage
+    check_endpoint_connectivity = checks.check_endpoint_connectivity
+    port_contact_radius_um = checks.port_contact_radius_um
+    port_obstacle_exemption_radius_um = checks.port_obstacle_exemption_radius_um
+    min_route_overlap_area_um2 = checks.min_route_overlap_area_um2
+    min_obstacle_overlap_area_um2 = checks.min_obstacle_overlap_area_um2
+    min_crossing_component_route_overlap_area_um2 = (
+        checks.min_crossing_component_route_overlap_area_um2
+    )
+    min_crossing_component_overlap_area_um2 = checks.min_crossing_component_overlap_area_um2
+    route_width_um = float(geometry.route_width_um)
     if route_width_um <= 0.0:
         raise ValueError("route_width_um must be > 0")
     if port_contact_radius_um is None:

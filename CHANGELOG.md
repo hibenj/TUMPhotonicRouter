@@ -290,6 +290,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Two long signatures take records instead of loose keywords (rule 4.4).
+  `verify_photonic_routing` (22 parameters) takes `geometry:
+  RealizedRouteGeometry` (grid, width, layers, turn rules, the die),
+  `crossings: LegalCrossings` and `checks: VerificationChecks`.
+  `analyze_meander_insertion_for_requirements` (13) and the two planner
+  functions behind it take `space: MeanderPlanningSpace` (grid, turn rules,
+  blocked cells, clearances). No value changes; the final meander pass
+  computes the minimum insertable length from the space instead of
+  receiving it.
+
 - Every function of the package is annotated (S4, slice 2; the annotation
   half of rule 4.2 is in force). The last 13 functions without a parameter
   or return annotation have one, and ruff's `ANN001`, `ANN201` and `ANN202`

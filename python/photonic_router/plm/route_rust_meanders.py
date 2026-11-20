@@ -151,6 +151,24 @@ class _RequirementPlanOutcome:
     candidate_statuses: list[dict[str, object]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class MeanderPlanningSpace:
+    """Where meanders may be planned: the grid, the turn rules, what is blocked and the clearances."""
+
+    #: (width cells, height cells, grid size um, origin x um, origin y um)
+    realization_grid_spec: tuple[int, int, float, float, float]
+    allow_45_degree_turns: bool
+    bend_radius_cells: int
+    #: cells no meander may use; None blocks nothing beyond the handle
+    static_blocked_cells: Iterable[tuple[int, int]] | None = None
+    #: the kernel's own handle of the blocked cells, used instead of the list when given
+    static_blocked_cell_handle: object | None = None
+    #: keepout around a registered route; None uses the kernel's default
+    route_occupancy_radius_cells: int | None = None
+    meander_box_clearance_radius_cells: int = 0
+    route_clearance_radius_cells: int | None = None
+
+
 @dataclass
 class _SelectedMeanderRequirement:
     entry: MeanderEdgeReport
@@ -814,20 +832,21 @@ def _build_planner_context(
     *,
     rust_backend: MeanderRustBackendLike,
     routed_net_records: list[RoutedNetRecord],
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool,
-    bend_radius_cells: int,
-    static_blocked_cells: Iterable[tuple[int, int]] | None,
-    static_blocked_cell_handle: object | None = None,
-    route_occupancy_radius_cells: int | None = None,
-    meander_box_clearance_radius_cells: int = 0,
-    route_clearance_radius_cells: int | None = None,
+    space: MeanderPlanningSpace,
     debug_meanders: bool = False,
 ) -> _MeanderPlannerContext:
     """A fresh router and its `MeanderPlanner`: static cells, the routes as
     occupied cells (with their keepout radius) and the route geometries the
     planner needs. Records without a centerline cannot be registered; their cells join
     the static set. Timers only under ``debug_meanders``."""
+    realization_grid_spec = space.realization_grid_spec
+    allow_45_degree_turns = space.allow_45_degree_turns
+    bend_radius_cells = space.bend_radius_cells
+    static_blocked_cells = space.static_blocked_cells
+    static_blocked_cell_handle = space.static_blocked_cell_handle
+    route_occupancy_radius_cells = space.route_occupancy_radius_cells
+    meander_box_clearance_radius_cells = space.meander_box_clearance_radius_cells
+    route_clearance_radius_cells = space.route_clearance_radius_cells
     t_total_start = time.perf_counter()
     width, height, grid_size_um_cfg, origin_x_um, origin_y_um = realization_grid_spec
     t_router_start = time.perf_counter()
@@ -1263,24 +1282,24 @@ def _axis_aligned_centerline_run_lengths_um(
     return lengths
 
 
+@dataclass(frozen=True)
+class _MeanderSelection:
+    """What the selection pass hands the final pass: the requirements it chose
+    and, per physical edge in planning order, the total extra length to insert."""
+
+    requirements: list[_SelectedMeanderRequirement]
+    physical_edge_order: list[RoutedEdgeKey]
+    physical_planned_extra_by_edge: Mapping[RoutedEdgeKey, float]
+
+
 def _plan_and_commit_final_physical_meanders(
     *,
     rust_backend: MeanderRustBackendLike,
     routed_net_records: list[RoutedNetRecord],
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool,
-    bend_radius_cells: int,
-    static_blocked_cells: Iterable[tuple[int, int]] | None,
-    static_blocked_cell_handle: object | None,
-    route_occupancy_radius_cells: int | None,
-    meander_box_clearance_radius_cells: int,
-    route_clearance_radius_cells: int | None,
+    space: MeanderPlanningSpace,
     config: MeanderInsertionConfig,
     search_config: _MeanderSearchConfig,
-    min_insertable_extra_um: float,
-    selected_requirements: list[_SelectedMeanderRequirement],
-    physical_edge_order: list[RoutedEdgeKey],
-    physical_planned_extra_by_edge: Mapping[RoutedEdgeKey, float],
+    selection: _MeanderSelection,
     debug_meanders: bool,
 ) -> _FinalMeanderPlanningResult:
     """The final pass: every physical edge's total in one Rust call, committed.
@@ -1290,17 +1309,18 @@ def _plan_and_commit_final_physical_meanders(
     or split per edge. A requirement whose physical edges did not all plan
     is reported ``no_candidate`` with its credit unmatched.
     """
+    selected_requirements = selection.requirements
+    physical_edge_order = selection.physical_edge_order
+    physical_planned_extra_by_edge = selection.physical_planned_extra_by_edge
+    min_insertable_extra_um = _minimum_four_bend_extra_length_um(
+        grid_size_um=float(space.realization_grid_spec[2]),
+        bend_radius_cells=int(space.bend_radius_cells),
+        min_straight_um=search_config.min_straight_um,
+    )
     final_context = _build_planner_context(
         rust_backend=rust_backend,
         routed_net_records=routed_net_records,
-        realization_grid_spec=realization_grid_spec,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_cells=bend_radius_cells,
-        static_blocked_cells=static_blocked_cells,
-        static_blocked_cell_handle=static_blocked_cell_handle,
-        route_occupancy_radius_cells=route_occupancy_radius_cells,
-        meander_box_clearance_radius_cells=meander_box_clearance_radius_cells,
-        route_clearance_radius_cells=route_clearance_radius_cells,
+        space=space,
         debug_meanders=debug_meanders,
     )
     final_plan_by_edge: dict[RoutedEdgeKey, list[PlannedEdgeInsertion]] = {}
@@ -1439,14 +1459,7 @@ def analyze_meander_insertion_for_requirements(
     requirements: list[MissingLengthRequirement],
     *,
     config: MeanderInsertionConfig,
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool,
-    bend_radius_cells: int,
-    static_blocked_cells: Iterable[tuple[int, int]] | None = None,
-    static_blocked_cell_handle: object | None = None,
-    route_occupancy_radius_cells: int | None = None,
-    meander_box_clearance_radius_cells: int = 0,
-    route_clearance_radius_cells: int | None = None,
+    space: MeanderPlanningSpace,
     requirement_delay_candidates: Mapping[
         RoutedEdgeKey,
         Iterable[DelayInsertionCandidate],
@@ -1468,18 +1481,12 @@ def analyze_meander_insertion_for_requirements(
     if rust_backend is None:
         raise RuntimeError("Rust router backend unavailable for meander analysis.")
     rust_backend = cast(MeanderRustBackendLike, rust_backend)
-    grid_size_um_cfg = float(realization_grid_spec[2])
+    grid_size_um_cfg = float(space.realization_grid_spec[2])
+    bend_radius_cells = space.bend_radius_cells
     context = _build_planner_context(
         rust_backend=rust_backend,
         routed_net_records=routed_net_records,
-        realization_grid_spec=realization_grid_spec,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_cells=bend_radius_cells,
-        static_blocked_cells=static_blocked_cells,
-        static_blocked_cell_handle=static_blocked_cell_handle,
-        route_occupancy_radius_cells=route_occupancy_radius_cells,
-        meander_box_clearance_radius_cells=meander_box_clearance_radius_cells,
-        route_clearance_radius_cells=route_clearance_radius_cells,
+        space=space,
         debug_meanders=debug_meanders,
     )
     search_config = _meander_search_config(
@@ -1683,20 +1690,14 @@ def analyze_meander_insertion_for_requirements(
     final_result = _plan_and_commit_final_physical_meanders(
         rust_backend=rust_backend,
         routed_net_records=routed_net_records,
-        realization_grid_spec=realization_grid_spec,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_cells=bend_radius_cells,
-        static_blocked_cells=static_blocked_cells,
-        static_blocked_cell_handle=static_blocked_cell_handle,
-        route_occupancy_radius_cells=route_occupancy_radius_cells,
-        meander_box_clearance_radius_cells=meander_box_clearance_radius_cells,
-        route_clearance_radius_cells=route_clearance_radius_cells,
+        space=space,
         config=config,
         search_config=search_config,
-        min_insertable_extra_um=min_insertable_extra_um,
-        selected_requirements=selected_requirements,
-        physical_edge_order=physical_edge_order,
-        physical_planned_extra_by_edge=physical_planned_extra_by_edge,
+        selection=_MeanderSelection(
+            requirements=selected_requirements,
+            physical_edge_order=physical_edge_order,
+            physical_planned_extra_by_edge=physical_planned_extra_by_edge,
+        ),
         debug_meanders=debug_meanders,
     )
     if profile is not None:

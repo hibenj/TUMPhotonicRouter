@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 from photonic_router.plm.path_length_graph import DelayInsertionCandidate, MissingLengthRequirement
 from photonic_router.plm.route_rust_meanders import (
+    MeanderPlanningSpace,
     _axis_aligned_centerline_run_lengths_um,
     _build_planner_context,
     _CandidateWorkItem,
@@ -58,12 +59,14 @@ def test_planner_context_uses_static_handle_when_registration_fast_path_is_unava
     context = _build_planner_context(
         rust_backend=fake_backend(),
         routed_net_records=[record],
-        realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=False,
-        bend_radius_cells=4,
-        static_blocked_cells=None,
-        static_blocked_cell_handle=_StaticHandle(),
         debug_meanders=True,
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=False,
+            bend_radius_cells=4,
+            static_blocked_cells=None,
+            static_blocked_cell_handle=_StaticHandle(),
+        ),
     )
 
     assert context.base_static_cells == {(1, 2), (3, 4)}
@@ -93,12 +96,14 @@ def test_planner_context_avoids_python_route_cell_bookkeeping_without_registrati
     context = _build_planner_context(
         rust_backend=fake_backend(),
         routed_net_records=[record],
-        realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=False,
-        bend_radius_cells=4,
-        static_blocked_cells=[(3, 3)],
-        route_clearance_radius_cells=1,
         debug_meanders=True,
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=False,
+            bend_radius_cells=4,
+            static_blocked_cells=[(3, 3)],
+            route_clearance_radius_cells=1,
+        ),
     )
 
     assert set(cast(Any, context.planner).router.static_cells) == {(3, 3)}
@@ -131,10 +136,12 @@ def test_planner_context_builds_no_profile_without_debug_meanders():
                 total_length_um=10.0,
             )
         ],
-        realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=False,
-        bend_radius_cells=4,
-        static_blocked_cells=[(3, 3)],
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=False,
+            bend_radius_cells=4,
+            static_blocked_cells=[(3, 3)],
+        ),
     )
 
     assert context.profile is None
@@ -342,9 +349,6 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
             min_candidate_straight_length_um=2.0,
             auto_meander_endpoint_inset_um=4.0,
         ),
-        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=True,
-        bend_radius_cells=4,
         requirement_delay_candidates={
             requirement_edge: [
                 DelayInsertionCandidate(
@@ -356,6 +360,11 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
             ]
         },
         debug_meanders=True,
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=True,
+            bend_radius_cells=4,
+        ),
     )
 
     updated_by_edge = {
@@ -452,9 +461,6 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
             min_candidate_straight_length_um=2.0,
             auto_meander_endpoint_inset_um=4.0,
         ),
-        realization_grid_spec=(300, 300, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=True,
-        bend_radius_cells=4,
         requirement_delay_candidates={
             output_edge: [
                 DelayInsertionCandidate(
@@ -466,6 +472,11 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
                 )
             ]
         },
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(300, 300, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=True,
+            bend_radius_cells=4,
+        ),
     )
 
     results = report.results
@@ -567,9 +578,6 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
             min_candidate_straight_length_um=2.0,
             auto_meander_endpoint_inset_um=4.0,
         ),
-        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=True,
-        bend_radius_cells=4,
         requirement_delay_candidates={
             requirement_edge: [
                 DelayInsertionCandidate(
@@ -581,6 +589,11 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
             ]
         },
         debug_meanders=True,
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=True,
+            bend_radius_cells=4,
+        ),
     )
 
     results = report.results
@@ -619,9 +632,11 @@ def test_main_meander_report_uses_auto_multi_bump_path():
             max_meander_height_um=40.0,
             auto_meander_endpoint_inset_um=0.0,
         ),
-        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=True,
-        bend_radius_cells=4,
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=True,
+            bend_radius_cells=4,
+        ),
     )
 
     assert updated[0].total_length_um == 30.0
@@ -660,9 +675,11 @@ def test_meander_report_builds_no_profile_without_debug_meanders():
             max_meander_height_um=40.0,
             auto_meander_endpoint_inset_um=0.0,
         ),
-        "realization_grid_spec": (200, 200, 1.0, 0.0, 0.0),
-        "allow_45_degree_turns": True,
-        "bend_radius_cells": 4,
+        "space": MeanderPlanningSpace(
+            realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=True,
+            bend_radius_cells=4,
+        ),
     }
 
     _, report = analyze_meander_insertion_for_requirements([record], [req], **kwargs)
@@ -717,10 +734,12 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
             max_meander_height_um=40.0,
             auto_meander_endpoint_inset_um=7.0,
         ),
-        realization_grid_spec=(256, 256, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=False,
-        bend_radius_cells=7,
         debug_meanders=True,
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(256, 256, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=False,
+            bend_radius_cells=7,
+        ),
     )
     fixed_results = fixed_report.results
     assert fixed_results[0].status == "no_candidate"
@@ -735,10 +754,12 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
             max_meander_height_um=40.0,
             auto_meander_endpoint_inset_um=None,
         ),
-        realization_grid_spec=(256, 256, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=False,
-        bend_radius_cells=7,
         debug_meanders=True,
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(256, 256, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=False,
+            bend_radius_cells=7,
+        ),
     )
 
     entry = report.results[0]
@@ -940,10 +961,12 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
             min_candidate_straight_length_um=2.0,
             max_meander_height_um=20.0,
         ),
-        realization_grid_spec=(1200, 100, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=False,
-        bend_radius_cells=2,
         debug_meanders=True,
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(1200, 100, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=False,
+            bend_radius_cells=2,
+        ),
     )
 
     results = report.results
@@ -990,10 +1013,12 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
         [record],
         [req],
         config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=5.0),
-        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=True,
-        bend_radius_cells=4,
-        static_blocked_cells=[(1, 1)],
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=True,
+            bend_radius_cells=4,
+            static_blocked_cells=[(1, 1)],
+        ),
     )
 
     static_cells = set(backend.routers[0].static_cells)
@@ -1090,9 +1115,11 @@ def test_too_short_route_reports_no_meander_candidate():
         [record],
         [req],
         config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=10.0),
-        realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
-        allow_45_degree_turns=True,
-        bend_radius_cells=4,
+        space=MeanderPlanningSpace(
+            realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+            allow_45_degree_turns=True,
+            bend_radius_cells=4,
+        ),
     )
 
     results = report.results

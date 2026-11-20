@@ -18,7 +18,12 @@ from photonic_router.crossings.crossing_verification_report import (
 from photonic_router.flow_component_info import component_info
 from photonic_router.flow_stats import RoutingFlowStats
 from photonic_router.routing_layers import get_routing_obstacle_layers
-from photonic_router.verify.photonic_verification import verify_photonic_routing
+from photonic_router.verify.photonic_verification import (
+    LegalCrossings,
+    RealizedRouteGeometry,
+    VerificationChecks,
+    verify_photonic_routing,
+)
 
 
 def verify_and_attach_photonic_reports(
@@ -85,27 +90,28 @@ def verify_and_attach_photonic_reports(
         schematic,
         routed_net_records=routed_records,
         unrouted_layout=unrouted_layout,
-        obstacle_layers=get_routing_obstacle_layers(
-            include_heaters=include_heater_obstacles,
+        geometry=RealizedRouteGeometry(
+            obstacle_layers=get_routing_obstacle_layers(
+                include_heaters=include_heater_obstacles,
+            ),
+            realization_grid_spec=realization_grid_spec,
+            allow_45_degree_turns=bool(
+                getattr(debug_artifacts, "realization_allow_45_degree_turns", True)
+            ),
+            bend_radius_cells=int(getattr(debug_artifacts, "realization_bend_radius_cells", 4)),
+            routable_bbox_um=getattr(debug_artifacts, "routable_bbox_um", None),
         ),
-        realization_grid_spec=realization_grid_spec,
-        allow_45_degree_turns=bool(
-            getattr(debug_artifacts, "realization_allow_45_degree_turns", True)
-        ),
-        bend_radius_cells=int(getattr(debug_artifacts, "realization_bend_radius_cells", 4)),
-        legal_overlap_polygons_by_net_id_pair_um=(
-            _legal_crossing_overlap_polygons(crossing_plan_info)
+        crossings=LegalCrossings(
+            overlap_polygons_by_net_id_pair_um=_legal_crossing_overlap_polygons(crossing_plan_info)
             if isinstance(crossing_plan_info, Mapping)
-            else {}
-        ),
-        crossing_component_footprints_um=(
-            _legal_crossing_component_footprints(crossing_plan_info)
+            else {},
+            component_footprints_um=_legal_crossing_component_footprints(crossing_plan_info)
             if isinstance(crossing_plan_info, Mapping)
-            else ()
+            else (),
         ),
-        check_route_coverage=route_coverage_check_enabled,
-        check_endpoint_connectivity=True,
-        routable_bbox_um=getattr(debug_artifacts, "routable_bbox_um", None),
+        checks=VerificationChecks(
+            check_route_coverage=route_coverage_check_enabled, check_endpoint_connectivity=True
+        ),
     )
     photonic_report = _write_photonic_verification_report(
         benchmark_name=benchmark_name,

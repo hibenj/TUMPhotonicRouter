@@ -59,7 +59,10 @@ from photonic_router.routing.api import route_match_and_realize
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions, SessionOptions
 from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
-from photonic_router.verify.photonic_verification import verify_photonic_routing
+from photonic_router.verify.photonic_verification import (
+    RealizedRouteGeometry,
+    verify_photonic_routing,
+)
 
 from tests.fixtures.flows import run_flow
 from tests.fixtures.sessions import route_electrical_benchmark_result, session_options
@@ -380,10 +383,12 @@ def test_heater_s_mod_90_degree_plm_regression(waveguide_clearance_um):
         schematic,
         routed_net_records=result.debug_artifacts.routed_net_records,
         unrouted_layout=unrouted_layout,
-        obstacle_layers=get_routing_obstacle_layers(include_heaters=True),
-        realization_grid_spec=result.debug_artifacts.realization_grid_spec,
-        allow_45_degree_turns=result.debug_artifacts.realization_allow_45_degree_turns,
-        bend_radius_cells=result.debug_artifacts.realization_bend_radius_cells,
+        geometry=RealizedRouteGeometry(
+            obstacle_layers=get_routing_obstacle_layers(include_heaters=True),
+            realization_grid_spec=result.debug_artifacts.realization_grid_spec,
+            allow_45_degree_turns=result.debug_artifacts.realization_allow_45_degree_turns,
+            bend_radius_cells=result.debug_artifacts.realization_bend_radius_cells,
+        ),
     )
     assert verification.success, verification.as_dict()
 

@@ -40,6 +40,7 @@ from photonic_router.plm.path_length_requirements import (
     minimum_four_bend_extra_length_um,
     requirement_to_dict,
 )
+from photonic_router.plm.route_rust_meanders import MeanderPlanningSpace
 from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 from photonic_router.records.route_rust_obstacle_config import (
     resolve_obstacle_config,
@@ -312,19 +313,17 @@ def route_match_and_realize(
             records_for_realization,
             requirements,
             config=meander_config,
-            realization_grid_spec=debug_artifacts.realization_grid_spec,
-            allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
-            bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
-            static_blocked_cells=meander_static_blocked_cells,
-            static_blocked_cell_handle=meander_static_blocked_cell_handle,
-            route_occupancy_radius_cells=(
-                meander_clearance_policy.plm_registered_route_keepout_radius_cells
-            ),
-            meander_box_clearance_radius_cells=(
-                meander_clearance_policy.plm_candidate_box_clearance_radius_cells
-            ),
             requirement_delay_candidates=requirement_delay_candidates,
             debug_meanders=matching.debug_meanders,
+            space=MeanderPlanningSpace(
+                realization_grid_spec=debug_artifacts.realization_grid_spec,
+                allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
+                bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+                static_blocked_cells=meander_static_blocked_cells,
+                static_blocked_cell_handle=meander_static_blocked_cell_handle,
+                route_occupancy_radius_cells=meander_clearance_policy.plm_registered_route_keepout_radius_cells,
+                meander_box_clearance_radius_cells=meander_clearance_policy.plm_candidate_box_clearance_radius_cells,
+            ),
         )
         pipeline_timings_s["meander_planning"] = time.perf_counter() - t_meander_planning_start
         meander_report_info = meander_report.to_info_dict()

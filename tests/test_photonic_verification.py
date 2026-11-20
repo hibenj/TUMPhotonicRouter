@@ -20,7 +20,10 @@ from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions
 from photonic_router.static_obstacle_builder import _load_rust_backend
 from photonic_router.verify.photonic_verification import (
+    LegalCrossings,
     PhotonicVerificationIssue,
+    RealizedRouteGeometry,
+    VerificationChecks,
     _BoxBucketIndex,
     _combined_region,
     _component_layer_region,
@@ -108,7 +111,7 @@ def test_photonic_verifier_reports_missing_routed_record():
         Component(),
         _schematic_with_one_net(),
         routed_net_records=[],
-        realization_grid_spec=(100, 100, 1.0, 0.0, 0.0),
+        geometry=RealizedRouteGeometry(realization_grid_spec=(100, 100, 1.0, 0.0, 0.0)),
     )
 
     assert result.success is False
@@ -194,9 +197,10 @@ def test_photonic_verifier_reports_perpendicular_crossing_overlap_at_default_thr
                 target_port_center_um=(0.0, 10.0),
             ),
         ],
-        route_width_um=0.5,
-        realization_grid_spec=(40, 40, 1.0, -20.0, -20.0),
-        check_endpoint_connectivity=False,
+        geometry=RealizedRouteGeometry(
+            route_width_um=0.5, realization_grid_spec=(40, 40, 1.0, -20.0, -20.0)
+        ),
+        checks=VerificationChecks(check_endpoint_connectivity=False),
     )
 
     assert [issue.code for issue in result.issues] == ["cross_net_waveguide_overlap"]
@@ -229,10 +233,12 @@ def test_photonic_verifier_old_threshold_hid_the_perpendicular_crossing_overlap(
                 target_port_center_um=(0.0, 10.0),
             ),
         ],
-        route_width_um=0.5,
-        realization_grid_spec=(40, 40, 1.0, -20.0, -20.0),
-        check_endpoint_connectivity=False,
-        min_route_overlap_area_um2=2.0,
+        geometry=RealizedRouteGeometry(
+            route_width_um=0.5, realization_grid_spec=(40, 40, 1.0, -20.0, -20.0)
+        ),
+        checks=VerificationChecks(
+            check_endpoint_connectivity=False, min_route_overlap_area_um2=2.0
+        ),
     )
 
     assert result.issues == ()
@@ -550,9 +556,10 @@ def test_photonic_verifier_accepts_stubbed_centerline_port_connections(monkeypat
                 target_port_center_um=(20.0, 5.0),
             )
         ],
-        route_width_um=1.0,
-        realization_grid_spec=(40, 20, 1.0, -5.0, -5.0),
-        check_endpoint_connectivity=True,
+        geometry=RealizedRouteGeometry(
+            route_width_um=1.0, realization_grid_spec=(40, 20, 1.0, -5.0, -5.0)
+        ),
+        checks=VerificationChecks(check_endpoint_connectivity=True),
     )
 
     assert result.success is True
@@ -575,10 +582,11 @@ def test_photonic_verifier_reports_unconnected_port_with_crossings_enabled(monke
                 target_port_center_um=(30.0, 5.0),
             )
         ],
-        route_width_um=1.0,
-        realization_grid_spec=(40, 20, 1.0, -5.0, -5.0),
-        legal_overlap_polygons_by_net_id_pair_um={(1, 2): ()},
-        check_endpoint_connectivity=True,
+        geometry=RealizedRouteGeometry(
+            route_width_um=1.0, realization_grid_spec=(40, 20, 1.0, -5.0, -5.0)
+        ),
+        crossings=LegalCrossings(overlap_polygons_by_net_id_pair_um={(1, 2): ()}),
+        checks=VerificationChecks(check_endpoint_connectivity=True),
     )
 
     issue_codes = {issue.code for issue in result.issues}
@@ -647,11 +655,13 @@ def test_photonic_verifier_reports_static_overlap_inside_broad_port_window(monke
             )
         ],
         unrouted_layout=obstacle_layout,
-        route_width_um=1.0,
-        route_layer=(1, 0),
-        obstacle_layers=((1, 0),),
-        realization_grid_spec=(40, 20, 1.0, -5.0, -5.0),
-        port_obstacle_exemption_radius_um=25.0,
+        geometry=RealizedRouteGeometry(
+            route_width_um=1.0,
+            route_layer=(1, 0),
+            obstacle_layers=((1, 0),),
+            realization_grid_spec=(40, 20, 1.0, -5.0, -5.0),
+        ),
+        checks=VerificationChecks(port_obstacle_exemption_radius_um=25.0),
     )
 
     assert result.success is False
@@ -697,10 +707,12 @@ def test_photonic_verifier_reports_realized_bend_static_overlap():
             )
         ],
         unrouted_layout=obstacle_layout,
-        route_width_um=1.0,
-        route_layer=(1, 0),
-        obstacle_layers=((1, 0),),
-        realization_grid_spec=(40, 40, 1.0, -15.0, -20.0),
+        geometry=RealizedRouteGeometry(
+            route_width_um=1.0,
+            route_layer=(1, 0),
+            obstacle_layers=((1, 0),),
+            realization_grid_spec=(40, 40, 1.0, -15.0, -20.0),
+        ),
     )
 
     assert result.success is False

@@ -54,8 +54,11 @@ from photonic_router.routing.stages import VerifiedRecords
 from photonic_router.routing.state import ProbeCache, SessionState
 from photonic_router.static_obstacle_builder import physical_to_grid
 from photonic_router.verify.photonic_verification import (
+    LegalCrossings,
     PhotonicVerificationIssue,
     PhotonicVerificationResult,
+    RealizedRouteGeometry,
+    VerificationChecks,
     verify_photonic_routing,
 )
 
@@ -761,23 +764,29 @@ def _refresh_photonic_verification(
         settings.schematic,
         routed_net_records=records,
         unrouted_layout=settings.unrouted_layout,
-        route_width_um=settings.route_width_um,
-        route_layer=settings.route_layer,
-        obstacle_layers=default_obstacle_layers(
-            settings.route_layer,
-            include_heater_obstacles=settings.include_heater_obstacles,
+        geometry=RealizedRouteGeometry(
+            route_width_um=settings.route_width_um,
+            route_layer=settings.route_layer,
+            obstacle_layers=default_obstacle_layers(
+                settings.route_layer,
+                include_heater_obstacles=settings.include_heater_obstacles,
+            ),
+            realization_grid_spec=state.run.realization_grid_spec,
+            allow_45_degree_turns=settings.allow_45_degree_turns,
+            bend_radius_cells=state.kernel.radii.bend_radius_cells,
         ),
-        realization_grid_spec=state.run.realization_grid_spec,
-        allow_45_degree_turns=settings.allow_45_degree_turns,
-        bend_radius_cells=state.kernel.radii.bend_radius_cells,
-        legal_overlap_polygons_by_net_id_pair_um=(
-            legal_crossing_overlap_polygons_for_verification(state.crossing_plan_info)
+        crossings=LegalCrossings(
+            overlap_polygons_by_net_id_pair_um=legal_crossing_overlap_polygons_for_verification(
+                state.crossing_plan_info
+            ),
+            component_footprints_um=legal_crossing_component_footprints_for_verification(
+                state.crossing_plan_info
+            ),
         ),
-        crossing_component_footprints_um=(
-            legal_crossing_component_footprints_for_verification(state.crossing_plan_info)
+        checks=VerificationChecks(
+            check_route_coverage=settings.debug_stop_after_route_index is None,
+            check_endpoint_connectivity=settings.enable_checked_endpoint_correction,
         ),
-        check_route_coverage=settings.debug_stop_after_route_index is None,
-        check_endpoint_connectivity=settings.enable_checked_endpoint_correction,
     )
     timing.record_pipeline_timing(settings, state, "photonic_probe_verify", t_verify_start)
     timing.record_pipeline_timing(settings, state, "photonic_refresh_total", t_refresh_start)
