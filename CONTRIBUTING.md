@@ -47,6 +47,20 @@ Tests sit next to what they test: Rust tests in their module (fixtures in
 `tests/`, full runs in `tests/e2e/` (marker `e2e`), the electrical stages in
 `tests/electrical/`, synthetic layouts in `tests/fixtures/` only.
 
+## Check
+
+```bash
+scripts/check.sh                          # the fast stage, about ten seconds
+scripts/check.sh --full                   # also the kernel build, the test baseline and the two gates
+git config core.hooksPath scripts/hooks   # once per clone: the fast stage runs before every commit
+```
+
+`scripts/check.sh` is the one entry to every check. The fast stage is
+`scripts/lint.sh` and the tests of the harness
+(`tests/test_coding_standards.py` holds `docs/CODING_STANDARDS.md` to the
+lint configuration, `tests/test_quality_ratchet.py` covers the ratchet). Run
+the full stage before a slice is committed.
+
 ## Lint
 
 ```bash

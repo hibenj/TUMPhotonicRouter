@@ -50,11 +50,9 @@ RUFF_RULES: dict[str, str] = {
     "PLR0915": "4.5 function over the statement limit",
     "C901": "4.5 function over the complexity limit",
     "T201": "4.6 print in the package",
-    "D100": "4.7 public module without a docstring",
     "D101": "4.7 public class without a docstring",
     "D102": "4.7 public method without a docstring",
     "D103": "4.7 public function without a docstring",
-    "D104": "4.7 public package without a docstring",
     "BLE001": "4.9 blind except",
 }
 

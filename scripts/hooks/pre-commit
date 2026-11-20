@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Commit hook: the fast stage of scripts/check.sh. Enable it once per clone:
+#   git config core.hooksPath scripts/hooks
+# It checks the working tree, not only the staged files, so a commit made
+# next to unfinished changes can fail for them; `git commit --no-verify`
+# skips the hook and CI still runs the same checks.
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"

@@ -755,7 +755,7 @@ or the `photonic_router.routing` re-exports.
 | path | contents |
 | --- | --- |
 | `benchmarks/` | one module per benchmark (`build_schematic()`), `benchmarks/<name>.toml` defaults, shared builders (`benes.py`, `cascade.py`), `data/` (mesh YAML), `private/` (git-ignored) |
-| `scripts/` | `lint.sh`, `test_baseline.sh`, the generators (`generate_config_reference.py`, `generate_rust_stubs.py`), `benchmark_photonic.py`, `benchmark_electrical.py`, `profile_astar.py`, `extract_private_benchmark.py`, `make_mesh_slice_benchmark.py`, `crossing_benchmark_report.py`, `lidar_bridge/`, `path_investigation/` (an exploratory harness kept as written) |
+| `scripts/` | `check.sh` (the one entry to every check), `hooks/pre-commit`, `lint.sh`, `test_baseline.sh`, `quality_ratchet.py`, the generators (`generate_config_reference.py`, `generate_rust_stubs.py`), `benchmark_photonic.py`, `benchmark_electrical.py`, `profile_astar.py`, `extract_private_benchmark.py`, `make_mesh_slice_benchmark.py`, `crossing_benchmark_report.py`, `lidar_bridge/`, `path_investigation/` (an exploratory harness kept as written) |
 | `scripts/results/` | the oracles and the archive tooling (section 8) |
 | `tests/` | unit tests by module, `e2e/` (full runs, marker `e2e`), `electrical/` (one module per electrical stage), `fixtures/` (synthetic layouts, sessions, PLM fixtures), `baselines/` (pinned numbers) |
 | `docs/` | this document, the generated configuration reference, the reproduction documents and their pinned tables, `history/` (earlier states) |
@@ -775,6 +775,7 @@ PYO3_PYTHON="$PWD/.venv/bin/python" cargo test --release -p router-py
 .venv/bin/python -m pytest -q tests             # with the end-to-end runs
 scripts/test_baseline.sh                        # both suites against tests/baselines/test_baseline.txt
 scripts/lint.sh                                 # ruff, generated files, quality ratchet, rustfmt, clippy
+scripts/check.sh --full                         # all of the above and the two gates, in one command
 ```
 
 ### 8.1 The oracles

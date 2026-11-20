@@ -84,12 +84,23 @@ nothing to the rows above.
 Every rule below carries one of three levels. A rule without a level is not
 a rule.
 
-- **Tool**: a CI job fails (`.github/workflows/ci.yml`, locally
-  `scripts/lint.sh` and `scripts/test_baseline.sh`). For a proposed Tool
+- **Tool**: a CI job fails (`.github/workflows/ci.yml`). For a proposed Tool
   rule the job holds the count of violations (section 8) until it is zero.
 - **Test**: a test in `tests/` fails.
 - **Review**: a reviewer checks it. A pull request template that lists these
   rules is proposed and does not exist yet.
+
+**One entry.** `scripts/check.sh` runs every Tool check locally: without a
+flag the fast stage (`scripts/lint.sh` and the tests of the harness, about
+ten seconds), with `--full` also the kernel build, `scripts/test_baseline.sh`
+and the two gates (about fifteen minutes). `scripts/hooks/pre-commit` runs
+the fast stage before every commit once `git config core.hooksPath
+scripts/hooks` is set. `tests/test_coding_standards.py` holds this document
+to its word: a rule marked *Tool, in force* must quote a check the harness
+runs (a selected ruff rule, a clippy lint of the workspace, a measure of the
+ratchet or a command of the two scripts), a rule marked *Tool, proposed*
+must have its row in section 8, and that table lists exactly the pinned
+measures.
 
 **Exceptions.** The limits are not loosened; a function that has a reason
 to exceed one carries an exception at the function: in Python a
@@ -126,9 +137,9 @@ like the violation counts: a commit that adds one says why in its message.
 4. **Dependencies point one way.** `cli` -> `flow` -> stage packages
    (`routing`, `crossings`, `plm`, `electrical`, `verify`, `gds`) ->
    `records`, `config`. No package imports from one to its left.
-   `router-core` has no Python dependency. *Test for the Rust side (`cargo
-   test -p router-core` needs no Python); Tool for Python, in force: the
-   ratchet holds the imports from a lower layer into a higher one at zero.* The
+   `router-core` has no Python dependency (`cargo test -p router-core`
+   needs no Python). *Tool, in force: the ratchet holds the imports from a
+   lower layer into a higher one at zero (`upward_imports`).* The
    rule does not order the stage packages among themselves, and several of
    them import each other.
 5. **Names starting with an underscore stay in their module.** Another
@@ -136,8 +147,9 @@ like the violation counts: a commit that adds one says why in its message.
 6. **Configuration has one path.** Nothing below `config_loading.py` reads
    the environment and nothing below `cli.py` sees a command line. A field
    exists in both configuration mirrors (`config.py`,
-   `crates/router-core/src/config.rs`). *Tool for the generated reference,
-   review for the rest; in force.*
+   `crates/router-core/src/config.rs`). *Tool for the generated reference
+   (`scripts/generate_config_reference.py --check`), review for the rest;
+   in force.*
 7. **The three paper configurations do not leak into each other.** The
    baseline never receives a crossing plan. *Test, in force
    (`tests/test_placement_analysis.py`).*
@@ -217,7 +229,8 @@ like the violation counts: a commit that adds one says why in its message.
    verifier contract) exist and are tested by following them. *Review,
    proposed; neither exists yet.*
 4. Generated files are never edited by hand (`CONTRIBUTING.md`,
-   "Generated files"). *Tool, in force.*
+   "Generated files"; `scripts/generate_config_reference.py --check`,
+   `scripts/generate_rust_stubs.py --check`). *Tool, in force.*
 5. Every behaviour change has a `CHANGELOG.md` entry. *Review, in force.*
 
 ## 8. Where the code stands
@@ -226,9 +239,10 @@ Production Python under `python/photonic_router/` (46,110 lines, 109 files)
 and `crates/router-core`. `scripts/quality_ratchet.py` measures the counts
 below and `tests/baselines/quality_ratchet.json` pins them. The table shows
 the first measurement and the counts after the first two work packages (both
-2026-11-19); the file is the current truth. Rules 4.2 (annotations), 4.10 (absolute imports) and 5.3 (no `unwrap()`)
-left the table when their counts reached zero and the lint sets took them
-over.
+2026-11-19); the file is the current truth. Rules 4.2 (annotations), 4.10 (absolute
+imports), 5.3 (no `unwrap()`) and the module and package half of 4.7 (ruff
+`D100`, `D104`) left the table when their counts reached zero and the lint
+sets took them over.
 
 | Rule | Measure (name in the pin) | at the first measurement | after S1 and S2 slice 3 |
 | --- | --- | --- | --- |
@@ -240,7 +254,7 @@ over.
 | 4.4 | functions over 7 parameters (`ruff_PLR0913`) | 58; the largest 50 | 50 |
 | 4.5 | functions over 50 statements (`ruff_PLR0915`) | 43 | 40 |
 | 4.5 | functions over complexity 10 (`ruff_C901`) | 70 | 68 |
-| 4.6 | `print` calls in the package (`ruff_T201`) | 157 | 157 |
+| 4.6 | print calls in the package (`ruff_T201`) | 157 | 157 |
 | 4.7 | public classes, methods, functions without a docstring (`ruff_D101`, `ruff_D102`, `ruff_D103`) | 56, 136, 77 | 52, 127, 67 |
 | 4.9 | blind `except Exception` (`ruff_BLE001`) | 35 | 35 |
 | 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 | 2 |

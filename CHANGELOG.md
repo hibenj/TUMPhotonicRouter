@@ -14,6 +14,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- A local harness for `docs/CODING_STANDARDS.md`: `scripts/check.sh` is the
+  one entry to every check (fast stage: `scripts/lint.sh` and the harness
+  tests; `--full`: also the kernel build, `scripts/test_baseline.sh` and the
+  two gates), `scripts/hooks/pre-commit` runs the fast stage before a commit
+  (`git config core.hooksPath scripts/hooks`; it replaces
+  `.pre-commit-config.yaml`, which needed the `pre-commit` package and ran
+  neither the ratchet nor clippy), and `tests/test_coding_standards.py`
+  fails when a rule marked "Tool, in force" quotes no check the harness
+  runs, when a proposed Tool rule has no row in the ratchet table, or when
+  that table and the pin list different measures. The test found two counts
+  that had reached zero and were still pinned: ruff `D100` and `D104` are
+  now in the lint set, and the ratchet holds 18 counts.
 - The quality ratchet measures rule 3.4 (dependencies point one way):
   `upward_imports` counts the import statements from a lower layer of the
   package into a higher one (`records`, `config` < the stage packages <
