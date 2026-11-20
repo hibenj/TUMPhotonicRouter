@@ -316,8 +316,6 @@ def path_length_acceptance_summary(
     max_realized_spread = 0.0
 
     for group in diagnostics:
-        if not isinstance(group, dict):
-            continue
         realized_spread = object_to_float(group.get("realized_arrival_spread_um", 0.0))
         max_realized_spread = max(max_realized_spread, realized_spread)
         if realized_spread > REALIZED_PATH_LENGTH_TOLERANCE_UM:

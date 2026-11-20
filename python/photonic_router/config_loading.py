@@ -32,6 +32,6 @@ def build_config(
     so an invalid value raises here instead of at first use."""
     config: RoutingConfig = RoutingConfig()
     if stable_env:
-        config = apply_env_overlay(config, stable_env)  # type: ignore[assignment]
+        config = apply_env_overlay(config, stable_env)
     process_env = os.environ if environ is None else environ
-    return apply_env_overlay(config, process_env)  # type: ignore[return-value]
+    return apply_env_overlay(config, process_env)

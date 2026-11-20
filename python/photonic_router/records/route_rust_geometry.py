@@ -9,7 +9,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
-from photonic_router.records.route_rust_types import RoutedNetRecord
+from photonic_router.records.route_rust_types import RoutedNetRecord, int_of
 from photonic_router.static_obstacle_builder import floor_snap_to_grid
 
 if TYPE_CHECKING:
@@ -116,7 +116,7 @@ def format_native_repair_trace_lines(
             value = record.get(key)
             if value is not None:
                 try:
-                    entry[key] = int(value)
+                    entry[key] = int_of(value)
                 except (TypeError, ValueError):
                     continue
         for key in ("candidate_blockers", "ripup_ids", "victim_order"):
@@ -124,7 +124,7 @@ def format_native_repair_trace_lines(
             if value is None:
                 continue
             try:
-                entry[key] = [int(item) for item in cast(Iterable[object], value)]
+                entry[key] = [int_of(item) for item in cast(Iterable[object], value)]
             except (TypeError, ValueError):
                 continue
         for key in ("victim_first", "reverse_victim_order", "success"):

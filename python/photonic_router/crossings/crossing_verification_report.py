@@ -12,6 +12,9 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import SupportsFloat, SupportsIndex
+
+from photonic_router.records.route_rust_types import int_or_none
 
 Point = tuple[float, float]
 
@@ -208,7 +211,7 @@ def write_crossing_verification_report(
 
 
 def _crossing_records_from_plan(plan_info: Mapping[str, object]) -> list[CrossingRecord]:
-    raw_records = []
+    raw_records: list[Mapping[str, object]] = []
     raw_records.extend(_iter_mappings(plan_info.get("realized_intersections")))
     raw_records.extend(_iter_mappings(plan_info.get("illegal_realized_crossings")))
 
@@ -223,8 +226,8 @@ def _crossing_records_from_plan(plan_info: Mapping[str, object]) -> list[Crossin
         key = (
             classification,
             point,
-            _int_or_none(raw.get("net_id_a")),
-            _int_or_none(raw.get("net_id_b")),
+            int_or_none(raw.get("net_id_a")),
+            int_or_none(raw.get("net_id_b")),
             str(raw.get("reason", "") or ""),
         )
         if key in seen:
@@ -236,8 +239,8 @@ def _crossing_records_from_plan(plan_info: Mapping[str, object]) -> list[Crossin
             CrossingRecord(
                 classification=classification,
                 point_um=point,
-                net_id_a=_int_or_none(raw.get("net_id_a")),
-                net_id_b=_int_or_none(raw.get("net_id_b")),
+                net_id_a=int_or_none(raw.get("net_id_a")),
+                net_id_b=int_or_none(raw.get("net_id_b")),
                 net_name_a=_as_str_or_none(raw.get("net_name_a")),
                 net_name_b=_as_str_or_none(raw.get("net_name_b")),
                 reason=_as_str_or_none(raw.get("reason")),
@@ -315,7 +318,7 @@ def _component_placement_issues(
     component_info: Mapping[str, object],
     tolerance_um: float,
     rotation_tolerance_deg: float,
-) -> tuple[list[CrossingVerificationIssue], dict[str, object]]:
+) -> tuple[list[CrossingVerificationIssue], dict[str, int]]:
     issues: list[CrossingVerificationIssue] = []
     matched_component_indices: set[int] = set()
     expected_name = _as_str_or_none(component_info.get("component_name"))
@@ -456,13 +459,13 @@ def _cluster_peer_indices(crossing: CrossingRecord) -> set[int]:
     raw_indices = crossing.details.get("overlapping_crossing_indices")
     if isinstance(raw_indices, (list, tuple, set)):
         for raw_index in raw_indices:
-            value = _int_or_none(raw_index)
+            value = int_or_none(raw_index)
             if value is not None:
                 indices.add(value)
-    value = _int_or_none(crossing.details.get("overlapping_crossing_index"))
+    value = int_or_none(crossing.details.get("overlapping_crossing_index"))
     if value is not None:
         indices.add(value)
-    value = _int_or_none(crossing.details.get("source_crossing_index"))
+    value = int_or_none(crossing.details.get("source_crossing_index"))
     if value is not None:
         indices.add(value)
     return indices
@@ -476,13 +479,13 @@ def _cluster_component_match(
     if not peer_indices:
         return -1, None
     for index, component in enumerate(realized_components):
-        source_index = _int_or_none(component.get("source_crossing_index"))
+        source_index = int_or_none(component.get("source_crossing_index"))
         if source_index is not None and source_index in peer_indices:
             return index, component
         raw_shared_indices = component.get("shared_crossing_indices")
         if isinstance(raw_shared_indices, (list, tuple, set)):
             for raw_shared_index in raw_shared_indices:
-                shared_index = _int_or_none(raw_shared_index)
+                shared_index = int_or_none(raw_shared_index)
                 if shared_index is not None and shared_index in peer_indices:
                     return index, component
     return -1, None
@@ -497,7 +500,12 @@ def _protected_segment_issues(
         intended_end = _as_point(segment.get("end_um"))
         realized_start = _as_point(segment.get("realized_start_um"))
         realized_end = _as_point(segment.get("realized_end_um"))
-        if None in (intended_start, intended_end, realized_start, realized_end):
+        if (
+            intended_start is None
+            or intended_end is None
+            or realized_start is None
+            or realized_end is None
+        ):
             issues.append(
                 CrossingVerificationIssue(
                     code="protected_segment_invalid",
@@ -609,8 +617,8 @@ def _plan_coverage_metrics(
     for event in _iter_mappings(plan_info.get("events")):
         if not event.get("loaded"):
             continue
-        net_id_a = _int_or_none(event.get("net_id_a"))
-        net_id_b = _int_or_none(event.get("net_id_b"))
+        net_id_a = int_or_none(event.get("net_id_a"))
+        net_id_b = int_or_none(event.get("net_id_b"))
         if net_id_a is None or net_id_b is None:
             continue
         planned_pairs.add(frozenset((net_id_a, net_id_b)))
@@ -728,7 +736,7 @@ def _coerce_cost_terms(item: RouteCostTerms | Mapping[str, object]) -> RouteCost
     if isinstance(item, RouteCostTerms):
         return item
     return RouteCostTerms(
-        net_id=_int_or_none(item.get("net_id")),
+        net_id=int_or_none(item.get("net_id")),
         net_name=_as_str_or_none(item.get("net_name")),
         length_um=_finite_float(item.get("length_um"), 0.0),
         length_loss=_finite_float(item.get("length_loss"), 0.0),
@@ -773,6 +781,8 @@ def _as_float_pair(value: object) -> tuple[float, float] | None:
 
 
 def _finite_float(value: object, default: float) -> float:
+    if not isinstance(value, (str, bytes, bytearray, SupportsFloat, SupportsIndex)):
+        return default
     try:
         out = float(value)
     except (TypeError, ValueError):
@@ -781,18 +791,13 @@ def _finite_float(value: object, default: float) -> float:
 
 
 def _as_float_or_none(value: object) -> float | None:
+    if not isinstance(value, (str, bytes, bytearray, SupportsFloat, SupportsIndex)):
+        return None
     try:
         out = float(value)
     except (TypeError, ValueError):
         return None
     return out if math.isfinite(out) else None
-
-
-def _int_or_none(value: object) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _as_str_or_none(value: object) -> str | None:

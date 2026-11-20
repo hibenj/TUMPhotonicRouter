@@ -457,7 +457,7 @@ def _ordered_terminals_for_bundle(
 def bundle_route_side(
     bundle: EscapeBundle,
     obstacle_map: ElectricalObstacleMap,
-) -> str:
+) -> Literal["left", "right"]:
     """Return which side ("left"/"right") of the terminal column a bundle escapes to.
 
     Shared by pad assignment (nested pad columns) and detailed routing (lane
@@ -471,7 +471,7 @@ def _bundle_route_side_from_routes(
     routes: tuple[EscapeTopologyRoute, ...],
     exit_interval: tuple[int, int],
     obstacle_map: ElectricalObstacleMap,
-) -> str:
+) -> Literal["left", "right"]:
     """Return "left"/"right": the ports decide, the topology only breaks ties.
 
     2026-09-28 (rule G, eight-row-bundles plan): when every member terminal

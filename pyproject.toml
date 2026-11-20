@@ -48,7 +48,7 @@ Repository = "https://github.com/hibenj/TUMPhotonicRouter"
 [project.optional-dependencies]
 # Dev-only tooling, not a runtime dependency of the photonic_router package.
 # Install with `.venv/bin/pip install -e ".[dev]"`.
-dev = ["ruff>=0.16,<0.17", "mypy>=2.3,<2.4"]
+dev = ["ruff>=0.16,<0.17", "mypy>=2.3,<2.4", "types-shapely>=2.1"]
 
 [tool.maturin]
 # The extension is the `router-py` crate of the Cargo workspace (phase 8
@@ -143,24 +143,12 @@ max-complexity = 10
 required-imports = ["from __future__ import annotations"]
 
 [tool.mypy]
-# Deliberately not `strict = true` yet: a baseline scoping pass (2026-08-25)
-# found 246 errors in just the former top-level package and routing_flow.py, most from the
-# untyped PyO3 boundary (photonic_router._rust ships no type stub, so mypy
-# sees every value it returns as `object`/`Any`). Tightening this is tracked
-# as a Milestone 4 candidate in the ExecPlan referenced above, not silently
-# deferred with no record.
-files = [
-    "python/photonic_router/routing",
-    "python/photonic_router/electrical",
-    "python/photonic_router/crossings",
-    "python/photonic_router/plm",
-    "python/photonic_router/verify",
-    "python/photonic_router/gds",
-    "python/photonic_router/records",
-    "routing_flow.py",
-    "python/photonic_router/flow_config.py",
-]
+# docs/CODING_STANDARDS.md rule 4.2: mypy passes on the whole package
+# (scripts/lint.sh and CI run it). Not `strict = true`: the PyO3 boundary
+# is typed by Protocols at its callers, and tests are not checked.
+files = ["python/photonic_router", "routing_flow.py"]
 warn_unused_configs = true
+warn_unused_ignores = true
 warn_unreachable = true
 disallow_untyped_defs = false
 

@@ -69,15 +69,14 @@ scripts/lint.sh --fix    # apply ruff's and clippy's safe fixes
 ```
 
 It runs `ruff format --check`, `ruff check`, the generated-file checks (below),
-the quality ratchet, `cargo fmt --all -- --check` and `cargo clippy --workspace
+`mypy` on the whole package, the quality ratchet, `cargo fmt --all -- --check` and `cargo clippy --workspace
 --all-targets -- -D warnings`. CI (`.github/workflows/ci.yml`) runs the same
 checks, the Rust tests and the fast Python suite on every push, and the paper
 gate nightly.
 
 The quality ratchet (`scripts/quality_ratchet.py`) counts what does not meet
 the proposed rules of [`docs/CODING_STANDARDS.md`](docs/CODING_STANDARDS.md)
-yet (long signatures and functions, missing annotations and docstrings,
-mypy's errors, `print`, imports of private names, three clippy lints) and
+yet (long signatures and functions, missing docstrings, `print`, imports of private names, three clippy lints) and
 compares the counts with `tests/baselines/quality_ratchet.json`. A count
 that rose fails. A count that fell fails until it is pinned with
 `.venv/bin/python scripts/quality_ratchet.py --update`, in the same commit.

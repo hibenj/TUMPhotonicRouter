@@ -12,8 +12,11 @@ import gdsfactory as gf
 from gdsfactory.component import Component
 
 from photonic_router.records.route_rust_geometry import rounded_point
+from photonic_router.records.route_rust_types import int_or_none
 
 if TYPE_CHECKING:
+    from kfactory.typings import MetaData
+
     from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 
 
@@ -190,12 +193,12 @@ def _shared_crossing_peer_indices(raw_crossing: Mapping[str, object]) -> set[int
         (str, bytes, bytearray),
     ):
         for raw_peer_index in raw_peer_indices:
-            try:
-                indices.add(int(cast(object, raw_peer_index)))
-            except (TypeError, ValueError):
-                continue
-    with contextlib.suppress(TypeError, ValueError):
-        indices.add(int(cast(object, raw_crossing.get("overlapping_crossing_index"))))
+            peer_index = int_or_none(raw_peer_index)
+            if peer_index is not None:
+                indices.add(peer_index)
+    overlapping_index = int_or_none(raw_crossing.get("overlapping_crossing_index"))
+    if overlapping_index is not None:
+        indices.add(overlapping_index)
     return indices
 
 
@@ -365,10 +368,9 @@ def place_realized_crossing_components(
                     if isinstance(value, str) and value:
                         shared_owner_names.add(value)
                 for key in ("net_id_a", "net_id_b"):
-                    try:
-                        shared_owner_ids.add(int(cast(object, shared_crossing.get(key))))
-                    except (TypeError, ValueError):
-                        continue
+                    shared_owner_id = int_or_none(shared_crossing.get(key))
+                    if shared_owner_id is not None:
+                        shared_owner_ids.add(shared_owner_id)
             if shared_owner_names:
                 placement["shared_owner_net_names"] = sorted(shared_owner_names)
             if shared_owner_ids:
@@ -384,7 +386,9 @@ def place_realized_crossing_components(
     crossing_plan_info.realized_crossing_component_count = len(placements)
     crossing_plan_info.realized_crossing_component_error = None
     with contextlib.suppress(AttributeError, TypeError, ValueError):
-        routed_layout.info["realized_crossing_components"] = placements
+        # The placements hold JSON values only, read from untyped crossing
+        # records; kfactory checks the value when it is assigned.
+        routed_layout.info["realized_crossing_components"] = cast("MetaData", placements)
     return placements
 
 
@@ -415,10 +419,9 @@ def legal_crossing_overlap_polygons_for_verification(
         classification = str(raw_crossing.get("classification", "") or "")
         if not classification.startswith("legal_"):
             continue
-        try:
-            net_id_a = int(cast(object, raw_crossing["net_id_a"]))
-            net_id_b = int(cast(object, raw_crossing["net_id_b"]))
-        except (KeyError, TypeError, ValueError):
+        net_id_a = int_or_none(raw_crossing.get("net_id_a"))
+        net_id_b = int_or_none(raw_crossing.get("net_id_b"))
+        if net_id_a is None or net_id_b is None:
             continue
         raw_polygon = raw_crossing.get("crossing_footprint_polygon_um", ())
         if not isinstance(raw_polygon, IterableABC) or isinstance(
@@ -470,15 +473,8 @@ def legal_crossing_component_footprints_for_verification(
             return tuple(components)
 
     raw_crossings = crossing_plan_info.realized_intersections or ()
-    if not isinstance(raw_crossings, IterableABC) or isinstance(
-        raw_crossings,
-        (str, bytes, bytearray),
-    ):
-        return ()
     footprints: list[dict[str, object]] = []
     for raw_crossing in raw_crossings:
-        if not isinstance(raw_crossing, Mapping):
-            continue
         classification = str(raw_crossing.get("classification", "") or "")
         if not classification.startswith("legal_"):
             continue

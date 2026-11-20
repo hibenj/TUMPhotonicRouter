@@ -153,6 +153,8 @@ def route_match_and_realize(
         # second correction pass here: the realization-only router built for
         # debug artifacts has no committed nets and cannot safely validate bump
         # candidates against neighboring routes.
+        if debug_artifacts.realization_grid_spec is None:
+            raise RuntimeError("Missing realization grid spec from routing phase.")
         debug_artifacts = replace(
             debug_artifacts,
             port_alignment_diagnostics=build_port_alignment_diagnostics(

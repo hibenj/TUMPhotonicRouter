@@ -50,7 +50,9 @@ from photonic_router.records.route_rust_types import (
     RouteAttemptRecord,
     RoutedNetRecord,
     RouteJob,
+    RouteRustPipelineResult,
     RouteSearchSummary,
+    RustRouteDebugArtifacts,
     bend_radius_cells_from_um,
 )
 from photonic_router.routing.api import route_match_and_realize
@@ -858,11 +860,14 @@ def test_the_flow_uses_strict_default_obstacle_config(monkeypatch):
         captured["ripup_reroute_config"] = options.ripup_reroute_config
         captured["collect_route_stats"] = options.debug.collect_route_stats
         captured["bend_radius_um"] = options.realization.bend_radius_um
-        routed_layout = SimpleNamespace(name="routed_layout_rust")
+        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
         routed_layout.write_gds = lambda *_args, **_kwargs: None
-        return SimpleNamespace(
+        return RouteRustPipelineResult(
             routed_layout=routed_layout,
-            debug_artifacts=SimpleNamespace(
+            debug_artifacts=RustRouteDebugArtifacts(
+                obstacle_svg=None,
+                route_svgs=[],
+                routed_edge_lengths_um={},
                 realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
                 static_blocked_cells=set(),
                 route_search_summary=RouteSearchSummary(
@@ -948,9 +953,12 @@ def test_the_flow_writes_crossing_verification_report(monkeypatch, tmp_path):
     ):
         routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
         routed_layout.write_gds = lambda *_args, **_kwargs: None
-        return SimpleNamespace(
+        return RouteRustPipelineResult(
             routed_layout=routed_layout,
-            debug_artifacts=SimpleNamespace(
+            debug_artifacts=RustRouteDebugArtifacts(
+                obstacle_svg=None,
+                route_svgs=[],
+                routed_edge_lengths_um={},
                 realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
                 static_blocked_cells=set(),
                 route_search_summary=RouteSearchSummary(route_count=1),
@@ -1067,9 +1075,12 @@ def test_the_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_path):
             captured["write_gds_called"] = True
 
         routed_layout.write_gds = fake_write_gds
-        return SimpleNamespace(
+        return RouteRustPipelineResult(
             routed_layout=routed_layout,
-            debug_artifacts=SimpleNamespace(
+            debug_artifacts=RustRouteDebugArtifacts(
+                obstacle_svg=None,
+                route_svgs=[],
+                routed_edge_lengths_um={},
                 realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
                 static_blocked_cells=set(),
                 route_search_summary=RouteSearchSummary(route_count=1),
@@ -1184,9 +1195,12 @@ def test_the_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_path):
             captured["write_gds_called"] = True
 
         routed_layout.write_gds = fake_write_gds
-        return SimpleNamespace(
+        return RouteRustPipelineResult(
             routed_layout=routed_layout,
-            debug_artifacts=SimpleNamespace(
+            debug_artifacts=RustRouteDebugArtifacts(
+                obstacle_svg=None,
+                route_svgs=[],
+                routed_edge_lengths_um={},
                 realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
                 realization_allow_45_degree_turns=True,
                 realization_bend_radius_cells=4,
@@ -1286,11 +1300,14 @@ def test_the_flow_collects_route_summary_when_stats_requested(monkeypatch):
         **_kwargs: object,
     ):
         captured["collect_route_stats"] = options.debug.collect_route_stats
-        routed_layout = SimpleNamespace(name="routed_layout_rust")
+        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
         routed_layout.write_gds = lambda *_args, **_kwargs: None
-        return SimpleNamespace(
+        return RouteRustPipelineResult(
             routed_layout=routed_layout,
-            debug_artifacts=SimpleNamespace(
+            debug_artifacts=RustRouteDebugArtifacts(
+                obstacle_svg=None,
+                route_svgs=[],
+                routed_edge_lengths_um={},
                 realization_grid_spec=(10, 20, 0.5, 0.0, 0.0),
                 static_blocked_cells={(1, 1), (2, 2)},
                 route_search_summary=RouteSearchSummary(
@@ -1542,11 +1559,12 @@ def test_the_flow_can_append_electrical_routing(monkeypatch):
         _options: SessionOptions,
         **_kwargs: object,
     ):
-        return SimpleNamespace(
+        return RouteRustPipelineResult(
             routed_layout=optical_routed_layout,
-            debug_artifacts=SimpleNamespace(
+            debug_artifacts=RustRouteDebugArtifacts(
                 obstacle_svg=None,
                 route_svgs=[],
+                routed_edge_lengths_um={},
                 realization_grid_spec=(10, 10, 0.5, 0.0, 0.0),
                 static_blocked_cells=set(),
                 route_attempt_records=[],

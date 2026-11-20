@@ -18,6 +18,7 @@ from photonic_router.electrical import (
     route_electrical_heaters,
 )
 from photonic_router.flow_component_info import component_info, copy_component_info
+from photonic_router.flow_stats import RoutingFlowStats
 
 
 def run_electrical_routing_step(
@@ -28,7 +29,7 @@ def run_electrical_routing_step(
     electrical_config: ElectricalRoutingConfig | None,
     debug_dir: Path | None,
     total_steps: int,
-    stats: object | None,
+    stats: RoutingFlowStats | None,
     debug_timing: bool,
     debug_svgs_enabled: bool,
 ) -> tuple[Component, ElectricalRoutingResult]:

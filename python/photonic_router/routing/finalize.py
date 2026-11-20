@@ -760,7 +760,7 @@ def _record_terminal_bump_distance_check_candidates(
 
         should_trace = trace_all or record.net_name in trace_tokens or str(net_id) in trace_tokens
         if should_trace:
-            matching_checks = [item for item in active_checks if int(item["net_id"]) == int(net_id)]
+            matching_checks = [item for item in active_checks if item["net_id"] == int(net_id)]
             print(
                 "terminal_bump_distance_check "
                 f"net={record.net_name} id={net_id} "

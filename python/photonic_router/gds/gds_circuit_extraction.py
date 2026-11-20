@@ -26,6 +26,9 @@ from typing import Any
 import klayout.db as kdb
 
 Point = tuple[float, float]
+#: one measured value of a component's ``geometry``: a length in micrometres,
+#: a side name (``arms_side``) or port positions (``outer_ports``)
+GeometryValue = float | str | tuple[Point, ...]
 
 
 @dataclass(frozen=True)
@@ -176,7 +179,7 @@ class ExtractedComponent:
     ports: tuple[ExtractedPort, ...]
     #: measured dimensions the generic replacement needs beyond the ports
     #: (an arm pair's arm length, separation and S-bend extension)
-    geometry: dict[str, float] = field(default_factory=dict)
+    geometry: dict[str, GeometryValue] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -188,6 +191,19 @@ class ExtractedNet:
     #: the original waveguide's length: its polygon area over its waveguide
     #: width, the narrowest end facet (0 for an abutting net); what the design
     #: routed, for comparing the original's path lengths with the rebuild's
+    length_um: float = 0.0
+
+
+@dataclass(frozen=True)
+class _IndexedNet:
+    """A net while the circuit is extracted: its endpoints are
+    ``(component index, port index)``, before the components have names
+    (``ExtractedNet`` is the same net with named endpoints)."""
+
+    name: str
+    endpoints: tuple[tuple[int, int], ...]
+    stub: bool = False
+    note: str = ""
     length_um: float = 0.0
 
 
@@ -238,7 +254,7 @@ class _Component:
     bbox: Any  # kdb.DBox, None when the cell has no shapes at all
     #: no shapes on the core layers: a foundry black box drawn elsewhere
     black_box: bool
-    geometry: dict[str, float] = field(default_factory=dict)
+    geometry: dict[str, GeometryValue] = field(default_factory=dict)
 
 
 def _flatten(layout: Any, top: Any, config: ExtractionConfig) -> list[_Leaf]:
@@ -369,7 +385,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
     ports_by_component: dict[int, list[ExtractedPort]] = {
         index: [] for index in range(len(components))
     }
-    nets: list[ExtractedNet] = []
+    nets: list[_IndexedNet] = []
     fragments = 0
     seen_ports: dict[tuple[int, int, int], int] = {}
 
@@ -442,7 +458,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
         # face of the component port the net ends on (a 2 um MMI port)
         width = min(facet_widths)
         nets.append(
-            ExtractedNet(
+            _IndexedNet(
                 name=f"net_{polygon_index}",
                 endpoints=tuple((ci, pi) for ci, pi in endpoints),
                 stub=stub,
@@ -456,7 +472,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
     for component_index, component in enumerate(components):
         outer_ports = component.geometry.get("outer_ports") if component.geometry else None
         ports = ports_by_component.get(component_index, [])
-        if not outer_ports or len(ports) != 2:
+        if not isinstance(outer_ports, tuple) or not outer_ports or len(ports) != 2:
             continue
         ports.sort(key=lambda port: port.position[1])
         for port_index, (port, (x, y)) in enumerate(zip(ports, outer_ports, strict=True)):
@@ -471,12 +487,12 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
     for component_index, pair_index, position, normal in abutting:
         # an MMI output lying on an arm pair's box: both get the port, the net
         # between them has no length and is not routed
-        a = register_port(component_index, position, normal)
-        b = register_port(pair_index, position, (-normal[0], -normal[1]))
+        port_a = register_port(component_index, position, normal)
+        port_b = register_port(pair_index, position, (-normal[0], -normal[1]))
         nets.append(
-            ExtractedNet(
+            _IndexedNet(
                 name=f"abut_{len(nets)}",
-                endpoints=((component_index, a), (pair_index, b)),
+                endpoints=((component_index, port_a), (pair_index, port_b)),
                 note="abutting: the arm pair starts at the component's port",
             )
         )
@@ -535,7 +551,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
         for port in ordered:
             ports_by_component[component_index][order[id(port)]] = port
         for net_index, net in enumerate(nets):
-            nets[net_index] = ExtractedNet(
+            nets[net_index] = _IndexedNet(
                 name=net.name,
                 endpoints=tuple(
                     (ci, order[id(ports[pi])] if ci == component_index else pi)
@@ -554,7 +570,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
     resolved_nets = [
         ExtractedNet(
             name=net.name,
-            endpoints=tuple(resolve(ci, pi) for ci, pi in net.endpoints),  # type: ignore[misc]
+            endpoints=tuple(resolve(ci, pi) for ci, pi in net.endpoints),
             stub=net.stub,
             note=net.note,
             length_um=net.length_um,
@@ -882,7 +898,7 @@ def _coupler_profile(
             open_ = float(d)
             gap_pitch = min(gap_pitch, pitch)
             continue
-        if open_ is None:
+        if close is None or open_ is None:  # set together, at the first close row
             continue
         recent.append(pitch)
         if len(recent) >= 3 and max(recent[-3:]) - min(recent[-3:]) <= 0.02:

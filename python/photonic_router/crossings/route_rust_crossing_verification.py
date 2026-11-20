@@ -260,9 +260,9 @@ def verify_realized_route_intersections(
     records = sorted(routed_records_by_net_id.items())
     centerlines_by_id: dict[int, tuple[tuple[float, float], ...]] = {}
     missing_centerline_illegal: list[dict[str, object]] = []
-    for net_id, record in records:
+    for net_id, routed_record in records:
         centerline = record_centerline_um(
-            record,
+            routed_record,
             grid_size_um=float(grid_size_um),
             origin_x_um=float(origin_x_um),
             origin_y_um=float(origin_y_um),
@@ -271,37 +271,37 @@ def verify_realized_route_intersections(
             centerlines_by_id[net_id] = centerline
             continue
 
-        reason = (
+        missing_reason = (
             "endpoint_correction_error"
-            if record.endpoint_correction_error is not None
+            if routed_record.endpoint_correction_error is not None
             else "missing_corrected_centerline"
         )
         missing_centerline_illegal.append(
             {
                 "net_id_a": int(net_id),
                 "net_id_b": None,
-                "net_name_a": record.net_name,
+                "net_name_a": routed_record.net_name,
                 "net_name_b": None,
                 "point_um": None,
                 "grid_cell": None,
                 "classification": "illegal_route_geometry",
-                "reason": reason,
+                "reason": missing_reason,
                 "message": (
-                    record.endpoint_correction_error
-                    if record.endpoint_correction_error is not None
+                    routed_record.endpoint_correction_error
+                    if routed_record.endpoint_correction_error is not None
                     else (
                         "Route has no corrected physical centerline; crossing "
                         "verification cannot use compressed route waypoints."
                     )
                 ),
                 "route_waypoint_fallback_available": bool(
-                    route_waypoints_from_obj(record.route_obj)
+                    route_waypoints_from_obj(routed_record.route_obj)
                 ),
             }
         )
         centerlines_by_id[net_id] = ()
-    for net_id, record in records:
-        net_names.setdefault(net_id, record.net_name)
+    for net_id, routed_record in records:
+        net_names.setdefault(net_id, routed_record.net_name)
     opened_cells_by_id = {
         net_id: {(int(x), int(y)) for x, y in record.opened_cells} for net_id, record in records
     }
@@ -365,15 +365,15 @@ def verify_realized_route_intersections(
                             round(overlap_end[1] * 1_000_000),
                         )
                         ordered_overlap_key = tuple(sorted((start_key, end_key)))
-                        key = (
+                        overlap_key = (
                             min(net_id_a, net_id_b),
                             max(net_id_a, net_id_b),
                             ordered_overlap_key[0],
                             ordered_overlap_key[1],
                         )
-                        if key in seen:
+                        if overlap_key in seen:
                             continue
-                        seen.add(key)
+                        seen.add(overlap_key)
                         midpoint = (
                             0.5 * (overlap_start[0] + overlap_end[0]),
                             0.5 * (overlap_start[1] + overlap_end[1]),
@@ -396,7 +396,7 @@ def verify_realized_route_intersections(
                             max(u_end, 0.0) * len_b,
                             max(1.0 - u_end, 0.0) * len_b,
                         )
-                        record = {
+                        record: dict[str, object] = {
                             "net_id_a": int(net_id_a),
                             "net_id_b": int(net_id_b),
                             "net_name_a": record_a.net_name,
@@ -643,21 +643,17 @@ def verify_realized_route_intersections(
                             else "legal_unexpected_crossing"
                         )
                         reason = None
-                        degraded_reason = None
                     elif rust_fields is not None:
                         classification = "illegal_unexpected_crossing"
                         reason = str(rust_fields["reason"]) or "crossing_footprint_invalid"
-                        degraded_reason = None
                     elif not contact_adjacent:
                         # Rust assessed no intersection here: a crossing without
                         # a registered event, as the Rust validator would call it.
                         classification = "illegal_unexpected_crossing"
                         reason = "missing_event"
-                        degraded_reason = None
                     else:
                         classification = "contact_adjacent_geometry"
                         reason = "shared_segment_endpoint"
-                        degraded_reason = None
                     record = {
                         "net_id_a": int(net_id_a),
                         "net_id_b": int(net_id_b),
@@ -738,8 +734,6 @@ def verify_realized_route_intersections(
                     }
                     if reason is not None:
                         record["reason"] = reason
-                    if degraded_reason is not None:
-                        record["degraded_reason"] = degraded_reason
                     record["legality_source"] = (
                         "rust_crossing_verdict"
                         if rust_fields is not None
@@ -1089,7 +1083,7 @@ def populate_realized_intersections_from_native_crossing_events(
         for verdict in pair_verdicts:
             if id(verdict) in matched_verdict_ids:
                 continue
-            record = _native_record_from_rust_verdict(
+            verdict_record = _native_record_from_rust_verdict(
                 verdict,
                 routed_records_by_net_id=routed_records_by_net_id,
                 planned_pairs=planned_pairs,
@@ -1098,11 +1092,11 @@ def populate_realized_intersections_from_native_crossing_events(
                 origin_x_um=float(origin_x_um),
                 origin_y_um=float(origin_y_um),
             )
-            if record is None:
+            if verdict_record is None:
                 continue
-            realized.append(record)
-            if str(record.get("classification", "")).startswith("illegal_"):
-                illegal.append(record)
+            realized.append(verdict_record)
+            if str(verdict_record.get("classification", "")).startswith("illegal_"):
+                illegal.append(verdict_record)
 
     crossing_plan_info.realized_intersections = realized
     crossing_plan_info.realized_intersection_count = len(realized)

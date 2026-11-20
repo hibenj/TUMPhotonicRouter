@@ -249,7 +249,7 @@ class PhotonicRoutingGraph:
     conflicting_nodes: list[str] = field(default_factory=list)
 
     def topological_order(self) -> list[str]:
-        sorter = TopologicalSorter()
+        sorter: TopologicalSorter[str] = TopologicalSorter()
         for node_name in self.nodes:
             sorter.add(node_name)
         for edge in self.edges.values():
@@ -325,14 +325,17 @@ def build_graph_from_schematic(
             ensure_node(declared_dst.instance)
             links.append((net_name, declared_src, declared_dst))
 
+    role: PortRole
     if port_role is None:
         roles, graph.conflicting_nodes = _propagate_roles(
             schematic, graph, links, input_ports_by_component
         )
 
-        def role(instance: str, port: str) -> str | None:
+        def propagated_role(instance: str, port: str) -> str | None:
+            """The role the propagation from the inputs gave this port, None if it gave none."""
             return roles.get((instance, port))
 
+        role = propagated_role
     else:
         role = port_role
 

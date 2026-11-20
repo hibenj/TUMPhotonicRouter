@@ -23,6 +23,11 @@ from photonic_router.flow_reporting import (
     report_partial_debug_artifacts,
     route_attempt_as_dict,
 )
+from photonic_router.records.route_rust_types import (
+    RouteRustPipelineResult,
+    RouteSearchSummary,
+    RustRouteDebugArtifacts,
+)
 from photonic_router.routing.api import route_match_and_realize
 from photonic_router.routing.options import (
     CircuitMetadata,
@@ -129,10 +134,10 @@ def build_optical_routing_stage_config(
 
 @dataclass(frozen=True)
 class OpticalRoutingStageResult:
-    route_result: object
+    route_result: RouteRustPipelineResult
     routed_layout: Component
-    debug_artifacts: object
-    route_summary: object
+    debug_artifacts: RustRouteDebugArtifacts
+    route_summary: RouteSearchSummary
     route_attempt_records: list[dict[str, object]]
     route_time_s: float
 

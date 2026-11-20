@@ -303,7 +303,7 @@ def route_detailed_bundles(
         rank, terminal, assignment, topology_route, target_cells = member
         _note_fallback(terminal.id, reason)
         bundle_id = bundle_id_by_terminal_id[terminal.id]
-        terminal_access = obstacle_map.individual_port_accesses.get(terminal.id)
+        fallback_access = obstacle_map.individual_port_accesses.get(terminal.id)
         source_cells = terminal_open_cells(obstacle_map, terminal.id)
         own_pad_cells = assigned_pad_cells_by_slot.get(assignment.slot.index, target_cells)
         raw_fallback_blocked = set(hard_blocked)
@@ -311,14 +311,14 @@ def route_detailed_bundles(
         raw_fallback_blocked.update(all_assigned_pad_cells.difference(own_pad_cells))
         detailed_path = (
             route_full_grid_pad_wire(
-                terminal_access,
+                fallback_access,
                 target_cells,
                 obstacle_map,
                 raw_fallback_blocked,
                 committed_footprint_cells,
                 config,
             )
-            if terminal_access is not None
+            if fallback_access is not None
             else ()
         )
         if not detailed_path:
@@ -351,7 +351,7 @@ def route_detailed_bundles(
                 reason="Z fallback route crosses a sibling's committed metal footprint",
             )
             continue
-        assert terminal_access is not None
+        assert fallback_access is not None
         fallback_bends = count_direction_changes(detailed_path)
         commit(
             detailed_path,
@@ -362,7 +362,7 @@ def route_detailed_bundles(
             topology_route=topology_route,
             target_cells=target_cells,
             shape="L" if fallback_bends <= 1 else "Z",
-            contact_port_name=_pad_wire_contact_port_name(terminal, terminal_access, detailed_path),
+            contact_port_name=_pad_wire_contact_port_name(terminal, fallback_access, detailed_path),
             construction="fallback",
         )
 
@@ -376,8 +376,8 @@ def route_detailed_bundles(
         ),
         key=lambda assignment: assignment.slot.index,
     ):
-        terminal = assignment.terminal
-        if terminal is None or terminal.id in routed_terminal_ids:
+        unrouted_terminal = assignment.terminal
+        if unrouted_terminal is None or unrouted_terminal.id in routed_terminal_ids:
             continue
         failed_routes.append(
             DetailedBundleRoute(
@@ -385,7 +385,7 @@ def route_detailed_bundles(
                 if assignment.topology_bundle_id is not None
                 else -1,
                 rank=assignment.topology_rank if assignment.topology_rank is not None else -1,
-                terminal=terminal,
+                terminal=unrouted_terminal,
                 pad_assignment=assignment,
                 path=(),
                 target_cells=frozenset(

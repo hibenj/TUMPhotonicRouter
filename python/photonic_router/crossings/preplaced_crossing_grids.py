@@ -51,17 +51,19 @@ import itertools
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, overload
 
 import gdsfactory as gf
 from gdsfactory.component import Component
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
+from gdsfactory.typings import Port
 
 from photonic_router.config import CrossingGridConfig, RoutingConfig
 from photonic_router.crossings.crossing_demand import StageSchedule, build_crossing_demand
 from photonic_router.crossings.crossing_plan import CrossingStagePlan
 from photonic_router.gds.route_gds import get_port_from_instance
 from photonic_router.records.layout_from_schematic import layout_from_schematic
+from photonic_router.records.route_keys import RoutedEdgeKey
 from photonic_router.routing_layers import (
     ComponentPortAccessRule,
     register_component_port_access_rule,
@@ -195,7 +197,7 @@ def _crossing_half_extent_um(crossing: Component) -> float:
 
 def lane_movement(
     stage_plan: CrossingStagePlan,
-) -> tuple[dict[str, tuple[int, int, int]], list[tuple[int, int, object, object]]]:
+) -> tuple[dict[str, tuple[int, int, int]], list[tuple[int, int, RoutedEdgeKey, RoutedEdgeKey]]]:
     """Simulate the swap schedule and return each lane's single movement block.
 
     Returns ``(movement_by_net, crossings)`` where ``movement_by_net[net] =
@@ -212,7 +214,7 @@ def lane_movement(
         events_by_level.setdefault(int(event.level), []).append(event)
     level_count = (max(events_by_level) + 1) if events_by_level else 0
     movement: dict[str, tuple[int, int, int]] = {}
-    crossings: list[tuple[int, int, object, object]] = []
+    crossings: list[tuple[int, int, RoutedEdgeKey, RoutedEdgeKey]] = []
     for level in range(level_count):
         moved_now: dict[str, int] = {}
         for event in events_by_level.get(level, []):
@@ -325,7 +327,7 @@ def _register_grid_cell(name: str, component: Component, *, access_length_um: fl
     register_component_port_access_rule(
         ComponentPortAccessRule(
             component_name_pattern=name,
-            port_names=tuple(port.name for port in component.ports),
+            port_names=tuple(port.name for port in component.ports if port.name is not None),
             access_length_um=float(access_length_um),
             access_width_um=0.0,
         )
@@ -376,7 +378,7 @@ def crossing_tile_component(
         ref.rotate(-45.0)
     center = ref.dbbox().center()
     ref.dmove((-float(center.x), -float(center.y)))
-    by_corner: dict[str, object] = {}
+    by_corner: dict[str, Port] = {}
     for port in ref.ports:
         x, y = float(port.dcenter[0]), float(port.dcenter[1])
         if axis_aligned:
@@ -610,8 +612,8 @@ def _derive_crossing_tiles(
             expected += stage_result[6]
             placed += stage_result[7]
             continue
-        for upper, lower in itertools.pairwise(rows):
-            if upper <= lower:
+        for upper_row, lower_row in itertools.pairwise(rows):
+            if upper_row <= lower_row:
                 raise ValueError(
                     "crossing tiles need the stage's lanes ordered top to bottom by their "
                     f"source rows; stage {stage_key} rows {rows}"
@@ -746,7 +748,7 @@ def crossing_corner_tile_component(
     component.add_port("r", port=ports["r"])
     entry_side, target_side = ("t", "b") if direction == "down" else ("b", "t")
 
-    def _corner(side: str, d_um: float, turn_to_west: bool) -> object:
+    def _corner(side: str, d_um: float, turn_to_west: bool) -> Port:
         run = float(d_um) - half - radius
         if run < -_GEOMETRY_TOLERANCE_UM:
             raise ValueError(
@@ -825,6 +827,44 @@ def plain_corner_component(
     return component
 
 
+# What `column_grid_stage` returns when it places a stage: tile names, builds,
+# stub nets, lane lengths, nets, split net names, expected and placed crossings.
+ColumnGridStagePlacement = tuple[
+    list[str],
+    dict[str, CrossingGridBuildResult],
+    dict[str, tuple[str, str]],
+    dict[str, float],
+    list[Net],
+    set[str],
+    int,
+    int,
+]
+
+
+@overload
+def column_grid_stage(
+    schematic: Schematic,
+    unrouted_layout: Component,
+    stage_plan: CrossingStagePlan,
+    geometry: CrossingGridGeometry,
+    derived: Schematic,
+    plus_tile: Component,
+    anchors: Mapping[str, tuple[float, float]],
+    probe_only: Literal[False] = False,
+    config: CrossingGridConfig | None = None,
+) -> ColumnGridStagePlacement: ...
+@overload
+def column_grid_stage(
+    schematic: Schematic,
+    unrouted_layout: Component,
+    stage_plan: CrossingStagePlan,
+    geometry: CrossingGridGeometry,
+    derived: Schematic,
+    plus_tile: Component,
+    anchors: Mapping[str, tuple[float, float]],
+    probe_only: Literal[True],
+    config: CrossingGridConfig | None = None,
+) -> dict[str, float | int]: ...
 def column_grid_stage(
     schematic: Schematic,
     unrouted_layout: Component,
@@ -835,19 +875,7 @@ def column_grid_stage(
     anchors: Mapping[str, tuple[float, float]],
     probe_only: bool = False,
     config: CrossingGridConfig | None = None,
-) -> (
-    tuple[
-        list[str],
-        dict[str, CrossingGridBuildResult],
-        dict[str, tuple[str, str]],
-        dict[str, float],
-        list[Net],
-        set[str],
-        int,
-        int,
-    ]
-    | dict[str, float | int]
-):
+) -> ColumnGridStagePlacement | dict[str, float | int]:
     """Column grid for one stage: axis-aligned "+" crossings only.
 
     With ``probe_only`` nothing is placed; the return value is a summary
@@ -1179,11 +1207,11 @@ def column_grid_stage(
         name = f"{CROSSING_LINK_PREFIX}corner_stage{depth}_{index}"
         radius = float(geometry.bend_radius_um)
         if c["entry"]:
-            placement = Placement(x=round(c["x"] - radius, 3), y=round(c["y"], 3))
+            corner_x, corner_y = round(c["x"] - radius, 3), round(c["y"], 3)
         else:
-            placement = Placement(
-                x=round(c["x"], 3), y=round(c["y"] + (radius if c["down"] else -radius), 3)
-            )
+            corner_x = round(c["x"], 3)
+            corner_y = round(c["y"] + (radius if c["down"] else -radius), 3)
+        placement = Placement(x=corner_x, y=corner_y)
         derived.add_instance(name, Instance(component=component.name), placement)
         tile_names.append(name)
         role = ("corner_entry_" if c["entry"] else "corner_target_") + (
@@ -1199,7 +1227,7 @@ def column_grid_stage(
             "target_corner": None,
             "corner": True,
             "component": component,
-            "placement": (float(placement.x), float(placement.y)),
+            "placement": (float(corner_x), float(corner_y)),
         }
         tiles_of_lane.setdefault(c["lane"], []).append(element)
     if corner_tiles or corner_elements:

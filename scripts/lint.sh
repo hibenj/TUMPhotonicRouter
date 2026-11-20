@@ -38,8 +38,10 @@ echo "== generated files =="
 .venv/bin/python scripts/generate_config_reference.py --check
 .venv/bin/python scripts/generate_rust_stubs.py --check
 
-# The counts of docs/CODING_STANDARDS.md section 8 (mypy's errors among
-# them) may only fall; `.venv/bin/python -m mypy` lists the findings.
+echo "== mypy =="
+.venv/bin/python -m mypy
+
+# The counts of docs/CODING_STANDARDS.md section 8 may only fall.
 echo "== quality ratchet =="
 .venv/bin/python scripts/quality_ratchet.py
 

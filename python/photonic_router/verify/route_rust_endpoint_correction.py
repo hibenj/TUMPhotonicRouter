@@ -28,7 +28,11 @@ from photonic_router.records.route_rust_records import (
     format_port_endpoint_correction_error,
     routed_edge_lengths_from_records,
 )
-from photonic_router.records.route_rust_types import RoutedNetRecord, RustRouteDebugArtifacts
+from photonic_router.records.route_rust_types import (
+    RoutedNetRecord,
+    RustRouteDebugArtifacts,
+    int_or_none,
+)
 
 
 def _load_rust_backend() -> Any | None:
@@ -314,9 +318,8 @@ def legal_crossing_points_by_net_id(
         if point is None:
             continue
         for key in ("net_id_a", "net_id_b"):
-            try:
-                net_id = int(raw_crossing.get(key))
-            except (TypeError, ValueError):
+            net_id = int_or_none(raw_crossing.get(key))
+            if net_id is None:
                 continue
             points_by_net_id.setdefault(net_id, []).append(point)
     return points_by_net_id
@@ -342,10 +345,10 @@ def _foreign_crossing_footprint_specs(
     for raw_crossing in raw_crossings:
         if not isinstance(raw_crossing, Mapping):
             continue
-        try:
-            net_id_a = int(raw_crossing.get("net_id_a"))
-            net_id_b = int(raw_crossing.get("net_id_b"))
-        except (TypeError, ValueError):
+        net_id_a = int_or_none(raw_crossing.get("net_id_a"))
+        net_id_b = int_or_none(raw_crossing.get("net_id_b"))
+        if net_id_a is None or net_id_b is None:
+            # A crossing without both net ids belongs to no net of this record.
             net_id_a = net_id_b = -1
         if net_id is not None and int(net_id) in (net_id_a, net_id_b):
             continue
@@ -844,76 +847,3 @@ def apply_crossing_aware_endpoint_correction_to_record(
     if log_failures:
         print("ERROR: " + message)
     return replace(record, endpoint_correction_error=message)
-
-
-def _apply_crossing_aware_endpoint_corrections_to_debug_artifacts(
-    debug_artifacts: RustRouteDebugArtifacts,
-    crossing_plan_info: Mapping[str, object] | None,
-    *,
-    route_width_um: float,
-) -> RustRouteDebugArtifacts:
-    if debug_artifacts.realization_grid_spec is None:
-        raise RuntimeError("Missing realization grid spec from routing phase.")
-    router = _build_realization_router(
-        realization_grid_spec=debug_artifacts.realization_grid_spec,
-        allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
-        bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
-    )
-    crossing_points_by_net_id = legal_crossing_points_by_net_id(crossing_plan_info)
-    fanout_anchor_net_ids = {
-        int(net_id)
-        for net_id in (
-            (crossing_plan_info or {}).get("fanout_anchor_net_ids", [])
-            if isinstance(crossing_plan_info, Mapping)
-            else []
-        )
-    }
-    fanout_anchor_source_net_ids = {
-        int(net_id)
-        for net_id in (
-            (crossing_plan_info or {}).get("fanout_anchor_source_net_ids", [])
-            if isinstance(crossing_plan_info, Mapping)
-            else []
-        )
-    }
-    fanout_anchor_target_net_ids = {
-        int(net_id)
-        for net_id in (
-            (crossing_plan_info or {}).get("fanout_anchor_target_net_ids", [])
-            if isinstance(crossing_plan_info, Mapping)
-            else []
-        )
-    }
-    records: list[RoutedNetRecord] = []
-    for record in debug_artifacts.routed_net_records:
-        net_id = int(record.net_id) if record.net_id is not None else None
-        source_has_fanout_stub = net_id is not None and net_id in fanout_anchor_source_net_ids
-        target_has_fanout_stub = net_id is not None and net_id in fanout_anchor_target_net_ids
-        record_has_fanout_stub = net_id is not None and net_id in fanout_anchor_net_ids
-        crossing_points = crossing_points_by_net_id.get(net_id, []) if net_id is not None else []
-        records.append(
-            apply_crossing_aware_endpoint_correction_to_record(
-                record,
-                router=router,
-                crossing_points=crossing_points,
-                realization_grid_spec=debug_artifacts.realization_grid_spec,
-                route_width_um=route_width_um,
-                allow_unchecked_bumps=True,
-                log_failures=not debug_artifacts.realization_allow_45_degree_turns,
-                crossing_plan_info=crossing_plan_info,
-                correct_source=not source_has_fanout_stub,
-                correct_target=not target_has_fanout_stub,
-                prefer_corrected_baseline=(
-                    record_has_fanout_stub and bool(record.corrected_centerline_um)
-                ),
-            )
-        )
-    return replace(
-        debug_artifacts,
-        routed_net_records=records,
-        routed_edge_lengths_um=routed_edge_lengths_from_records(records),
-        port_alignment_diagnostics=build_port_alignment_diagnostics(
-            records,
-            realization_grid_spec=debug_artifacts.realization_grid_spec,
-        ),
-    )

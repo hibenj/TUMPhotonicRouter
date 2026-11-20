@@ -251,7 +251,8 @@ def _generic_component_ports(
     ports = {
         port.name: (float(port.center[0]), float(port.center[1]), float(port.orientation))
         for port in built.ports
-        if port.port_type == "optical"
+        # a port without a name cannot be looked up by one
+        if port.port_type == "optical" and port.name is not None
     }
     _GENERIC_PORT_CACHE[key] = ports
     return ports
@@ -491,6 +492,15 @@ def _waveguide_settings(component: ExtractedComponent) -> dict[str, float]:
     return {"length": round(span, 3)}
 
 
+def _measured_um(component: ExtractedComponent, key: str) -> float:
+    """The length the extractor measured for ``component`` under ``key`` of its geometry."""
+
+    value = component.geometry[key]
+    if not isinstance(value, (int, float)):
+        raise TypeError(f"{component.name}: geometry[{key!r}] is {value!r}, not a length")
+    return value
+
+
 def _arm_pair_settings(component: ExtractedComponent, bend_radius_um: float) -> dict[str, float]:
     """An arm pair's arms from the extractor's geometry, its pitches from the ports."""
 
@@ -498,11 +508,10 @@ def _arm_pair_settings(component: ExtractedComponent, bend_radius_um: float) -> 
     for port in component.ports:
         by_side.setdefault(port.local_side, []).append(port.local_position[1])
     left, right = by_side.get("left", [0.0]), by_side.get("right", [0.0])
-    geometry = component.geometry
     return {
-        "arm_length": geometry["arm_length_um"],
-        "arm_separation": geometry["arm_separation_um"],
-        "extension": geometry["extension_um"],
+        "arm_length": _measured_um(component, "arm_length_um"),
+        "arm_separation": _measured_um(component, "arm_separation_um"),
+        "extension": _measured_um(component, "extension_um"),
         "pitch_in": round(max(left) - min(left), 3) if len(left) == 2 else 2.0,
         "pitch_out": round(max(right) - min(right), 3) if len(right) == 2 else 2.0,
         "bend_radius": bend_radius_um,
@@ -527,19 +536,26 @@ def _directional_coupler_settings(
     # the extractor measures from the arms outward; the generic component
     # runs left to right, so with the arms on its right the arms' extension
     # is the component's right-hand one
-    extension_in, extension_out = geometry["extension_um"], geometry["extension_out_um"]
+    extension_in = _measured_um(component, "extension_um")
+    extension_out = _measured_um(component, "extension_out_um")
     if geometry.get("arms_side") == "right":
         extension_in, extension_out = extension_out, extension_in
-    pitch_in = round(max(left) - min(left), 3) if len(left) == 2 else geometry["pitch_um"]
-    pitch_out = round(max(right) - min(right), 3) if len(right) == 2 else geometry["pitch_um"]
+    pitch_in = (
+        round(max(left) - min(left), 3) if len(left) == 2 else _measured_um(component, "pitch_um")
+    )
+    pitch_out = (
+        round(max(right) - min(right), 3)
+        if len(right) == 2
+        else _measured_um(component, "pitch_um")
+    )
     # the generic coupler spreads with two 90-degree bends per side: a side the
     # original spreads less (its waveguides turn away right after the coupling
     # section) is spread to the least the bends need, and its ports move out
-    gap = geometry["gap_pitch_um"]
+    gap = _measured_um(component, "gap_pitch_um")
     least_pitch = gap + 4 * bend_radius_um + 1.0
     least_extension = 2 * bend_radius_um
     return {
-        "coupling_length": geometry["coupling_length_um"],
+        "coupling_length": _measured_um(component, "coupling_length_um"),
         "gap_pitch": gap,
         "extension": max(extension_in, least_extension),
         "extension_out": max(extension_out, least_extension),

@@ -14,6 +14,20 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `mypy` passes on the whole package (348 errors at the first measurement,
+  277 before this change) and is a check of `scripts/lint.sh` and CI instead
+  of a count of the ratchet; `types-shapely` joins the `dev` extra. The
+  errors went by typing what was `object`: the report functions take the
+  records they read, the realization, probe and crossing-plan callers name
+  the router methods they use as Protocols, one variable no longer holds
+  two types. `records.route_rust_types.int_or_none` replaces four private
+  copies. `resolve_obstacle_config`, `with_obstacle_mode` and
+  `with_bbox_cell_materialization` return a `StaticObstacleMapConfig` and
+  refuse (`TypeError`) what is neither that record, a mapping of its fields
+  nor None; before, an unknown object was handed on unchecked. Removed as
+  dead: `_apply_crossing_aware_endpoint_corrections_to_debug_artifacts`
+  (no caller), the `degraded_reason` variable that was None on every path,
+  and five shape checks on values whose type already guarantees the shape.
 - A local harness for `docs/CODING_STANDARDS.md`: `scripts/check.sh` is the
   one entry to every check (fast stage: `scripts/lint.sh` and the harness
   tests; `--full`: also the kernel build, `scripts/test_baseline.sh` and the

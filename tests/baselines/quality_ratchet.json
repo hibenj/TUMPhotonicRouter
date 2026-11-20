@@ -1,20 +1,19 @@
 {
-  "mypy_errors": 277,
   "private_imports": 7,
   "python_exceptions": 0,
-  "ruff_BLE001": 35,
+  "ruff_BLE001": 32,
   "ruff_C901": 68,
   "ruff_D101": 50,
   "ruff_D102": 126,
   "ruff_D103": 66,
   "ruff_PLR0913": 50,
-  "ruff_PLR0915": 40,
+  "ruff_PLR0915": 39,
   "ruff_T201": 157,
   "rust_exceptions": 39,
   "rust_missing_docs": 796,
   "rust_too_many_lines": 23,
   "rust_workspace_debt_allows": 2,
   "session_state_fields": 14,
-  "untyped_dict_annotations": 216,
+  "untyped_dict_annotations": 213,
   "upward_imports": 0
 }

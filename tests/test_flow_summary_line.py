@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-
 import pytest
 from photonic_router import flow as routing_flow
 from photonic_router.flow_stats import RoutingFlowStats, format_flow_summary_line
@@ -42,79 +40,36 @@ def test_route_failures_print_a_dash_without_per_route_collection():
     buckets, which are empty unless per-route collection ran; then the line
     says ``-``, not a guessed 0 (merge review 2026-10-05)."""
 
-    from types import SimpleNamespace
-
+    import gdsfactory as gf
     from photonic_router.flow_stats import populate_route_stats
-
-    def summary(attempts: int, failures: int) -> SimpleNamespace:
-        return SimpleNamespace(
-            astar_elapsed_s=0.0,
-            route_attempts=attempts,
-            route_failures=failures,
-            simple_route_count=0,
-            repair_count=0,
-            full_grid_fallbacks=0,
-            endpoint_correction_time_s=0.0,
-            endpoint_correction_calls=0,
-            endpoint_correction_failures=0,
-            expanded_states=0,
-            generated_neighbors=0,
-            heap_pushes=0,
-            heap_pops=0,
-            skipped_duplicate_heap_entries=0,
-            stale_generation_heap_entries=0,
-            closed_heap_entries=0,
-            max_heap_size=0,
-            dense_search_states=0,
-            dense_search_storage_bytes=0,
-            best_cost_updates=0,
-            parent_updates=0,
-            obstacle_clearance_checks=0,
-            footprint_checks=0,
-            footprint_rect_checks=0,
-            crossing_candidate_checks=0,
-            crossing_accepted=0,
-            crossing_reject_non_straight=0,
-            crossing_reject_not_perpendicular=0,
-            crossing_reject_margin=0,
-            crossing_reject_wrong_order=0,
-            crossing_reject_unexpected_owner=0,
-            crossing_reject_unmatched_owner=0,
-            crossing_reject_unmatched_centerline=0,
-            crossing_reject_unmatched_footprint=0,
-            crossing_reject_unmatched_route_centerline=0,
-            crossing_reject_unmatched_route_footprint=0,
-            crossing_reject_pending_straight=0,
-            search_loop_time_s=0.0,
-            obstacle_map_prepare_time_s=0.0,
-            simple_route_time_s=0.0,
-            commit_prepare_time_s=0.0,
-            commit_time_s=0.0,
-            neighbor_generation_time_s=0.0,
-            heap_operation_time_s=0.0,
-            primitive_candidate_counts={},
-            primitive_accepted_counts={},
-            primitive_rejected_blocked_counts={},
-            primitive_rejected_bounds_counts={},
-            primitive_rejected_turn_counts={},
-            primitive_rejected_worse_cost_counts={},
-            primitive_rejected_other_counts={},
-        )
+    from photonic_router.records.route_rust_types import (
+        RouteRustPipelineResult,
+        RouteSearchSummary,
+        RustRouteDebugArtifacts,
+    )
 
     def populated(attempts: int, failures: int) -> RoutingFlowStats:
         stats = RoutingFlowStats()
         stats.benchmark_name = "x"
         stats.net_count = 128
-        # fields this stub does not model are not what the test is about
-        with contextlib.suppress(AttributeError):
-            populate_route_stats(
-                stats,
-                route_result=None,
-                debug_artifacts=None,
-                route_summary=summary(attempts, failures),
-                route_attempt_records=[],
-                route_time_s=0.0,
-            )
+        artifacts = RustRouteDebugArtifacts(
+            obstacle_svg=None,
+            route_svgs=[],
+            routed_edge_lengths_um={},
+            route_search_summary=RouteSearchSummary(
+                route_attempts=attempts, route_failures=failures
+            ),
+        )
+        populate_route_stats(
+            stats,
+            route_result=RouteRustPipelineResult(
+                routed_layout=gf.Component(), debug_artifacts=artifacts
+            ),
+            debug_artifacts=artifacts,
+            route_summary=artifacts.route_search_summary,
+            route_attempt_records=[],
+            route_time_s=0.0,
+        )
         return stats
 
     assert "route_failures=- " in format_flow_summary_line(populated(0, 0))

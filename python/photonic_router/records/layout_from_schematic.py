@@ -82,6 +82,11 @@ def layout_from_schematic(schematic: Schematic) -> Component:
         # Add the component to the layout with transformation
         ref = component.add_ref(sub_component, name=instance_name)
         if anchor is None:
+            if isinstance(x, str) or isinstance(y, str):
+                raise TypeError(
+                    f"instance {instance_name!r}: a placement without an anchor port "
+                    f"needs numbers for x and y, got x={x!r}, y={y!r}"
+                )
             if mirror:
                 ref.mirror()
             ref.rotate(rotation)

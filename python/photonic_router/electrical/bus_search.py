@@ -108,7 +108,7 @@ def path_hits_blockers(
     path: Iterable[GridCell],
     blocked: set[GridCell],
     *,
-    allowed: set[GridCell],
+    allowed: set[GridCell] | frozenset[GridCell],
     forbidden: set[GridCell] | frozenset[GridCell] = frozenset(),
 ) -> bool:
     return any((cell in blocked and cell not in allowed) or cell in forbidden for cell in path)

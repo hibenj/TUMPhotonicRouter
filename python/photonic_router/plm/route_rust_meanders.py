@@ -66,11 +66,13 @@ class MeanderRouterLike(Protocol):
     """Structural type for the PyO3 router the planner context is built on."""
 
     def set_static_cells(self, cells: list[GridCell]) -> None: ...
+    # The value comes from the untyped extension, so it is `object` here and
+    # `_record_centerline_for_registration` checks its shape before use.
     def route_port_corrected_centerline(
         self,
         route: object,
         **kwargs: Any,
-    ) -> list[tuple[float, float]]: ...
+    ) -> object: ...
 
 
 class MeanderPlannerLike(Protocol):

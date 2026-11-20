@@ -91,12 +91,12 @@ def component_port_role(
         if not inputs:
             return None
         return INPUT if port in inputs else OUTPUT
-    inputs = INPUT_PORTS_BY_COMPONENT.get(component)
-    if inputs is None:
+    table_inputs = INPUT_PORTS_BY_COMPONENT.get(component)
+    if table_inputs is None:
         return None
-    if port in inputs:
+    if port in table_inputs:
         return INPUT
-    if port in OPTICAL_PORTS_BY_COMPONENT.get(component, frozenset()) and inputs:
+    if port in OPTICAL_PORTS_BY_COMPONENT.get(component, frozenset()) and table_inputs:
         return OUTPUT
     return None
 
@@ -118,10 +118,10 @@ def component_port_sides(
         if not inputs:
             return None
         return inputs, frozenset()  # every other port is the other side
-    inputs = INPUT_PORTS_BY_COMPONENT.get(component)
-    if not inputs:
+    table_inputs = INPUT_PORTS_BY_COMPONENT.get(component)
+    if not table_inputs:
         return None
-    return inputs, OPTICAL_PORTS_BY_COMPONENT.get(component, frozenset()) - inputs
+    return table_inputs, OPTICAL_PORTS_BY_COMPONENT.get(component, frozenset()) - table_inputs
 
 
 def no_port_roles(instance: str, port: str) -> str | None:

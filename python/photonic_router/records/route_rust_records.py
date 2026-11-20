@@ -252,6 +252,15 @@ def centerline_tuple(points: object) -> tuple[tuple[float, float], ...]:
     return tuple(out)
 
 
+class RoutedPath(Protocol):
+    """What the bookkeeping reads of a kernel route object: its length."""
+
+    @property
+    def total_length_um(self) -> float:
+        """The length of the route in um."""
+        ...
+
+
 class EndpointCorrectionRouter(Protocol):
     """The router methods that the endpoint correction (the bumps) calls."""
 
@@ -355,7 +364,7 @@ class RouteBookkeeping:
     def record_route(
         self,
         job: RouteJob,
-        route_obj: object,
+        route_obj: RoutedPath,
         opened_cells: list[tuple[int, int]],
         *,
         route_cells: set[tuple[int, int]] | None = None,

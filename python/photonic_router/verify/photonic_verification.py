@@ -13,6 +13,7 @@ from gdsfactory.component import Component
 from shapely.geometry import LineString, Point
 
 from photonic_router.records.route_rust_realization import (
+    RealizationRouter,
     build_realization_router,
     realized_record_polygons,
 )
@@ -366,7 +367,7 @@ def _realized_record_region(
     route_width_um: float,
     realization_grid_spec: tuple[int, int, float, float, float],
     dbu: float,
-    router: object,
+    router: RealizationRouter,
     crossing_plan_info: Mapping[str, object] | None = None,
     enable_endpoint_correction: bool = True,
 ) -> kdb.Region:
@@ -1136,7 +1137,7 @@ def _combined_region(*regions: kdb.Region) -> kdb.Region:
 
 
 def _polygons_region_um(
-    polygons_um: Iterable[Iterable[tuple[float, float]]],
+    polygons_um: Iterable[Iterable[object]],
     dbu: float,
 ) -> kdb.Region:
     region = kdb.Region()

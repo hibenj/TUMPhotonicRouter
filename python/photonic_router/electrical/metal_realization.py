@@ -79,24 +79,24 @@ def realize_electrical_metal(
     )
 
     if detailed_bundle_routes is not None:
-        for route in detailed_bundle_routes.routes:
-            if not route.success:
+        for detail_route in detailed_bundle_routes.routes:
+            if not detail_route.success:
                 continue
             net_id = (
-                route.pad_assignment.net_id
-                if route.pad_assignment is not None
-                else f"individual:{route.terminal.heater_id}"
+                detail_route.pad_assignment.net_id
+                if detail_route.pad_assignment is not None
+                else f"individual:{detail_route.terminal.heater_id}"
             )
             _append_terminal_point_route(
                 rects_by_net.setdefault(net_id, []),
-                route.terminal,
-                route.centerline,
+                detail_route.terminal,
+                detail_route.centerline,
                 obstacle_map,
                 width_um=config.wire_width_um,
                 contact_width_um=config.terminal_contact_width_um,
                 trim_route_tail_bends=True,
-                access=_individual_access(obstacle_map, route.terminal),
-                preferred_port_name=route.contact_port_name,
+                access=_individual_access(obstacle_map, detail_route.terminal),
+                preferred_port_name=detail_route.contact_port_name,
             )
 
     pad_marker_rects: list[BBox] = []
@@ -139,8 +139,8 @@ def realize_electrical_metal(
         "union_metal_area_um2": union_area,
         "metal_area_overcount_um2": raw_area - union_area,
         "rect_count_by_net": {net_id: len(rects) for net_id, rects in sorted(rects_by_net.items())},
-        "raw_metal_area_by_net_um2": raw_area_by_net,
-        "union_metal_area_by_net_um2": union_area_by_net,
+        "raw_metal_area_by_net_um2": dict(raw_area_by_net),
+        "union_metal_area_by_net_um2": dict(union_area_by_net),
         "polygon_count_by_net": dict(sorted(polygon_count_by_net.items())),
         "pad_marker_layer": config.pad_marker_layer,
         "pad_marker_polygon_count": pad_marker_polygon_count,
@@ -232,21 +232,21 @@ def _append_terminal_um_route(
         if preferred_port_name is not None
         else (access.port_name if access is not None else None)
     )
-    access = terminal_access_path(
+    access_path = terminal_access_path(
         terminal,
         route_points_um,
         fallback_width_um=contact_width_um,
         preferred_port_name=resolved_port_name,
     )
-    _append_rect(rects, access.contact_bbox)
+    _append_rect(rects, access_path.contact_bbox)
     _append_um_wire_path(
         rects,
-        access.adapter_points,
-        width_um=access.access_width_um,
+        access_path.adapter_points,
+        width_um=access_path.access_width_um,
     )
     _append_um_wire_path(
         rects,
-        access.route_tail_points,
+        access_path.route_tail_points,
         width_um=width_um,
         trim_bends=trim_route_tail_bends,
         trim_start=trim_route_tail_start,

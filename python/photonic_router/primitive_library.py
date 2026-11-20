@@ -29,7 +29,7 @@ class PrimitiveMetadata:
 class PrimitiveLibrary:
     """Maps Rust primitive IDs to gdsfactory components and metadata."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the primitive library with gdsfactory waveguides."""
         self.components: dict[int, gf.Component] = {}
         self.metadata: dict[int, PrimitiveMetadata] = {}

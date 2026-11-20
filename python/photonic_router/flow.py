@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import importlib
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from gdsfactory.component import Component
@@ -75,11 +75,17 @@ from photonic_router.routing.options import (
 )
 
 
+@dataclass(frozen=True)
+class _SchematicLink:
+    """One link of the benchmark's netlist, as the instances it joins (for the depth)."""
+
+    inst1: str
+    inst2: str
+
+
 def _depth_by_node_from_schematic(schematic: Schematic) -> dict[str, int]:
     """Instance depth (hops from a true source) on the benchmark's own
     netlist, before any contribution 2 splitting."""
-    from types import SimpleNamespace
-
     from photonic_router.records.route_order import depth_by_node_from_jobs
 
     jobs = []
@@ -87,7 +93,7 @@ def _depth_by_node_from_schematic(schematic: Schematic) -> dict[str, int]:
         for port1_spec, port2_spec in bundle.links.items():
             inst1 = str(port1_spec).split(",")[0]
             inst2 = str(port2_spec).split(",")[0]
-            jobs.append(SimpleNamespace(inst1=inst1, inst2=inst2))
+            jobs.append(_SchematicLink(inst1=inst1, inst2=inst2))
     return depth_by_node_from_jobs(jobs)
 
 
@@ -178,9 +184,7 @@ def _layout_from_schematic_stage(
         stats.step_times_s["layout_from_schematic"] = step_layout_end - step_layout_start
     print(f"      \u2713 Layout generated: {unrouted_layout.name}")
     bbox = unrouted_layout.bbox
-    if callable(bbox):
-        bbox = bbox()
-    print(f"      - Bounding box: {bbox}")
+    print(f"      - Bounding box: {bbox() if callable(bbox) else bbox}")
     if debug_timing:
         print(f"      - Translation time: {step_layout_end - step_layout_start:.4f} s")
     return unrouted_layout

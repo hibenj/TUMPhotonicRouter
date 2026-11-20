@@ -8,6 +8,7 @@ from collections.abc import Iterable as IterableABC
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import SupportsIndex, SupportsInt
 
 from gdsfactory.component import Component
 from gdsfactory.typings import Port
@@ -182,6 +183,30 @@ def as_int(value: object, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def int_of(value: object) -> int:
+    """``int(value)`` for a value whose type is not known.
+
+    Accepts what ``int`` accepts and raises what it raises: ``TypeError`` for
+    a value that is not a number or a string, ``ValueError`` for a string
+    that is not a number. For the callers that skip such a value.
+    """
+    if not isinstance(value, (int, str, bytes, bytearray, SupportsInt, SupportsIndex)):
+        raise TypeError(f"cannot convert {type(value).__name__} to int")
+    return int(value)
+
+
+def int_or_none(value: object) -> int | None:
+    """``int(value)``, or None for a value that ``int`` does not convert.
+
+    For records that carry a net id or an index as an untyped value: the
+    caller skips the entry that has none.
+    """
+    try:
+        return int_of(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _get_route_int_stat(route_obj: object, attr: str) -> int:

@@ -783,7 +783,7 @@ def _straight_static_stub_centerline_um(
         float(port_center_um[1])
         + float(step_y) * float(forward_cells) * float(state.obstacles.grid.grid_size_um),
     )
-    centerline = compress_centerline((tuple(port_center_um), anchor_point_um))
+    centerline = compress_centerline((port_center_um, anchor_point_um))
     if len(centerline) < 2:
         return None
     return centerline, (anchor_x, anchor_y)

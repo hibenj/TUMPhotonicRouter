@@ -514,7 +514,7 @@ def assign_pad_slots(lane_xs: list[int], slot_xs: list[int], gap_slots: int = 0)
         raise ValueError("lane_xs must be ascending")
 
     infinity = float("inf")
-    best = [abs(lane_xs[0] - slot_x) for slot_x in slot_xs]
+    best: list[float] = [abs(lane_xs[0] - slot_x) for slot_x in slot_xs]
     came_from: list[list[int]] = []
     for lane_x in lane_xs[1:]:
         previous = best

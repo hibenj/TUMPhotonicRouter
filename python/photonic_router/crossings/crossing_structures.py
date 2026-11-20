@@ -208,7 +208,6 @@ def evaluate_column_grid(
         )
     except ValueError as exc:
         return StructureCandidate(COLUMN_GRID, False, str(exc).replace("column grid: ", "", 1))
-    assert isinstance(probe, dict)
     return StructureCandidate(
         COLUMN_GRID,
         True,

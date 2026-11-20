@@ -44,6 +44,7 @@ span order). An explicit ``--net-order`` always wins.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import Protocol
 
 from photonic_router.records.route_rust_types import RouteJob
 
@@ -103,7 +104,21 @@ def normalize_net_order(net_order: object) -> str:
     return value
 
 
-def depth_by_node_from_jobs(jobs: Sequence[RouteJob]) -> dict[str, int]:
+class InstanceLink(Protocol):
+    """What `depth_by_node_from_jobs` reads of a job: the two instances a net joins."""
+
+    @property
+    def inst1(self) -> str:
+        """The instance the net leaves."""
+        ...
+
+    @property
+    def inst2(self) -> str:
+        """The instance the net enters."""
+        ...
+
+
+def depth_by_node_from_jobs(jobs: Sequence[InstanceLink]) -> dict[str, int]:
     """Hops from a true source (an instance with no incoming net in `jobs`).
 
     A cycle member (impossible for a real photonic netlist's signal flow, a

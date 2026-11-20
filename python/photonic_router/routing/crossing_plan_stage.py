@@ -65,7 +65,7 @@ def _resolve_port_footprint_cells(
     *,
     instance_name: str,
     port_name: str,
-    port: object,
+    port: Port,
 ) -> tuple[int, int]:
     """Return (length_cells, half_width_cells) sizing this port's access/keepout region."""
     rule = port_access_rule_for(

@@ -160,8 +160,7 @@ like the violation counts: a commit that adds one says why in its message.
    `ruff check`). *Tool, in force.*
 2. Every function of the package has annotated parameters and an annotated
    return type (ruff `ANN001`, `ANN201`, `ANN202`). *Tool, in force.* `mypy`
-   passes on the package. *Tool, proposed: the ratchet holds its error
-   count.*
+   passes on the package (`python -m mypy`). *Tool, in force.*
 3. A record that crosses a module boundary is a dataclass, not a
    `dict[str, object]`. A dictionary is for a mapping whose keys are data.
    *Review, proposed.*
@@ -239,8 +238,8 @@ Production Python under `python/photonic_router/` (46,110 lines, 109 files)
 and `crates/router-core`. `scripts/quality_ratchet.py` measures the counts
 below and `tests/baselines/quality_ratchet.json` pins them. The table shows
 the first measurement and the counts after the first two work packages (both
-2026-11-19); the file is the current truth. Rules 4.2 (annotations), 4.10 (absolute
-imports), 5.3 (no `unwrap()`) and the module and package half of 4.7 (ruff
+2026-11-19); the file is the current truth. Rules 4.2 (annotations, and mypy with 348
+errors at the first measurement), 4.10 (absolute imports), 5.3 (no `unwrap()`) and the module and package half of 4.7 (ruff
 `D100`, `D104`) left the table when their counts reached zero and the lint
 sets took them over.
 
@@ -249,7 +248,6 @@ sets took them over.
 | 3.2 | fields of the shared session state (`session_state_fields`) | 82 | 14 |
 | 3.4 | imports from a lower layer into a higher one (`upward_imports`) | 3 | 0 |
 | 3.5 | underscore names imported from another module (`private_imports`) | 247 | 27 |
-| 4.2 | mypy errors on the whole package (`mypy_errors`) | 348 | 285 |
 | 4.3 | `dict[str, object]` / `dict[str, Any]` annotations (`untyped_dict_annotations`) | 222 | 216 |
 | 4.4 | functions over 7 parameters (`ruff_PLR0913`) | 58; the largest 50 | 50 |
 | 4.5 | functions over 50 statements (`ruff_PLR0915`) | 43 | 40 |
@@ -265,9 +263,7 @@ sets took them over.
 
 The 39 Rust exceptions are per-function `allow(clippy::too_many_arguments)`
 attributes from before this document; they become `#[expect]` with a reason
-or disappear when the functions are reworked. mypy's informational run of
-`pyproject.toml` covers a narrower file list (236 errors there); the rule is
-about the package, so the package is what is pinned.
+or disappear when the functions are reworked.
 
 **Ratchet.** Until a proposed Tool rule holds everywhere, its count is
 pinned and may only fall. `scripts/quality_ratchet.py` (run by

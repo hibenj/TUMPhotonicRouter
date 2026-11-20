@@ -16,6 +16,7 @@ from photonic_router.crossings.crossing_verification_report import (
     route_cost_terms_from_mapping,
 )
 from photonic_router.flow_component_info import component_info
+from photonic_router.flow_stats import RoutingFlowStats
 from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.verify.photonic_verification import verify_photonic_routing
 
@@ -31,7 +32,7 @@ def verify_and_attach_photonic_reports(
     debug_stop_after_route_index: int | None,
     extra_report_metadata: Mapping[str, object] | None = None,
     write_gds_on_photonic_verification_failure: bool = False,
-    stats: object | None = None,
+    stats: RoutingFlowStats | None = None,
 ) -> None:
     """Run crossing and photonic final-geometry gates and attach report metadata.
 

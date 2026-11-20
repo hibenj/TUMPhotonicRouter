@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
-from dataclasses import is_dataclass, replace
-from typing import Any, cast
+from collections.abc import Mapping
+from dataclasses import replace
+from typing import Any, TypeAlias
 
 from photonic_router.routing_layers import get_routing_obstacle_layers
-
-_sob = importlib.import_module("photonic_router.static_obstacle_builder")
-GridSpec = _sob.GridSpec
-StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
+from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
 
 
 def grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
@@ -43,115 +40,83 @@ def default_obstacle_layers(
     return ((int(route_layer[0]), int(route_layer[1])),)
 
 
+#: What a caller may hand in as an obstacle configuration: the record, the
+#: keywords of `StaticObstacleMapConfig` as a mapping, or None for the defaults.
+ObstacleConfigInput: TypeAlias = "StaticObstacleMapConfig | Mapping[str, Any] | None"
+
+
+def _as_obstacle_config(obstacle_config: ObstacleConfigInput) -> StaticObstacleMapConfig:
+    """Return the configuration record for any accepted form; refuse anything else."""
+    if obstacle_config is None:
+        return StaticObstacleMapConfig()
+    if isinstance(obstacle_config, StaticObstacleMapConfig):
+        return obstacle_config
+    if isinstance(obstacle_config, Mapping):
+        return StaticObstacleMapConfig(**obstacle_config)
+    raise TypeError(
+        "obstacle_config must be a StaticObstacleMapConfig, a mapping of its fields or None, "
+        f"not {type(obstacle_config).__name__}"
+    )
+
+
 def resolve_obstacle_config(
-    obstacle_config: object | None,
+    obstacle_config: ObstacleConfigInput,
     *,
     route_layer: tuple[int, int],
     include_heater_obstacles: bool = False,
-) -> object:
-    """Default obstacle extraction to the photonic routing layer."""
+) -> StaticObstacleMapConfig:
+    """Return the configuration with its obstacle layers defaulted to the routing layer.
 
-    default_layers = default_obstacle_layers(
-        route_layer,
-        include_heater_obstacles=include_heater_obstacles,
+    Layers the caller named are kept; only a missing ``obstacle_layers`` is
+    filled with `default_obstacle_layers`.
+    """
+    config = _as_obstacle_config(obstacle_config)
+    if config.obstacle_layers is not None:
+        return config
+    return replace(
+        config,
+        obstacle_layers=default_obstacle_layers(
+            route_layer, include_heater_obstacles=include_heater_obstacles
+        ),
     )
-    if obstacle_config is None:
-        return StaticObstacleMapConfig(obstacle_layers=default_layers)
-
-    if isinstance(obstacle_config, dict):
-        if obstacle_config.get("obstacle_layers") is None:
-            config_dict = dict(obstacle_config)
-            config_dict["obstacle_layers"] = default_layers
-            return StaticObstacleMapConfig(**config_dict)
-        return StaticObstacleMapConfig(**obstacle_config)
-
-    obstacle_layers = getattr(obstacle_config, "obstacle_layers", None)
-    if obstacle_layers is None:
-        if is_dataclass(obstacle_config) and not isinstance(obstacle_config, type):
-            try:
-                return replace(cast(Any, obstacle_config), obstacle_layers=default_layers)
-            except Exception:
-                return obstacle_config
-        return obstacle_config
-
-    return obstacle_config
 
 
 def with_bbox_cell_materialization(
-    obstacle_config: object | None,
+    obstacle_config: ObstacleConfigInput,
     *,
     materialize_bbox_cells: bool,
     populate_obstacle_map: bool = True,
-) -> object | None:
-    """Return the obstacle config with ``materialize_bbox_cells`` and ``populate_obstacle_map`` set.
-
-    None gives a new dict with the two keys, a dict a changed copy, a dataclass
-    instance a changed copy made with ``dataclasses.replace``. A dataclass that
-    rejects the fields and any other object are returned unchanged.
-    """
-    if obstacle_config is None:
-        return {
-            "materialize_bbox_cells": materialize_bbox_cells,
-            "populate_obstacle_map": populate_obstacle_map,
-        }
-
-    if isinstance(obstacle_config, dict):
-        config_dict = dict(obstacle_config)
-        config_dict["materialize_bbox_cells"] = materialize_bbox_cells
-        config_dict["populate_obstacle_map"] = populate_obstacle_map
-        return config_dict
-
-    if is_dataclass(obstacle_config) and not isinstance(obstacle_config, type):
-        try:
-            return replace(
-                cast(Any, obstacle_config),
-                materialize_bbox_cells=materialize_bbox_cells,
-                populate_obstacle_map=populate_obstacle_map,
-            )
-        except Exception:
-            return obstacle_config
-
-    return obstacle_config
+) -> StaticObstacleMapConfig:
+    """Return the obstacle config with ``materialize_bbox_cells`` and ``populate_obstacle_map`` set."""
+    return replace(
+        _as_obstacle_config(obstacle_config),
+        materialize_bbox_cells=materialize_bbox_cells,
+        populate_obstacle_map=populate_obstacle_map,
+    )
 
 
 def with_obstacle_mode(
-    obstacle_config: object | None,
+    obstacle_config: ObstacleConfigInput,
     *,
     obstacle_mode: str,
     clear_port_open_cells_from_static: bool | None = None,
     populate_obstacle_map: bool | None = None,
     materialize_cell_sets: bool | None = None,
-) -> object | None:
+) -> StaticObstacleMapConfig:
     """Return the obstacle config with ``obstacle_mode`` set, plus the optional flags given.
 
-    A flag left at None is not written. None gives a new dict with the updates, a dict
-    a changed copy, a dataclass instance a changed copy made with
-    ``dataclasses.replace``. A dataclass that rejects the fields and any other object
-    are returned unchanged.
+    A flag left at None keeps the value the configuration has.
     """
-    updates: dict[str, object] = {"obstacle_mode": obstacle_mode}
+    config = replace(_as_obstacle_config(obstacle_config), obstacle_mode=obstacle_mode)
     if clear_port_open_cells_from_static is not None:
-        updates["clear_port_open_cells_from_static"] = clear_port_open_cells_from_static
+        config = replace(
+            config, clear_port_open_cells_from_static=clear_port_open_cells_from_static
+        )
     if populate_obstacle_map is not None:
-        updates["populate_obstacle_map"] = populate_obstacle_map
+        config = replace(config, populate_obstacle_map=populate_obstacle_map)
     if materialize_cell_sets is not None:
-        updates["materialize_cell_sets"] = materialize_cell_sets
-
-    if obstacle_config is None:
-        return updates
-
-    if isinstance(obstacle_config, dict):
-        config_dict = dict(obstacle_config)
-        config_dict.update(updates)
-        return config_dict
-
-    if is_dataclass(obstacle_config) and not isinstance(obstacle_config, type):
-        try:
-            return replace(cast(Any, obstacle_config), **updates)
-        except Exception:
-            return obstacle_config
-
-    return obstacle_config
+        config = replace(config, materialize_cell_sets=materialize_cell_sets)
+    return config
 
 
 def _coerce_component_name(instance: object) -> str | None:

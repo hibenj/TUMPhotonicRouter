@@ -278,8 +278,8 @@ def write_routes_overview_svg(
         'paint-order="stroke" stroke="white" stroke-width="2.5" fill="#111827">'
     )
     for record in drawn:
-        points = record.corrected_centerline_um
-        mx, my = to_px(points[len(points) // 2])
+        centerline = record.corrected_centerline_um
+        mx, my = to_px(centerline[len(centerline) // 2])
         label = escape(_route_label(record, realized_extra_um_by_net))
         parts.append(f'<text x="{mx + 2:.1f}" y="{my - 2:.1f}">{label}</text>')
     parts.append("</g>")

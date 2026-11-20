@@ -8,7 +8,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
@@ -24,6 +24,40 @@ from photonic_router.records.route_rust_types import RoutedNetRecord, RouteJob
 
 if TYPE_CHECKING:
     from photonic_router.records.crossing_plan_info import CrossingPlanInfo
+
+
+class CrossingRustBackendLike(Protocol):
+    """The part of the loaded `photonic_router._rust` module the crossing plan uses."""
+
+    def CrossingConfig(
+        self, *, enabled: bool, crossing_loss: float, crossing_half_size_cells: int
+    ) -> object:
+        """Build the kernel's crossing configuration."""
+        ...
+
+
+class CrossingRouterLike(Protocol):
+    """The part of the PyO3 router the crossing plan configures."""
+
+    def set_crossing_config(self, config: object) -> None:
+        """Hand the router the configuration `CrossingConfig` built."""
+        ...
+
+    def set_crossing_guidance(
+        self,
+        planned_pairs: list[tuple[int, int]],
+        planned_crossing_loss: float,
+        single_discounted_crossing_per_pair: bool,
+    ) -> None:
+        """Tell the router which net pairs the plan lets cross, and at what loss."""
+        ...
+
+
+class NativeCrossingEventNets(TypedDict):
+    """The two fields of a `router.crossing_events()` record the insertion-loss report reads."""
+
+    net_id: int
+    partner_net_id: int
 
 
 def _ensure_debug_dir(path: Path) -> None:
@@ -171,8 +205,8 @@ def _effective_single_discounted_crossing_per_pair(
 
 def build_crossing_plan_info(
     *,
-    rust_backend: object,
-    router: object,
+    rust_backend: CrossingRustBackendLike,
+    router: CrossingRouterLike,
     schematic: Schematic,
     unrouted_layout: Component,
     route_jobs: list[RouteJob],
@@ -428,7 +462,7 @@ def augment_insertion_loss_report(
     *,
     crossing_plan_info: CrossingPlanInfo,
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
-    native_crossing_events: Iterable[object],
+    native_crossing_events: Iterable[NativeCrossingEventNets],
     propagation_loss_per_um: float = 0.0,
     bend_loss_per_90deg: float = 0.0,
 ) -> None:

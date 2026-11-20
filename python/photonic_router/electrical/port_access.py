@@ -6,7 +6,7 @@ import itertools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal
 
 from photonic_router.electrical.pitch_grid import grid_cell_center_um
 from photonic_router.electrical.terminal_contacts import (
@@ -43,7 +43,7 @@ def build_electrical_port_accesses(
     common_bus_open_cells: dict[str, frozenset[GridCell]],
     individual_open_cells: dict[str, frozenset[GridCell]],
     blocked_cells: frozenset[GridCell],
-    grid: object,
+    grid: GridSpec,
     config: ElectricalRoutingConfig,
 ) -> tuple[dict[str, ElectricalPortAccess], dict[str, ElectricalPortAccess]]:
     """Build one selected access anchor per terminal and electrical purpose."""
@@ -77,7 +77,7 @@ def choose_route_start_cell(
     *,
     access: ElectricalPortAccess | None,
     opened_cells: frozenset[GridCell],
-    grid: object,
+    grid: GridSpec,
     blocked_cells: frozenset[GridCell] | set[GridCell] = frozenset(),
     fallback_cell: GridCell | None = None,
     bias_key: Callable[[GridCell], tuple[object, ...]] | None = None,
@@ -114,7 +114,7 @@ def ordered_route_start_cells(
     *,
     access: ElectricalPortAccess | None,
     opened_cells: frozenset[GridCell],
-    grid: object,
+    grid: GridSpec,
     blocked_cells: frozenset[GridCell] | set[GridCell] = frozenset(),
     fallback_cell: GridCell | None = None,
     bias_key: Callable[[GridCell], tuple[object, ...]] | None = None,
@@ -149,7 +149,7 @@ def build_terminal_port_access(
     side: Side,
     opened_cells: frozenset[GridCell],
     blocked_cells: frozenset[GridCell],
-    grid: object,
+    grid: GridSpec,
     fallback_width_um: float,
 ) -> ElectricalPortAccess:
     """Select a deterministic legal electrical-grid anchor for one terminal."""
@@ -198,15 +198,11 @@ def select_anchor_cell(
     side: Side,
     opened_cells: frozenset[GridCell],
     blocked_cells: frozenset[GridCell],
-    grid: object,
+    grid: GridSpec,
 ) -> GridCell:
     """Select the preferred legal anchor from already-open terminal cells."""
 
-    seed_cell = physical_to_grid(
-        port_point_um[0],
-        port_point_um[1],
-        cast(GridSpec, grid),
-    )
+    seed_cell = physical_to_grid(port_point_um[0], port_point_um[1], grid)
     legal_cells = tuple(
         cell for cell in opened_cells if _in_bounds(cell, grid) and cell not in blocked_cells
     )
@@ -280,5 +276,5 @@ def _fallback_contact_bbox(point: Point, width_um: float) -> tuple[float, float,
     )
 
 
-def _in_bounds(cell: GridCell, grid: object) -> bool:
+def _in_bounds(cell: GridCell, grid: GridSpec) -> bool:
     return 0 <= cell[0] < int(grid.width) and 0 <= cell[1] < int(grid.height)

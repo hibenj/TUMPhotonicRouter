@@ -6,7 +6,7 @@ import math
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from photonic_router.gds.route_rust_debug_artifacts import (
     ensure_dir,
@@ -92,19 +92,30 @@ def _record_native_batch_timings(
         state.route_nets_timings_s[name] = state.route_nets_timings_s.get(name, 0.0) + elapsed_s
 
 
+class _LongStraightCongestionRecord(TypedDict):
+    """One long straight the kernel marked as congestion, as the batch result reports it."""
+
+    net_id: int
+    start: tuple[int, int]
+    end: tuple[int, int]
+    length_um: float
+    marked_cells: int
+
+
 def _report_long_straight_congestion(
     settings: SessionSettings, state: SessionState, batch_result: dict[str, Any]
 ) -> None:
-    records = [
-        dict(record)
-        for record in cast(
-            Iterable[Mapping[str, object]],
+    # The kernel builds these dicts in `long_straight_congestion_records`
+    # (router-py `lib.rs`) with exactly the keys of the TypedDict.
+    records = list(
+        cast(
+            Iterable[_LongStraightCongestionRecord],
             batch_result.get("long_straight_congestion", []),
         )
-    ]
+    )
     if not records or not settings.verbose_route_diagnostics:
         return
-    grouped: dict[int, list[dict[str, object]]] = {}
+    grouped: dict[int, list[_LongStraightCongestionRecord]] = {}
     for record in records:
         try:
             net_id = int(record.get("net_id", -1))
@@ -472,10 +483,11 @@ def dispatch_native_routing(
         repair_round_raw = attempt.get("repair_round")
         repair_round = int(repair_round_raw) if repair_round_raw is not None else None
         attempt_index = len(state.search.attempt_records) + 1
+        # The kernel writes both lists from `Vec<u64>` (router-py `convert.rs`).
         candidate_blockers = [
-            int(value) for value in cast(list[object], attempt.get("candidate_blockers", []))
+            int(value) for value in cast(list[int], attempt.get("candidate_blockers", []))
         ]
-        ripup_ids = [int(value) for value in cast(list[object], attempt.get("ripup_ids", []))]
+        ripup_ids = [int(value) for value in cast(list[int], attempt.get("ripup_ids", []))]
         if (
             route_obj is not None
             and not failed

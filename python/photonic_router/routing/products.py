@@ -39,7 +39,7 @@ from photonic_router.records.route_rust_types import (
     RipupRerouteConfig,
     RouteJob,
 )
-from photonic_router.static_obstacle_builder import GridSpec
+from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
 
 if TYPE_CHECKING:  # annotation-only: `route_jobs` imports this module
     from gdsfactory.typings import Port
@@ -59,9 +59,8 @@ class ObstacleContext:
     obstacle_svg: Path | None
     #: the routing grid of the static obstacle map
     grid: GridSpec
-    #: the obstacle configuration actually used: a `StaticObstacleMapConfig`,
-    #: or the caller's own configuration object when it passed one
-    resolved_obstacle_config: object
+    #: the obstacle configuration actually used, its obstacle layers resolved
+    resolved_obstacle_config: StaticObstacleMapConfig
     #: the crossing footprint's half size in cells after resolution
     resolved_crossing_half_size_cells: int
     #: the debug artifact directory; None writes no artifacts

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from photonic_router.config import RoutingConfig
 from photonic_router.placement_analysis import PlacementAnalysis
+from photonic_router.records.route_rust_obstacle_config import ObstacleConfigInput
 from photonic_router.records.route_rust_types import (
     DEFAULT_MEANDER_MAX_HEIGHT_UM,
     RipupRerouteConfig,
@@ -132,7 +133,7 @@ class SessionOptions:
     debug: DebugOptions = field(default_factory=DebugOptions)
     realization: RealizationOptions = field(default_factory=RealizationOptions)
     #: the static obstacle map's configuration; None uses the builder's default
-    obstacle_config: object | None = None
+    obstacle_config: ObstacleConfigInput = None
     include_heater_obstacles: bool = False
     ripup_reroute_config: RipupRerouteConfig | None = None
     #: True runs the expensive probe of the realized layout inside the

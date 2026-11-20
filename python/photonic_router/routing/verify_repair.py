@@ -39,7 +39,7 @@ from photonic_router.crossings.route_rust_crossing_verification import (
 from photonic_router.gds.route_rust_debug_artifacts import dump_photonic_probe_failure_artifacts
 from photonic_router.records.route_rust_obstacle_config import default_obstacle_layers
 from photonic_router.records.route_rust_realization import realize_routed_net_records
-from photonic_router.records.route_rust_types import RoutedNetRecord
+from photonic_router.records.route_rust_types import RoutedNetRecord, int_or_none
 from photonic_router.routing import timing
 from photonic_router.routing.dispatch import (
     NEGOTIATED_MAX_ROUNDS,
@@ -231,9 +231,8 @@ def _final_crossing_repair_net_ids(
         for blocker in blockers:
             if not isinstance(blocker, Mapping):
                 continue
-            try:
-                blocker_net_id = int(cast(object, blocker.get("net_id")))
-            except (TypeError, ValueError):
+            blocker_net_id = int_or_none(blocker.get("net_id"))
+            if blocker_net_id is None:
                 continue
             if blocker_net_id in state.run.route_jobs_by_id:
                 net_ids.add(blocker_net_id)
@@ -241,9 +240,8 @@ def _final_crossing_repair_net_ids(
     for item in illegal_crossings:
         item_pair_ids: list[int] = []
         for key in ("net_id_a", "net_id_b"):
-            try:
-                net_id = int(cast(object, item.get(key)))
-            except (TypeError, ValueError):
+            net_id = int_or_none(item.get(key))
+            if net_id is None:
                 continue
             if net_id in state.run.route_jobs_by_id:
                 item_pair_ids.append(net_id)
@@ -268,9 +266,8 @@ def _final_crossing_repair_net_ids(
             peer = item.get("overlapping_crossing")
             if isinstance(peer, Mapping):
                 for key in ("net_id_a", "net_id_b"):
-                    try:
-                        peer_net_id = int(cast(object, peer.get(key)))
-                    except (TypeError, ValueError):
+                    peer_net_id = int_or_none(peer.get(key))
+                    if peer_net_id is None:
                         continue
                     if peer_net_id in state.run.route_jobs_by_id:
                         peer_pair_ids.add(peer_net_id)
@@ -418,9 +415,8 @@ def _repair_final_illegal_crossings(
         priority: list[int] = []
         for item in selected_illegal_crossings:
             for key in ("net_id_b", "net_id_a"):
-                try:
-                    net_id = int(cast(object, item.get(key)))
-                except (TypeError, ValueError):
+                net_id = int_or_none(item.get(key))
+                if net_id is None:
                     continue
                 if net_id in state.run.route_jobs_by_id and net_id not in priority:
                     priority.append(net_id)
@@ -433,9 +429,8 @@ def _repair_final_illegal_crossings(
             for blocker in blockers:
                 if not isinstance(blocker, Mapping):
                     continue
-                try:
-                    blocker_net_id = int(cast(object, blocker.get("net_id")))
-                except (TypeError, ValueError):
+                blocker_net_id = int_or_none(blocker.get("net_id"))
+                if blocker_net_id is None:
                     continue
                 if blocker_net_id in state.run.route_jobs_by_id and blocker_net_id not in priority:
                     priority.append(blocker_net_id)

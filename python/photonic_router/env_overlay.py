@@ -30,9 +30,17 @@ import math
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import replace
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, TypeVar
 
-from photonic_router.config import ALL_NETS, RouterConfig
+from photonic_router.config import ALL_NETS, RouterConfig, RoutingConfig
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
+#: any frozen configuration dataclass of the tree, rebuilt by `_replace_path`
+_DataclassT = TypeVar("_DataclassT", bound="DataclassInstance")
+#: the two roots `apply_env_overlay` accepts; it returns the type it was given
+_ConfigT = TypeVar("_ConfigT", RouterConfig, RoutingConfig)
 
 
 class EnvVar(NamedTuple):
@@ -707,7 +715,7 @@ SPECIALLY_HANDLED_NAMES: frozenset[str] = frozenset(
 )
 
 
-def _replace_path(config: object, path: tuple[str, ...], value: object) -> object:
+def _replace_path(config: _DataclassT, path: tuple[str, ...], value: object) -> _DataclassT:
     """Set the field named by `path` (arbitrary depth: a leaf name, or a
     chain of group names ending in a leaf) on `config`, rebuilding every
     frozen dataclass along the way with `dataclasses.replace`."""
@@ -754,7 +762,7 @@ def _apply_long_straight_congestion_weight(
     return _replace_path(config, ("search", "long_straight_congestion_weight"), value)
 
 
-def apply_env_overlay(config: object, environ: Mapping[str, str] | None = None) -> object:
+def apply_env_overlay(config: _ConfigT, environ: Mapping[str, str] | None = None) -> _ConfigT:
     """Apply every present `PHOTONIC_ROUTER_*` name of `ENV_OVERLAY` plus
     the two specially-handled ones onto `config`, returning a new config of
     the same type. A variable absent from `environ` is never applied -- its
@@ -781,7 +789,7 @@ def apply_env_overlay(config: object, environ: Mapping[str, str] | None = None) 
             path = path[1:]
         value = entry.parse(environ[entry.name])
         config = _replace_path(config, path, value)
-    if is_router_config:
+    if isinstance(config, RouterConfig):
         config = _apply_astar_timeout(config, environ)
         config = _apply_long_straight_congestion_weight(config, environ)
     else:

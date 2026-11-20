@@ -25,6 +25,7 @@ from photonic_router.crossings.crossing_modes import normalize_crossing_mode
 from photonic_router.crossings.route_rust_crossing_plan import effective_crossing_search_loss
 from photonic_router.placement_analysis import PlacementAnalysis
 from photonic_router.records.route_order import normalize_net_order
+from photonic_router.records.route_rust_obstacle_config import ObstacleConfigInput
 from photonic_router.records.route_rust_types import RipupRerouteConfig
 from photonic_router.routing.options import SessionOptions
 
@@ -42,7 +43,7 @@ class SessionSettings:
     # Consumed by the obstacle context, the debug SVG registry and the printers.
     unrouted_layout: Component
     schematic: Schematic
-    obstacle_config: object | None
+    obstacle_config: ObstacleConfigInput
     include_heater_obstacles: bool
     debug_dir: str | Path | None
     debug_prefix: str

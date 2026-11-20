@@ -15,6 +15,8 @@ from photonic_router.records.route_rust_types import (
     RoutedNetRecord,
     as_float,
     as_int,
+    int_of,
+    int_or_none,
 )
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
@@ -31,6 +33,38 @@ class _EndpointCorrectionRouter(Protocol):
         target_port_um: tuple[float, float] | None = None,
         allow_unchecked_bumps: bool = True,
     ) -> Iterable[object]: ...
+
+
+class RealizationRouter(_EndpointCorrectionRouter, Protocol):
+    """The router methods that turn a routed record into its polygon (points in um)."""
+
+    def realize_route_polygon(self, route: object, width_um: float) -> list[tuple[float, float]]:
+        """Return the polygon of ``route`` drawn ``width_um`` wide."""
+        ...
+
+    def realize_centerline_polygon_with_terminal_tangents(
+        self,
+        centerline: list[tuple[float, float]],
+        width_um: float,
+        route: object,
+        *,
+        source_enabled: bool = True,
+        target_enabled: bool = True,
+    ) -> list[tuple[float, float]]:
+        """Return the polygon of a corrected centerline, its enabled ends on the route's tangents."""
+        ...
+
+    def realize_route_polygon_from_planned_auto_meander(
+        self,
+        route: object,
+        width_um: float,
+        *,
+        selected_run_start_index: int,
+        selected_run_end_index: int,
+        meander_centerline: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        """Return the polygon of ``route`` with the planned meander in place of the selected run."""
+        ...
 
 
 def _physical_port_centerline(
@@ -125,7 +159,7 @@ def _crossing_net_ids(
             for key_pair in key_pairs:
                 for key in key_pair:
                     try:
-                        net_ids.add(int(raw_item.get(key)))
+                        net_ids.add(int_of(raw_item.get(key)))
                     except (TypeError, ValueError):
                         continue
     return net_ids
@@ -136,7 +170,7 @@ def build_realization_router(
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_45_degree_turns: bool = True,
     bend_radius_cells: int = 4,
-) -> object:
+) -> RealizationRouter:
     """Build the backend router used to realize routed records into polygons.
 
     Extracted from ``realize_routed_net_records`` (Milestone 4 of
@@ -180,7 +214,7 @@ def realize_routed_net_records(
     bend_radius_cells: int = 4,
     crossing_plan_info: Mapping[str, object] | None = None,
     enable_endpoint_correction: bool = True,
-    router: object | None = None,
+    router: RealizationRouter | None = None,
 ) -> None:
     """Phase B: realize routed records into polygons on the target layout."""
     if route_width_um <= 0:
@@ -224,7 +258,7 @@ def realize_routed_net_records(
 
 
 def _record_realized_polygon(
-    router: object,
+    router: RealizationRouter,
     record: RoutedNetRecord,
     *,
     route_width_um: float,
@@ -320,7 +354,7 @@ def _record_realized_polygon(
 
 def _add_route_polygon(
     routed_layout: Component,
-    polygon: object,
+    polygon: list[tuple[float, float]],
     *,
     route_layer: tuple[int, int],
     clip_region: kdb.Region | None = None,
@@ -345,7 +379,7 @@ def realized_record_polygons(
     route_width_um: float,
     realization_grid_spec: tuple[int, int, float, float, float],
     dbu: float,
-    router: object,
+    router: RealizationRouter,
     crossing_plan_info: Mapping[str, object] | None = None,
     enable_endpoint_correction: bool = True,
 ) -> list[kdb.Polygon]:
@@ -428,7 +462,7 @@ def _crossing_clip_regions_by_net_id(
         if footprint.is_empty():
             continue
         for key in ("net_id_a", "net_id_b"):
-            net_id = _as_int_or_none(raw_crossing.get(key))
+            net_id = int_or_none(raw_crossing.get(key))
             if net_id is None:
                 continue
             regions_by_net_id.setdefault(net_id, kdb.Region())
@@ -479,10 +513,3 @@ def _component_dbu(component: Component) -> float:
 
 def _um_to_dbu(value_um: float, dbu: float) -> int:
     return round(float(value_um) / float(dbu))
-
-
-def _as_int_or_none(value: object) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None

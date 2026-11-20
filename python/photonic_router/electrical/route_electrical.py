@@ -93,7 +93,7 @@ def route_electrical_heaters(
     # Stage 2: ObstacleMapBuilder.
     obstacle_map = build_electrical_obstacle_map(component, terminal_groups, config)
     if not terminal_groups:
-        routed_component = component.copy()
+        unrouted_component = component.copy()
         return ElectricalRoutingResult(
             terminal_groups=terminal_groups,
             obstacle_map=obstacle_map,
@@ -106,7 +106,7 @@ def route_electrical_heaters(
                 tree_cells=frozenset(),
                 failed_heaters=(),
             ),
-            routed_component=routed_component,
+            routed_component=unrouted_component,
         )
 
     # Stage 3: CommonBusRouter.

@@ -6,14 +6,32 @@ import json
 import math
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from gdsfactory.component import Component
 
 from photonic_router.gds.gds_write_options import gds_save_options
-from photonic_router.records.route_rust_records import EndpointCorrectionRouter
 from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.verify.photonic_verification import PhotonicVerificationResult
+
+
+class ProbeCenterlineRouter(Protocol):
+    """The router methods the probe failure dump reads a net's centerlines with."""
+
+    def route_primitive_centerline(self, route: object) -> Iterable[object]:
+        """Return the centerline of ``route`` in um as the kernel's primitives give it."""
+        ...
+
+    def route_port_corrected_centerline(
+        self,
+        route: object,
+        *,
+        source_port_um: tuple[float, float] | None = None,
+        target_port_um: tuple[float, float] | None = None,
+        allow_unchecked_bumps: bool = True,
+    ) -> Iterable[object]:
+        """Return the centerline of ``route`` in um with its ends corrected to the port centers."""
+        ...
 
 
 def ensure_dir(path: Path) -> None:
@@ -163,7 +181,7 @@ def dump_photonic_probe_failure_artifacts(
     probe_layout: Component | None,
     verification: PhotonicVerificationResult,
     records: Iterable[RoutedNetRecord],
-    router: EndpointCorrectionRouter,
+    router: ProbeCenterlineRouter,
     realization_grid_spec: tuple[int, int, float, float, float],
     allow_unchecked_bumps: bool,
 ) -> dict[str, str]:

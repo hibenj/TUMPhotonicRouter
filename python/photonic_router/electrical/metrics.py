@@ -271,14 +271,14 @@ def _route_start_metrics(
             }
         )
     if detailed_bundle_routes is not None:
-        for route in detailed_bundle_routes.routes:
+        for detail_route in detailed_bundle_routes.routes:
             records.append(
                 {
                     "purpose": "individual",
-                    "terminal_id": route.terminal.id,
-                    "route_start_cell": route.route_start_cell,
-                    "access_anchor_cell": route.access_anchor_cell,
-                    "used_access_anchor": route.used_access_anchor,
+                    "terminal_id": detail_route.terminal.id,
+                    "route_start_cell": detail_route.route_start_cell,
+                    "access_anchor_cell": detail_route.access_anchor_cell,
+                    "used_access_anchor": detail_route.used_access_anchor,
                 }
             )
     route_count_by_purpose = Counter(str(record["purpose"]) for record in records)

@@ -85,7 +85,7 @@ def parse_debug_svg_selector(
         if selector in {"true", "on", "yes", "all", "*"}:
             return True, None
 
-        indices: set[int] = set()
+        indices = set()
         for part in selector.split(","):
             token = part.strip()
             if not token:

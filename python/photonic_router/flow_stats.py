@@ -3,7 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from photonic_router.records.route_rust_types import (
+        RouteRustPipelineResult,
+        RouteSearchSummary,
+        RustRouteDebugArtifacts,
+    )
 
 
 @dataclass
@@ -166,9 +173,9 @@ def record_initial_route_stats(stats: RoutingFlowStats | None) -> None:
 def populate_route_stats(
     stats: RoutingFlowStats,
     *,
-    route_result: object,
-    debug_artifacts: object,
-    route_summary: object,
+    route_result: RouteRustPipelineResult,
+    debug_artifacts: RustRouteDebugArtifacts,
+    route_summary: RouteSearchSummary,
     route_attempt_records: list[dict[str, object]],
     route_time_s: float,
 ) -> None:
@@ -176,19 +183,19 @@ def populate_route_stats(
     stats.step_times_s["baseline_gdsfactory_routing"] = route_time_s
     if "build_static_obstacle_map" not in stats.step_times_s:
         stats.step_times_s["build_static_obstacle_map"] = 0.0
-    for name, elapsed_s in getattr(route_result, "pipeline_timings_s", {}).items():
+    for name, elapsed_s in route_result.pipeline_timings_s.items():
         stats.step_times_s[str(name)] = float(elapsed_s)
-    if getattr(debug_artifacts, "realization_grid_spec", None) is not None:
+    if debug_artifacts.realization_grid_spec is not None:
         width, height, *_ = debug_artifacts.realization_grid_spec
         stats.static_grid_width = int(width)
         stats.static_grid_height = int(height)
-    blocked_count = len(getattr(debug_artifacts, "static_blocked_cells", ()))
+    blocked_count = len(debug_artifacts.static_blocked_cells)
     if blocked_count == 0:
-        blocked_count = int(getattr(debug_artifacts, "static_obstacle_count", 0) or 0)
+        blocked_count = int(debug_artifacts.static_obstacle_count or 0)
     if blocked_count > 0:
         stats.blocked_cells = blocked_count
         stats.raw_blocked_cells = blocked_count
-        port_open_count = int(getattr(debug_artifacts, "static_port_open_count", 0) or 0)
+        port_open_count = int(debug_artifacts.static_port_open_count or 0)
         stats.port_open_cells = port_open_count
     stats.astar_time_s = float(route_summary.astar_elapsed_s)
     stats.route_attempts = int(route_summary.route_attempts)
@@ -198,7 +205,7 @@ def populate_route_stats(
     stats.route_failures = (
         int(route_summary.route_failures) if int(route_summary.route_attempts) > 0 else None
     )
-    stats.detour_pass_reroutes = getattr(debug_artifacts, "detour_pass_reroutes", None)
+    stats.detour_pass_reroutes = debug_artifacts.detour_pass_reroutes
     stats.simple_route_count = int(route_summary.simple_route_count)
     stats.repair_count = int(route_summary.repair_count)
     stats.expanded_states = int(route_summary.expanded_states)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from gdsfactory.component import Component
 
+from photonic_router.flow_stats import RoutingFlowStats
 from photonic_router.records.route_rust_types import (
     MeanderEdgeReport,
     MeanderInsertionReport,
@@ -16,7 +17,7 @@ def attach_and_report_path_length_matching(
     routed_layout: Component,
     route_result: object,
     debug_meanders: bool,
-    stats: object | None = None,
+    stats: RoutingFlowStats | None = None,
 ) -> None:
     """Attach PLM metadata to the layout and print the PLM summary.
 

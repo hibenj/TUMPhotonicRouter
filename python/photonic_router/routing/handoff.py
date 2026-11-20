@@ -218,7 +218,7 @@ def _filter_dense_port_opening(
     lower -= lane_margin_um
     upper += lane_margin_um
     eps = max(1.0e-9, grid_size * 1.0e-9)
-    filtered: set[tuple[int, int]] = set()
+    filtered = set()
     for cell_x, cell_y in cells:
         center_x, center_y = grid_cell_center(cell_x, cell_y, state.obstacles.grid)
         lateral_position = center_x * lateral_x + center_y * lateral_y
@@ -645,8 +645,6 @@ def _hand_static_cells_to_kernel(
             Iterable[tuple[int, int, int, int]], obstacle_map.blocked_static_rects
         )
         for rect in raw_blocked_rects:
-            if len(rect) != 4:
-                continue
             blocked_static_rects.append((int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])))
         blocked_rects_for_diagnostics = list(blocked_static_rects)
         if blocked_static_rects:

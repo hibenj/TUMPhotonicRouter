@@ -8,12 +8,18 @@ from __future__ import annotations
 
 import contextlib
 import webbrowser
+from collections.abc import Mapping
 from pathlib import Path
 
 from gdsfactory.component import Component
 
 from photonic_router.electrical import ElectricalRoutingResult
 from photonic_router.gds.gds_write_options import gds_save_options
+from photonic_router.records.route_rust_types import (
+    RouteRustPipelineResult,
+    RouteSearchSummary,
+    RustRouteDebugArtifacts,
+)
 
 
 def route_attempt_as_dict(record: object) -> dict[str, object]:
@@ -247,13 +253,13 @@ def report_partial_debug_artifacts(
 
 def report_optical_timing(
     *,
-    route_result: object,
-    route_summary: object,
+    route_result: RouteRustPipelineResult,
+    route_summary: RouteSearchSummary,
     route_attempt_records: list[dict[str, object]],
     route_time_s: float,
 ) -> None:
     """Print the detailed optical routing timing report."""
-    timings = getattr(route_result, "pipeline_timings_s", {})
+    timings = route_result.pipeline_timings_s
     route_nets_time = float(timings.get("route_nets", 0.0))
     plm_analysis_time = float(timings.get("path_length_analysis", 0.0))
     plm_obstacle_time = float(timings.get("meander_obstacle_map", 0.0))
@@ -280,13 +286,13 @@ def report_optical_timing(
         f"{int(route_summary.route_count)}, "
         f"repairs={int(route_summary.repair_count)}"
     )
-    endpoint_correction_time_s = float(getattr(route_summary, "endpoint_correction_time_s", 0.0))
+    endpoint_correction_time_s = float(route_summary.endpoint_correction_time_s)
     if endpoint_correction_time_s > 0.0:
         print(
             "          endpoint correction: "
             f"time={endpoint_correction_time_s:.4f}s, "
-            f"calls={int(getattr(route_summary, 'endpoint_correction_calls', 0))}, "
-            f"failures={int(getattr(route_summary, 'endpoint_correction_failures', 0))}"
+            f"calls={int(route_summary.endpoint_correction_calls)}, "
+            f"failures={int(route_summary.endpoint_correction_failures)}"
         )
     print(
         "          A* counters: "
@@ -300,27 +306,27 @@ def report_optical_timing(
     )
     print(
         "          Crossing hot path: "
-        f"no_contact={int(getattr(route_summary, 'crossing_hotpath_no_contact', 0))}, "
-        f"contact_checks={int(getattr(route_summary, 'crossing_hotpath_contact_checks', 0))}, "
-        f"static_rejects={int(getattr(route_summary, 'crossing_hotpath_static_rejects', 0))}, "
-        f"no_owner={int(getattr(route_summary, 'crossing_hotpath_no_owner_contacts', 0))}, "
-        f"single_owner={int(getattr(route_summary, 'crossing_hotpath_single_owner_contacts', 0))}, "
-        f"multi_owner={int(getattr(route_summary, 'crossing_hotpath_multi_owner_contacts', 0))}, "
+        f"no_contact={int(route_summary.crossing_hotpath_no_contact)}, "
+        f"contact_checks={int(route_summary.crossing_hotpath_contact_checks)}, "
+        f"static_rejects={int(route_summary.crossing_hotpath_static_rejects)}, "
+        f"no_owner={int(route_summary.crossing_hotpath_no_owner_contacts)}, "
+        f"single_owner={int(route_summary.crossing_hotpath_single_owner_contacts)}, "
+        f"multi_owner={int(route_summary.crossing_hotpath_multi_owner_contacts)}, "
         f"candidate_checks={int(route_summary.crossing_candidate_checks)}, "
         f"accepted={int(route_summary.crossing_accepted)}, "
-        f"accepted_planned={int(getattr(route_summary, 'crossing_accepted_planned', 0))}, "
-        f"accepted_over_budget={int(getattr(route_summary, 'crossing_accepted_over_budget', 0))}"
+        f"accepted_planned={int(route_summary.crossing_accepted_planned)}, "
+        f"accepted_over_budget={int(route_summary.crossing_accepted_over_budget)}"
     )
     print(
         "          Crossing hot path detail: "
-        f"witness_cells={int(getattr(route_summary, 'crossing_hotpath_witness_cells_scanned', 0))}, "
-        f"partner_segments={int(getattr(route_summary, 'crossing_hotpath_partner_segment_checks', 0))}, "
-        f"bbox_rejects={int(getattr(route_summary, 'crossing_hotpath_partner_segment_bbox_rejects', 0))}, "
-        f"intersections={int(getattr(route_summary, 'crossing_hotpath_intersection_hits', 0))}, "
-        f"total={float(getattr(route_summary, 'crossing_hotpath_total_time_us', 0)) / 1_000_000.0:.4f}s, "
-        f"owner_scan={float(getattr(route_summary, 'crossing_hotpath_owner_scan_time_us', 0)) / 1_000_000.0:.4f}s, "
-        f"segments={float(getattr(route_summary, 'crossing_hotpath_segment_time_us', 0)) / 1_000_000.0:.4f}s, "
-        f"reservation={float(getattr(route_summary, 'crossing_hotpath_reservation_time_us', 0)) / 1_000_000.0:.4f}s"
+        f"witness_cells={int(route_summary.crossing_hotpath_witness_cells_scanned)}, "
+        f"partner_segments={int(route_summary.crossing_hotpath_partner_segment_checks)}, "
+        f"bbox_rejects={int(route_summary.crossing_hotpath_partner_segment_bbox_rejects)}, "
+        f"intersections={int(route_summary.crossing_hotpath_intersection_hits)}, "
+        f"total={float(route_summary.crossing_hotpath_total_time_us) / 1_000_000.0:.4f}s, "
+        f"owner_scan={float(route_summary.crossing_hotpath_owner_scan_time_us) / 1_000_000.0:.4f}s, "
+        f"segments={float(route_summary.crossing_hotpath_segment_time_us) / 1_000_000.0:.4f}s, "
+        f"reservation={float(route_summary.crossing_hotpath_reservation_time_us) / 1_000_000.0:.4f}s"
     )
     _report_astar_timed_ops(route_summary)
     _report_slowest_routes(route_attempt_records)
@@ -339,7 +345,7 @@ def report_optical_timing(
         print(f"        - stage overhead/reporting: {overhead_time:.4f} s")
 
 
-def _report_route_nets_subtimings(timings: object, route_nets_time: float) -> None:
+def _report_route_nets_subtimings(timings: Mapping[str, float], route_nets_time: float) -> None:
     route_nets_subtimings = {
         str(name).removeprefix("route_nets."): float(elapsed_s)
         for name, elapsed_s in dict(timings).items()
@@ -421,7 +427,7 @@ def _report_native_repair_timings(route_nets_subtimings: dict[str, float]) -> No
     )
 
 
-def _report_astar_timed_ops(route_summary: object) -> None:
+def _report_astar_timed_ops(route_summary: RouteSearchSummary) -> None:
     print(
         "          A* timed ops: "
         f"dense_build={float(route_summary.dense_grid_build_time_us) / 1_000_000.0:.4f}s, "
@@ -477,15 +483,15 @@ def _report_slowest_routes(route_attempt_records: list[dict[str, object]]) -> No
 
 def report_and_open_debug_svgs(
     *,
-    debug_artifacts: object,
+    debug_artifacts: RustRouteDebugArtifacts,
     electrical_result: ElectricalRoutingResult | None,
     debug_route_indices: set[int] | None,
 ) -> None:
     """Report generated debug SVGs and open them in the default browser."""
-    if getattr(debug_artifacts, "obstacle_svg", None) is not None:
+    if debug_artifacts.obstacle_svg is not None:
         print(f"      - Obstacle SVG: {debug_artifacts.obstacle_svg}")
     if debug_route_indices is None:
-        if getattr(debug_artifacts, "route_svgs", None):
+        if debug_artifacts.route_svgs:
             print(f"      - Route SVGs: {len(debug_artifacts.route_svgs)} files")
     else:
         selected = _format_debug_route_indices(debug_route_indices)
@@ -495,17 +501,17 @@ def report_and_open_debug_svgs(
         )
 
     try:
-        if getattr(debug_artifacts, "obstacle_svg", None) is not None:
+        if debug_artifacts.obstacle_svg is not None:
             obs_path = Path(debug_artifacts.obstacle_svg)
             if obs_path.exists():
                 webbrowser.open_new_tab(obs_path.resolve().as_uri())
-        for svg in getattr(debug_artifacts, "route_svgs", ()) or ():
+        for svg in debug_artifacts.route_svgs or ():
             svg_path = Path(svg)
             if svg_path.exists():
                 webbrowser.open_new_tab(svg_path.resolve().as_uri())
         if electrical_result is not None:
-            for svg in electrical_result.debug_artifacts.values():
-                svg_path = Path(svg)
+            for electrical_svg in electrical_result.debug_artifacts.values():
+                svg_path = Path(electrical_svg)
                 if svg_path.exists():
                     webbrowser.open_new_tab(svg_path.resolve().as_uri())
     except Exception as e:

@@ -197,24 +197,26 @@ def electrical_debug_svg(
                 route.terminal.id,
             ),
         )
-        for route in sorted_routes:
-            detail_cells.update(route.path)
-            detail_target_cells.update(route.target_cells)
+        for detail_route in sorted_routes:
+            detail_cells.update(detail_route.path)
+            detail_target_cells.update(detail_route.target_cells)
         _append_cells(parts, grid.height, detail_target_cells, fill="#fdd663", opacity=0.75)
         _append_cells(parts, grid.height, detail_cells, fill="#2a9d8f", opacity=0.12)
-        for route in sorted_routes:
-            color = _INDIVIDUAL_ROUTE_PALETTE[route.bundle_id % len(_INDIVIDUAL_ROUTE_PALETTE)]
+        for detail_route in sorted_routes:
+            color = _INDIVIDUAL_ROUTE_PALETTE[
+                detail_route.bundle_id % len(_INDIVIDUAL_ROUTE_PALETTE)
+            ]
             title = (
-                f"detailed bundle={route.bundle_id} rank={route.rank} "
-                f"pad={route.pad_assignment.slot.index if route.pad_assignment is not None else 'none'} "
-                f"terminal={route.terminal.id} start={route.route_start_cell} "
-                f"anchor={route.access_anchor_cell} used_anchor={route.used_access_anchor}"
+                f"detailed bundle={detail_route.bundle_id} rank={detail_route.rank} "
+                f"pad={detail_route.pad_assignment.slot.index if detail_route.pad_assignment is not None else 'none'} "
+                f"terminal={detail_route.terminal.id} start={detail_route.route_start_cell} "
+                f"anchor={detail_route.access_anchor_cell} used_anchor={detail_route.used_access_anchor}"
             )
-            if route.centerline:
+            if detail_route.centerline:
                 _append_point_polyline(
                     parts,
                     grid.height,
-                    route.centerline,
+                    detail_route.centerline,
                     stroke=color,
                     stroke_width=0.24,
                     opacity=0.95,
@@ -224,7 +226,7 @@ def electrical_debug_svg(
                 _append_route_polyline(
                     parts,
                     grid.height,
-                    route.path,
+                    detail_route.path,
                     stroke=color,
                     stroke_width=0.24,
                     opacity=0.95,
@@ -240,14 +242,14 @@ def electrical_debug_svg(
         for bundle in individual_topology.bundles:
             color = _INDIVIDUAL_ROUTE_PALETTE[bundle.bundle_id % len(_INDIVIDUAL_ROUTE_PALETTE)]
             for rank, terminal in enumerate(bundle.ordered_terminals):
-                route = routes_by_terminal_id.get(terminal.id)
-                if route is None:
+                topology_route = routes_by_terminal_id.get(terminal.id)
+                if topology_route is None:
                     continue
                 offset = _DEBUG_ROUTE_OFFSETS[rank % len(_DEBUG_ROUTE_OFFSETS)]
                 _append_route_polyline(
                     parts,
                     grid.height,
-                    route.path,
+                    topology_route.path,
                     stroke=color,
                     stroke_width=0.28,
                     opacity=0.45,

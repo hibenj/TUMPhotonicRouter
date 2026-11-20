@@ -8,12 +8,8 @@ from gdsfactory.component import Component
 
 
 def component_info(component: Component) -> Any:
-    """Return a mutable component info object, creating one for test doubles."""
-    info = getattr(component, "info", None)
-    if info is None:
-        info = {}
-        component.info = info
-    return info
+    """Return the component's mutable info object."""
+    return component.info
 
 
 def copy_component_info(source: Component, target: Component) -> None:

@@ -108,21 +108,6 @@ def ruff_counts(package: Path = PACKAGE) -> dict[str, int]:
     return {f"ruff_{code}": found.get(code, 0) for code in RUFF_RULES}
 
 
-def mypy_errors() -> int:
-    """Count mypy's errors on the whole package (rule 4.2).
-
-    `pyproject.toml` lists a narrower set of files for the informational
-    run; the rule is about the package, so the package is what is counted.
-    """
-    output = _run([sys.executable, "-m", "mypy", str(PACKAGE), "routing_flow.py"])
-    match = re.search(r"Found (\d+) errors?", output)
-    if match:
-        return int(match.group(1))
-    if "Success" in output:
-        return 0
-    raise RuntimeError(f"mypy printed no verdict:\n{output[-2000:]}")
-
-
 def private_imports(sources: Iterable[Path]) -> int:
     """Count names with a leading underscore imported from another module (rule 3.5).
 
@@ -267,7 +252,6 @@ def measure() -> dict[str, int]:
     """Measure every count of the ratchet on the working tree."""
     sources = _python_sources(PACKAGE)
     counts = ruff_counts()
-    counts["mypy_errors"] = mypy_errors()
     counts["private_imports"] = private_imports(sources)
     counts["upward_imports"] = upward_imports()
     counts["untyped_dict_annotations"] = untyped_dict_annotations(sources)
