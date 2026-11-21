@@ -1,105 +1,195 @@
 {
-  "benes_128x128": {},
+  "benes_128x128": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3
+  },
   "benes_128x128_flat": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 3328
   },
-  "benes_16x16": {},
+  "benes_16x16": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3
+  },
   "benes_16x16_flat": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 224
   },
-  "benes_32x32": {},
+  "benes_32x32": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3
+  },
   "benes_32x32_flat": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 576
   },
-  "benes_4x4": {},
+  "benes_4x4": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3
+  },
   "benes_4x4_flat": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 24
   },
-  "benes_64x64": {},
+  "benes_64x64": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3
+  },
   "benes_64x64_flat": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 1408
   },
-  "benes_64x64_stages2": {},
-  "benes_8x8": {},
+  "benes_64x64_stages2": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3
+  },
+  "benes_8x8": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3
+  },
   "benes_8x8_flat": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 80
   },
   "cascade_12_compact": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 66
   },
   "cascade_12_diagonal": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 66
   },
   "cascade_12_folded": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 66
   },
   "cascade_12_folded_compact": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 66
   },
   "cascade_16_compact": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 90
   },
   "cascade_16_diagonal": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 90
   },
   "cascade_16_folded": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 90
   },
   "cascade_16_folded_compact": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 90
   },
   "cascade_8_compact": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 42
   },
   "cascade_8_diagonal": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 42
   },
   "cascade_8_folded": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 42
   },
   "cascade_8_folded_compact": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 42
   },
-  "clements_8x8": {},
+  "clements_8x8": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3
+  },
   "heater_lanes_20": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.instances_overlap": 20
   },
   "heater_lanes_ripup": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.instances_overlap": 11
   },
   "heater_s_mod": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 42
   },
   "heater_single": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 2
   },
   "multiportmmi_128x128": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 1280
   },
   "multiportmmi_16x16": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 160
   },
   "multiportmmi_32x32": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 320
   },
   "multiportmmi_64x64": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 640
   },
-  "multiportmmi_64x64_bands1to2": {},
+  "multiportmmi_64x64_bands1to2": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3
+  },
   "multiportmmi_64x64_bands4to5": {
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 128
   },
   "multiportmmi_64x64_bands6to9": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 192
   },
   "multiportmmi_64x64_bands7to9": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 128
   },
   "multiportmmi_64x64_bands8to9": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 64
   },
   "multiportmmi_8x8": {
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "obstacle_map.stats_disagree": 3,
     "reading.port_recessed": 80
   },
-  "permutation_synthetic": {}
+  "permutation_synthetic": {
+    "obstacle_map.routable_cell_outside_routable_box": 1
+  }
 }

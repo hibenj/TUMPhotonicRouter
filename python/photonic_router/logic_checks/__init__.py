@@ -12,7 +12,9 @@ legal but that a later stage has to handle, such as a port recessed from
 its component's face). `scripts/logic_check.py` runs the checks on
 benchmarks; `tests/logic/` pins what they find.
 
-Stages so far: `reading` (the schematic and the placed layout).
+Stages so far: `reading` (the schematic and the placed layout) and
+`obstacle_map` (phase 1 of the routing session, read through
+`routing.stage_observer`).
 """
 
 from __future__ import annotations

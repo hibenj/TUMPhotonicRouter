@@ -823,19 +823,34 @@ the lint stage, which checks form, and the gates, which check end numbers:
 after a stage it tests the stage's product against statements that have to
 hold for the next stage to mean anything. A finding is an *error* (the
 product contradicts itself) or a *note* (legal, but a later stage has to
-handle it). One module per stage; so far `reading.py`, the schematic and
-the placed layout: every instance placed, every link end a port that
-exists, on its instance, axis-aligned, optical, matching its partner in
-width and layer; noted are overlapping instance boxes, links within one
-instance and ports recessed from the face they point at.
+handle it). One module per stage, its statements listed in the module
+docstring:
+
+* `reading.py`, the schematic and the placed layout: every instance placed,
+  every link end a port that exists, on its instance, axis-aligned, optical,
+  matching its partner in width and layer; noted are overlapping instance
+  boxes, links within one instance and ports recessed from the face they
+  point at.
+* `obstacle_map.py`, phase 1's map: the grid holds the die and the die the
+  design; every blocked cell, opened cell and rectangle is on the grid;
+  every cell under an obstacle's bounding box is blocked (the blocked area
+  is `blocked_cells` and the `blocked_static_rects` together); the keep-out
+  band stays outside the routable box; the cell in front of every linked
+  port is free or opened; `build_stats` counts what the map holds.
+
+The session stages are read from a real run: `routing/stage_observer.py`
+is the seam (`observe_stages(observer)`; the session calls `notify` after
+a phase, and an observer ends the run with `StopAfterStage`), so the
+harness runs the flow with the benchmark's stable defaults up to the last
+stage it has checks for and routes nothing.
 `scripts/logic_check.py <benchmark>|--all [--list N]` prints the findings;
 `tests/baselines/logic_findings.json` pins their counts per public
-benchmark (no errors; `port_recessed` on the benchmarks with heaters,
-`instances_overlap` on the two with a die outline) and
-`tests/logic/test_logic_findings.py` compares, as part of the test
-baseline. A new stage is a new module with its statements in the module
-docstring, its checks in `findings_for_benchmark` of the script, unit tests
-that each statement finds what it names, and a re-pin.
+benchmark and `tests/logic/test_logic_findings.py` compares, as part of the
+test baseline; the errors a benchmark may have are named there
+(`KNOWN_ERRORS`) until they are fixed. A new stage is a new module, a
+`notify` in the session if the product is not reported yet, its checks in
+the script, unit tests that each statement finds what it names, and a
+re-pin.
 
 ### 8.2 How to add a benchmark
 

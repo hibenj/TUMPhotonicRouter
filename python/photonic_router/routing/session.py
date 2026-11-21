@@ -26,6 +26,7 @@ from photonic_router.routing import (
     obstacle_context,
     realize,
     router_setup,
+    stage_observer,
     verify_repair,
 )
 from photonic_router.routing import (
@@ -86,18 +87,21 @@ class RouteNetsRustSession:
         context = obstacle_context.build_static_obstacle_context(
             settings, self._rust_backend, timings_s
         )
+        stage_observer.notify("obstacle_map", settings, context)
         kernel = router_setup.configure_router_and_grid(
             settings, self._rust_backend, context, timings_s
         )
         routed_layout = settings.unrouted_layout.copy()
         routed_layout.name = "routed_layout_rust"
-        return SessionState.after_setup(
+        state = SessionState.after_setup(
             routed_layout=routed_layout,
             rust_backend=self._rust_backend,
             timings_s=timings_s,
             obstacles=context,
             kernel=kernel,
         )
+        stage_observer.notify("router_setup", settings, state)
+        return state
 
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
         """The routing phases of `stages.py`, in order (nine, plus the optional detour pass).

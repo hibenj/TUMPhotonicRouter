@@ -14,6 +14,21 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The logic harness, stage "obstacle map". `logic_checks/obstacle_map.py`
+  has ten statements about phase 1's static obstacle map.
+  `routing/stage_observer.py` is the seam the harness reads a session
+  through: `observe_stages(observer)`, `notify` after phases 1 and 2,
+  `StopAfterStage` to end the run before any net is routed; a run without
+  an observer is unchanged. Found on the 41 public benchmarks: every
+  obstacle is blocked and every linked port can leave (the recessed heater
+  ports too). One error, on the 40 benchmarks routed with heater obstacles:
+  `build_stats` counts ports and port-open cells twice and its
+  `blocked_cell_count` is not the blocked area, because the map is built
+  from two layer groups whose stats are added up; the flow statistics take
+  their `port_open_cells` from it. Pinned as a known error, not fixed here.
+  One note: the keep-out band is rounded outward, so the cells straddling
+  the edge of the routable box stay routable. Test baseline python 817 ->
+  827.
 - The logic harness, stage "reading". `python/photonic_router/logic_checks/`
   tests what a stage hands on against statements that have to hold for the
   next stage to mean anything; a finding is an error (the product
