@@ -7,6 +7,7 @@ import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
@@ -203,6 +204,26 @@ def _effective_single_discounted_crossing_per_pair(
     return config.planned_crossing_budget
 
 
+@dataclass(frozen=True)
+class CrossingPlanRequest:
+    """The crossing settings of a run that the crossing plan is built for."""
+
+    enable_crossings: bool
+    crossing_mode: str
+    crossing_loss: float
+    """The loss the reports charge per crossing."""
+    crossing_search_loss: float
+    """The loss the search charges per crossing, in um."""
+    crossing_half_size_cells: int
+    guidance_net_names: frozenset[str] | None = None
+    """When given, only plan events between two of these nets are loaded
+    (counts, guidance pairs); the others are dropped silently. Contribution
+    2's router fallback uses it so that the guided search only sees the
+    layers it routes, not the tiled ones."""
+    plan_config: CrossingPlanConfig | None = None
+    """None is the default `CrossingPlanConfig`."""
+
+
 def build_crossing_plan_info(
     *,
     rust_backend: CrossingRustBackendLike,
@@ -211,13 +232,7 @@ def build_crossing_plan_info(
     unrouted_layout: Component,
     route_jobs: list[RouteJob],
     placement_analysis: PlacementAnalysis | None = None,
-    enable_crossings: bool,
-    crossing_mode: str,
-    crossing_loss: float,
-    crossing_search_loss: float,
-    crossing_half_size_cells: int,
-    guidance_net_names: frozenset[str] | None = None,
-    config: CrossingPlanConfig | None = None,
+    request: CrossingPlanRequest,
 ) -> dict[str, object]:
     """Build the crossing plan info and hand contribution 1's guidance to the router.
 
@@ -226,11 +241,14 @@ def build_crossing_plan_info(
     are the invariant crossing pairs in the bubble-sort order of each band.
     ``placement_analysis`` is the flow's; without one (a session entered
     directly) the design is analysed here.
-    ``guidance_net_names``: when given, only plan events between two of
-    these nets are loaded (counts, guidance pairs); the others are dropped
-    silently. Contribution 2's router fallback uses it so that the guided
-    search only sees the layers it routes, not the tiled ones."""
-    config = config if config is not None else CrossingPlanConfig()
+    ``request`` holds the crossing settings of the run."""
+    enable_crossings = request.enable_crossings
+    crossing_mode = request.crossing_mode
+    crossing_loss = request.crossing_loss
+    crossing_search_loss = request.crossing_search_loss
+    crossing_half_size_cells = request.crossing_half_size_cells
+    guidance_net_names = request.guidance_net_names
+    config = request.plan_config if request.plan_config is not None else CrossingPlanConfig()
     info: dict[str, object] = {
         "enabled": bool(enable_crossings),
         "event_count": 0,

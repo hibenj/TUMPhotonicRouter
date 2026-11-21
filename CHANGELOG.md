@@ -290,6 +290,8 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `build_crossing_plan_info` (13 parameters) takes the crossing settings of
+  the run as one `CrossingPlanRequest` (rule 4.4, 33 -> 32). No value changes.
 - Six routing signatures shrink (rule 4.4, 39 -> 33). `StateOpenings`, the
   per-net product of `handoff.states_and_openings`, is a named tuple instead
   of a bare five-tuple; `write_route_diagnostics` and `write_failed_log` take

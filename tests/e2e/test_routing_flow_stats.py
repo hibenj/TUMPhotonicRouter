@@ -14,6 +14,7 @@ from photonic_router.cli import _build_arg_parser
 from photonic_router.crossings.route_rust_crossing_plan import (
     COLLISION_CROSSING_SEARCH_LOSS_ENV,
     DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+    CrossingPlanRequest,
     build_crossing_plan_info,
     effective_crossing_search_loss,
 )
@@ -150,11 +151,13 @@ def test_crossing_plan_keeps_physical_loss_separate_from_search_penalty():
         schematic=SimpleNamespace(),
         unrouted_layout=SimpleNamespace(),
         route_jobs=[],
-        enable_crossings=True,
-        crossing_mode="lidar-pure",
-        crossing_loss=0.0,
-        crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
-        crossing_half_size_cells=3,
+        request=CrossingPlanRequest(
+            enable_crossings=True,
+            crossing_mode="lidar-pure",
+            crossing_loss=0.0,
+            crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+            crossing_half_size_cells=3,
+        ),
     )
 
     assert captured["config"]["crossing_loss"] == pytest.approx(
@@ -1767,11 +1770,13 @@ def test_lidar_guided_builds_the_plan_as_guidance_not_constraints():
         schematic=schematic,
         unrouted_layout=layout,
         route_jobs=jobs,
-        enable_crossings=True,
-        crossing_mode="lidar-guided",
-        crossing_loss=0.0,
-        crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
-        crossing_half_size_cells=3,
+        request=CrossingPlanRequest(
+            enable_crossings=True,
+            crossing_mode="lidar-guided",
+            crossing_loss=0.0,
+            crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+            crossing_half_size_cells=3,
+        ),
     )
 
     assert info["event_count"] == 33  # the multiportmmi_8x8 plan
@@ -1797,11 +1802,13 @@ def test_lidar_pure_still_ignores_the_topology_plan():
         schematic=schematic,
         unrouted_layout=layout,
         route_jobs=jobs,
-        enable_crossings=True,
-        crossing_mode="lidar-pure",
-        crossing_loss=0.0,
-        crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
-        crossing_half_size_cells=3,
+        request=CrossingPlanRequest(
+            enable_crossings=True,
+            crossing_mode="lidar-pure",
+            crossing_loss=0.0,
+            crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+            crossing_half_size_cells=3,
+        ),
     )
 
     assert info["reason"] == "lidar_pure_mode_ignores_topology_plan"
@@ -1863,12 +1870,14 @@ def test_planned_crossing_budget_env_switches_s2_off(monkeypatch):
         schematic=schematic,
         unrouted_layout=layout,
         route_jobs=jobs,
-        enable_crossings=True,
-        crossing_mode="lidar-guided",
-        crossing_loss=0.0,
-        crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
-        crossing_half_size_cells=3,
-        config=RoutingConfig.from_environment().crossing_plan,
+        request=CrossingPlanRequest(
+            enable_crossings=True,
+            crossing_mode="lidar-guided",
+            crossing_loss=0.0,
+            crossing_search_loss=DEFAULT_COLLISION_CROSSING_SEARCH_LOSS_UM,
+            crossing_half_size_cells=3,
+            plan_config=RoutingConfig.from_environment().crossing_plan,
+        ),
     )
     assert info["guidance"]["single_discounted_crossing_per_pair"] is True
     assert captured["guidance_single"] is True

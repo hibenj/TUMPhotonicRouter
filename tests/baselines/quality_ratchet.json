@@ -6,7 +6,7 @@
   "ruff_D101": 50,
   "ruff_D102": 126,
   "ruff_D103": 65,
-  "ruff_PLR0913": 33,
+  "ruff_PLR0913": 32,
   "ruff_PLR0915": 39,
   "ruff_T201": 157,
   "rust_exceptions": 39,

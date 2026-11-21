@@ -9,6 +9,7 @@ from gdsfactory.typings import Port
 
 from photonic_router.crossings.route_rust_crossing_components import bbox_bounds_um
 from photonic_router.crossings.route_rust_crossing_plan import (
+    CrossingPlanRequest,
     build_crossing_plan_info,
 )
 from photonic_router.records.crossing_plan_info import CrossingPlanInfo
@@ -285,13 +286,15 @@ def _build_crossing_plan(
             unrouted_layout=settings.unrouted_layout,
             placement_analysis=settings.placement_analysis,
             route_jobs=route_jobs,
-            enable_crossings=settings.enable_crossings,
-            crossing_mode=settings.crossing_mode,
-            crossing_loss=float(settings.crossing_loss),
-            crossing_search_loss=float(settings.crossing_search_loss),
-            crossing_half_size_cells=int(state.obstacles.resolved_crossing_half_size_cells),
-            guidance_net_names=settings.crossing_guidance_net_names,
-            config=settings.config.crossing_plan,
+            request=CrossingPlanRequest(
+                enable_crossings=settings.enable_crossings,
+                crossing_mode=settings.crossing_mode,
+                crossing_loss=float(settings.crossing_loss),
+                crossing_search_loss=float(settings.crossing_search_loss),
+                crossing_half_size_cells=int(state.obstacles.resolved_crossing_half_size_cells),
+                guidance_net_names=settings.crossing_guidance_net_names,
+                plan_config=settings.config.crossing_plan,
+            ),
         )
     )
     plan.crossing_mode = settings.crossing_mode

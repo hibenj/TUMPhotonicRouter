@@ -6,7 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 from photonic_router.crossings import route_rust_crossing_plan
-from photonic_router.crossings.route_rust_crossing_plan import build_crossing_plan_info
+from photonic_router.crossings.route_rust_crossing_plan import (
+    CrossingPlanRequest,
+    build_crossing_plan_info,
+)
 from photonic_router.placement_analysis import PlacementAnalysis, analyze_placement
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 
@@ -38,11 +41,13 @@ def _plan_info(crossing_mode: str, analysis: PlacementAnalysis | None, design: t
         unrouted_layout=layout,
         route_jobs=[],
         placement_analysis=analysis,
-        enable_crossings=True,
-        crossing_mode=crossing_mode,
-        crossing_loss=0.0,
-        crossing_search_loss=1.0,
-        crossing_half_size_cells=3,
+        request=CrossingPlanRequest(
+            enable_crossings=True,
+            crossing_mode=crossing_mode,
+            crossing_loss=0.0,
+            crossing_search_loss=1.0,
+            crossing_half_size_cells=3,
+        ),
     )
 
 
