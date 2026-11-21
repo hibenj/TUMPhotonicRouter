@@ -1,6 +1,9 @@
 // pyo3 0.22's `#[pymethods]` / `#[pyfunction]` expansion converts the returned
 // `PyErr` into `PyErr`, which clippy reports at every binding; nothing here to fix.
-#![allow(clippy::useless_conversion)]
+#![expect(
+    clippy::useless_conversion,
+    reason = "pyo3 0.22 macro expansion converts PyErr into PyErr at every binding"
+)]
 
 use std::time::Instant;
 
@@ -404,7 +407,10 @@ pub(crate) fn auto_meander_search_config_to_py_dict<'py>(
     Ok(search_config)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn registered_requirement_result_to_py_object(
     py: Python<'_>,
     result: RegisteredRequirementResult,
@@ -1104,7 +1110,10 @@ impl PyMeanderPlanner {
     /// the planned candidate (the split's part-count attempts follow the
     /// candidates) and `split_part_count` the chunks of a planned split.
     #[pyo3(signature=(candidate_geometry_indices,candidate_requested_extra_lengths_um,split_geometry_index=None,split_requested_extra_length_um=None,min_insertable_extra_length_um=0.0,max_split_parts=8,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,auto_endpoint_inset_um=None,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     fn plan_requests(
         &mut self,
         py: Python<'_>,
@@ -1218,7 +1227,10 @@ impl PyMeanderPlanner {
     /// `planning_mode` names the branch that planned and
     /// `plan_input_indices` the input edge of each plan.
     #[pyo3(signature=(geometry_indices,requested_extra_lengths_um,min_insertable_extra_length_um,max_split_parts=8,min_bend_radius_um=None,min_straight_um=0.0,max_meander_height_um=20.0,min_segment_length_um=10.0,auto_endpoint_inset_um=None,clearance_radius_cells=0,side_policy="both",planning_mode="fill_box_multi_bump"))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     fn plan_final(
         &mut self,
         py: Python<'_>,
@@ -1316,7 +1328,10 @@ impl PyMeanderPlanner {
     /// (its port-open cells unless `opened_cells` is given): the first box
     /// depth, run and side that take `requested_extra_length_um` exactly.
     #[pyo3(signature=(centerline,requested_extra_length_um,box_depths_um,min_bend_radius_um=None,min_straight_um=0.0,max_bumps=8,max_meander_height_um=20.0,min_segment_length_um=10.0,endpoint_inset_um=0.0,clearance_radius_cells=0,side_policy="both",opened_cells=None,planning_mode="fill_box_multi_bump",extra_blocked_cells=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     fn plan_centerline(
         &mut self,
         py: Python<'_>,
@@ -1452,7 +1467,10 @@ impl PyMeanderPlanner {
     /// router state, so a static method.
     #[staticmethod]
     #[pyo3(signature=(centerline,width_um,route,selected_run_start_index,selected_run_end_index,meander_centerline,source_enabled=true,target_enabled=true))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     fn realize(
         centerline: Vec<(f64, f64)>,
         width_um: f64,

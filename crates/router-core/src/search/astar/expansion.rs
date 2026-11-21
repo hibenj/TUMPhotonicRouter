@@ -370,7 +370,10 @@ impl<'a> Iterator for CandidateMoves<'a> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn candidate_moves<'a>(
     primitives: &'a [Primitive],
     metadata: &'a [PrimitiveSearchMetadata],
@@ -489,7 +492,13 @@ pub(crate) enum MoveVerdict {
     /// The reason names the rule that rejected the move; the kernel loop
     /// only skips the move (every counter and diagnostic line has already
     /// been written), so the reason is read by the tests below.
-    Illegal(#[cfg_attr(not(test), allow(dead_code))] MoveRejection),
+    Illegal(
+        #[cfg_attr(
+            not(test),
+            expect(dead_code, reason = "only the tests read the reason")
+        )]
+        MoveRejection,
+    ),
     /// Free footprint, free halo, no crossing bookkeeping: the dense fast path.
     Tier1(LegalMove),
     /// The legality hook accepted the move: its outcome and extra cost.
@@ -499,7 +508,6 @@ pub(crate) enum MoveVerdict {
 /// Every reject rule of one primitive move, in the kernel's order, ending
 /// in the tier the move belongs to. `None` is the kernel's `checked_add`
 /// `?`: a coordinate overflow abandons the whole search.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn move_is_legal<H: CrossingLegalityHook>(
     context: &MoveContext<'_, H>,
     state: State,
@@ -834,7 +842,10 @@ pub(crate) fn goal_reached<H: CrossingLegalityHook>(
 /// and the generation stamp before pushing the entry. Returns whether an
 /// entry was pushed onto the open set; `None` is the kernel's generation
 /// `?`, which abandons the whole search.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn push_or_improve_dense<H: CrossingLegalityHook>(
     context: &MoveContext<'_, H>,
     heuristic: &SearchHeuristic,
@@ -948,7 +959,10 @@ pub(crate) fn push_or_improve_dense<H: CrossingLegalityHook>(
 /// map, the two own-reservation guards, then the new extended node with
 /// its promoted reservation keys and the Tier-2 heap push. Returns whether
 /// an entry was pushed; `None` is the kernel's generation `?`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn push_or_improve_extended<H: CrossingLegalityHook>(
     context: &MoveContext<'_, H>,
     heuristic: &SearchHeuristic,
@@ -1239,7 +1253,10 @@ pub(crate) struct CompletedCorridor {
 /// branch has already been incremented, and any nodes the abandoned chain
 /// appended stay in the arena, unreferenced -- exactly as the inline
 /// version left them).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn complete_crossing_corridor<H: CrossingLegalityHook>(
     context: &MoveContext<'_, H>,
     tables: &PrimitiveTables<'_>,

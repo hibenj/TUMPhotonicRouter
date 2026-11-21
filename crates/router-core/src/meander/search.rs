@@ -164,7 +164,10 @@ impl DenseOccupancyPrefix {
     }
 }
 
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only the tests query through this trait")
+)]
 trait RectOccupancyQuery {
     fn grid_width(&self) -> i32;
     fn grid_height(&self) -> i32;

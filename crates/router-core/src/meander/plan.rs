@@ -250,7 +250,10 @@ pub struct RegisteredFinalPlanningResult {
     pub plan_input_indices: Vec<usize>,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 fn plan_registered_geometry_sequence_at_endpoint(
     candidate_index: usize,
     geometry_indices: &[usize],
@@ -440,7 +443,10 @@ fn empty_requirement_result(
 /// (`plan_registered_geometry_split_request`). This is the one place that
 /// decides a requirement's candidate, direct or split plan; the Python side
 /// only builds the vector.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub fn plan_registered_geometry_requirement_requests(
     candidate_geometry_indices: &[Vec<usize>],
     candidate_requested_extra_lengths_um: &[Vec<f64>],
@@ -683,7 +689,10 @@ pub fn plan_registered_geometry_requirement_requests(
 /// The per-candidate form: one requested extra length for every edge of a
 /// candidate and no split fallback (`plan_registered_geometry_requirement_requests`
 /// is the general form).
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub fn plan_registered_geometry_requirement_candidates(
     candidate_geometry_indices: &[Vec<usize>],
     candidate_requested_extra_lengths_um: &[f64],
@@ -742,7 +751,10 @@ pub fn plan_registered_geometry_requirement_candidates(
     .map(|requests_result| requests_result.result)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub fn plan_registered_geometry_request_sequence(
     geometry_indices: &[usize],
     requested_extra_lengths_um: &[f64],
@@ -857,7 +869,10 @@ pub fn plan_registered_geometry_request_sequence(
     last_result.ok_or_else(|| "endpoint inset sweep produced no result".to_string())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub fn plan_registered_geometry_split_request(
     geometry_index: usize,
     requested_extra_length_um: f64,
@@ -1000,7 +1015,10 @@ pub fn plan_registered_geometry_split_request(
     last_result.ok_or_else(|| "split request produced no candidate result".to_string())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub fn plan_registered_geometry_final_requests(
     geometry_indices: &[usize],
     requested_extra_lengths_um: &[f64],
@@ -2085,7 +2103,6 @@ mod tests {
         assert_eq!(result.result.candidate_results[0].plans.len(), 2);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn call_requirement_requests(
         fixture: &PlanningFixture,
         candidate_geometry_indices: &[Vec<usize>],

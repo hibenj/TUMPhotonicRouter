@@ -189,7 +189,10 @@ pub(crate) fn entry_is_better(candidate: &OpenEntry, current: &OpenEntry) -> boo
 /// through unchanged; it is only consulted later, by the pop-diagnostic.
 /// Shared with `crate::search::grid_dijkstra`, which builds the same grid
 /// for its own single full-grid attempt.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn build_search_grid(
     obstacle_map: &ObstacleMap,
     bounds: RoutingBounds,
@@ -523,7 +526,10 @@ pub(crate) fn reservation_nodes(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 /// The A* search itself: build the dense search grid and the per-angle
 /// primitive tables, seed the open set, then per iteration pop the best
 /// entry across the two open tiers, stop on the goal, generate the

@@ -12,7 +12,10 @@ impl Router {
     /// plain searches, `budget` the braid pass's fail-fast budget, and
     /// `repair_history_weight` the history weight of the victim's repair
     /// fallback.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub(crate) fn try_ripup_single_victim_and_reroute_with(
         &mut self,
         batch: &mut RepairBatchState,
@@ -244,7 +247,10 @@ impl Router {
     /// disabled, no partner with >=2 crossings, or the pair was skipped);
     /// otherwise `Some((partner_id, kept))` reporting which partner was
     /// tried and whether the swapped result was kept.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub(crate) fn try_braid_repair(
         &mut self,
         batch: &mut RepairBatchState,

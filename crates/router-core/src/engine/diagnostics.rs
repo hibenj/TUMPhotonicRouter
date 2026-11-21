@@ -42,7 +42,10 @@ pub(crate) fn format_cell_sample(cells: &[(i32, i32)], limit: usize) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn push_native_repair_trace(
     repair_trace: &mut Vec<NativeRepairTraceEvent>,
     event_name: &'static str,

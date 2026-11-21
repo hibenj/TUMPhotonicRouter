@@ -261,9 +261,13 @@ sets took them over.
 | 2 | exceptions written at a function (`python_exceptions`, `rust_exceptions`) | 0, 39 | 0, 39 |
 | 7.3 | user guide, developer guide (not measured) | none | none |
 
-The 39 Rust exceptions are per-function `allow(clippy::too_many_arguments)`
-attributes from before this document; they become `#[expect]` with a reason
-or disappear when the functions are reworked.
+The Rust exceptions were 39 per-function `allow(clippy::too_many_arguments)`
+attributes from before this document. They are `#[expect]` with a reason
+now (34; the compiler reported five as no longer needed), and the workspace
+denies `clippy::allow_attributes` and
+`clippy::allow_attributes_without_reason`, so an `#[allow]` or an exception
+without a reason does not compile under `scripts/lint.sh`. The 34 disappear
+when the functions are reworked.
 
 **Ratchet.** Until a proposed Tool rule holds everywhere, its count is
 pinned and may only fall. `scripts/quality_ratchet.py` (run by

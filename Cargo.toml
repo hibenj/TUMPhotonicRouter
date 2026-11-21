@@ -21,3 +21,8 @@ type_complexity = "allow"
 # docs/CODING_STANDARDS.md rule 5.3: no unwrap() outside tests (clippy.toml
 # exempts the tests).
 unwrap_used = "warn"
+# docs/CODING_STANDARDS.md section 2: an exception is an #[expect] with a
+# reason, never an #[allow]; the compiler reports an #[expect] that is no
+# longer needed.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"

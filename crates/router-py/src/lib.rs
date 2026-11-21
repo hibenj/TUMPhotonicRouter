@@ -1,6 +1,9 @@
 // pyo3 0.22's `#[pymethods]` / `#[pyfunction]` expansion converts the returned
 // `PyErr` into `PyErr`, which clippy reports at every binding; nothing here to fix.
-#![allow(clippy::useless_conversion)]
+#![expect(
+    clippy::useless_conversion,
+    reason = "pyo3 0.22 macro expansion converts PyErr into PyErr at every binding"
+)]
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -372,7 +375,10 @@ impl PyPhotonicRouter {
     /// (`RipupRerouteConfig(enabled=False)`), which used to be the separate
     /// non-repair binding; every other caller leaves it at its default.
     #[pyo3(signature=(jobs,block_radius_cells=0,commit_radius_cells=None,core_radius_cells=None,max_rounds=8,history_weight=2.0,history_increment=1,no_ripup=false))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     fn route_many_with_negotiated_repair_and_commit(
         &mut self,
         py: Python<'_>,

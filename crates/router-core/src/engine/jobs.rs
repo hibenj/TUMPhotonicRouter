@@ -21,7 +21,10 @@ pub struct NativeRouteJob {
 }
 
 impl NativeRouteJob {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub fn new(
         net_id: u64,
         source: State,

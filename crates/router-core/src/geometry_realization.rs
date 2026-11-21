@@ -1935,7 +1935,10 @@ struct DiagonalEndpointAdjustment {
     delta: (f64, f64),
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 fn try_apply_45_degree_endpoint_delta_correction(
     centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
@@ -2063,7 +2066,10 @@ fn try_apply_45_degree_endpoint_delta_correction(
     Ok(false)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 fn try_apply_45_degree_centerline_endpoint_delta_correction(
     centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],

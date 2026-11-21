@@ -258,7 +258,10 @@ fn point_in_box(p: PhysicalPoint, b: MeanderBox) -> bool {
         && p.y_um <= b.max_y_um + EPS
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only the tests measure a centerline here")
+)]
 fn centerline_length(points: &[PhysicalPoint]) -> f64 {
     points
         .windows(2)

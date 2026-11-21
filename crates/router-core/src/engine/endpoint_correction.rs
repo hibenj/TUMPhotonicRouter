@@ -616,7 +616,10 @@ impl Router {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub fn route_port_corrected_centerline_checked_native(
         &mut self,
         net_id: u64,
@@ -643,7 +646,10 @@ impl Router {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub fn centerline_port_corrected_checked_native(
         &mut self,
         net_id: u64,
@@ -992,7 +998,10 @@ impl Router {
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub fn route_port_corrected_centerline_checked_and_commit_compat_native(
         &mut self,
         net_id: u64,

@@ -137,7 +137,10 @@ pub(crate) fn heuristic_estimate(heuristic: &SearchHeuristic, state: State) -> f
 /// both calling conventions reproduce their original inline expression
 /// exactly.
 #[inline]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn step_cost(
     grid: &DenseRoutingGrid,
     config: &AStarConfig,

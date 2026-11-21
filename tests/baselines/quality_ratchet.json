@@ -9,7 +9,7 @@
   "ruff_PLR0913": 32,
   "ruff_PLR0915": 39,
   "ruff_T201": 157,
-  "rust_exceptions": 39,
+  "rust_exceptions": 34,
   "rust_missing_docs": 796,
   "rust_too_many_lines": 23,
   "rust_workspace_debt_allows": 2,

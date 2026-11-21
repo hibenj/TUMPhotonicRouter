@@ -29,7 +29,10 @@ impl Router {
     /// (`negotiated_crossing_free_net`) -- the net may cross nothing, so
     /// the partners of the probe's *legal* crossings
     /// (`probe_crossing_events`) are ripped as well, after the illegal ones.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub(crate) fn ripup_illegal_crossing_partners(
         &mut self,
         batch: &mut RepairBatchState,

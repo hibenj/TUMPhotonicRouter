@@ -1730,7 +1730,6 @@ impl Router {
         self.crossing_events.extend(events);
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Committed nets (other than `net_id`) whose realized centerline the
     /// route's centerline intersects (proper crossing or collinear overlap),
     /// regardless of the crossing context -- the geometric core of

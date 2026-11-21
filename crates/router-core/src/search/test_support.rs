@@ -304,7 +304,10 @@ pub(crate) fn test_route_single_net_with_dynamic_expansion_config(
     search::AStarSearch.search(&env, &request).route
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn test_route_single_net_with_dynamic_expansion_config_reporting_stats(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
@@ -336,7 +339,10 @@ pub(crate) fn test_route_single_net_with_dynamic_expansion_config_reporting_stat
     outcome.route
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn test_route_single_net_with_collision_crossing_config(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
@@ -364,7 +370,10 @@ pub(crate) fn test_route_single_net_with_collision_crossing_config(
     .0
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn test_route_single_net_with_collision_crossing_config_with_stats(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,
@@ -414,7 +423,10 @@ pub(crate) fn test_route_single_net_with_collision_crossing_config_with_stats(
     (outcome.route, outcome.stats)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn test_route_single_net_with_crossing_config(
     obstacle_map: &ObstacleMap,
     primitives: &PrimitiveLibrary,

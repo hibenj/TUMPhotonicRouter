@@ -67,7 +67,10 @@ pub(crate) fn trace_crossing_pending_enabled(crossing: &CrossingSearchConfig) ->
     true
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn trace_crossing_pending(
     crossing: &CrossingSearchConfig,
     event: &str,
@@ -335,7 +338,10 @@ pub(crate) fn print_best_crossing_path(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn trace_crossing_candidate(
     crossing: &CrossingSearchConfig,
     partner_net_id: u64,

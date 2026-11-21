@@ -184,7 +184,10 @@ impl Router {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     /// The lidar-pure collision-crossing search: one A* with the committed
     /// partners' centerlines as crossing partners, validated at both
     /// levels before it is handed back. A shared low-level search

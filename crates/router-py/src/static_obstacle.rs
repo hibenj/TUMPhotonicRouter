@@ -6,7 +6,10 @@
 
 // pyo3 0.22's `#[pymethods]` / `#[pyfunction]` expansion converts the returned
 // `PyErr` into `PyErr`, which clippy reports at every binding; nothing here to fix.
-#![allow(clippy::useless_conversion)]
+#![expect(
+    clippy::useless_conversion,
+    reason = "pyo3 0.22 macro expansion converts PyErr into PyErr at every binding"
+)]
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -77,7 +80,10 @@ impl PyStaticCellSet {
     populate_obstacle_map=true,
     materialize_cell_sets=true
 ))]
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn build_static_obstacle_map_rs(
     py: Python<'_>,
     polygons: Vec<Vec<(f64, f64)>>,

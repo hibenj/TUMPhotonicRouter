@@ -290,6 +290,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Every Rust exception is an `#[expect(..., reason = "...")]`; no `#[allow]`
+  is left in the two crates, and the workspace denies
+  `clippy::allow_attributes` and `clippy::allow_attributes_without_reason`.
+  The compiler reported five `too_many_arguments` exceptions as no longer
+  needed; they are gone (`rust_exceptions` 39 -> 34). Three `dead_code`
+  exceptions hold outside the tests only and say so.
 - `build_crossing_plan_info` (13 parameters) takes the crossing settings of
   the run as one `CrossingPlanRequest` (rule 4.4, 33 -> 32). No value changes.
 - Six routing signatures shrink (rule 4.4, 39 -> 33). `StateOpenings`, the

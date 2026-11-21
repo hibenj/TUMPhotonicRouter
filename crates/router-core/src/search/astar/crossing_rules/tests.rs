@@ -12,7 +12,10 @@ use crate::search::astar::route_single_net_with_config;
 use crate::search::state::RouteResult;
 use crate::search::test_support::*;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 fn crossing_move_outcome(
     obstacle_map: &ObstacleMap,
     crossing: &CrossingSearchConfig,
@@ -2782,7 +2785,6 @@ mod kernel_hook_dispatch {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn route_single_net_unified_for_test(
         obstacle_map: &ObstacleMap,
         primitives: &PrimitiveLibrary,

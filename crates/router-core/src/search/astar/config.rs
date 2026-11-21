@@ -377,7 +377,10 @@ pub(crate) const NO_HEAP_POSITION: usize = usize::MAX;
 
 // `DiagonalAware` carries its 64 terminal approaches inline so the mode stays
 // `Copy` and is built once per search; the size difference is deliberate.
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "DiagonalAware carries its terminal approaches inline so the mode stays Copy"
+)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SearchHeuristicMode {
     Distance,

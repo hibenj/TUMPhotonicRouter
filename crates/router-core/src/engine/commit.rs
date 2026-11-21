@@ -183,7 +183,10 @@ impl Router {
         self.route_obstacle_center_cells(route)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub(crate) fn route_commit_and_core_cells(
         &self,
         route: &RouteResult,
@@ -272,7 +275,6 @@ impl Router {
         self.add_history_cells(cells, amount);
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// See `RealizedDynamicBlockers`. `clearance_exempt_keys` follows
     /// `cells_with_other_dynamic_owner`.
     pub(crate) fn realized_dynamic_blockers(

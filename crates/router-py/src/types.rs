@@ -1,6 +1,9 @@
 // pyo3 0.22's `#[pymethods]` / `#[pyfunction]` expansion converts the returned
 // `PyErr` into `PyErr`, which clippy reports at every binding; nothing here to fix.
-#![allow(clippy::useless_conversion)]
+#![expect(
+    clippy::useless_conversion,
+    reason = "pyo3 0.22 macro expansion converts PyErr into PyErr at every binding"
+)]
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -418,7 +421,10 @@ pub struct PyRouteJob {
 impl PyRouteJob {
     #[new]
     #[pyo3(signature=(*, net_id, source, target, opened_cells, clearance_exempt_cells, foreign_keepout_cleanup_cells, source_port_um=None, target_port_um=None))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub(crate) fn new(
         net_id: u64,
         source: PyState,
@@ -767,7 +773,10 @@ impl PyRouterConfig {
         diag_crossing_mismatch_fatal=false,
         diag_analysis_crossing_partner_counters=false,
     ))]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     pub(crate) fn new(
         negotiation_budget_first: u64,
         negotiation_budget_first_retry: u64,

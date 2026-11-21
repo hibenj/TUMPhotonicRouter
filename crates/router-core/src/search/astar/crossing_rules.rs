@@ -600,7 +600,10 @@ pub(crate) trait CrossingLegalityHook {
     /// of the primitive's own base step cost (0.0 for a step that only
     /// continues an existing post-crossing corridor without crossing
     /// anything new).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+    )]
     fn evaluate(
         &self,
         state: State,
@@ -1174,7 +1177,10 @@ pub(crate) fn crossing_partner_budget_bits(crossing: &CrossingSearchConfig) -> V
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
+)]
 pub(crate) fn crossing_move_outcome_with_segments(
     obstacle_map: &ObstacleMap,
     crossing: &CrossingSearchConfig,
