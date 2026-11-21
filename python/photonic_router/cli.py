@@ -189,6 +189,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Print per-net routing details, including simple vs A* route type.",
     )
     parser.add_argument(
+        "--verify-stages",
+        action="store_true",
+        default=False,
+        help=(
+            "Check what every stage hands on against the statements of the logic "
+            "harness (photonic_router.logic_checks); a stage with an error ends the run."
+        ),
+    )
+    parser.add_argument(
         "--show-klayout",
         action="store_true",
         default=SCRIPT_SHOW_KLAYOUT,
@@ -859,6 +868,7 @@ def _flow_options(args: argparse.Namespace) -> FlowOptions:
             debug_meanders=args.debug_meanders,
             verbose_routes=args.verbose_routes,
             collect_attempt_diagnostics=args.attempt_diagnostics,
+            verify_stages=args.verify_stages,
         ),
         output=OutputOptions(show_klayout=args.show_klayout),
     )

@@ -358,3 +358,10 @@ class RealizedNets(NamedTuple):
     route_width_um: float
     crossing_plan_info: CrossingPlanInfo | None
     """The session's crossing plan info with the crossing components that were placed."""
+
+
+class LoadedDesign(NamedTuple):
+    """What the flow reports once the schematic is placed (`stage_observer`)."""
+
+    schematic: Any
+    unrouted_layout: Any

@@ -160,6 +160,9 @@ class DebugArtifactOptions:
     debug_meanders: bool = False
     verbose_routes: bool = False
     collect_attempt_diagnostics: bool = False
+    #: check what every stage hands on (`logic_checks.stages.verify_stages`); an
+    #: error ends the run
+    verify_stages: bool = False
 
 
 @dataclass(frozen=True)

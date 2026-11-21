@@ -877,14 +877,23 @@ docstring:
   or for a net with a meander the recorded length plus the extra length
   its plan asked for; polygons of two nets do not overlap.
 
-The session stages are read from a real run: `routing/stage_observer.py`
-is the seam (`observe_stages(observer)`; the session calls `notify` after
-a phase, and an observer ends the run with `StopAfterStage`), so the
-harness runs the flow with the benchmark's stable defaults up to the last
-stage it has checks for: until the routes are polygons, or, from 16 x 16 on
-where the search takes over a minute, up to the hand-off
-(`last_stage` in `scripts/logic_check.py`). A run in which the kernel
-gives up on a net is the error `routing.net_not_routed`.
+The stages are read from a real run: `routing/stage_observer.py` is the
+seam (`observe_stages(observer)`; the flow and the session call `notify`
+after a stage, and an observer can end the run with `StopAfterStage`).
+`logic_checks/stages.py` says which checks read which stage
+(`stage_findings`) and has the two readers' common part:
+
+* `--verify-stages` (`verify_stages()` around `route_schematic`) checks
+  every stage of a normal run as it is handed on, prints one line per
+  stage and ends the run with `StageVerificationError` at the first stage
+  with an error. Off by default; a run without it pays one lookup per
+  stage.
+* `scripts/logic_check.py` runs the flow with the benchmark's stable
+  defaults and collects the findings: until the routes are polygons, or,
+  from 16 x 16 on where the search takes over a minute, up to the
+  hand-off (`last_stage`). A run in which the kernel gives up on a net is
+  the error `routing.net_not_routed`.
+
 `scripts/logic_check.py <benchmark>|--all [--list N]` prints the findings;
 `tests/baselines/logic_findings.json` pins their counts per public
 benchmark and `tests/logic/test_logic_findings.py` compares, as part of the

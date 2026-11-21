@@ -14,6 +14,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `--verify-stages`: a normal run of the flow checks what every stage
+  hands on. `logic_checks/stages.py` holds which checks read which stage
+  (`stage_findings`) and the verifier (`verify_stages()`, around
+  `route_schematic` when `DebugArtifactOptions.verify_stages` is set): one
+  line per stage, and `StageVerificationError` at the first stage with an
+  error; notes do not end a run. Off by default. The flow reports the
+  placed design (`"loaded"`, `LoadedDesign`), so the reading checks and the
+  crossing demand run on the same path, and `scripts/logic_check.py` now
+  collects its findings through `stage_findings` too: one path for both.
+  All eight stages report no error on Benes 8 x 8 in the three
+  configurations (baseline, contribution 1, contribution 2 with its probe
+  session). Test baseline python 870 -> 875.
 - The logic harness, stage "realized". `logic_checks/realized.py` has nine
   statements about phase 8's product and the polygons of the routed
   layout: no realized crossing is left illegal; polygons and nets belong

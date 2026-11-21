@@ -67,6 +67,8 @@ have to hold for the next stage to mean anything (docs/ARCHITECTURE.md
 section 8.1). Its findings per public benchmark are pinned in
 `tests/baselines/logic_findings.json` and compared in the test baseline; a
 benchmark you add needs an entry (`--all --update`).
+`python -m photonic_router <benchmark> --verify-stages` runs the same checks
+inside a normal run and ends it at the first stage that hands on an error.
 
 ## Lint
 

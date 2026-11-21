@@ -13,6 +13,8 @@ catches it.
 
 Stages reported so far, with their product:
 
+- `"loaded"`: the `LoadedDesign` of the flow, the schematic and its placed
+  layout before anything is routed; reported without session settings
 - `"obstacle_map"`: phase 1's `ObstacleContext`
 - `"router_setup"`: the `SessionState` after phase 2
 - `"handoff"`: the `SessionState` after phase 5, before the dispatch

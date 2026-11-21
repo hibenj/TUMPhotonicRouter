@@ -29,31 +29,16 @@ import pkgutil
 import re
 import sys
 from pathlib import Path
-from typing import cast
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from photonic_router import cli
-from photonic_router.flow import load_benchmark
 from photonic_router.logic_checks import ERROR, Finding, count_by_check
-from photonic_router.logic_checks.crossing_plan import (
-    check_crossing_demand,
-    check_crossing_plan_info,
-)
-from photonic_router.logic_checks.obstacle_map import check_obstacle_map
-from photonic_router.logic_checks.reading import check_layout, check_schematic
-from photonic_router.logic_checks.realized import check_realized, check_verified
-from photonic_router.logic_checks.records import check_records
-from photonic_router.logic_checks.route_jobs import check_route_jobs
-from photonic_router.logic_checks.routing import check_routing
-from photonic_router.placement_analysis import analyze_placement
-from photonic_router.records.layout_from_schematic import layout_from_schematic
-from photonic_router.routing.products import ObstacleContext
+from photonic_router.logic_checks.stages import stage_findings
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stage_observer import StopAfterStage, observe_stages
-from photonic_router.routing.stages import RoutedRecords, VerifiedRecords
 
 PIN = REPO_ROOT / "tests" / "baselines" / "logic_findings.json"
 
@@ -70,10 +55,6 @@ def public_benchmarks() -> list[str]:
     return sorted(names)
 
 
-#: the stages a session reports, in order (`routing.stage_observer`)
-STAGES = ("obstacle_map", "router_setup", "handoff", "routed", "records", "verified", "realized")
-
-
 def last_stage(benchmark: str) -> str:
     """The last stage a benchmark is run to: `realized`, or `handoff` for the wide designs.
 
@@ -85,64 +66,23 @@ def last_stage(benchmark: str) -> str:
 
 
 def findings_for_benchmark(benchmark: str, *, session: bool = True) -> list[Finding]:
-    """Every finding of every stage implemented so far, in stage order.
+    """Every finding of every stage, in the order a run reports the stages.
 
-    `session=False` checks the reading stage and the crossing demand only
-    (the session stages take over a minute on the largest benchmarks).
-
-    The reading stage and the crossing demand of the placement analysis are
-    checked on the benchmark as loaded. The session stages are checked on a
-    real run of the flow with the benchmark's stable defaults
-    (`cli.main([benchmark])`), which is ended after `last_stage(benchmark)`:
-    after the routes are polygons, or before the search.
+    The stages are checked on a real run of the flow with the benchmark's
+    stable defaults (`cli.main([benchmark])`), through
+    `logic_checks.stages.stage_findings`, the checks `--verify-stages` runs.
+    The run is ended after `last_stage(benchmark)`: after the routes are
+    polygons, or before the search. `session=False` ends it after the stage
+    `loaded` (the reading checks and the crossing demand; the session
+    stages take over a minute on the largest benchmarks).
     """
-    schematic = load_benchmark(benchmark)
-    findings = check_schematic(schematic)
-    layout = layout_from_schematic(schematic)
-    findings.extend(check_layout(schematic, layout))
-    demand = analyze_placement(schematic, layout).crossing_demand
-    findings.extend(check_crossing_demand(schematic, layout, demand))
-    if session:
-        findings.extend(_session_findings(benchmark, last_stage(benchmark)))
-    return findings
-
-
-def _stage_findings(stage: str, settings: SessionSettings | None, product: object) -> list[Finding]:
-    """The findings of the checks that read the product of `stage`."""
-    if stage == "realized":
-        return check_realized(product)
-    if settings is None:
-        return []
-    if stage == "obstacle_map":
-        context = cast(ObstacleContext, product)
-        return check_obstacle_map(
-            settings.schematic, context.obstacle_map, context.resolved_obstacle_config
-        )
-    if stage == "handoff":
-        analysis = settings.placement_analysis or analyze_placement(
-            settings.schematic, settings.unrouted_layout
-        )
-        return [
-            *check_route_jobs(settings.schematic, product),
-            *check_crossing_plan_info(settings, product, analysis.crossing_demand),
-        ]
-    if stage == "routed":
-        return check_routing(product)
-    if stage == "records":
-        routed = cast(RoutedRecords, product)
-        return check_records(settings.schematic, routed.routed_net_records)
-    if stage == "verified":
-        return check_verified(cast(VerifiedRecords, product))
-    return []
-
-
-def _session_findings(benchmark: str, last: str) -> list[Finding]:
+    last = last_stage(benchmark) if session else "loaded"
     findings: list[Finding] = []
     seen: list[str] = []
 
     def observer(stage: str, settings: SessionSettings | None, product: object) -> None:
         seen.append(stage)
-        findings.extend(_stage_findings(stage, settings, product))
+        findings.extend(stage_findings(stage, settings, product))
         if stage == last:
             raise StopAfterStage
 

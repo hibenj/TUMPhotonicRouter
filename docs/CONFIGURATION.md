@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 79 `RoutingConfig` fields (79 with an overlay variable), 49 `FlowOptions` fields (41 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 165 in total.
+Totals: 79 `RoutingConfig` fields (79 with an overlay variable), 50 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 166 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -306,6 +306,7 @@ Debug artifacts and verbosity: SVGs, timings, per-net prints. `show_debug_svgs` 
 | `debug_meanders` | `bool` | `False` | `--debug-meanders` | -- |
 | `verbose_routes` | `bool` | `False` | `--verbose-routes` | -- |
 | `collect_attempt_diagnostics` | `bool` | `False` | `--attempt-diagnostics` | -- |
+| `verify_stages` | `bool` | `False` | `--verify-stages` | check what every stage hands on (`logic_checks.stages.verify_stages`); an error ends the run |
 
 ### `output` -- `OutputOptions`
 

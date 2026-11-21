@@ -9,8 +9,10 @@ Each stage has a module here with pure functions from the stage's product
 to a list of `Finding`. A finding is an *error* (the product contradicts
 itself; the next stage would work on nonsense) or a *note* (a fact that is
 legal but that a later stage has to handle, such as a port recessed from
-its component's face). `scripts/logic_check.py` runs the checks on
-benchmarks; `tests/logic/` pins what they find.
+its component's face). `stages.py` says which checks read which stage and
+runs them inside a run of the flow (`--verify-stages`: an error ends the
+run); `scripts/logic_check.py` runs them on benchmarks and `tests/logic/`
+pins what they find.
 
 Stages so far: `reading` (the schematic and the placed layout),
 `crossing_plan` (the crossing demand of the placement analysis and what

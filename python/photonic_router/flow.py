@@ -64,15 +64,18 @@ from photonic_router.gds.route_overview_svg import (
     realized_extra_um_by_net,
     write_routes_overview_svg,
 )
+from photonic_router.logic_checks.stages import verify_stages
 from photonic_router.placement_analysis import PlacementAnalysis, analyze_placement
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.records.route_order import default_net_order
+from photonic_router.routing import stage_observer
 from photonic_router.routing.options import (
     CrossingOptions,
     PortAccessOptions,
     RealizationOptions,
     SessionOptions,
 )
+from photonic_router.routing.products import LoadedDesign
 
 
 @dataclass(frozen=True)
@@ -366,6 +369,21 @@ def route_benchmark(config: RoutingConfig, options: FlowOptions) -> Component:
 def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOptions) -> Component:
     """Route one already-loaded schematic: every stage after the load.
 
+    With `options.debug.verify_stages` every stage's product is checked by
+    the logic harness as it is handed on, and an error ends the run
+    (`logic_checks.stages.StageVerificationError`).
+    """
+    if not options.debug.verify_stages:
+        return _route_schematic(schematic, config, options)
+    with verify_stages():
+        return _route_schematic(schematic, config, options)
+
+
+def _route_schematic(
+    schematic: Schematic, config: RoutingConfig, options: FlowOptions
+) -> Component:
+    """The stages of `route_schematic`.
+
     Keep the body below as the stage outline; detailed behavior belongs in the
     stage modules and the small helpers above.
     """
@@ -408,6 +426,7 @@ def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOp
         stats=stats,
         debug_timing=debug.debug_timing,
     )
+    stage_observer.notify("loaded", None, LoadedDesign(schematic, unrouted_layout))
     # The stages below negotiate the crossing configuration between them, so
     # these four start as the option values and are then rebound.
     enable_crossings = optical.enable_crossings
