@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from photonic_router.electrical.bus_search import (
     all_terminal_cells,
     axis_path,
@@ -25,13 +27,25 @@ from photonic_router.electrical.types import (
 from photonic_router.static_obstacle_builder import physical_to_grid
 
 
+@dataclass
+class CommonBusProgress:
+    """What the common bus phases have routed so far; each phase updates it in place."""
+
+    remaining: dict[str, TerminalPairGroup]
+    """Heaters without a bus route yet, by heater id."""
+    selected: dict[str, ElectricalTerminal]
+    """The terminal of each routed heater that joins the bus."""
+    unselected: dict[str, ElectricalTerminal]
+    """The other terminal of each routed heater, left for its own pad."""
+    routes: list[TerminalBusRoute]
+    tree_cells: set[GridCell]
+    """Cells of the bus stripe and of every route joined to it."""
+    blocked: set[GridCell]
+    """Obstacle cells, dilated to the wire's clearance radius."""
+
+
 def route_column_trunks(
-    remaining: dict[str, TerminalPairGroup],
-    selected: dict[str, ElectricalTerminal],
-    unselected: dict[str, ElectricalTerminal],
-    routes: list[TerminalBusRoute],
-    tree_cells: set[GridCell],
-    blocked: set[GridCell],
+    progress: CommonBusProgress,
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
     local_target_x_by_group: dict[str, float],
@@ -67,6 +81,12 @@ def route_column_trunks(
     and the merged metal is one trunk with one contact per terminal.
     """
 
+    remaining = progress.remaining
+    selected = progress.selected
+    unselected = progress.unselected
+    routes = progress.routes
+    tree_cells = progress.tree_cells
+    blocked = progress.blocked
     terminal_cluster, cluster_trunk_column, cluster_heater_ids = _column_groups(
         remaining, obstacle_map
     )

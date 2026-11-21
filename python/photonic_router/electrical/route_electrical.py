@@ -42,6 +42,7 @@ inline version used; each guard is noted at its call below.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from gdsfactory.component import Component
@@ -208,22 +209,7 @@ def route_electrical_heaters(
         if routed_component is not None
         else None
     )
-    # Stage 12: DebugArtifactWriter.
-    artifacts = write_debug_artifacts(
-        debug_dir,
-        debug_prefix,
-        obstacle_map=obstacle_map,
-        terminal_groups=terminal_groups,
-        common_bus=common_bus,
-        common_bus_escape=common_bus_escape,
-        individual_topology=individual_topology,
-        detailed_bundle_routes=detailed_bundle_routes,
-        pad_plan=pad_plan,
-        routed_component=routed_component,
-        config=config,
-    )
-
-    return ElectricalRoutingResult(
+    result = ElectricalRoutingResult(
         terminal_groups=terminal_groups,
         obstacle_map=obstacle_map,
         common_bus=common_bus,
@@ -233,5 +219,7 @@ def route_electrical_heaters(
         detailed_bundle_routes=detailed_bundle_routes,
         routed_component=routed_component,
         verification=verification,
-        debug_artifacts=artifacts,
     )
+    # Stage 12: DebugArtifactWriter.
+    artifacts = write_debug_artifacts(debug_dir, debug_prefix, result, config)
+    return replace(result, debug_artifacts=artifacts)

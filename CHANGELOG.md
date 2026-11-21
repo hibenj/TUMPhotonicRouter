@@ -290,6 +290,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Seven electrical signatures take records (rule 4.4, 46 -> 39). The debug
+  stage (`write_debug_artifacts`, its protocol `DebugArtifactWriter`, and the
+  two grid SVG functions) reads the `ElectricalRoutingResult` of stages 1 to
+  11 instead of nine loose products; `route_electrical_heaters` builds the
+  result first and adds the artifact paths to it. The three common bus phases
+  (`route_column_trunks`, `_route_local_trunks`, `_route_lone_straight_drops`)
+  share one `CommonBusProgress` (remaining heaters, selected and unselected
+  terminals, routes, tree cells, blocked cells), updated in place as before.
+  No value changes.
 - Two long signatures take records instead of loose keywords (rule 4.4).
   `verify_photonic_routing` (22 parameters) takes `geometry:
   RealizedRouteGeometry` (grid, width, layers, turn rules, the die),

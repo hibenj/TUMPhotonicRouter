@@ -17,7 +17,11 @@ from photonic_router.electrical.bus_search import (
     terminal_access_anchor_cell,
     terminal_open_cells,
 )
-from photonic_router.electrical.column_trunks import route_column_trunks, straight_drop_to_bus
+from photonic_router.electrical.column_trunks import (
+    CommonBusProgress,
+    route_column_trunks,
+    straight_drop_to_bus,
+)
 from photonic_router.electrical.pitch_grid import bbox_to_grid_cells, grid_cell_center_um
 from photonic_router.electrical.types import (
     BusStripe,
@@ -115,6 +119,14 @@ def route_common_bus(
         obstacle_map.grid.width,
         obstacle_map.grid.height,
     )
+    progress = CommonBusProgress(
+        remaining=remaining,
+        selected=selected,
+        unselected=unselected,
+        routes=routes,
+        tree_cells=tree_cells,
+        blocked=blocked,
+    )
     all_terminal_cells_set = all_terminal_cells(obstacle_map)
     median_x = _terminal_median_grid_x(terminal_groups, obstacle_map)
     local_target_x_by_group = _local_pair_target_grid_x_by_group(
@@ -125,12 +137,7 @@ def route_common_bus(
     )
 
     route_column_trunks(
-        remaining,
-        selected,
-        unselected,
-        routes,
-        tree_cells,
-        blocked,
+        progress,
         obstacle_map,
         config,
         local_target_x_by_group,
@@ -138,23 +145,13 @@ def route_common_bus(
 
     if config.common_bus_routing_strategy == "local_trunk_then_greedy":
         _route_local_trunks(
-            remaining,
-            selected,
-            unselected,
-            routes,
-            tree_cells,
-            blocked,
+            progress,
             obstacle_map,
             config,
             local_target_x_by_group,
         )
     _route_lone_straight_drops(
-        remaining,
-        selected,
-        unselected,
-        routes,
-        tree_cells,
-        blocked,
+        progress,
         obstacle_map,
         config,
     )
@@ -318,12 +315,7 @@ def trim_common_bus_to_connections(
 
 
 def _route_lone_straight_drops(
-    remaining: dict[str, TerminalPairGroup],
-    selected: dict[str, ElectricalTerminal],
-    unselected: dict[str, ElectricalTerminal],
-    routes: list[TerminalBusRoute],
-    tree_cells: set[GridCell],
-    blocked: set[GridCell],
+    progress: CommonBusProgress,
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
 ) -> None:
@@ -335,6 +327,12 @@ def _route_lone_straight_drops(
     in ``remaining`` for the greedy phase.
     """
 
+    remaining = progress.remaining
+    selected = progress.selected
+    unselected = progress.unselected
+    routes = progress.routes
+    tree_cells = progress.tree_cells
+    blocked = progress.blocked
     for heater_id in sorted(remaining):
         group = remaining[heater_id]
         best: tuple[tuple[int, str, str], ElectricalTerminal, tuple[GridCell, ...]] | None = None
@@ -374,16 +372,17 @@ def _route_lone_straight_drops(
 
 
 def _route_local_trunks(
-    remaining: dict[str, TerminalPairGroup],
-    selected: dict[str, ElectricalTerminal],
-    unselected: dict[str, ElectricalTerminal],
-    routes: list[TerminalBusRoute],
-    tree_cells: set[GridCell],
-    blocked: set[GridCell],
+    progress: CommonBusProgress,
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
     local_target_x_by_group: dict[str, float],
 ) -> None:
+    remaining = progress.remaining
+    selected = progress.selected
+    unselected = progress.unselected
+    routes = progress.routes
+    tree_cells = progress.tree_cells
+    blocked = progress.blocked
     pairs = _local_same_row_pairs(tuple(remaining.values()), config)
     used: set[str] = set()
     for left_id, right_id in pairs:

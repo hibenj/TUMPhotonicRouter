@@ -9,15 +9,9 @@ from typing import Protocol
 
 from photonic_router.electrical.svg_support import _all_port_accesses
 from photonic_router.electrical.types import (
-    CommonBusEscapeResult,
-    CommonBusRoutingResult,
-    DetailedBundleRoutingResult,
-    ElectricalObstacleMap,
     ElectricalPortAccess,
+    ElectricalRoutingResult,
     GridCell,
-    IndividualEscapeTopologyResult,
-    PadPlan,
-    TerminalPairGroup,
 )
 
 
@@ -56,13 +50,7 @@ _DEBUG_ROUTE_OFFSETS = (
 
 def export_electrical_debug_svg(
     path: str | Path,
-    obstacle_map: ElectricalObstacleMap,
-    terminal_groups: tuple[TerminalPairGroup, ...],
-    common_bus: CommonBusRoutingResult | None = None,
-    common_bus_escape: CommonBusEscapeResult | None = None,
-    individual_topology: IndividualEscapeTopologyResult | None = None,
-    detailed_bundle_routes: DetailedBundleRoutingResult | None = None,
-    pad_plan: PadPlan | None = None,
+    result: ElectricalRoutingResult,
     *,
     max_cell_px: int = 8,
 ) -> None:
@@ -71,31 +59,24 @@ def export_electrical_debug_svg(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        electrical_debug_svg(
-            obstacle_map,
-            terminal_groups,
-            common_bus,
-            common_bus_escape,
-            individual_topology,
-            detailed_bundle_routes,
-            pad_plan,
-            max_cell_px=max_cell_px,
-        ),
+        electrical_debug_svg(result, max_cell_px=max_cell_px),
         encoding="utf-8",
     )
 
 
 def electrical_debug_svg(
-    obstacle_map: ElectricalObstacleMap,
-    terminal_groups: tuple[TerminalPairGroup, ...],
-    common_bus: CommonBusRoutingResult | None = None,
-    common_bus_escape: CommonBusEscapeResult | None = None,
-    individual_topology: IndividualEscapeTopologyResult | None = None,
-    detailed_bundle_routes: DetailedBundleRoutingResult | None = None,
-    pad_plan: PadPlan | None = None,
+    result: ElectricalRoutingResult,
     *,
     max_cell_px: int = 8,
 ) -> str:
+    """The SVG text of a run: obstacles, terminal openings, bus and routes."""
+    obstacle_map = result.obstacle_map
+    terminal_groups = result.terminal_groups
+    common_bus = result.common_bus
+    common_bus_escape = result.common_bus_escape
+    individual_topology = result.individual_topology
+    detailed_bundle_routes = result.detailed_bundle_routes
+    pad_plan = result.pad_plan
     grid = obstacle_map.grid
     if grid.width <= 0 or grid.height <= 0:
         return '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" />\n'

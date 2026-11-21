@@ -24,10 +24,7 @@ inline.
                                 pad_plan, config)                                  -> Component
     11 ElectricalVerifier     (obstacle_map, common_bus, common_bus_escape,
                                 detailed_bundle_routes, pad_plan, config)          -> ElectricalVerificationResult
-    12 DebugArtifactWriter    (debug_dir, debug_prefix, *, obstacle_map,
-                                terminal_groups, common_bus, common_bus_escape,
-                                individual_topology, detailed_bundle_routes,
-                                pad_plan, routed_component, config)                -> dict[str, str]
+    12 DebugArtifactWriter    (debug_dir, debug_prefix, result, config)            -> dict[str, str]
 
 Deviations from the brief's table, found by reading each implementation
 before writing its Protocol:
@@ -48,9 +45,9 @@ before writing its Protocol:
   before this slice (Part 1.3 of the brief extracted it from the inline
   debug-export block of ``route_electrical_heaters``); its signature was
   designed for this slice rather than read from an existing implementation.
-  It takes ``debug_dir`` and ``debug_prefix`` positionally and every other
-  input keyword-only, and returns the ``artifacts`` dict exactly as the
-  inline block used to build it.
+  It takes the ``ElectricalRoutingResult`` of stages 1 to 11 (still without
+  debug artifacts) and returns the ``artifacts`` dict exactly as the inline
+  block used to build it.
 """
 
 from __future__ import annotations
@@ -67,6 +64,7 @@ from photonic_router.electrical.types import (
     DetailedBundleRoutingResult,
     ElectricalObstacleMap,
     ElectricalRoutingConfig,
+    ElectricalRoutingResult,
     ElectricalVerificationResult,
     IndividualEscapeTopologyResult,
     PadPlan,
@@ -236,14 +234,6 @@ class DebugArtifactWriter(Protocol):
         self,
         debug_dir: str | Path | None,
         debug_prefix: str,
-        *,
-        obstacle_map: ElectricalObstacleMap,
-        terminal_groups: tuple[TerminalPairGroup, ...],
-        common_bus: CommonBusRoutingResult,
-        common_bus_escape: CommonBusEscapeResult | None,
-        individual_topology: IndividualEscapeTopologyResult | None,
-        detailed_bundle_routes: DetailedBundleRoutingResult | None,
-        pad_plan: PadPlan | None,
-        routed_component: object | None,
+        result: ElectricalRoutingResult,
         config: ElectricalRoutingConfig,
     ) -> dict[str, str]: ...
