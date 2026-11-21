@@ -100,6 +100,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   never reads one) and `tests/e2e/test_placement_analysis_flow.py` (analyses
   per configuration on Benes 4x4: 0, 1, 1, and the demand is never built
   outside the stage). Nine-cell gate and PLM gate exact.
+- The passage report (region graph phase 3, a report: no plan changes).
+  `region_paths.passage_load_report` lists every passage with a path by the
+  height each path would get if they shared it evenly;
+  `PlacementAnalysis.passage_summary()` is one line with the number of nets
+  led through passages, the vertical travel the columns add to them, and
+  the tightest passage. The flow prints it under the analysis line when the
+  design has such nets (none of the paper benchmarks has). Whether a
+  passage is too full depends on the waveguide pitch, which the analysis
+  does not know; the line states the height per path and no verdict. Test
+  baseline python 763 -> 765.
 - Paths through the passages for nets that pass columns (region graph phase
   2, a report: no plan changes). New
   `python/photonic_router/crossings/region_paths.py`: `plan_region_paths`

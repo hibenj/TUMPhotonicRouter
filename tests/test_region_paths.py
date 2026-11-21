@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import pytest
-from photonic_router.crossings.region_paths import PathRequest, passage_loads, plan_region_paths
+from photonic_router.crossings.region_paths import (
+    PathRequest,
+    passage_load_report,
+    passage_loads,
+    plan_region_paths,
+)
 from photonic_router.crossings.routing_regions import (
     BAND,
     PASSAGE,
@@ -96,3 +101,21 @@ def test_passage_loads_count_the_paths_per_passage() -> None:
         ],
     )
     assert passage_loads(paths) == {_GAP: 2, _BELOW: 1, _ABOVE: 1}
+
+
+def test_the_load_report_lists_the_tightest_passage_first() -> None:
+    paths, _blocked = plan_region_paths(
+        _GRAPH,
+        [
+            PathRequest("a", 0, 45.0, 2, 80.0),
+            PathRequest("b", 0, 55.0, 1, 55.0),
+            PathRequest("c", 1, 10.0, 2, 10.0),
+        ],
+    )
+    report = passage_load_report(_GRAPH, paths)
+    assert [(load.key, load.height_um, load.paths) for load in report] == [
+        (_GAP, 20.0, 2),
+        (_BELOW, 30.0, 1),
+        (_ABOVE, 30.0, 1),
+    ]
+    assert report[0].height_per_path_um == pytest.approx(10.0)

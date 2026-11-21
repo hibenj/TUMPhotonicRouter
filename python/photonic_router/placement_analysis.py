@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from photonic_router.crossings.crossing_demand import CrossingDemand, build_crossing_demand
+from photonic_router.crossings.region_paths import passage_load_report
 from photonic_router.crossings.routing_regions import RegionGraph
 
 
@@ -46,6 +47,25 @@ class PlacementAnalysis:
             f"{len(regions.regions) - len(regions.bands)} passage(s); "
             f"{demand.lower_bound()} planned crossing(s), "
             f"{len(demand.outside)} net(s) outside the band model"
+        )
+
+    def passage_summary(self) -> str | None:
+        """One line on the nets led through passages, or None when there are none.
+
+        Names the vertical travel the columns add to these nets and the
+        passage with the least height per path (`region_paths`).
+        """
+        demand = self.crossing_demand
+        paths = demand.passage_paths
+        if not paths:
+            return None
+        detour_um = sum(path.detour_um for path in paths.values())
+        tightest = passage_load_report(demand.regions, paths)[0]
+        return (
+            f"{len(paths)} net(s) through passages, {detour_um:.1f} um detour; "
+            f"tightest passage: column {tightest.key.column} slot {tightest.key.slot}, "
+            f"{tightest.paths} path(s) in {tightest.height_um:.1f} um "
+            f"({tightest.height_per_path_um:.1f} um each)"
         )
 
 

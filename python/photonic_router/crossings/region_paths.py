@@ -14,8 +14,10 @@ clamped into it, so the search is a shortest path over those candidates,
 column by column. Ties go to the lower passage, then the lower y.
 
 The paths are geometry only: no passage has a capacity here, and two paths
-may ask for the same stretch of a passage. `passage_loads` counts the paths
-per passage for the check that follows.
+may ask for the same stretch of a passage. `passage_load_report` lists the
+passages by the height each of their paths would get if they shared it
+evenly; whether that is enough depends on the waveguide pitch, which this
+module does not know.
 """
 
 from __future__ import annotations
@@ -91,6 +93,31 @@ def passage_loads(paths: Mapping[NetT, RegionPath[NetT]]) -> dict[RegionKey, int
     for path in paths.values():
         counter.update(path.passages)
     return dict(sorted(counter.items()))
+
+
+@dataclass(frozen=True)
+class PassageLoad:
+    """A passage that paths go through, with the room it has for them."""
+
+    key: RegionKey
+    height_um: float
+    paths: int
+
+    @property
+    def height_per_path_um(self) -> float:
+        """The passage's height divided evenly among its paths."""
+        return self.height_um / self.paths
+
+
+def passage_load_report(
+    regions: RegionGraph, paths: Mapping[NetT, RegionPath[NetT]]
+) -> tuple[PassageLoad, ...]:
+    """Every passage with a path, the one with the least height per path first."""
+    report = [
+        PassageLoad(key, regions.regions[key].y_max - regions.regions[key].y_min, count)
+        for key, count in passage_loads(paths).items()
+    ]
+    return tuple(sorted(report, key=lambda load: (load.height_per_path_um, load.key)))
 
 
 def _least_travel_path(regions: RegionGraph, request: PathRequest[NetT]) -> RegionPath[NetT] | None:

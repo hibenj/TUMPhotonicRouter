@@ -14,6 +14,7 @@ from photonic_router.placement_analysis import PlacementAnalysis, analyze_placem
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from benchmarks.benes_8x8 import build_schematic
+from benchmarks.heater_single import build_schematic as build_heater_single
 
 
 class _Router:
@@ -94,3 +95,14 @@ def test_the_baseline_never_reads_an_analysis(design, monkeypatch) -> None:
     info = _plan_info("lidar-pure", analyze_placement(*design), design)
     assert info["reason"] == "lidar_pure_mode_ignores_topology_plan"
     assert info["event_count"] == 0 and "plan_text" not in info
+
+
+def test_the_passage_summary_names_the_nets_led_through_passages(design) -> None:
+    # every net of Benes 4x4 is confined to a band: nothing to report
+    assert analyze_placement(*design).passage_summary() is None
+
+    schematic = build_heater_single()
+    summary = analyze_placement(schematic, layout_from_schematic(schematic)).passage_summary()
+    assert summary is not None
+    assert summary.startswith("1 net(s) through passages, 0.0 um detour; tightest passage: ")
+    assert summary.endswith("1 path(s) in 87.5 um (87.5 um each)")

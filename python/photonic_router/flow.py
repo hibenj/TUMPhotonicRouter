@@ -210,7 +210,8 @@ def _placement_analysis_stage(
         stats.step_times_s["placement_analysis"] = (
             stats.step_times_s.get("placement_analysis", 0.0) + elapsed
         )
-    print(f"      - {analysis.summary()}")
+    lines = [analysis.summary(), analysis.passage_summary()]
+    print("\n".join(f"      - {line}" for line in lines if line is not None))
     return analysis, elapsed
 
 
