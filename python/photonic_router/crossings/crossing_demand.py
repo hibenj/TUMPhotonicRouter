@@ -18,8 +18,9 @@ The columns, the bands and the free passages inside the columns are the
 `RegionGraph` of `routing_regions.py` (`CrossingDemand.regions`); a confined
 net is the path of length one through its band (`CrossingDemand.paths`), and
 its band's invariant pairs are the chords that alternate on the band's
-boundary (`routing_regions.crossing_chords`). Nets on longer paths are not
-planned yet.
+boundary (`routing_regions.crossing_chords`). A net that passes columns has
+its way through their passages in `CrossingDemand.passage_paths`
+(`region_paths`); it is reported there and not planned yet.
 
 Per band the two wall orders go through `crossing_plan.build_crossing_plan`
 (the bubble-sort sequencing, one stage per band keyed `(left column, right
@@ -56,6 +57,7 @@ from photonic_router.crossings.crossing_plan import (
     LaneRank,
     build_crossing_plan,
 )
+from photonic_router.crossings.region_paths import PathRequest, RegionPath, plan_region_paths
 from photonic_router.crossings.routing_regions import (
     Column,
     RegionGraph,
@@ -201,6 +203,12 @@ class CrossingDemand:
     """The placement's bands and passages; `columns` are its columns."""
     paths: dict[RoutedEdgeKey, tuple[RegionKey, ...]] = field(repr=False)
     """The regions every planned net runs through, in order: its one band."""
+    passage_paths: dict[RoutedEdgeKey, RegionPath[RoutedEdgeKey]] = field(
+        default_factory=dict, repr=False
+    )
+    """The way through the passages of every `non_adjacent_walls` net that has
+    one (`region_paths`). A report: these nets stay in `outside` and get no
+    events."""
 
     def lower_bound(self) -> int:
         """Crossings every band-confined routing of this placement realises."""
@@ -366,6 +374,7 @@ def demand_from_geometry(regions: RegionGraph, links: Iterable[_Link]) -> Crossi
     column_of = {name: column.index for column in columns for name in column.instances}
     confined: dict[int, list[tuple[RoutedEdgeKey, Terminal, Terminal]]] = {}
     outside: list[OutsideNet] = []
+    requests: list[PathRequest[RoutedEdgeKey]] = []
 
     for link in links:
         a, b = link.a, link.b
@@ -389,6 +398,7 @@ def demand_from_geometry(regions: RegionGraph, links: Iterable[_Link]) -> Crossi
             )
             continue
         if band_a != band_b:
+            requests.append(PathRequest(link.edge_key, band_a, a.y, band_b, b.y))
             outside.append(
                 OutsideNet(
                     link.edge_key,
@@ -449,6 +459,7 @@ def demand_from_geometry(regions: RegionGraph, links: Iterable[_Link]) -> Crossi
         plan=plan,
         regions=regions,
         paths=paths,
+        passage_paths=plan_region_paths(regions, requests)[0],
     )
 
 

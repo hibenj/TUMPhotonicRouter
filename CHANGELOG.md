@@ -100,6 +100,23 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   never reads one) and `tests/e2e/test_placement_analysis_flow.py` (analyses
   per configuration on Benes 4x4: 0, 1, 1, and the demand is never built
   outside the stage). Nine-cell gate and PLM gate exact.
+- Paths through the passages for nets that pass columns (region graph phase
+  2, a report: no plan changes). New
+  `python/photonic_router/crossings/region_paths.py`: `plan_region_paths`
+  leads every net whose two terminals point into different bands through one
+  passage of each column in between, band, passage, band, ..., and takes the
+  sequence with the least vertical travel (ties to the lower passage);
+  `RegionPath` holds the regions, the passing heights and the detour against
+  the terminals' height difference, `passage_loads` counts the paths per
+  passage. `CrossingDemand.passage_paths` holds them for the
+  `non_adjacent_walls` nets; these nets stay in `outside`, get no events,
+  and nothing reads the paths yet. Measured on the 20 benchmarks with such
+  nets (twelve cascades, `heater_s_mod`, `heater_single`, `clements_8x8`,
+  five private circuits): all 707 nets have a path, none is blocked by a
+  solid column, none has a detour; the fullest passage carries 14 paths, and
+  the tightest one has 13.4 um of height per path. Test baseline python 754
+  -> 763 (`tests/test_region_paths.py`, one test in
+  `tests/test_crossing_demand.py`).
 - The placement's free space as a region graph (region graph phase 1, a
   restructuring: no plan changes). New
   `python/photonic_router/crossings/routing_regions.py`: `cluster_columns`

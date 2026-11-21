@@ -354,3 +354,25 @@ def test_outside_summary_groups_the_nets_by_sorted_reason_in_netlist_order() -> 
     )
     with pytest.raises(ValueError, match="5 net\\(s\\) outside the band model"):
         demand.require_band_layered()
+
+
+def test_a_net_that_passes_a_column_has_its_passage_path_and_stays_outside() -> None:
+    skip = _outside_link(NON_ADJACENT_WALLS)
+    # hand-built columns are solid walls: no path
+    solid = demand_from_geometry(build_region_graph(_THREE_COLUMNS), [*_layered_links(), skip])
+    assert solid.passage_paths == {}
+    # the middle column occupies y 5..25 of a chip that reaches down to -20
+    columns = (
+        Column(0, 0.0, 10.0, ("l0", "l1"), ((-20.0, 25.0),)),
+        Column(1, 50.0, 60.0, ("m0", "m1"), ((5.0, 25.0),)),
+        Column(2, 100.0, 110.0, ("r0", "r1"), ((-20.0, 25.0),)),
+    )
+    demand = demand_from_geometry(build_region_graph(columns), [*_layered_links(), skip])
+    (path,) = demand.passage_paths.values()
+    assert path.net == skip.edge_key
+    assert [key.kind for key in path.regions] == ["band", "passage", "band"]
+    assert path.passing_y == (-10.0,) and path.detour_um == 0.0
+    # a report only: the net is still outside and the plan has no event for it
+    assert [net.edge_key for net in demand.outside] == [skip.edge_key]
+    assert skip.edge_key not in demand.paths
+    assert demand.plan.events == solid.plan.events

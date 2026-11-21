@@ -145,10 +145,12 @@ placement's `RegionGraph` (`crossings/routing_regions.py`,
 `CrossingDemand.regions`); a *portal* joins a passage to each band beside
 its column. A confined net is the path of length one through its band
 (`CrossingDemand.paths`), and a band's invariant pairs are the nets whose
-ends alternate on its boundary (`crossing_chords`). Nets outside the band
-model have no path yet; on the non-paper benchmarks (cascades, Clements,
-the heater circuits) 10 to 35 % of the nets pass a column and are the
-reason the graph exists.
+ends alternate on its boundary (`crossing_chords`). A net that passes
+columns has its way through their passages in
+`CrossingDemand.passage_paths` (`crossings/region_paths.py`), as a report:
+it stays outside the band model and gets no events yet. On the non-paper
+benchmarks (cascades, Clements, the heater circuits) 10 to 35 % of the
+nets pass a column and are the reason the graph exists.
 
 ### 2.4 Phase 1: the static obstacle map
 
@@ -738,7 +740,7 @@ Sub-packages:
 | package | files, lines | responsibility |
 | --- | --- | --- |
 | `routing/` | 20, 10,100 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `products.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `timing.py`, `api.py` (`route_match_and_realize`) |
-| `crossings/` | 12, 6,000 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,400, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 1,300 for verification), `crossing_verification_report.py`, `topology_analysis.py` (test oracle) |
+| `crossings/` | 13, 6,300 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `region_paths.py` (the way of a net that passes columns through their passages; a report), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,400, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 1,300 for verification), `crossing_verification_report.py`, `topology_analysis.py` (test oracle) |
 | `plm/` | 5, 3,600 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,850) |
 | `verify/` | 3, 2,150 | `photonic_verification.py` (1,240, the geometry verifier), `route_rust_endpoint_correction.py` (900) |
 | `records/` | 8, 3,600 | `route_rust_types.py` (1,540, the shared records), `route_rust_records.py`, `route_rust_geometry.py`, `route_rust_realization.py`, `route_rust_obstacle_config.py`, `route_order.py` (`NET_ORDERS`), `layout_from_schematic.py` |
