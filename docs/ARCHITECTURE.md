@@ -831,6 +831,15 @@ docstring:
   matching its partner in width and layer; noted are overlapping instance
   boxes, links within one instance and ports recessed from the face they
   point at.
+* `crossing_plan.py`, the crossing demand of the placement analysis: every
+  link is confined to one band or listed as outside the band model; a
+  confined net has an end on each wall of its band and the wall orders run
+  top to bottom; the invariant pairs are the inversions between the two
+  wall orders, recounted pair by pair; the events are those pairs, each
+  once, and as swaps of neighbours they sort the left order into the right
+  one. And what phase 4 takes of it: in `lidar-pure` mode the plan info
+  holds nothing of a plan; in `lidar-guided` mode the pairs handed to the
+  router are the invariant pairs, as net ids of the jobs.
 * `obstacle_map.py`, phase 1's map: the grid holds the die and the die the
   design; every blocked cell, opened cell and rectangle is on the grid;
   every cell under an obstacle's bounding box is blocked (the blocked area
@@ -854,8 +863,8 @@ stage it has checks for and routes nothing.
 `scripts/logic_check.py <benchmark>|--all [--list N]` prints the findings;
 `tests/baselines/logic_findings.json` pins their counts per public
 benchmark and `tests/logic/test_logic_findings.py` compares, as part of the
-test baseline (the 64 x 64 and 128 x 128 designs through the reading stage
-only, unless `LOGIC_CHECK_LARGE=1`: their session stages take over a minute
+test baseline (the 64 x 64 and 128 x 128 designs without the session
+stages, unless `LOGIC_CHECK_LARGE=1`: their session stages take over a minute
 each; `--all --update` always runs everything, about six minutes); the
 errors a benchmark may have are named there
 (`KNOWN_ERRORS`) until they are fixed. A new stage is a new module, a

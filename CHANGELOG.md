@@ -14,6 +14,19 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The logic harness, stage "crossing plan". `logic_checks/crossing_plan.py`
+  has nine statements about the crossing demand of the placement analysis
+  (every link in one band or outside; ends on the walls; wall orders top to
+  bottom; invariant pairs recounted as the inversions between the walls;
+  events are the pairs and sort one wall order into the other) and four
+  about phase 4's plan info (the baseline holds nothing of a plan; in
+  guided mode the router gets the invariant pairs and the expected counts
+  are theirs). The demand is checked on all 41 public benchmarks including
+  the large ones, the plan info at the hand-off. Found: no error; the
+  default runs are `lidar-pure`, so the pin shows on every benchmark that
+  the baseline holds no plan. Noted: 545 links outside the band model on
+  the cascade, Clements and heater designs, each with a way through the
+  passages. Test baseline python 836 -> 848.
 - `scipy` is a declared dependency of the package (`scipy>=1.13,<2`).
   `logic_checks/route_jobs.py` imports it; until now it was installed only
   because gdsfactory depends on it.

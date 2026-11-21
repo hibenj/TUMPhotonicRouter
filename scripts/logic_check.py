@@ -37,9 +37,14 @@ if str(REPO_ROOT) not in sys.path:
 from photonic_router import cli
 from photonic_router.flow import load_benchmark
 from photonic_router.logic_checks import ERROR, Finding, count_by_check
+from photonic_router.logic_checks.crossing_plan import (
+    check_crossing_demand,
+    check_crossing_plan_info,
+)
 from photonic_router.logic_checks.obstacle_map import check_obstacle_map
 from photonic_router.logic_checks.reading import check_layout, check_schematic
 from photonic_router.logic_checks.route_jobs import check_route_jobs
+from photonic_router.placement_analysis import analyze_placement
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.routing.products import ObstacleContext
 from photonic_router.routing.settings import SessionSettings
@@ -66,17 +71,21 @@ LAST_STAGE = "handoff"
 def findings_for_benchmark(benchmark: str, *, session: bool = True) -> list[Finding]:
     """Every finding of every stage implemented so far, in stage order.
 
-    `session=False` checks the reading stage only (the session stages take
-    over a minute on the largest benchmarks).
+    `session=False` checks the reading stage and the crossing demand only
+    (the session stages take over a minute on the largest benchmarks).
 
-    The reading stage is checked on the benchmark as loaded. The session
+    The reading stage and the crossing demand of the placement analysis are
+    checked on the benchmark as loaded. The session
     stages are checked on a real run of the flow with the benchmark's stable
     defaults (`cli.main([benchmark])`), which is ended after the last stage
     that has checks, before any net is routed.
     """
     schematic = load_benchmark(benchmark)
     findings = check_schematic(schematic)
-    findings.extend(check_layout(schematic, layout_from_schematic(schematic)))
+    layout = layout_from_schematic(schematic)
+    findings.extend(check_layout(schematic, layout))
+    demand = analyze_placement(schematic, layout).crossing_demand
+    findings.extend(check_crossing_demand(schematic, layout, demand))
     if session:
         findings.extend(_session_findings(benchmark))
     return findings
@@ -97,6 +106,10 @@ def _session_findings(benchmark: str) -> list[Finding]:
             )
         if stage == "handoff":
             findings.extend(check_route_jobs(settings.schematic, product))
+            analysis = settings.placement_analysis or analyze_placement(
+                settings.schematic, settings.unrouted_layout
+            )
+            findings.extend(check_crossing_plan_info(settings, product, analysis.crossing_demand))
         if stage == LAST_STAGE:
             raise StopAfterStage
 
