@@ -39,6 +39,7 @@ dependencies = [
     "klayout>=0.30,<0.31",
     "numpy>=2,<3",
     "PyYAML>=6,<7",
+    "scipy>=1.13,<2",
     "shapely>=2.1,<3",
 ]
 
@@ -157,7 +158,7 @@ disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
 # scipy has no type information; the logic harness labels free areas with it
-# (logic_checks/route_jobs.py). It is installed as a dependency of gdsfactory.
+# (logic_checks/route_jobs.py).
 module = "scipy.*"
 ignore_missing_imports = true
 

@@ -14,6 +14,9 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `scipy` is a declared dependency of the package (`scipy>=1.13,<2`).
+  `logic_checks/route_jobs.py` imports it; until now it was installed only
+  because gdsfactory depends on it.
 - The logic harness, stage "route jobs". `logic_checks/route_jobs.py` has
   nine statements about what phases 3 to 5 hand to the kernel: the jobs are
   the links, both grid states of a job are on a free or opened cell and
