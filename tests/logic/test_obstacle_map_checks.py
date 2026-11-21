@@ -50,9 +50,32 @@ def test_two_layer_groups_count_every_port_once() -> None:
     obstacle_map = build_static_obstacle_map(layout_from_schematic(schematic), config)
     assert obstacle_map.build_stats["port_count"] == len(obstacle_map.benchmark.ports)
     assert obstacle_map.build_stats["port_open_cell_count"] == len(obstacle_map.port_open_cells)
-    findings = check_obstacle_map(schematic, obstacle_map, config)
-    # the one disagreement left: blocked_cell_count adds up the groups' box areas
-    assert [f.subject for f in findings if f.severity == ERROR] == ["blocked_cell_count"]
+    assert _errors(schematic, obstacle_map, config) == {}
+
+
+def test_the_blocked_count_is_the_blocked_area_not_the_sum_of_the_boxes() -> None:
+    """Boxes overlap, within a layer group and between the two: a cell counts once."""
+    schematic = build_schematic()
+    for heater in (False, True):
+        config = with_bbox_cell_materialization(
+            resolve_obstacle_config(None, route_layer=(1, 0), include_heater_obstacles=heater),
+            materialize_bbox_cells=False,
+            populate_obstacle_map=False,
+        )
+        obstacle_map = build_static_obstacle_map(layout_from_schematic(schematic), config)
+        cells = {
+            (x, y)
+            for x_min, y_min, x_max, y_max in obstacle_map.blocked_static_rects
+            for x in range(x_min, x_max + 1)
+            for y in range(y_min, y_max + 1)
+        }
+        box_sum = sum(
+            (x_max - x_min + 1) * (y_max - y_min + 1)
+            for x_min, y_min, x_max, y_max in obstacle_map.blocked_static_rects
+        )
+        assert obstacle_map.build_stats["blocked_cell_count"] == len(cells)
+        if heater:
+            assert len(cells) < box_sum
 
 
 def test_the_blocked_area_is_the_cells_and_the_rectangles(design) -> None:

@@ -23,13 +23,7 @@ PIN = json.loads(
 )
 
 #: errors the harness found that are still in the code, with what they are
-KNOWN_ERRORS = {
-    "obstacle_map.stats_disagree": (
-        "with heater obstacles the map is built from two layer groups and their "
-        "build_stats are added up, so blocked_cell_count is not the blocked area "
-        "(what it should count is the owner's decision)"
-    ),
-}
+KNOWN_ERRORS: dict[str, str] = {}
 
 
 def _is_large(benchmark: str) -> bool:

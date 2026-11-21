@@ -308,10 +308,8 @@ pub fn build_static_obstacle_map_from_geometry(
                 obstacle_map.set_static_rects(&blocked_static_rects);
             }
             stats.obstacle_map_time_s = elapsed_s(map_start);
-            let blocked_cell_count = blocked_static_rects
-                .iter()
-                .map(|rect| grid_rect_area_cells(*rect))
-                .sum();
+            // The blocked area: a cell under several boxes counts once.
+            let blocked_cell_count = union_area_cells(&blocked_static_rects);
             stats.blocked_cells_after_port_opening = blocked_cell_count;
             stats.port_opening_time_s = 0.0;
             stats.port_open_cell_count = port_open_keys.len();
@@ -326,10 +324,7 @@ pub fn build_static_obstacle_map_from_geometry(
                 blocked_cell_count
             };
             stats.blocked_cells_after_port_opening = blocked_cells_after_port_opening;
-            stats.raw_blocked_cell_count = raw_static_rects
-                .iter()
-                .map(|rect| grid_rect_area_cells(*rect))
-                .sum();
+            stats.raw_blocked_cell_count = union_area_cells(&raw_static_rects);
 
             if config.materialize_bbox_cells {
                 let mut blocked_cells_cells = materialize_rects(&blocked_static_rects);
@@ -351,11 +346,10 @@ pub fn build_static_obstacle_map_from_geometry(
 
             // Keep raw rectangle stats for debugging and non-routing compatibility.
             stats.static_box_count = raw_static_rects.len();
-            if config.materialize_bbox_cells {
-                stats.blocked_cell_count = blocked_cells.len();
-            } else {
-                stats.blocked_cell_count = blocked_cell_count;
-            }
+            // The materialized list still names a cell once per box over it,
+            // and the rectangles block the opened cells too: the count is
+            // the rectangles' area in both modes.
+            stats.blocked_cell_count = blocked_cell_count;
         }
     }
 
@@ -812,6 +806,107 @@ fn materialize_rects(rects: &[GridRect]) -> Vec<GridCell> {
     cells
 }
 
+/// The number of grid cells the rectangles cover together: a cell under
+/// several rectangles counts once. Empty rectangles (`min > max`) cover
+/// nothing.
+///
+/// A sweep over x; a segment tree over the rectangles' y-ends holds how many
+/// rows are covered at the sweep position.
+pub fn union_area_cells(rects: &[GridRect]) -> usize {
+    let mut ys: Vec<i64> = Vec::with_capacity(rects.len() * 2);
+    // (x, first row slot, one past the last row slot, opens)
+    let mut events: Vec<(i64, i64, i64, bool)> = Vec::with_capacity(rects.len() * 2);
+    for rect in rects {
+        if rect.x_min > rect.x_max || rect.y_min > rect.y_max {
+            continue;
+        }
+        let (y_low, y_high) = (i64::from(rect.y_min), i64::from(rect.y_max) + 1);
+        ys.push(y_low);
+        ys.push(y_high);
+        events.push((i64::from(rect.x_min), y_low, y_high, true));
+        events.push((i64::from(rect.x_max) + 1, y_low, y_high, false));
+    }
+    if events.is_empty() {
+        return 0;
+    }
+    ys.sort_unstable();
+    ys.dedup();
+    events.sort_unstable_by_key(|event| event.0);
+
+    let mut rows = CoveredRows::new(&ys);
+    let mut area: i64 = 0;
+    let mut previous_x = events[0].0;
+    for (x, y_low, y_high, opens) in events {
+        area = area.saturating_add(rows.covered().saturating_mul(x - previous_x));
+        previous_x = x;
+        let low = ys.partition_point(|&y| y < y_low);
+        let high = ys.partition_point(|&y| y < y_high);
+        rows.change(low, high, if opens { 1 } else { -1 });
+    }
+    usize::try_from(area).unwrap_or(usize::MAX)
+}
+
+/// How many rows are covered by at least one open rectangle, over the
+/// intervals between consecutive y-ends (`union_area_cells`).
+struct CoveredRows<'a> {
+    ys: &'a [i64],
+    /// Rectangles that span the whole node.
+    open: Vec<i32>,
+    /// Rows covered within the node.
+    covered: Vec<i64>,
+}
+
+impl<'a> CoveredRows<'a> {
+    fn new(ys: &'a [i64]) -> Self {
+        let nodes = 4 * ys.len().max(1);
+        Self {
+            ys,
+            open: vec![0; nodes],
+            covered: vec![0; nodes],
+        }
+    }
+
+    fn covered(&self) -> i64 {
+        self.covered[1]
+    }
+
+    /// Open (`delta = 1`) or close (`delta = -1`) a rectangle over the
+    /// intervals `low..high`.
+    fn change(&mut self, low: usize, high: usize, delta: i32) {
+        if low < high {
+            self.change_node(1, 0, self.ys.len() - 1, low, high, delta);
+        }
+    }
+
+    fn change_node(
+        &mut self,
+        node: usize,
+        node_low: usize,
+        node_high: usize,
+        low: usize,
+        high: usize,
+        delta: i32,
+    ) {
+        if high <= node_low || node_high <= low {
+            return;
+        }
+        if low <= node_low && node_high <= high {
+            self.open[node] += delta;
+        } else {
+            let middle = (node_low + node_high) / 2;
+            self.change_node(2 * node, node_low, middle, low, high, delta);
+            self.change_node(2 * node + 1, middle, node_high, low, high, delta);
+        }
+        self.covered[node] = if self.open[node] > 0 {
+            self.ys[node_high] - self.ys[node_low]
+        } else if node_high - node_low == 1 {
+            0
+        } else {
+            self.covered[2 * node] + self.covered[2 * node + 1]
+        };
+    }
+}
+
 fn grid_rect_area_cells(rect: GridRect) -> usize {
     let width = (rect.x_max - rect.x_min + 1) as i64;
     let height = (rect.y_max - rect.y_min + 1) as i64;
@@ -978,6 +1073,51 @@ fn elapsed_s(start: Instant) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rect(x_min: i32, y_min: i32, x_max: i32, y_max: i32) -> GridRect {
+        GridRect {
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+        }
+    }
+
+    #[test]
+    fn union_area_counts_a_cell_under_several_rects_once() {
+        assert_eq!(union_area_cells(&[]), 0);
+        assert_eq!(union_area_cells(&[rect(2, 3, 2, 3)]), 1);
+        // two 3 x 3 boxes that share one column
+        assert_eq!(union_area_cells(&[rect(0, 0, 2, 2), rect(2, 0, 4, 2)]), 15);
+        // one box inside another, and the same box twice
+        assert_eq!(union_area_cells(&[rect(0, 0, 9, 9), rect(3, 3, 5, 5)]), 100);
+        assert_eq!(union_area_cells(&[rect(1, 1, 4, 2), rect(1, 1, 4, 2)]), 8);
+        // a cross, negative coordinates, and a box that touches without overlap
+        assert_eq!(
+            union_area_cells(&[rect(-1, -5, 1, 5), rect(-5, -1, 5, 1), rect(6, -1, 6, 1)]),
+            33 + 33 - 9 + 3
+        );
+        // an empty rectangle covers nothing
+        assert_eq!(union_area_cells(&[rect(4, 0, 3, 9)]), 0);
+    }
+
+    #[test]
+    fn union_area_is_the_number_of_materialized_cells() {
+        // a deterministic scatter of overlapping boxes
+        let mut state: u32 = 12345;
+        let mut next = |modulus: u32| {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            ((state >> 8) % modulus) as i32
+        };
+        let rects: Vec<GridRect> = (0..200)
+            .map(|_| {
+                let (x, y) = (next(60), next(60));
+                rect(x, y, x + next(12), y + next(12))
+            })
+            .collect();
+        let cells: FxHashSet<GridCell> = materialize_rects(&rects).into_iter().collect();
+        assert_eq!(union_area_cells(&rects), cells.len());
+    }
 
     /// The scanline rasterizer must produce exactly the cells of the
     /// exhaustive bbox scan (same `point_in_polygon` oracle): rectangles,

@@ -355,6 +355,25 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   all reproduced cells match); the 27-cell ablation decides, and a later slice
   deletes the losing side.
 
+### Fixed
+
+- `build_stats["blocked_cell_count"]` and `raw_blocked_cell_count` of the
+  static obstacle map are the blocked area: a cell under several boxes
+  counts once. In bounding-box mode the Rust builder added up the areas of
+  the boxes, which overlap (Benes 8 x 8 without heater obstacles: 306,884
+  reported, 299,524 blocked), and the merge of the two layer groups added
+  up the groups (with heater obstacles: 1,176,884 reported, 884,244
+  blocked). New in the core: `union_area_cells` (a sweep with a segment
+  tree), and `static_blocked_area_rs` in the extension, which the merge
+  uses too. With materialized cells the builder counted its cell list
+  before duplicates were removed; it counts the rectangles' area in both
+  modes now. `raw_box_area_cells` stays the sum of the raw boxes. Nothing
+  routed reads the count; the flow statistics fall back to it for their
+  `blocked_cells`. The logic harness' known error
+  `obstacle_map.stats_disagree` is gone from all 40 benchmarks it was
+  pinned on, and the list of known errors is empty. Test baseline rust
+  513 -> 515, python 835 -> 836.
+
 ### Changed
 
 - The obstacle map's `build_stats` count every port and every port-open

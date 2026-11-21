@@ -349,20 +349,30 @@ def _merge_static_obstacle_data(
     raw_blocked_cells = set().union(*(data.raw_blocked_cells for data in data_items))
     blocked_cells = set().union(*(data.blocked_cells for data in data_items))
     port_open_cells = set().union(*(data.port_open_cells for data in data_items))
+    raw_static_rects = tuple(rect for data in data_items for rect in data.raw_static_rects)
+    blocked_static_rects = tuple(rect for data in data_items for rect in data.blocked_static_rects)
     if build_stats is not None:
         # Every layer group sees all the ports, so the sums count them once
         # per group; the merged map has each port and each opened cell once.
         build_stats["port_count"] = len(benchmark.ports)
         build_stats["port_open_cell_count"] = len(port_open_cells)
+        # The groups' obstacles overlap, so neither is the blocked area a sum.
+        # A handle-only map has neither cells nor rectangles here and keeps the sum.
+        if raw_blocked_cells or raw_static_rects:
+            build_stats["raw_blocked_cell_count"] = _blocked_area_cells(
+                raw_blocked_cells, raw_static_rects, rust_backend
+            )
+        if blocked_cells or blocked_static_rects:
+            build_stats["blocked_cell_count"] = _blocked_area_cells(
+                blocked_cells, blocked_static_rects, rust_backend
+            )
     return StaticObstacleMapData(
         grid=grid,
         raw_blocked_cells=raw_blocked_cells,
         blocked_cells=blocked_cells,
         port_open_cells=port_open_cells,
-        raw_static_rects=tuple(rect for data in data_items for rect in data.raw_static_rects),
-        blocked_static_rects=tuple(
-            rect for data in data_items for rect in data.blocked_static_rects
-        ),
+        raw_static_rects=raw_static_rects,
+        blocked_static_rects=blocked_static_rects,
         benchmark=benchmark,
         backend=backend,
         build_stats=build_stats,
@@ -372,6 +382,23 @@ def _merge_static_obstacle_data(
             rust_backend=rust_backend,
         ),
     )
+
+
+def _blocked_area_cells(
+    cells: set[GridCell], rects: Sequence[GridRect], rust_backend: Any | None
+) -> int:
+    """The number of cells a merged map blocks: its cells and its rectangles together.
+
+    A cell that is in the set and under a rectangle, or under several
+    rectangles, counts once.
+    """
+    blocked_area = getattr(rust_backend, "static_blocked_area_rs", None)
+    if blocked_area is None:
+        raise RuntimeError(
+            "The Rust extension has no static_blocked_area_rs. Rebuild "
+            "photonic_router._rust with `python3 -m maturin develop --release`."
+        )
+    return int(blocked_area(list(cells), list(rects)))
 
 
 def _merge_rust_static_cell_handles(

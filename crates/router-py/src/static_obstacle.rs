@@ -15,9 +15,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+use router_core::obstacle_map::GridRect;
 use router_core::static_obstacle_builder::{
-    build_static_obstacle_map_from_geometry, parse_clearance_metric, parse_obstacle_mode, GridCell,
-    PortInput, StaticCellSet, StaticObstacleBuildConfig, StaticObstacleBuildResult,
+    build_static_obstacle_map_from_geometry, parse_clearance_metric, parse_obstacle_mode,
+    union_area_cells, GridCell, PortInput, StaticCellSet, StaticObstacleBuildConfig,
+    StaticObstacleBuildResult,
 };
 
 /// Python-visible handle for passing packed static cells back into Rust without
@@ -62,6 +64,24 @@ impl PyStaticCellSet {
             inner: self.inner.merged_with_rects(rects, width, height),
         }
     }
+}
+
+/// The number of grid cells that `cells` and the inclusive rectangles
+/// `(x_min, y_min, x_max, y_max)` cover together; a cell that is listed and
+/// under a rectangle, or under several rectangles, counts once.
+#[pyfunction]
+pub fn static_blocked_area_rs(cells: Vec<GridCell>, rects: Vec<(i32, i32, i32, i32)>) -> usize {
+    let covered: Vec<GridRect> = rects
+        .into_iter()
+        .chain(cells.into_iter().map(|(x, y)| (x, y, x, y)))
+        .map(|(x_min, y_min, x_max, y_max)| GridRect {
+            x_min,
+            y_min,
+            x_max,
+            y_max,
+        })
+        .collect();
+    union_area_cells(&covered)
 }
 
 #[pyfunction]

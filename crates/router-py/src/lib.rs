@@ -1144,6 +1144,7 @@ pub fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     register_py_router(m)?;
     m.add_class::<PyStaticCellSet>()?;
     m.add_function(wrap_pyfunction!(build_static_obstacle_map_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(static_blocked_area_rs, m)?)?;
     Ok(())
 }
 

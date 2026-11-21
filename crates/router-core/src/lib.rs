@@ -59,7 +59,7 @@ pub use search::{
 pub use static_obstacle_builder::{
     build_static_obstacle_map_from_geometry, compute_bbox, expand_bbox, grid_cell_center,
     make_grid_spec, parse_clearance_metric, parse_obstacle_mode, physical_to_grid,
-    rasterize_polygon, BBox, GridCell, Point, Polygon, PortInput, StaticCellSet, StaticGridSpec,
-    StaticObstacleBuildConfig, StaticObstacleBuildMode, StaticObstacleBuildResult,
+    rasterize_polygon, union_area_cells, BBox, GridCell, Point, Polygon, PortInput, StaticCellSet,
+    StaticGridSpec, StaticObstacleBuildConfig, StaticObstacleBuildMode, StaticObstacleBuildResult,
     StaticObstacleBuildStats,
 };
