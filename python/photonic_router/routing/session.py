@@ -134,6 +134,7 @@ class RouteNetsRustSession:
         )
         if settings.detour_pass_factor > 0:
             routed = detour_pass.run_detour_pass(settings, state, routed)
+        stage_observer.notify("records", settings, routed)
         verified = verify_repair.repair_and_verify_final_geometry(
             settings, state, routed.routed_net_records
         )

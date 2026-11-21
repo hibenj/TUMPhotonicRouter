@@ -18,6 +18,8 @@ Stages reported so far, with their product:
 - `"handoff"`: the `SessionState` after phase 5, before the dispatch
 - `"routed"`: the `SessionState` after phase 6, the kernel batch: every net
   has its committed route, no end is corrected yet
+- `"records"`: the `RoutedRecords` after phase 7 and the optional detour
+  pass: the routed net records with their ends corrected to the ports
 """
 
 from __future__ import annotations

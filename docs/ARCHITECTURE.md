@@ -862,12 +862,18 @@ docstring:
   neighbour steps through cells that are free or opened for the net; two
   nets' cell paths meet exactly where the kernel recorded a crossing of
   the two, and every recorded crossing is legal.
+* `records.py`, the records after phase 7: the records are the links; no
+  endpoint correction failed; every corrected centerline runs from the
+  centre of its source port to the centre of its target port (to 1 nm),
+  without a repeated point, leaving and arriving along the ports'
+  directions; the recorded length is the centerline's and the base length
+  the kernel route's.
 
 The session stages are read from a real run: `routing/stage_observer.py`
 is the seam (`observe_stages(observer)`; the session calls `notify` after
 a phase, and an observer ends the run with `StopAfterStage`), so the
 harness runs the flow with the benchmark's stable defaults up to the last
-stage it has checks for: through the kernel batch, or, from 16 x 16 on
+stage it has checks for: through the endpoint correction, or, from 16 x 16 on
 where the search takes over a minute, up to the hand-off
 (`last_stage` in `scripts/logic_check.py`). A run in which the kernel
 gives up on a net is the error `routing.net_not_routed`.

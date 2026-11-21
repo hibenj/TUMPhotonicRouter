@@ -14,6 +14,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The logic harness, stage "records". `logic_checks/records.py` has eight
+  statements about the routed net records after the endpoint correction
+  (phase 7): the records are the links; no correction failed; a corrected
+  centerline runs from port centre to port centre (to 1 nm), has no
+  repeated point and leaves and arrives along the ports' directions (to 5
+  degrees; 2.8 is the most seen); the recorded length is the centerline's
+  and the base length the kernel route's. The session reports the records
+  after phase 7 (`"records"`). Found on the 21 public benchmarks that
+  route: nothing; every net is corrected onto both of its ports. Test
+  baseline python 857 -> 863.
 - The logic harness, stage "routing". `logic_checks/routing.py` has twelve
   statements about what the kernel batch hands back: the routed nets are
   the jobs; a route starts and ends in its job's two states; its segments
