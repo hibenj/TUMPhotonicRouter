@@ -868,12 +868,20 @@ docstring:
   without a repeated point, leaving and arriving along the ports'
   directions; the recorded length is the centerline's and the base length
   the kernel route's.
+* `realized.py`, phase 8's product and the polygons of the routed layout:
+  no realized crossing is left illegal; every polygon on the route layer
+  is simple and belongs to a net, every net has polygons, one more than it
+  has crossing components; a net's port centres lie in its polygons; its
+  centerline lies in its polygons and the footprints of its crossing
+  components; the polygons' length (area over width) is the centerline's,
+  or for a net with a meander the recorded length plus the extra length
+  its plan asked for; polygons of two nets do not overlap.
 
 The session stages are read from a real run: `routing/stage_observer.py`
 is the seam (`observe_stages(observer)`; the session calls `notify` after
 a phase, and an observer ends the run with `StopAfterStage`), so the
 harness runs the flow with the benchmark's stable defaults up to the last
-stage it has checks for: through the endpoint correction, or, from 16 x 16 on
+stage it has checks for: until the routes are polygons, or, from 16 x 16 on
 where the search takes over a minute, up to the hand-off
 (`last_stage` in `scripts/logic_check.py`). A run in which the kernel
 gives up on a net is the error `routing.net_not_routed`.

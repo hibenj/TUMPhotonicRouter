@@ -14,6 +14,22 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The logic harness, stage "realized". `logic_checks/realized.py` has nine
+  statements about phase 8's product and the polygons of the routed
+  layout: no realized crossing is left illegal; polygons and nets belong
+  to each other; a net is one polygon more than it has crossing
+  components; its ports lie in its polygons; its centerline lies in its
+  polygons and crossing footprints; the polygons are as long as the
+  record says (with a meander: the recorded length plus the extra length
+  of the plan); polygons of two nets do not overlap. The session reports
+  phase 8's product (`"verified"`), `route_match_and_realize` the realized
+  nets (`"realized"`, `RealizedNets` in `routing/products.py`); an
+  observer is now called with `None` for the settings outside a session.
+  Found on the 21 public benchmarks that route: no error. Noted: the nets
+  with a meander; such a record keeps the centerline and length from
+  before the meander and carries the meander as a plan. With this stage
+  the harness follows a design from the schematic to the polygons. Test
+  baseline python 863 -> 870.
 - The logic harness, stage "records". `logic_checks/records.py` has eight
   statements about the routed net records after the endpoint correction
   (phase 7): the records are the links; no correction failed; a corrected

@@ -138,6 +138,7 @@ class RouteNetsRustSession:
         verified = verify_repair.repair_and_verify_final_geometry(
             settings, state, routed.routed_net_records
         )
+        stage_observer.notify("verified", settings, verified)
         debug_artifacts = realize.realize_and_assemble_debug_artifacts(
             settings, state, final.route_jobs, routed, verified
         )

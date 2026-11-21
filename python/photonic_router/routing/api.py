@@ -60,7 +60,9 @@ from photonic_router.records.route_rust_types import (
     RouteRustPipelineResult,
     as_float,
 )
+from photonic_router.routing import stage_observer
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions, SessionOptions
+from photonic_router.routing.products import RealizedNets
 from photonic_router.routing.route_jobs import build_route_jobs_and_fanout_clustering
 
 # re-exported here as part of the module-level routing API
@@ -438,6 +440,17 @@ def route_match_and_realize(
             f"{pipeline_timings_s['route_realization']:.4f} s"
         )
 
+    stage_observer.notify(
+        "realized",
+        None,
+        RealizedNets(
+            routed_layout=routed_layout,
+            records=list(records_for_realization),
+            route_layer=realization.route_layer,
+            route_width_um=float(realization.route_width_um),
+            crossing_plan_info=plan_info,
+        ),
+    )
     return RouteRustPipelineResult(
         routed_layout=routed_layout,
         debug_artifacts=debug_artifacts,

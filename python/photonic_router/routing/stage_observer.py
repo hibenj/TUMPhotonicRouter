@@ -20,6 +20,11 @@ Stages reported so far, with their product:
   has its committed route, no end is corrected yet
 - `"records"`: the `RoutedRecords` after phase 7 and the optional detour
   pass: the routed net records with their ends corrected to the ports
+- `"verified"`: the `VerifiedRecords` after phase 8: the records after the
+  repair loops and the realized crossings that are still illegal
+- `"realized"`: the `RealizedNets` of `route_match_and_realize`, after the
+  session, the path-length matching and the realization into polygons;
+  reported without session settings (`None`)
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from photonic_router.routing.settings import SessionSettings
 
-StageObserver = Callable[[str, "SessionSettings", object], None]
+StageObserver = Callable[[str, "SessionSettings | None", object], None]
 
 _OBSERVER: ContextVar[StageObserver | None] = ContextVar("stage_observer", default=None)
 
@@ -51,7 +56,7 @@ def observe_stages(observer: StageObserver) -> Iterator[None]:
         _OBSERVER.reset(token)
 
 
-def notify(stage: str, settings: SessionSettings, product: object) -> None:
+def notify(stage: str, settings: SessionSettings | None, product: object) -> None:
     """Hand a phase's product to the observer of the current context, if there is one."""
     observer = _OBSERVER.get()
     if observer is not None:

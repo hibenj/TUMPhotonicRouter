@@ -44,6 +44,7 @@ from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapC
 if TYPE_CHECKING:  # annotation-only: `route_jobs` imports this module
     from gdsfactory.typings import Port
 
+    from photonic_router.records.crossing_plan_info import CrossingPlanInfo
     from photonic_router.routing.route_jobs import FanoutAnchor
 
 
@@ -344,3 +345,16 @@ class RunPlan:
     def empty(cls) -> RunPlan:
         """The plan of a session whose phase 5 has not run."""
         return cls([], {}, {}, {}, {}, (0, 0, 0.0, 0.0, 0.0), RipupRerouteConfig(), False, False)
+
+
+class RealizedNets(NamedTuple):
+    """What `route_match_and_realize` reports once the routes are polygons (`stage_observer`)."""
+
+    routed_layout: Any
+    """The layout with one polygon per net on the route layer."""
+    records: list[Any]
+    """The routed net records the polygons were made from (after any meander insertion)."""
+    route_layer: tuple[int, int]
+    route_width_um: float
+    crossing_plan_info: CrossingPlanInfo | None
+    """The session's crossing plan info with the crossing components that were placed."""

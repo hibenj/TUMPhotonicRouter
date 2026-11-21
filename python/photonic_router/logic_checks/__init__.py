@@ -16,8 +16,9 @@ Stages so far: `reading` (the schematic and the placed layout),
 `crossing_plan` (the crossing demand of the placement analysis and what
 phase 4 of the session takes of it), `obstacle_map` (phase 1 of the routing
 session), `route_jobs` (the jobs and openings after phase 5), `routing`
-(the routes the kernel hands back after phase 6) and `records` (the routed
-net records after the ends were corrected, phase 7); the session stages
+(the routes the kernel hands back after phase 6), `records` (the routed
+net records after the ends were corrected, phase 7) and `realized` (phase
+8's product and the polygons of the routed layout); the stages of a run
 are read through `routing.stage_observer`.
 """
 

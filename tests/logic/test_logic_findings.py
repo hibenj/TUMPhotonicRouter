@@ -77,9 +77,9 @@ def test_a_benchmark_has_the_pinned_findings_and_only_known_errors(benchmark: st
     assert count_by_check(findings) == PIN[benchmark]
 
 
-def test_the_wide_designs_stop_at_the_hand_off_and_the_others_are_routed_and_corrected() -> None:
-    assert logic_check.last_stage("benes_8x8_flat") == "records"
-    assert logic_check.last_stage("cascade_16_folded") == "records"
-    assert logic_check.last_stage("heater_single") == "records"
+def test_the_wide_designs_stop_at_the_hand_off_and_the_others_run_to_the_polygons() -> None:
+    assert logic_check.last_stage("benes_8x8_flat") == "realized"
+    assert logic_check.last_stage("cascade_16_folded") == "realized"
+    assert logic_check.last_stage("heater_single") == "realized"
     assert logic_check.last_stage("benes_16x16") == "handoff"
     assert logic_check.last_stage("multiportmmi_64x64_bands1to2") == "handoff"
