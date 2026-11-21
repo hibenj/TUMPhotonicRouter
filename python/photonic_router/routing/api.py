@@ -47,7 +47,10 @@ from photonic_router.records.route_rust_obstacle_config import (
     with_bbox_cell_materialization,
     with_obstacle_mode,
 )
-from photonic_router.records.route_rust_realization import realize_routed_net_records
+from photonic_router.records.route_rust_realization import (
+    RealizationGeometry,
+    realize_routed_net_records,
+)
 from photonic_router.records.route_rust_records import build_port_alignment_diagnostics
 from photonic_router.records.route_rust_types import (
     MeanderInsertionConfig,
@@ -404,13 +407,15 @@ def route_match_and_realize(
     realize_routed_net_records(
         routed_layout,
         records_for_realization,
-        route_width_um=realization.route_width_um,
-        route_layer=realization.route_layer,
-        realization_grid_spec=debug_artifacts.realization_grid_spec,
-        allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
-        bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
         crossing_plan_info=plan_info.to_dict() if plan_info is not None else None,
         enable_endpoint_correction=realization.enable_checked_endpoint_correction,
+        geometry=RealizationGeometry(
+            route_width_um=realization.route_width_um,
+            route_layer=realization.route_layer,
+            realization_grid_spec=debug_artifacts.realization_grid_spec,
+            allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
+            bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+        ),
     )
     if plan_info is not None:
         place_realized_crossing_components(routed_layout, plan_info)

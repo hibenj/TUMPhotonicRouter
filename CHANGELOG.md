@@ -290,6 +290,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Two more long signatures take records (rule 4.4, 32 -> 30).
+  `apply_crossing_aware_endpoint_correction_to_record` (16 parameters) takes
+  `setup: EndpointCorrectionSetup` (what a run's corrections share),
+  `scope: EndpointCorrectionScope` (which ends, which baseline) and
+  `clearance: EndpointClearance` (opened and exempt cells, radii).
+  `realize_routed_net_records` (10) takes `geometry: RealizationGeometry`.
+  No value changes.
 - Every Rust exception is an `#[expect(..., reason = "...")]`; no `#[allow]`
   is left in the two crates, and the workspace denies
   `clippy::allow_attributes` and `clippy::allow_attributes_without_reason`.

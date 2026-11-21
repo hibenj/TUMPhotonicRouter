@@ -12,6 +12,7 @@ from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
 from photonic_router.records.route_keys import PortRef
 from photonic_router.records.route_rust_realization import (
+    RealizationGeometry,
     build_realization_router,
     realize_routed_net_records,
     realized_record_polygons,
@@ -1292,12 +1293,14 @@ def _component_path_region(
     realize_routed_net_records(
         temp,
         [record],
-        route_width_um=route_width_um,
-        route_layer=route_layer,
-        realization_grid_spec=realization_grid_spec,
         crossing_plan_info=crossing_plan_info,
         enable_endpoint_correction=enable_endpoint_correction,
         router=router,
+        geometry=RealizationGeometry(
+            route_width_um=route_width_um,
+            route_layer=route_layer,
+            realization_grid_spec=realization_grid_spec,
+        ),
     )
     return _component_layer_region(temp, route_layer)
 
@@ -1549,10 +1552,12 @@ def test_realized_record_polygons_returns_dbu_polygons_matching_component_add_po
     realize_routed_net_records(
         temp,
         [record],
-        route_width_um=route_width_um,
-        route_layer=(1, 0),
-        realization_grid_spec=realization_grid_spec,
         router=router,
+        geometry=RealizationGeometry(
+            route_width_um=route_width_um,
+            route_layer=(1, 0),
+            realization_grid_spec=realization_grid_spec,
+        ),
     )
     component_polygons = temp.get_polygons(merge=False, by="tuple").get((1, 0), [])
     assert len(component_polygons) == 1

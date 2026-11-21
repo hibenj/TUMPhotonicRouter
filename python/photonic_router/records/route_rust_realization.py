@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Protocol
 
 import klayout.db as kdb
@@ -203,20 +204,33 @@ def build_realization_router(
     return rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
 
 
+@dataclass(frozen=True)
+class RealizationGeometry:
+    """The grid, the waveguide and the turn rules the records are drawn with."""
+
+    realization_grid_spec: tuple[int, int, float, float, float]
+    """(width, height, cell size in um, origin x, origin y)."""
+    route_width_um: float = 0.5
+    route_layer: tuple[int, int] = (1, 0)
+    allow_45_degree_turns: bool = True
+    bend_radius_cells: int = 4
+
+
 def realize_routed_net_records(
     routed_layout: Component,
     routed_net_records: list[RoutedNetRecord],
     *,
-    route_width_um: float = 0.5,
-    route_layer: tuple[int, int] = (1, 0),
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool = True,
-    bend_radius_cells: int = 4,
+    geometry: RealizationGeometry,
     crossing_plan_info: Mapping[str, object] | None = None,
     enable_endpoint_correction: bool = True,
     router: RealizationRouter | None = None,
 ) -> None:
     """Phase B: realize routed records into polygons on the target layout."""
+    route_width_um = geometry.route_width_um
+    route_layer = geometry.route_layer
+    realization_grid_spec = geometry.realization_grid_spec
+    allow_45_degree_turns = geometry.allow_45_degree_turns
+    bend_radius_cells = geometry.bend_radius_cells
     if route_width_um <= 0:
         raise ValueError("route_width_um must be > 0")
 

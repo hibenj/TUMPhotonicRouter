@@ -9,7 +9,10 @@ from photonic_router.crossings.route_rust_crossing_components import (
     place_realized_crossing_components,
 )
 from photonic_router.crossings.route_rust_crossing_plan import write_crossing_debug_artifacts
-from photonic_router.records.route_rust_realization import realize_routed_net_records
+from photonic_router.records.route_rust_realization import (
+    RealizationGeometry,
+    realize_routed_net_records,
+)
 from photonic_router.records.route_rust_records import build_route_debug_artifacts
 from photonic_router.records.route_rust_types import (
     RouteJob,
@@ -55,13 +58,15 @@ def realize_and_assemble_debug_artifacts(
         realize_routed_net_records(
             state.routed_layout,
             routed_net_records,
-            route_width_um=settings.route_width_um,
-            route_layer=settings.route_layer,
-            realization_grid_spec=state.run.realization_grid_spec,
-            allow_45_degree_turns=settings.allow_45_degree_turns,
-            bend_radius_cells=state.kernel.radii.bend_radius_cells,
             crossing_plan_info=state.crossing_plan_info.to_dict(),
             enable_endpoint_correction=settings.enable_checked_endpoint_correction,
+            geometry=RealizationGeometry(
+                route_width_um=settings.route_width_um,
+                route_layer=settings.route_layer,
+                realization_grid_spec=state.run.realization_grid_spec,
+                allow_45_degree_turns=settings.allow_45_degree_turns,
+                bend_radius_cells=state.kernel.radii.bend_radius_cells,
+            ),
         )
         timing.record_pipeline_timing(
             settings, state, "direct_realization", t_direct_realization_start

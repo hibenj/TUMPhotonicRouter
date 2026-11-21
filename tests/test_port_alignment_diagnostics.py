@@ -16,6 +16,7 @@ from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions
 from photonic_router.static_obstacle_builder import _load_rust_backend
 from photonic_router.verify.route_rust_endpoint_correction import (
+    EndpointCorrectionSetup,
     apply_crossing_aware_endpoint_correction_to_record,
 )
 
@@ -775,10 +776,12 @@ def test_crossing_aware_endpoint_correction_succeeds_via_checked_native_method()
         _simple_record(),
         router=_FakeCheckedEndpointRouter(),
         crossing_points=[(4.5, 0.0), (5.5, 0.0)],
-        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
-        route_width_um=0.5,
-        allow_unchecked_bumps=True,
-        log_failures=True,
+        setup=EndpointCorrectionSetup(
+            realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+            route_width_um=0.5,
+            allow_unchecked_bumps=True,
+            log_failures=True,
+        ),
     )
 
     assert updated.endpoint_correction_error is None
@@ -804,10 +807,12 @@ def test_crossing_aware_endpoint_correction_fails_honestly_without_checked_nativ
         _simple_record(),
         router=_FakeEndpointRouter(),
         crossing_points=[(4.5, 0.0), (5.5, 0.0)],
-        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
-        route_width_um=0.5,
-        allow_unchecked_bumps=True,
-        log_failures=True,
+        setup=EndpointCorrectionSetup(
+            realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+            route_width_um=0.5,
+            allow_unchecked_bumps=True,
+            log_failures=True,
+        ),
     )
 
     assert updated.endpoint_correction_error is not None
@@ -824,10 +829,12 @@ def test_crossing_free_endpoint_correction_uses_normal_corrected_centerline():
         record,
         router=_FakeEndpointRouter(),
         crossing_points=[],
-        realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
-        route_width_um=0.5,
-        allow_unchecked_bumps=True,
-        log_failures=True,
+        setup=EndpointCorrectionSetup(
+            realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+            route_width_um=0.5,
+            allow_unchecked_bumps=True,
+            log_failures=True,
+        ),
     )
 
     assert updated.corrected_centerline_um == (

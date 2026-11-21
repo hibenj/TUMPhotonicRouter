@@ -38,7 +38,10 @@ from photonic_router.crossings.route_rust_crossing_verification import (
 )
 from photonic_router.gds.route_rust_debug_artifacts import dump_photonic_probe_failure_artifacts
 from photonic_router.records.route_rust_obstacle_config import default_obstacle_layers
-from photonic_router.records.route_rust_realization import realize_routed_net_records
+from photonic_router.records.route_rust_realization import (
+    RealizationGeometry,
+    realize_routed_net_records,
+)
 from photonic_router.records.route_rust_types import RoutedNetRecord, int_or_none
 from photonic_router.routing import timing
 from photonic_router.routing.dispatch import (
@@ -716,13 +719,15 @@ def _make_photonic_verification_probe_layout(
     realize_routed_net_records(
         probe_layout,
         list(records),
-        route_width_um=settings.route_width_um,
-        route_layer=settings.route_layer,
-        realization_grid_spec=state.run.realization_grid_spec,
-        allow_45_degree_turns=settings.allow_45_degree_turns,
-        bend_radius_cells=state.kernel.radii.bend_radius_cells,
         crossing_plan_info=state.crossing_plan_info.to_dict(),
         enable_endpoint_correction=settings.enable_checked_endpoint_correction,
+        geometry=RealizationGeometry(
+            route_width_um=settings.route_width_um,
+            route_layer=settings.route_layer,
+            realization_grid_spec=state.run.realization_grid_spec,
+            allow_45_degree_turns=settings.allow_45_degree_turns,
+            bend_radius_cells=state.kernel.radii.bend_radius_cells,
+        ),
     )
     timing.record_pipeline_timing(settings, state, "photonic_probe_realize", t_probe_realize_start)
     if state.crossing_plan_info.enabled:

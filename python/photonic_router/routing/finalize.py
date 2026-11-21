@@ -36,6 +36,9 @@ from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import RoutedRecords
 from photonic_router.routing.state import SessionState
 from photonic_router.verify.route_rust_endpoint_correction import (
+    EndpointClearance,
+    EndpointCorrectionScope,
+    EndpointCorrectionSetup,
     _centerline_length_um,
     apply_crossing_aware_endpoint_correction_to_record,
     dedupe_centerline,
@@ -862,36 +865,42 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
             record,
             router=cast(EndpointCorrectionRouter, state.kernel.router),
             crossing_points=crossing_points,
-            realization_grid_spec=state.run.realization_grid_spec,
-            route_width_um=float(settings.route_width_um),
-            allow_unchecked_bumps=False,
-            log_failures=print_warnings,
-            crossing_plan_info=state.crossing_plan_info.to_dict(),
-            correct_source=not source_has_fanout_stub,
-            # Unlike a source fanout stub (still always eagerly,
-            # fully pre-stitched to the true port by
-            # `_fanout_stubbed_centerline`, so its side never needs
-            # further correction), a TARGET fanout stub's own
-            # `record.target_port_center_um` is deliberately pointed
-            # at the anchor's own exact position, not the true port
-            # (see `RouteBookkeeping.record_route`'s
-            # `target_port_center_um_override`) -- so the target side
-            # of a crossing-aware net always still needs correction
-            # too, regardless of whether it has a fanout stub. Always
-            # correcting here (instead of `not target_has_fanout_stub`,
-            # which assumed the old eager-stitch design where the
-            # target was already fully corrected) is what actually
-            # closes that gap; see
-            # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
-            correct_target=True,
-            prefer_corrected_baseline=(
-                record_has_fanout_stub and bool(record.corrected_centerline_um)
+            setup=EndpointCorrectionSetup(
+                realization_grid_spec=state.run.realization_grid_spec,
+                route_width_um=float(settings.route_width_um),
+                allow_unchecked_bumps=False,
+                log_failures=print_warnings,
+                crossing_plan_info=state.crossing_plan_info.to_dict(),
+                diagnostics=settings.config.diagnostics,
             ),
-            opened_cells=opened_candidate_cells,
-            clearance_exempt_cells=clearance_exempt_cells,
-            clearance_radius_cells=int(state.kernel.radii.commit_radius_cells),
-            core_radius_cells=int(state.kernel.radii.core_commit_radius_cells),
-            config=settings.config.diagnostics,
+            scope=EndpointCorrectionScope(
+                correct_source=not source_has_fanout_stub,
+                # Unlike a source fanout stub (still always eagerly,
+                # fully pre-stitched to the true port by
+                # `_fanout_stubbed_centerline`, so its side never needs
+                # further correction), a TARGET fanout stub's own
+                # `record.target_port_center_um` is deliberately pointed
+                # at the anchor's own exact position, not the true port
+                # (see `RouteBookkeeping.record_route`'s
+                # `target_port_center_um_override`) -- so the target side
+                # of a crossing-aware net always still needs correction
+                # too, regardless of whether it has a fanout stub. Always
+                # correcting here (instead of `not target_has_fanout_stub`,
+                # which assumed the old eager-stitch design where the
+                # target was already fully corrected) is what actually
+                # closes that gap; see
+                # `.agent/execplans/2026-08-26-target-side-static-stubs-for-dense-mmi-ports.md`.
+                correct_target=True,
+                prefer_corrected_baseline=(
+                    record_has_fanout_stub and bool(record.corrected_centerline_um)
+                ),
+            ),
+            clearance=EndpointClearance(
+                opened_cells=opened_candidate_cells,
+                exempt_cells=clearance_exempt_cells,
+                radius_cells=int(state.kernel.radii.commit_radius_cells),
+                core_radius_cells=int(state.kernel.radii.core_commit_radius_cells),
+            ),
         )
         failed = updated.endpoint_correction_error is not None
         if state.run.collect_timing:

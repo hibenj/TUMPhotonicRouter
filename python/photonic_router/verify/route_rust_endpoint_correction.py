@@ -6,7 +6,7 @@ import itertools
 import math
 from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from photonic_router.config import FlowDiagnostics
@@ -516,28 +516,69 @@ def merge_terminal_corrected_route_centerline(
     return dedupe_centerline(tuple(merged))
 
 
+@dataclass(frozen=True)
+class EndpointCorrectionSetup:
+    """What every endpoint correction of one run shares."""
+
+    realization_grid_spec: tuple[int, int, float, float, float] | None
+    """(width, height, cell size in um, origin x, origin y)."""
+    route_width_um: float
+    allow_unchecked_bumps: bool
+    log_failures: bool
+    crossing_plan_info: Mapping[str, object] | None = None
+    diagnostics: FlowDiagnostics | None = None
+    """None is the default `FlowDiagnostics`."""
+
+
+@dataclass(frozen=True)
+class EndpointCorrectionScope:
+    """Which ends of one record are corrected, and from which baseline."""
+
+    correct_source: bool = True
+    correct_target: bool = True
+    prefer_corrected_baseline: bool = False
+
+
+@dataclass(frozen=True)
+class EndpointClearance:
+    """The cells and radii the checked correction of one record tests against."""
+
+    opened_cells: Iterable[tuple[int, int]] = ()
+    exempt_cells: Iterable[tuple[int, int]] = ()
+    radius_cells: int = 0
+    core_radius_cells: int = 0
+
+
 def apply_crossing_aware_endpoint_correction_to_record(
     record: RoutedNetRecord,
     *,
     router: EndpointCorrectionRouter,
     crossing_points: list[tuple[float, float]],
-    realization_grid_spec: tuple[int, int, float, float, float] | None,
-    route_width_um: float,
-    allow_unchecked_bumps: bool,
-    log_failures: bool,
-    crossing_plan_info: Mapping[str, object] | None = None,
-    correct_source: bool = True,
-    correct_target: bool = True,
-    prefer_corrected_baseline: bool = False,
-    opened_cells: Iterable[tuple[int, int]] | None = None,
-    clearance_exempt_cells: Iterable[tuple[int, int]] | None = None,
-    clearance_radius_cells: int = 0,
-    core_radius_cells: int = 0,
-    config: FlowDiagnostics | None = None,
+    setup: EndpointCorrectionSetup,
+    scope: EndpointCorrectionScope | None = None,
+    clearance: EndpointClearance | None = None,
 ) -> RoutedNetRecord:
-    """Apply terminal-only endpoint correction without moving route crossings."""
+    """Apply terminal-only endpoint correction without moving route crossings.
 
-    config = config if config is not None else FlowDiagnostics()
+    ``scope`` defaults to both ends, ``clearance`` to no opened cells and
+    radius zero.
+    """
+
+    scope = scope if scope is not None else EndpointCorrectionScope()
+    clearance = clearance if clearance is not None else EndpointClearance()
+    realization_grid_spec = setup.realization_grid_spec
+    route_width_um = setup.route_width_um
+    allow_unchecked_bumps = setup.allow_unchecked_bumps
+    log_failures = setup.log_failures
+    crossing_plan_info = setup.crossing_plan_info
+    correct_source = scope.correct_source
+    correct_target = scope.correct_target
+    prefer_corrected_baseline = scope.prefer_corrected_baseline
+    opened_cells = clearance.opened_cells
+    clearance_exempt_cells = clearance.exempt_cells
+    clearance_radius_cells = clearance.radius_cells
+    core_radius_cells = clearance.core_radius_cells
+    config = setup.diagnostics if setup.diagnostics is not None else FlowDiagnostics()
     trace_endpoint_nets = config.trace_endpoint_correction_nets
     trace_endpoint = record.net_name in trace_endpoint_nets or (
         record.net_id is not None and str(int(record.net_id)) in trace_endpoint_nets
