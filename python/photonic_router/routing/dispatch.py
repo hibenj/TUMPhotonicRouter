@@ -227,12 +227,6 @@ def clearance_exempt_cells_for_job(
     return state.run.clearance_exempt_cells_by_id.get(int(job.net_id), [])
 
 
-def _clearance_exempt_cell_set_for_job(
-    settings: SessionSettings, state: SessionState, job: RouteJob
-) -> set[tuple[int, int]]:
-    return set(clearance_exempt_cells_for_job(settings, state, job))
-
-
 def native_route_jobs(
     settings: SessionSettings, state: SessionState, jobs: Iterable[RouteJob]
 ) -> list[Any]:
@@ -333,7 +327,6 @@ def _finalize_committed_route(
     *,
     should_print_route: bool,
     diag_txt: Path | None,
-    debug_obstacle_cells: set[tuple[int, int]] | None = None,
 ) -> None:
     expanded_states = int(getattr(route_obj, "expanded_states", 0))
     state.search.total_expanded_states += expanded_states
@@ -341,24 +334,12 @@ def _finalize_committed_route(
         state.search.simple_route_count += 1
 
     if state.obstacles.diagnostics_enabled:
-        source_state, target_state, opened_candidate_cells, opened_cells_set, _ = (
-            state_openings_for_job(settings, state, job)
-        )
-        route_cells = {
-            (int(cell[0]), int(cell[1])) for cell in (getattr(route_obj, "cells", None) or [])
-        }
         write_route_diagnostics(
             settings,
             state,
             job=job,
-            source_state=source_state,
-            target_state=target_state,
-            opened_candidate_cells=opened_candidate_cells,
-            dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(settings, state, job),
-            opened_cells_set=opened_cells_set,
+            openings=state_openings_for_job(settings, state, job),
             diag_txt=diag_txt,
-            status="ok",
-            route_cells=route_cells,
             route_obj=route_obj,
         )
 
@@ -367,7 +348,6 @@ def _finalize_committed_route(
         state,
         job,
         route_obj,
-        obstacle_cells=debug_obstacle_cells,
         opened_cells=opened_cells,
     )
 
@@ -579,13 +559,9 @@ def dispatch_native_routing(
         error_text = str(batch_result.get("error", "No route found"))
         if failed_job is None:
             raise RuntimeError(error_text)
-        (
-            source_state,
-            target_state,
-            opened_candidate_cells,
-            opened_cells_set,
-            opened_cells,
-        ) = state_openings_for_job(settings, state, failed_job)
+        openings = state_openings_for_job(settings, state, failed_job)
+        source_state = openings.source_state
+        target_state = openings.target_state
         should_print_route, diag_txt = batch_debug_by_id.get(
             failed_net_id,
             (False, None),
@@ -600,27 +576,11 @@ def dispatch_native_routing(
             settings,
             state,
             job=failed_job,
-            source_state=source_state,
-            target_state=target_state,
-            opened_candidate_cells=opened_candidate_cells,
-            dynamic_clearance_exempt_cells=_clearance_exempt_cell_set_for_job(
-                settings, state, failed_job
-            ),
-            opened_cells_set=opened_cells_set,
+            openings=openings,
             diag_txt=diag_txt,
-            status="failed",
             error_text=error_text,
         )
-        write_failed_log(
-            settings,
-            state,
-            failed_job,
-            source_state,
-            target_state,
-            opened_candidate_cells,
-            opened_cells,
-            error_text,
-        )
+        write_failed_log(settings, state, failed_job, openings, error_text)
         raise RuntimeError(
             f"No route found for {failed_job.net_name}: "
             f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "

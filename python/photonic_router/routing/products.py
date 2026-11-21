@@ -32,7 +32,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from photonic_router.records.route_rust_types import (
     OpticalRouteClearancePolicy,
@@ -283,10 +283,19 @@ class PortFootprints:
         return cls({}, {}, {}, {}, set(), {}, {}, {}, {})
 
 
-#: per net, as `handoff.states_and_openings` returns it: the source state, the
-#: target state (kernel `State` handles), the candidate cells the net may
-#: open, the cells it opens, and those cells as a sorted list
-StateOpenings = tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]
+class StateOpenings(NamedTuple):
+    """Per net, as `handoff.states_and_openings` returns it."""
+
+    source_state: Any
+    """The kernel `State` handle of the source end."""
+    target_state: Any
+    """The kernel `State` handle of the target end."""
+    opened_candidate_cells: set[tuple[int, int]]
+    """The cells the net may open."""
+    opened_cells_set: set[tuple[int, int]]
+    """The cells the net opens."""
+    opened_cells: list[tuple[int, int]]
+    """`opened_cells_set` as a sorted list."""
 
 
 @dataclass(frozen=True)

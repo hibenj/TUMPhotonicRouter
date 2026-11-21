@@ -325,18 +325,12 @@ def _route_job_grid_span(
         settings,
         state,
         route_job.source_port,
-        state.kernel.frame.origin_x_um,
-        state.kernel.frame.origin_y_um,
-        float(state.obstacles.grid.grid_size_um),
         as_target=False,
     )
     target_state = port_to_grid_state(
         settings,
         state,
         route_job.target_port,
-        state.kernel.frame.origin_x_um,
-        state.kernel.frame.origin_y_um,
-        float(state.obstacles.grid.grid_size_um),
         as_target=True,
     )
     return abs(int(source_state.x) - int(target_state.x)) + abs(
@@ -421,7 +415,7 @@ def states_and_openings(
     settings: SessionSettings,
     state: SessionState,
     job: RouteJob,
-) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
+) -> StateOpenings:
     """Compute the two grid states of a job and the cells opened for its endpoints.
 
     A state comes from the port's fan-out anchor if it has one (the heading reversed
@@ -444,9 +438,6 @@ def states_and_openings(
             settings,
             state,
             job.source_port,
-            state.kernel.frame.origin_x_um,
-            state.kernel.frame.origin_y_um,
-            float(state.obstacles.grid.grid_size_um),
             as_target=False,
         )
     else:
@@ -460,9 +451,6 @@ def states_and_openings(
             settings,
             state,
             job.target_port,
-            state.kernel.frame.origin_x_um,
-            state.kernel.frame.origin_y_um,
-            float(state.obstacles.grid.grid_size_um),
             as_target=True,
         )
     else:
@@ -576,7 +564,7 @@ def states_and_openings(
             f"opened_candidate={len(opened_candidate_cells)} "
             f"has_112_243={(112, 243) in opened_candidate_cells}"
         )
-    return (
+    return StateOpenings(
         source_state,
         target_state,
         opened_candidate_cells,

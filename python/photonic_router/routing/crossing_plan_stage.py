@@ -263,9 +263,6 @@ def _endpoint_state_for_lane_assignment(
         settings,
         state,
         port,
-        state.kernel.frame.origin_x_um,
-        state.kernel.frame.origin_y_um,
-        float(state.obstacles.grid.grid_size_um),
         as_target=as_target,
     )
 

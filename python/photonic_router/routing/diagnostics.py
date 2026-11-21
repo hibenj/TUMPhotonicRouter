@@ -37,6 +37,7 @@ from photonic_router.routing.handoff import (
     foreign_keepout_open_cells_for_spec,
     states_and_openings,
 )
+from photonic_router.routing.products import StateOpenings
 from photonic_router.routing.route_jobs import angle_to_step, fanout_stub_bend_steps
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SessionState
@@ -46,13 +47,13 @@ def _direction_reaches_target_ray(
     settings: SessionSettings,
     state: SessionState,
     *,
-    source_x: int,
-    source_y: int,
-    source_angle: int,
-    target_x: int,
-    target_y: int,
+    source: tuple[int, int, int],
+    target_cell: tuple[int, int],
     tolerance: int,
 ) -> bool:
+    """Whether the heading of ``source`` (x, y, angle) points at ``target_cell``."""
+    source_x, source_y, source_angle = source
+    target_x, target_y = target_cell
     dx = target_x - source_x
     dy = target_y - source_y
     if abs(dx) <= tolerance and abs(dy) <= tolerance:
@@ -73,13 +74,16 @@ def _source_lower_bounds(
     settings: SessionSettings,
     state: SessionState,
     *,
-    source_x: int,
-    source_y: int,
-    source_angle: int,
-    target_x: int,
-    target_y: int,
-    target_angle: int,
+    source: tuple[int, int, int],
+    target: tuple[int, int, int],
 ) -> tuple[float, float]:
+    """Two lower bounds of the route cost between two grid states (x, y, angle).
+
+    The first is the distance in um; the second adds one bend where the
+    heading-aware heuristic sees that the source heading misses the target.
+    """
+    source_x, source_y, source_angle = source
+    target_x, target_y, target_angle = target
     grid_size_um = float(state.obstacles.grid.grid_size_um)
     dx = target_x - source_x
     dy = target_y - source_y
@@ -92,11 +96,8 @@ def _source_lower_bounds(
         reaches_target_ray = _direction_reaches_target_ray(
             settings,
             state,
-            source_x=source_x,
-            source_y=source_y,
-            source_angle=source_angle,
-            target_x=target_x,
-            target_y=target_y,
+            source=source,
+            target_cell=(target_x, target_y),
             tolerance=max(0, int(getattr(state.kernel.astar_cfg, "target_tolerance_cells", 0))),
         )
         if not target_angle_ok or not reaches_target_ray:
@@ -139,7 +140,7 @@ def state_openings_for_job(
     settings: SessionSettings,
     state: SessionState,
     job: RouteJob,
-) -> tuple[Any, Any, set[tuple[int, int]], set[tuple[int, int]], list[tuple[int, int]]]:
+) -> StateOpenings:
     """Return the states and opened cells precomputed for a job in the static hand-off.
 
     The tuple has the layout that `states_and_openings` returns. Raises KeyError if
@@ -294,12 +295,8 @@ def route_attempt_diagnostics(
     euclidean_lower_bound, heading_lower_bound = _source_lower_bounds(
         settings,
         state,
-        source_x=source_x,
-        source_y=source_y,
-        source_angle=source_angle,
-        target_x=target_x,
-        target_y=target_y,
-        target_angle=target_angle,
+        source=(source_x, source_y, source_angle),
+        target=(target_x, target_y, target_angle),
     )
     blocker_ids = list(candidate_blockers or [])
     victim_ids = list(ripup_ids or [])
@@ -446,29 +443,34 @@ def write_route_diagnostics(
     state: SessionState,
     *,
     job: RouteJob,
-    source_state: Any,
-    target_state: Any,
-    opened_candidate_cells: set[tuple[int, int]],
-    dynamic_clearance_exempt_cells: set[tuple[int, int]],
-    opened_cells_set: set[tuple[int, int]],
+    openings: StateOpenings,
     diag_txt: Path | None,
-    status: str,
-    error_text: str | None = None,
-    route_cells: set[tuple[int, int]] | None = None,
     route_obj: Any | None = None,
-    repair_note: str | None = None,
+    error_text: str | None = None,
 ) -> None:
     """Write the diagnostics text file of one routed or failed job to ``diag_txt``.
 
-    The file has one ``key=value`` line per item: the job, ``status``, the two grid
-    states, the opened cells, and how the opened cells and the route cells overlap the
-    raw static geometry, the committed cells of the other nets, the runways of the
-    job's own ports and of their sibling ports, and the clearance-exempt cells; then
-    the route segments, ``repair_note`` and ``error_text`` where given. Does nothing
-    if ``diag_txt`` is None.
+    The file has one ``key=value`` line per item: the job, the status (``failed``
+    if ``error_text`` is given, otherwise ``ok``), the two grid states, the opened
+    cells, and how the opened cells and the cells of ``route_obj`` overlap the raw
+    static geometry, the committed cells of the other nets, the runways of the
+    job's own ports and of their sibling ports, and the job's clearance-exempt
+    cells; then the route segments and ``error_text`` where given. Does nothing if
+    ``diag_txt`` is None.
     """
     if diag_txt is None:
         return
+    source_state = openings.source_state
+    target_state = openings.target_state
+    opened_candidate_cells = openings.opened_candidate_cells
+    opened_cells_set = openings.opened_cells_set
+    status = "ok" if error_text is None else "failed"
+    dynamic_clearance_exempt_cells = set(
+        state.run.clearance_exempt_cells_by_id.get(int(job.net_id), [])
+    )
+    route_cells = {
+        (int(cell[0]), int(cell[1])) for cell in (getattr(route_obj, "cells", None) or [])
+    }
     port1_spec = f"{job.inst1},{job.port1}"
     port2_spec = f"{job.inst2},{job.port2}"
     source_anchor_cell = (int(source_state.x), int(source_state.y))
@@ -489,7 +491,6 @@ def write_route_diagnostics(
         opened_dynamic_overlap = set()
         dynamic_exempt_dynamic_overlap = set()
 
-    route_cells = route_cells or set()
     route_static_overlap = cells_in_raw_static_geometry(settings, state, route_cells)
     route_overlap_with_candidate_opened_static = route_cells & opened_candidate_static_overlap
     route_overlap_with_effective_opened_static = route_cells & opened_static_overlap
@@ -900,8 +901,6 @@ def write_route_diagnostics(
     lines.extend(_format_first_move_debug())
     if route_segments:
         lines.append("route_segments=" + "; ".join(route_segments))
-    if repair_note is not None:
-        lines.append(f"repair={repair_note}")
     if error_text is not None:
         lines.append(f"error={error_text}")
     diag_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1125,10 +1124,7 @@ def write_failed_log(
     settings: SessionSettings,
     state: SessionState,
     job: RouteJob,
-    source_state: Any,
-    target_state: Any,
-    opened_candidate_cells: set[tuple[int, int]],
-    opened_cells: list[tuple[int, int]],
+    openings: StateOpenings,
     error_text: str,
 ) -> None:
     """Write ``<debug_prefix>_<net_name>_FAILED.txt`` for a net that could not be routed.
@@ -1142,6 +1138,10 @@ def write_failed_log(
     """
     if state.obstacles.debug_path is None:
         return
+    source_state = openings.source_state
+    target_state = openings.target_state
+    opened_candidate_cells = openings.opened_candidate_cells
+    opened_cells = openings.opened_cells
     route_dir = state.obstacles.debug_path / "routes"
     ensure_dir(route_dir)
     port1_spec = f"{job.inst1},{job.port1}"

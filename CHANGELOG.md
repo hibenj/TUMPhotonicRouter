@@ -290,6 +290,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Six routing signatures shrink (rule 4.4, 39 -> 33). `StateOpenings`, the
+  per-net product of `handoff.states_and_openings`, is a named tuple instead
+  of a bare five-tuple; `write_route_diagnostics` and `write_failed_log` take
+  it whole. `write_route_diagnostics` derives the status, the route cells
+  and the clearance-exempt cells from its inputs (both callers passed
+  exactly these) and loses `repair_note`, which no caller passed, as
+  `_finalize_committed_route` loses `debug_obstacle_cells`.
+  `port_to_grid_state` reads the grid origin and size from the state, which
+  all six callers passed from there. The two heading helpers of the
+  diagnostics take grid states as tuples. No value changes.
 - Seven electrical signatures take records (rule 4.4, 46 -> 39). The debug
   stage (`write_debug_artifacts`, its protocol `DebugArtifactWriter`, and the
   two grid SVG functions) reads the `ElectricalRoutingResult` of stages 1 to

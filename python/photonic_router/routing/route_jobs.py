@@ -94,9 +94,6 @@ def port_to_grid_state(
     settings: SessionSettings,
     state: SessionState,
     port: Port,
-    grid_origin_x_um: float,
-    grid_origin_y_um: float,
-    grid_size_um: float,
     *,
     as_target: bool = False,
     outward_cells: int = 1,
@@ -105,9 +102,12 @@ def port_to_grid_state(
 
     The cell is the one ``outward_cells`` cells in front of the port along its
     orientation, so that the state is not inside the component. The heading points
-    away from the port for a source and toward it with ``as_target``. Origin and grid
-    size are in um.
+    away from the port for a source and toward it with ``as_target``. The cell is
+    on the kernel's grid (``state.kernel.frame``, ``state.obstacles.grid``).
     """
+    grid_origin_x_um = state.kernel.frame.origin_x_um
+    grid_origin_y_um = state.kernel.frame.origin_y_um
+    grid_size_um = float(state.obstacles.grid.grid_size_um)
     port_angle = orientation_to_angle(settings, state, port.orientation, flip=False)
 
     # For choosing the grid cell, always move outward from the physical port.
@@ -841,9 +841,6 @@ def _build_static_fanout_anchors(
                     settings,
                     state,
                     port,
-                    state.kernel.frame.origin_x_um,
-                    state.kernel.frame.origin_y_um,
-                    float(state.obstacles.grid.grid_size_um),
                     as_target=False,
                 )
                 lateral_cell = int(grid_state.x) * lateral_x + int(grid_state.y) * lateral_y
