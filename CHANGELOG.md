@@ -14,6 +14,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The logic harness, stage "route jobs". `logic_checks/route_jobs.py` has
+  nine statements about what phases 3 to 5 hand to the kernel: the jobs are
+  the links, both grid states of a job are on a free or opened cell and
+  head as the port points, and the two ends of every net are connected
+  through cells that are free or opened for it. The session reports the
+  state after phase 5 (`"handoff"`). Found on the 41 public benchmarks:
+  nothing; every net is routable as far as the static cells go. The pin
+  test reads the twelve 64 x 64 and 128 x 128 designs through the
+  reading stage only unless `LOGIC_CHECK_LARGE=1`. Test baseline python
+  828 -> 835.
 - The logic harness, stage "obstacle map". `logic_checks/obstacle_map.py`
   has ten statements about phase 1's static obstacle map.
   `routing/stage_observer.py` is the seam the harness reads a session

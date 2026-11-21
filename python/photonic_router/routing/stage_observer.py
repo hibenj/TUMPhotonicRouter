@@ -15,6 +15,7 @@ Stages reported so far, with their product:
 
 - `"obstacle_map"`: phase 1's `ObstacleContext`
 - `"router_setup"`: the `SessionState` after phase 2
+- `"handoff"`: the `SessionState` after phase 5, before the dispatch
 """
 
 from __future__ import annotations

@@ -126,6 +126,7 @@ class RouteNetsRustSession:
         final = handoff.finalize_route_jobs_and_static_handoff(
             settings, state, planned.route_jobs, planned.foreign_port_keepout_cells_by_instance
         )
+        stage_observer.notify("handoff", settings, state)
         dispatch.dispatch_native_routing(settings, state, final.route_jobs)
         routed = finalize.finalize_routing_results(
             settings, state, final.route_jobs, final.astar_start_s

@@ -837,6 +837,14 @@ docstring:
   is `blocked_cells` and the `blocked_static_rects` together); the keep-out
   band stays outside the routable box; the cell in front of every linked
   port is free or opened; `build_stats` counts what the map holds.
+* `route_jobs.py`, the jobs and openings after phase 5: the jobs are
+  exactly the links, with net ids 1..n and an order that holds each once;
+  both grid states of every job are on the grid, on a cell that is free or
+  opened for the net, and head the way the port points (the target the
+  opposite way); and the target is reachable from the source through cells
+  that are free or opened for the net, static cells alone (free areas are
+  labelled once with `scipy.ndimage`, every net then walks over its opened
+  cells and the areas they touch).
 
 The session stages are read from a real run: `routing/stage_observer.py`
 is the seam (`observe_stages(observer)`; the session calls `notify` after
@@ -846,7 +854,10 @@ stage it has checks for and routes nothing.
 `scripts/logic_check.py <benchmark>|--all [--list N]` prints the findings;
 `tests/baselines/logic_findings.json` pins their counts per public
 benchmark and `tests/logic/test_logic_findings.py` compares, as part of the
-test baseline; the errors a benchmark may have are named there
+test baseline (the 64 x 64 and 128 x 128 designs through the reading stage
+only, unless `LOGIC_CHECK_LARGE=1`: their session stages take over a minute
+each; `--all --update` always runs everything, about six minutes); the
+errors a benchmark may have are named there
 (`KNOWN_ERRORS`) until they are fixed. A new stage is a new module, a
 `notify` in the session if the product is not reported yet, its checks in
 the script, unit tests that each statement finds what it names, and a

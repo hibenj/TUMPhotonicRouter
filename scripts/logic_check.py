@@ -39,6 +39,7 @@ from photonic_router.flow import load_benchmark
 from photonic_router.logic_checks import ERROR, Finding, count_by_check
 from photonic_router.logic_checks.obstacle_map import check_obstacle_map
 from photonic_router.logic_checks.reading import check_layout, check_schematic
+from photonic_router.logic_checks.route_jobs import check_route_jobs
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.routing.products import ObstacleContext
 from photonic_router.routing.settings import SessionSettings
@@ -59,11 +60,14 @@ def public_benchmarks() -> list[str]:
     return sorted(names)
 
 
-LAST_STAGE = "obstacle_map"
+LAST_STAGE = "handoff"
 
 
-def findings_for_benchmark(benchmark: str) -> list[Finding]:
+def findings_for_benchmark(benchmark: str, *, session: bool = True) -> list[Finding]:
     """Every finding of every stage implemented so far, in stage order.
+
+    `session=False` checks the reading stage only (the session stages take
+    over a minute on the largest benchmarks).
 
     The reading stage is checked on the benchmark as loaded. The session
     stages are checked on a real run of the flow with the benchmark's stable
@@ -73,7 +77,8 @@ def findings_for_benchmark(benchmark: str) -> list[Finding]:
     schematic = load_benchmark(benchmark)
     findings = check_schematic(schematic)
     findings.extend(check_layout(schematic, layout_from_schematic(schematic)))
-    findings.extend(_session_findings(benchmark))
+    if session:
+        findings.extend(_session_findings(benchmark))
     return findings
 
 
@@ -90,11 +95,17 @@ def _session_findings(benchmark: str) -> list[Finding]:
                     settings.schematic, context.obstacle_map, context.resolved_obstacle_config
                 )
             )
+        if stage == "handoff":
+            findings.extend(check_route_jobs(settings.schematic, product))
         if stage == LAST_STAGE:
             raise StopAfterStage
 
     try:
-        with observe_stages(observer), contextlib.redirect_stdout(io.StringIO()):
+        with (
+            observe_stages(observer),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
             cli.main([benchmark])
     except StopAfterStage:
         return findings

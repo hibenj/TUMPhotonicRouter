@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,12 @@ KNOWN_ERRORS = {
     ),
 }
 
+
+def _is_large(benchmark: str) -> bool:
+    """The 64 x 64 and 128 x 128 designs: read fully only with `LOGIC_CHECK_LARGE=1`."""
+    return "64x64" in benchmark or "128x128" in benchmark
+
+
 _spec = importlib.util.spec_from_file_location(
     "logic_check", REPO_ROOT / "scripts" / "logic_check.py"
 )
@@ -46,6 +53,13 @@ def test_the_pin_lists_every_public_benchmark() -> None:
 @pytest.mark.e2e
 @pytest.mark.parametrize("benchmark", sorted(PIN))
 def test_a_benchmark_has_the_pinned_findings_and_only_known_errors(benchmark: str) -> None:
+    if _is_large(benchmark) and os.environ.get("LOGIC_CHECK_LARGE") != "1":
+        # The session stages take over a minute each here; the pin is still
+        # written from a full run (`scripts/logic_check.py --all --update`).
+        findings = logic_check.findings_for_benchmark(benchmark, session=False)
+        reading = {k: v for k, v in PIN[benchmark].items() if k.startswith("reading.")}
+        assert count_by_check(findings) == reading
+        return
     findings = logic_check.findings_for_benchmark(benchmark)
     unknown = [
         str(finding)

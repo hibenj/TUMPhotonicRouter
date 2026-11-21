@@ -155,6 +155,12 @@ warn_unused_ignores = true
 warn_unreachable = true
 disallow_untyped_defs = false
 
+[[tool.mypy.overrides]]
+# scipy has no type information; the logic harness labels free areas with it
+# (logic_checks/route_jobs.py). It is installed as a dependency of gdsfactory.
+module = "scipy.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 markers = [
     "e2e: loads a benchmark module or a script and runs it end to end",
