@@ -349,6 +349,11 @@ def _merge_static_obstacle_data(
     raw_blocked_cells = set().union(*(data.raw_blocked_cells for data in data_items))
     blocked_cells = set().union(*(data.blocked_cells for data in data_items))
     port_open_cells = set().union(*(data.port_open_cells for data in data_items))
+    if build_stats is not None:
+        # Every layer group sees all the ports, so the sums count them once
+        # per group; the merged map has each port and each opened cell once.
+        build_stats["port_count"] = len(benchmark.ports)
+        build_stats["port_open_cell_count"] = len(port_open_cells)
     return StaticObstacleMapData(
         grid=grid,
         raw_blocked_cells=raw_blocked_cells,

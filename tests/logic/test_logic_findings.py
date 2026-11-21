@@ -25,8 +25,8 @@ PIN = json.loads(
 KNOWN_ERRORS = {
     "obstacle_map.stats_disagree": (
         "with heater obstacles the map is built from two layer groups and their "
-        "build_stats are added up, so ports and port-open cells count twice and "
-        "blocked_cell_count is not the blocked area"
+        "build_stats are added up, so blocked_cell_count is not the blocked area "
+        "(what it should count is the owner's decision)"
     ),
 }
 

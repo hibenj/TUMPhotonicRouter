@@ -344,6 +344,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The obstacle map's `build_stats` count every port and every port-open
+  cell once. With heater obstacles the map is merged from two layer groups
+  that both see all ports, and the merge added their counts up, so
+  `port_count` and `port_open_cell_count` were twice the map's; the flow
+  statistic `port_open_cells` halves accordingly (reports only; nothing
+  routes from it). Found by the logic harness; its pin drops from three
+  `obstacle_map.stats_disagree` per benchmark to one (`blocked_cell_count`,
+  open). Test baseline python 827 -> 828.
 - Rule 4.7 is in force: every public class, method and function of the
   package, the benchmarks and the two experiment tables has a docstring
   (268 added; ruff `D101`, `D102`, `D103` join the lint set and leave the

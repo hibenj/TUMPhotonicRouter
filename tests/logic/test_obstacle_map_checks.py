@@ -43,6 +43,18 @@ def test_a_map_of_one_layer_group_has_no_error(design) -> None:
     assert _errors(*design) == {}
 
 
+def test_two_layer_groups_count_every_port_once() -> None:
+    """With heater obstacles the map is merged from two groups that both see all ports."""
+    schematic = build_schematic()
+    config = resolve_obstacle_config(None, route_layer=(1, 0), include_heater_obstacles=True)
+    obstacle_map = build_static_obstacle_map(layout_from_schematic(schematic), config)
+    assert obstacle_map.build_stats["port_count"] == len(obstacle_map.benchmark.ports)
+    assert obstacle_map.build_stats["port_open_cell_count"] == len(obstacle_map.port_open_cells)
+    findings = check_obstacle_map(schematic, obstacle_map, config)
+    # the one disagreement left: blocked_cell_count adds up the groups' box areas
+    assert [f.subject for f in findings if f.severity == ERROR] == ["blocked_cell_count"]
+
+
 def test_the_blocked_area_is_the_cells_and_the_rectangles(design) -> None:
     schematic, obstacle_map, config = design
     assert len(obstacle_map.blocked_static_rects) > 0
