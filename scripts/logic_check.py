@@ -26,6 +26,7 @@ import importlib
 import io
 import json
 import pkgutil
+import re
 import sys
 from pathlib import Path
 from typing import cast
@@ -44,6 +45,7 @@ from photonic_router.logic_checks.crossing_plan import (
 from photonic_router.logic_checks.obstacle_map import check_obstacle_map
 from photonic_router.logic_checks.reading import check_layout, check_schematic
 from photonic_router.logic_checks.route_jobs import check_route_jobs
+from photonic_router.logic_checks.routing import check_routing
 from photonic_router.placement_analysis import analyze_placement
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.routing.products import ObstacleContext
@@ -65,7 +67,18 @@ def public_benchmarks() -> list[str]:
     return sorted(names)
 
 
-LAST_STAGE = "handoff"
+#: the stages a session reports, in order (`routing.stage_observer`)
+STAGES = ("obstacle_map", "router_setup", "handoff", "routed")
+
+
+def last_stage(benchmark: str) -> str:
+    """The last stage a benchmark is run to: `routed`, or `handoff` for the wide designs.
+
+    From 16 x 16 on the search takes over a minute (Benes 32 x 32: eight),
+    so those designs are checked up to the hand-off and not routed.
+    """
+    match = re.search(r"_(\d+)x\d+", benchmark)
+    return "handoff" if match and int(match.group(1)) >= 16 else "routed"
 
 
 def findings_for_benchmark(benchmark: str, *, session: bool = True) -> list[Finding]:
@@ -75,10 +88,10 @@ def findings_for_benchmark(benchmark: str, *, session: bool = True) -> list[Find
     (the session stages take over a minute on the largest benchmarks).
 
     The reading stage and the crossing demand of the placement analysis are
-    checked on the benchmark as loaded. The session
-    stages are checked on a real run of the flow with the benchmark's stable
-    defaults (`cli.main([benchmark])`), which is ended after the last stage
-    that has checks, before any net is routed.
+    checked on the benchmark as loaded. The session stages are checked on a
+    real run of the flow with the benchmark's stable defaults
+    (`cli.main([benchmark])`), which is ended after `last_stage(benchmark)`:
+    after the kernel has routed the nets, or before.
     """
     schematic = load_benchmark(benchmark)
     findings = check_schematic(schematic)
@@ -87,11 +100,11 @@ def findings_for_benchmark(benchmark: str, *, session: bool = True) -> list[Find
     demand = analyze_placement(schematic, layout).crossing_demand
     findings.extend(check_crossing_demand(schematic, layout, demand))
     if session:
-        findings.extend(_session_findings(benchmark))
+        findings.extend(_session_findings(benchmark, last_stage(benchmark)))
     return findings
 
 
-def _session_findings(benchmark: str) -> list[Finding]:
+def _session_findings(benchmark: str, last: str) -> list[Finding]:
     findings: list[Finding] = []
     seen: list[str] = []
 
@@ -110,7 +123,9 @@ def _session_findings(benchmark: str) -> list[Finding]:
                 settings.schematic, settings.unrouted_layout
             )
             findings.extend(check_crossing_plan_info(settings, product, analysis.crossing_demand))
-        if stage == LAST_STAGE:
+        if stage == "routed":
+            findings.extend(check_routing(product))
+        if stage == last:
             raise StopAfterStage
 
     try:
@@ -122,7 +137,15 @@ def _session_findings(benchmark: str) -> list[Finding]:
             cli.main([benchmark])
     except StopAfterStage:
         return findings
-    raise RuntimeError(f"{benchmark}: the flow ended without stage {LAST_STAGE!r}; saw {seen}")
+    except RuntimeError as error:
+        if "handoff" in seen and "routed" not in seen and "No route found" in str(error):
+            # the kernel batch gave up on a net: the flow's own failure path
+            findings.append(
+                Finding("routing.net_not_routed", ERROR, benchmark, str(error).splitlines()[0])
+            )
+            return findings
+        raise
+    raise RuntimeError(f"{benchmark}: the flow ended without stage {last!r}; saw {seen}")
 
 
 def main(argv: list[str] | None = None) -> int:

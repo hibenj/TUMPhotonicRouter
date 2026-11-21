@@ -15,8 +15,9 @@ benchmarks; `tests/logic/` pins what they find.
 Stages so far: `reading` (the schematic and the placed layout),
 `crossing_plan` (the crossing demand of the placement analysis and what
 phase 4 of the session takes of it), `obstacle_map` (phase 1 of the routing
-session) and `route_jobs` (the jobs and openings after phase 5); the
-session stages are read through `routing.stage_observer`.
+session), `route_jobs` (the jobs and openings after phase 5) and `routing`
+(the routes the kernel hands back after phase 6); the session stages are
+read through `routing.stage_observer`.
 """
 
 from __future__ import annotations

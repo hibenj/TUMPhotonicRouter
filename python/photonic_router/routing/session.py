@@ -128,6 +128,7 @@ class RouteNetsRustSession:
         )
         stage_observer.notify("handoff", settings, state)
         dispatch.dispatch_native_routing(settings, state, final.route_jobs)
+        stage_observer.notify("routed", settings, state)
         routed = finalize.finalize_routing_results(
             settings, state, final.route_jobs, final.astar_start_s
         )

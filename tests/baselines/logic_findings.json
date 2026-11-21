@@ -124,7 +124,8 @@
   "heater_single": {
     "crossing_plan.net_outside_band_model": 1,
     "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 2
+    "reading.port_recessed": 2,
+    "routing.net_not_routed": 1
   },
   "multiportmmi_128x128": {
     "obstacle_map.routable_cell_outside_routable_box": 1,
@@ -165,6 +166,7 @@
     "reading.port_recessed": 80
   },
   "permutation_synthetic": {
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "obstacle_map.routable_cell_outside_routable_box": 1,
+    "routing.net_not_routed": 1
   }
 }

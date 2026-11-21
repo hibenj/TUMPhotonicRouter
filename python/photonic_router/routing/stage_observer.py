@@ -16,6 +16,8 @@ Stages reported so far, with their product:
 - `"obstacle_map"`: phase 1's `ObstacleContext`
 - `"router_setup"`: the `SessionState` after phase 2
 - `"handoff"`: the `SessionState` after phase 5, before the dispatch
+- `"routed"`: the `SessionState` after phase 6, the kernel batch: every net
+  has its committed route, no end is corrected yet
 """
 
 from __future__ import annotations

@@ -14,6 +14,23 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The logic harness, stage "routing". `logic_checks/routing.py` has twelve
+  statements about what the kernel batch hands back: the routed nets are
+  the jobs; a route starts and ends in its job's two states; its segments
+  are chained and as long as they say; the lengths of segments, route and
+  record agree; its cells are a path through free or opened cells; two
+  nets' cell paths meet exactly where a crossing of the two is recorded
+  (in a shared cell or across the two diagonals of a unit square), and
+  every recorded crossing is legal. The session reports the state after
+  phase 6 (`"routed"`). The harness routes the 23 public benchmarks below
+  16 x 16 (about 100 s together) and stops the wider ones at the hand-off.
+  Found: no statement fails on a routed design (Benes 8 x 8: exactly the
+  16 pairs with a recorded crossing meet). Two default runs do not route:
+  `heater_single` (a known limit written in the benchmark) and
+  `permutation_synthetic` (the baseline does not converge on the random
+  permutation within 10 rounds); both are the error
+  `routing.net_not_routed`, pinned as known per benchmark. Test baseline
+  python 848 -> 857.
 - The logic harness, stage "crossing plan". `logic_checks/crossing_plan.py`
   has nine statements about the crossing demand of the placement analysis
   (every link in one band or outside; ends on the walls; wall orders top to

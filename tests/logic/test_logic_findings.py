@@ -22,8 +22,17 @@ PIN = json.loads(
     (REPO_ROOT / "tests" / "baselines" / "logic_findings.json").read_text(encoding="utf-8")
 )
 
-#: errors the harness found that are still in the code, with what they are
-KNOWN_ERRORS: dict[str, str] = {}
+#: errors the harness found that are still there, per (benchmark, check), with what they are
+KNOWN_ERRORS: dict[tuple[str, str], str] = {
+    ("heater_single", "routing.net_not_routed"): (
+        "the optical router finds no path for gc_1,o1 -> mmi_0,o1; a known limit of "
+        "this placement, written down in benchmarks/heater_single.py"
+    ),
+    ("permutation_synthetic", "routing.net_not_routed"): (
+        "the default run (baseline, no pre-placed crossings) does not converge on the "
+        "random permutation; the design is made for contribution 2"
+    ),
+}
 
 
 def _is_large(benchmark: str) -> bool:
@@ -51,14 +60,26 @@ def test_a_benchmark_has_the_pinned_findings_and_only_known_errors(benchmark: st
         # The session stages take over a minute each here; the pin is still
         # written from a full run (`scripts/logic_check.py --all --update`).
         findings = logic_check.findings_for_benchmark(benchmark, session=False)
-        reading = {k: v for k, v in PIN[benchmark].items() if k.startswith("reading.")}
-        assert count_by_check(findings) == reading
+        loaded = {
+            check: count
+            for check, count in PIN[benchmark].items()
+            if check.startswith(("reading.", "crossing_plan."))
+        }
+        assert count_by_check(findings) == loaded
         return
     findings = logic_check.findings_for_benchmark(benchmark)
     unknown = [
         str(finding)
         for finding in findings
-        if finding.severity == ERROR and finding.check not in KNOWN_ERRORS
+        if finding.severity == ERROR and (benchmark, finding.check) not in KNOWN_ERRORS
     ]
     assert unknown == []
     assert count_by_check(findings) == PIN[benchmark]
+
+
+def test_the_wide_designs_stop_at_the_hand_off_and_the_others_are_routed() -> None:
+    assert logic_check.last_stage("benes_8x8_flat") == "routed"
+    assert logic_check.last_stage("cascade_16_folded") == "routed"
+    assert logic_check.last_stage("heater_single") == "routed"
+    assert logic_check.last_stage("benes_16x16") == "handoff"
+    assert logic_check.last_stage("multiportmmi_64x64_bands1to2") == "handoff"

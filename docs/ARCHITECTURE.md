@@ -854,20 +854,31 @@ docstring:
   that are free or opened for the net, static cells alone (free areas are
   labelled once with `scipy.ndimage`, every net then walks over its opened
   cells and the areas they touch).
+* `routing.py`, the routes after phase 6: the routed nets are the jobs;
+  every route starts and ends in the cell and heading of its job's two
+  states; its segments are chained, a straight one as long as the distance
+  of its two cells and a bend not shorter; the route's length is the sum
+  of its segments and the recorded length; its cells are a path of
+  neighbour steps through cells that are free or opened for the net; two
+  nets' cell paths meet exactly where the kernel recorded a crossing of
+  the two, and every recorded crossing is legal.
 
 The session stages are read from a real run: `routing/stage_observer.py`
 is the seam (`observe_stages(observer)`; the session calls `notify` after
 a phase, and an observer ends the run with `StopAfterStage`), so the
 harness runs the flow with the benchmark's stable defaults up to the last
-stage it has checks for and routes nothing.
+stage it has checks for: through the kernel batch, or, from 16 x 16 on
+where the search takes over a minute, up to the hand-off
+(`last_stage` in `scripts/logic_check.py`). A run in which the kernel
+gives up on a net is the error `routing.net_not_routed`.
 `scripts/logic_check.py <benchmark>|--all [--list N]` prints the findings;
 `tests/baselines/logic_findings.json` pins their counts per public
 benchmark and `tests/logic/test_logic_findings.py` compares, as part of the
 test baseline (the 64 x 64 and 128 x 128 designs without the session
 stages, unless `LOGIC_CHECK_LARGE=1`: their session stages take over a minute
-each; `--all --update` always runs everything, about six minutes); the
-errors a benchmark may have are named there
-(`KNOWN_ERRORS`) until they are fixed. A new stage is a new module, a
+each; `--all --update` always runs everything, about eight minutes); the
+errors a benchmark may have are named there, per benchmark
+(`KNOWN_ERRORS`), until they are fixed. A new stage is a new module, a
 `notify` in the session if the product is not reported yet, its checks in
 the script, unit tests that each statement finds what it names, and a
 re-pin.
