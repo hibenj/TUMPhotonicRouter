@@ -51,6 +51,11 @@ class GenericMapping:
     generic_ports: Any = None
 
     def component_name(self, ports: tuple[ExtractedPort, ...]) -> str:
+        """The generic component's name for an extracted component with these ``ports``.
+
+        ``component`` itself when it is a name, otherwise what it returns for
+        ``ports``.
+        """
         return self.component(ports) if callable(self.component) else self.component
 
 

@@ -44,6 +44,14 @@ _ConfigT = TypeVar("_ConfigT", RouterConfig, RoutingConfig)
 
 
 class EnvVar(NamedTuple):
+    """One entry of `ENV_OVERLAY`: an environment variable and the field it sets.
+
+    `name` is the full variable name (with the `PHOTONIC_ROUTER_` prefix),
+    `path` the chain of group names into `RoutingConfig` that ends in the
+    leaf field, and `parse` turns the variable's raw string into that
+    field's value.
+    """
+
     name: str
     path: tuple[str, ...]
     parse: Callable[[str], object]

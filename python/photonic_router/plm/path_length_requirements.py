@@ -54,6 +54,11 @@ __all__ = [
 
 
 def requirement_to_dict(req: MissingLengthRequirement) -> dict[str, object]:
+    """The requirement as a plain dict for the reports.
+
+    ``edge`` is the edge in the `edge_key_to_dict` form,
+    ``missing_length_um`` the extra length it needs.
+    """
     return {
         "edge": edge_key_to_dict(req.edge_key),
         "missing_length_um": float(req.missing_length_um),
@@ -61,6 +66,12 @@ def requirement_to_dict(req: MissingLengthRequirement) -> dict[str, object]:
 
 
 def delay_candidate_to_dict(candidate: DelayInsertionCandidate) -> dict[str, object]:
+    """The delay-insertion candidate as a plain dict for the reports.
+
+    Every edge is in the `edge_key_to_dict` form: ``requirement_edge``,
+    the ``edges`` that take ``extra_length_um`` and the
+    ``affected_requirement_edges``.
+    """
     return {
         "requirement_edge": edge_key_to_dict(candidate.requirement_edge_key),
         "edges": [edge_key_to_dict(edge_key) for edge_key in candidate.edge_keys],
@@ -73,6 +84,12 @@ def delay_candidate_to_dict(candidate: DelayInsertionCandidate) -> dict[str, obj
 
 
 def edge_identity(edge_key: RoutedEdgeKey) -> tuple[str, str, str, str, str]:
+    """The key as ``(net name, source instance, source port, target instance, target port)``.
+
+    The ends are the key's own, the net as routed, not the light's
+    direction. `edge_identity_from_info` gives the same tuple for the dict
+    form of the edge, so the two can be compared.
+    """
     return (
         edge_key.net_name,
         edge_key.source.instance,
@@ -83,6 +100,11 @@ def edge_identity(edge_key: RoutedEdgeKey) -> tuple[str, str, str, str, str]:
 
 
 def edge_identity_from_info(edge_info: object) -> tuple[str, str, str, str, str] | None:
+    """The `edge_identity` tuple of an edge given in the `edge_key_to_dict` form.
+
+    Returns None when ``edge_info``, its ``source`` or its ``target`` is
+    not a dict. A missing name, instance or port becomes the empty string.
+    """
     if not isinstance(edge_info, dict):
         return None
     source = edge_info.get("source", {})
@@ -101,6 +123,14 @@ def edge_identity_from_info(edge_info: object) -> tuple[str, str, str, str, str]
 def analysis_edge_maps(
     analysis: PathLengthAnalysisResult,
 ) -> tuple[dict[str, list[RoutedEdgeKey]], dict[str, list[RoutedEdgeKey]]]:
+    """The edges into and out of every node, along the light.
+
+    Returns ``(incoming_by_node, outgoing_by_node)``, both keyed by node
+    name. Every node of ``analysis.node_timings`` has an entry in both,
+    empty where it has no such edge. The edges are taken from the nodes'
+    incoming-edge timings and their ends from
+    `PathLengthAnalysisResult.source_instance` and ``target_instance``.
+    """
     incoming_by_node: dict[str, list[RoutedEdgeKey]] = {
         node_name: [] for node_name in analysis.node_timings
     }

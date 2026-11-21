@@ -69,6 +69,13 @@ class RegionKey(NamedTuple):
 
 @dataclass(frozen=True)
 class Region:
+    """A free rectangle of the chip, a band or a passage, with its extent in um.
+
+    A band spans the chip height (`y_min..y_max` is the y-extent of all
+    occupied intervals, infinite when no column has any); a passage spans the
+    x-extent of its column.
+    """
+
     key: RegionKey
     x_min: float
     y_min: float
@@ -88,14 +95,22 @@ class Portal:
 
     @property
     def width(self) -> float:
+        """The length of the segment along y, in um."""
         return self.y_max - self.y_min
 
     def other(self, key: RegionKey) -> RegionKey:
+        """The region on the other side; assumes `key` is the portal's band or its passage."""
         return self.passage if key == self.band else self.band
 
 
 @dataclass(frozen=True)
 class RegionGraph:
+    """The columns of a placement, its free regions and the portals that join them.
+
+    `regions` holds the bands and passages by key; every portal joins one band
+    and one passage. Built by `build_region_graph`.
+    """
+
     columns: tuple[Column, ...]
     regions: dict[RegionKey, Region]
     portals: tuple[Portal, ...]
@@ -106,6 +121,7 @@ class RegionGraph:
 
     @property
     def bands(self) -> tuple[Region, ...]:
+        """All bands, left to right."""
         return tuple(region for key, region in self.regions.items() if key.kind == BAND)
 
     def passages(self, column: int) -> tuple[Region, ...]:
@@ -117,12 +133,19 @@ class RegionGraph:
         )
 
     def portals_of(self, key: RegionKey) -> tuple[Portal, ...]:
+        """The portals on the boundary of region `key`, in the order of `portals`."""
         return tuple(portal for portal in self.portals if key in (portal.band, portal.passage))
 
     def neighbors(self, key: RegionKey) -> tuple[RegionKey, ...]:
+        """The regions that share a portal with region `key`, in the order of `portals_of`.
+
+        A band's neighbours are passages and a passage's neighbours are bands.
+        """
         return tuple(portal.other(key) for portal in self.portals_of(key))
 
     def to_text(self) -> str:
+        """A text report: a header line with the counts, then one line per column with
+        its x-extent in um, its instance count and the y-intervals of its passages."""
         passage_count = len(self.regions) - len(self.bands)
         lines = [
             (

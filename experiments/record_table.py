@@ -21,6 +21,17 @@ LINE = re.compile(
 
 
 def main() -> None:
+    """Write the cell record of one table run from the command-line arguments.
+
+    Every line of `<results_root>/reproduce.txt` that matches `LINE` becomes
+    one cell; other lines are skipped. A cell's run is the directory under
+    `<results_root>/<benchmark>/<config>/` whose name sorts last, and its
+    metrics are that run's `metrics.json`; a cell without a run directory or
+    without the file is recorded with `run` null or empty metrics rather
+    than dropped. The cells are sorted by benchmark and configuration and
+    written as JSON together with the commit, machine and switch texts.
+    Assumes `reproduce.txt` exists.
+    """
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("results_root", type=Path)
     ap.add_argument("out", type=Path)

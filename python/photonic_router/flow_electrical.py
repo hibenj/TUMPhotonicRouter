@@ -88,6 +88,13 @@ def run_electrical_routing_step(
 def electrical_config_summary(
     config: ElectricalRoutingConfig | None,
 ) -> dict[str, Any]:
+    """Return the electrical routing settings that are recorded with a run.
+
+    One entry per reported field of the config (pad and bus sides, grid
+    pitch, clearances, wire and pad dimensions, obstacle mode, layers),
+    keyed by field name; a field whose value is None is left out. None
+    reports the defaults of ElectricalRoutingConfig().
+    """
     if config is None:
         config = ElectricalRoutingConfig()
     keys = (
@@ -130,6 +137,21 @@ def electrical_summary_from_result(
     result: ElectricalRoutingResult,
     config: ElectricalRoutingConfig | None = None,
 ) -> dict[str, Any]:
+    """Summarize an electrical routing result as a plain dict.
+
+    This is what the electrical step stores under "electrical_routing" in the
+    routed component's info and reads its stats counters from: the config
+    summary, the counts of terminal groups, pad assignments and detailed
+    routes, the heaters and detailed routes that failed (terminal id and
+    reason), the verification outcome (success, error and warning counts,
+    the issues and their count per code, the metrics), the metal realization
+    metrics found in the routed component's info, and the debug artifacts.
+
+    "verification_success" and "common_bus_escape_success" are None when the
+    result carries no verification or no common-bus escape; the verification
+    counts are 0 and the issues empty then. The realization metrics are empty
+    when no routed component was produced.
+    """
     detailed_routes = result.detailed_bundle_routes
     failed_detailed_routes = (
         tuple(detailed_routes.failed_routes) if detailed_routes is not None else ()

@@ -50,6 +50,14 @@ class ComponentPortAccessRule:
         port_name: str | None,
         port_type: str | None = None,
     ) -> bool:
+        """Whether this rule governs the given port.
+
+        ``component_name`` must match ``component_name_pattern`` as a
+        case-sensitive shell-style pattern (``fnmatchcase``) and ``port_name``
+        must be one of ``port_names``. ``port_type`` is checked against
+        ``port_types`` only when it is given. A missing or empty component or
+        port name never matches.
+        """
         if not component_name or not port_name:
             return False
         if not fnmatchcase(component_name, self.component_name_pattern):

@@ -33,10 +33,17 @@ from photonic_router.crossings.routing_regions import RegionGraph
 
 @dataclass(frozen=True)
 class PlacementAnalysis:
+    """The result of `analyze_placement` for one placed design.
+
+    Holds the crossing demand, which carries the region graph it was
+    computed on (`regions`), the passage paths and the crossing plan.
+    """
+
     crossing_demand: CrossingDemand
 
     @property
     def regions(self) -> RegionGraph:
+        """The region graph of the placement: the one the crossing demand was built on."""
         return self.crossing_demand.regions
 
     def summary(self) -> str:

@@ -34,6 +34,20 @@ from photonic_router.electrical.types import (
 
 @dataclass(frozen=True)
 class NetGeometry:
+    """The realized metal of one electrical net, as verification and metrics read it.
+
+    ``net_id`` is ``"common_bus"`` for the bus net; an individual net uses its
+    pad assignment's net id, or ``individual:<heater_id>`` without one.
+    ``rects`` are the net's metal rectangles in um, and ``rect_sources`` is
+    parallel to it: one tag per rectangle naming what produced it
+    (``bus_stripe``, ``bus_route``, ``bus_escape``, ``route_tail``, ``pad``,
+    ``terminal_contact`` or ``terminal_adapter``).
+
+    ``allowed_cells`` are the grid cells this net's metal may cover even
+    where the obstacle map blocks them; ``allowed_physical_bboxes`` are the
+    um boxes inside which it may overlap raw obstacle geometry.
+    """
+
     net_id: str
     rects: tuple[BBox, ...]
     rect_sources: tuple[str, ...]
@@ -47,6 +61,11 @@ class NetGeometry:
 
 @dataclass(frozen=True)
 class TaggedRect:
+    """A metal rectangle in um with the tag of what produced it.
+
+    ``source`` is the tag that ends up in ``NetGeometry.rect_sources``.
+    """
+
     bbox: BBox
     source: str
 
@@ -294,6 +313,12 @@ def detailed_route_centerline_points(
     route: DetailedBundleRoute,
     obstacle_map: ElectricalObstacleMap,
 ) -> tuple[tuple[float, float], ...]:
+    """Return a detailed route's centerline in physical coordinates (um).
+
+    Converts ``route.centerline`` from grid coordinates (cell units) with the
+    obstacle map's grid origin and ``grid_size_um``.
+    """
+
     return tuple(_grid_point_to_um(point, obstacle_map) for point in route.centerline)
 
 

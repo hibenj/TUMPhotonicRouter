@@ -8,6 +8,12 @@ from typing import Any, Protocol, cast
 
 
 class SchematicLike(Protocol):
+    """What this module reads of a schematic: `netlist.instances`.
+
+    A mapping from instance name to an instance whose `component` is the
+    cell's name or an object with a `name`.
+    """
+
     netlist: Any
 
 
@@ -21,6 +27,13 @@ def _coerce_nonnegative_float(value: Any) -> float | None:
 
 
 def is_auto_internal_delay_value(value: Any) -> bool:
+    """Whether an `INTERNAL_DELAYS_UM` entry asks for the component's own length.
+
+    True for None and for one of the words `auto`, `auto-detect`,
+    `auto_detect`, `auto detect`, `infer`, `infer_from_component`,
+    `from_component`, `from-component` (case and surrounding whitespace
+    ignored); False for every number and every other string.
+    """
     if value is None:
         return True
     if isinstance(value, str):
@@ -38,6 +51,11 @@ def is_auto_internal_delay_value(value: Any) -> bool:
 
 
 def coerce_instance_component_name(instance: Any) -> str | None:
+    """The component name of a netlist instance, or None when it has none.
+
+    `instance.component` is either the name itself or an object with a
+    non-empty string `name`.
+    """
     component_obj = getattr(instance, "component", None)
     if component_obj is None:
         return None
@@ -50,6 +68,19 @@ def coerce_instance_component_name(instance: Any) -> str | None:
 
 
 def component_internal_delay_um(component_name: str) -> float | None:
+    """The optical path length a component reports about itself, in um.
+
+    Builds the component with `gdsfactory.get_component`; when that raises,
+    the generic PDK is activated and its `cell` lookup is tried instead. The
+    length is the first of the known length keys of the component's `info`
+    (`optical_length_um`, `optical_path_length_um`, ..., `length`,
+    `route_info_length`, ...) that converts to a float; a negative value
+    counts as 0.0.
+
+    Returns None when the component cannot be built, has no `info`, or none
+    of the keys holds a number. Never raises. Assumes that activating the
+    generic PDK as a side effect is acceptable to the caller.
+    """
     try:
         from gdsfactory import get_component
 
@@ -95,6 +126,13 @@ def component_internal_delay_um(component_name: str) -> float | None:
 
 
 def normalize_internal_delays(internal_delays_um: dict[str, Any]) -> dict[str, float]:
+    """The declared internal delays as floats in um, without a schematic at hand.
+
+    An entry that asks for the component's own length
+    (`is_auto_internal_delay_value`) cannot be resolved here and becomes
+    0.0, as does a value that does not convert to a float. Returns a new
+    dict; the argument is not modified.
+    """
     normalized: dict[str, float] = {}
     for instance_name, raw_delay in internal_delays_um.items():
         if is_auto_internal_delay_value(raw_delay):
@@ -111,6 +149,19 @@ def resolve_internal_delays_for_instances(
     schematic: SchematicLike,
     internal_delays_um: dict[str, Any],
 ) -> dict[str, float]:
+    """The internal delays in um, with an entry for every instance of the schematic.
+
+    For each instance of `schematic.netlist.instances` (string names only):
+    an entry that asks for the component's own length
+    (`is_auto_internal_delay_value`) is replaced by
+    `component_internal_delay_um` of the instance's component, 0.0 when the
+    instance names no component or the component reports no length; an
+    instance without an entry gets 0.0; any other value is converted to a
+    float, 0.0 when it does not convert.
+
+    Returns a new dict; the argument is not modified. An entry whose name is
+    not an instance of the schematic is passed through as it was given.
+    """
     resolved_delays = dict(internal_delays_um)
     for instance_name, instance in schematic.netlist.instances.items():
         if not isinstance(instance_name, str):

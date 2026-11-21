@@ -134,6 +134,16 @@ def build_optical_routing_stage_config(
 
 @dataclass(frozen=True)
 class OpticalRoutingStageResult:
+    """What run_photonic_routing_stage returns to the flow.
+
+    The pipeline result, plus what the later stages read out of it:
+    routed_layout, debug_artifacts and route_summary are the pipeline
+    result's own layout, debug artifacts and route search summary.
+    route_attempt_records are the attempt records as dicts (records that
+    convert to an empty dict are dropped). route_time_s is the wall time of
+    the routing call in seconds, measured whether or not timing is printed.
+    """
+
     route_result: RouteRustPipelineResult
     routed_layout: Component
     debug_artifacts: RustRouteDebugArtifacts

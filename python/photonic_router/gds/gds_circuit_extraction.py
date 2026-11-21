@@ -89,6 +89,18 @@ class DirectionalCouplerRule:
 
 @dataclass(frozen=True)
 class ExtractionConfig:
+    """How ``extract_circuit`` reads one GDS file.
+
+    ``core_layers`` are the (layer, datatype) pairs that hold the waveguide
+    cores, in the order they are tried per cell. ``rules`` classify the leaf
+    cells by name (ordered, first match wins) and ``composites`` name the
+    containers kept as one component. ``facet_width_um`` is the range
+    (minimum, maximum) of edge lengths that count as a waveguide's end
+    facet, ``touch_tolerance_um`` how far from a component's shapes a facet
+    may be and still touch it, and ``placeholder_tolerance_um`` how far from
+    a placeholder cell's origin a waveguide may end. All lengths are in um.
+    """
+
     core_layers: tuple[tuple[int, int], ...]
     rules: tuple[ClassificationRule, ...]
     composites: tuple[CompositeRule, ...] = ()
@@ -137,6 +149,12 @@ class ExtractionConfig:
     net_gap_um: float = 0.0
 
     def kind_of(self, cell_name: str) -> str:
+        """The kind of a leaf cell.
+
+        The kind of the first rule of ``rules`` one of whose substrings occurs
+        in ``cell_name`` (case-insensitive); ``default_kind`` when no rule
+        matches.
+        """
         lowered = cell_name.lower()
         for rule in self.rules:
             if any(token.lower() in lowered for token in rule.substrings):
@@ -144,6 +162,11 @@ class ExtractionConfig:
         return self.default_kind
 
     def composite_kind(self, cell_name: str) -> str | None:
+        """The kind of a container cell that is one component as a whole, else None.
+
+        The kind of the first rule of ``composites`` whose substring occurs in
+        ``cell_name`` (case-insensitive).
+        """
         lowered = cell_name.lower()
         for rule in self.composites:
             if rule.substring.lower() in lowered:
@@ -153,6 +176,14 @@ class ExtractionConfig:
 
 @dataclass(frozen=True)
 class ExtractedPort:
+    """A place where a net ends on a component, in um.
+
+    ``position`` is the midpoint of the waveguide's end facet and ``normal``
+    its direction, both in the layout's frame. The local pair is the same in
+    the instance's rotation-only frame: the instance's rotation and
+    displacement undone, a mirror left in place.
+    """
+
     position: Point
     #: unit vector from the component into the waveguide
     normal: Point
@@ -162,6 +193,11 @@ class ExtractedPort:
 
     @property
     def local_side(self) -> str:
+        """The side of the component the port faces, in the component's own frame.
+
+        ``left``, ``right``, ``bottom`` or ``top``, by the larger component of
+        ``local_normal``; a diagonal normal counts as ``left`` or ``right``.
+        """
         nx, ny = self.local_normal
         if abs(nx) >= abs(ny):
             return "left" if nx < 0 else "right"
@@ -170,6 +206,15 @@ class ExtractedPort:
 
 @dataclass(frozen=True)
 class ExtractedComponent:
+    """One component of an extracted circuit.
+
+    ``name`` is ``<kind>_<n>``, numbered per kind from 0; ``cell_name`` is
+    the GDS cell it was read from. ``origin`` (um), ``rotation_deg`` and
+    ``mirror`` are the cell instance's placement in the layout. ``ports``
+    are sorted by local position (x, then y); the part of a split cell has
+    exactly one.
+    """
+
     name: str
     kind: str
     cell_name: str
@@ -184,6 +229,15 @@ class ExtractedComponent:
 
 @dataclass(frozen=True)
 class ExtractedNet:
+    """One waveguide of an extracted circuit.
+
+    ``endpoints`` are (component name, index into that component's
+    ``ports``); a routable net has two. ``stub`` marks a two-ported net one
+    of whose ends is a component of ``ExtractionConfig.stub_kinds``.
+    ``note`` says what is unusual about the net: one port only, more than
+    two, or two abutting ports.
+    """
+
     name: str
     endpoints: tuple[tuple[str, int], ...]
     stub: bool = False
@@ -209,12 +263,28 @@ class _IndexedNet:
 
 @dataclass
 class ExtractedCircuit:
+    """The result of ``extract_circuit``.
+
+    ``components`` are the components at least one net ends on. ``skipped``
+    counts the cells left out, by kind: those of
+    ``ExtractionConfig.skip_kinds`` and, as ``<kind> (no net)``, the
+    components no net touches. ``fragments`` is the number of net polygons
+    on which no port was found.
+    """
+
     components: list[ExtractedComponent]
     nets: list[ExtractedNet]
     skipped: Counter = field(default_factory=Counter)
     fragments: int = 0
 
     def report(self) -> str:
+        """A few lines of text for the person checking an extraction.
+
+        The component count per kind, the nets (two-ported, ending on a stub,
+        others, port-less fragments), the skipped cells, and up to 20 of the
+        nets that are neither two-ported nor stubs with their endpoints and
+        note.
+        """
         kinds = Counter(component.kind for component in self.components)
         routed = [net for net in self.nets if len(net.endpoints) == 2 and not net.stub]
         stubs = [net for net in self.nets if net.stub]
@@ -314,6 +384,20 @@ def _leaf_region(layout: Any, leaf: _Leaf, core_indexes: list[int], fallback: bo
 
 
 def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> ExtractedCircuit:
+    """Extract the components and nets of a GDS file's top cell.
+
+    Reads the file with KLayout and walks the hierarchy of the first top
+    cell down to the leaf cells and the composites of ``config``. Cells of
+    ``config.skip_kinds`` are only counted, cells of the default kind are
+    waveguide pieces, every other cell is a component. The merged waveguide
+    pieces give one net per connected polygon, and a net's ports are the
+    polygon's end facets as the module docstring describes. Arm pairs and
+    directional couplers are grouped when ``config`` has rules for them, and
+    the cells of ``config.split_kinds`` become one component per port.
+
+    Positions and lengths in the result are in um. Assumes the file has a
+    top cell.
+    """
     layout = kdb.Layout()
     layout.read(str(gds_path))
     top = next(cell for cell in layout.each_cell() if cell.is_top())

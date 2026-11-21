@@ -317,6 +317,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Rule 4.7 is in force: every public class, method and function of the
+  package, the benchmarks and the two experiment tables has a docstring
+  (268 added; ruff `D101`, `D102`, `D103` join the lint set and leave the
+  ratchet, which holds 14 counts). Docstrings only: the syntax tree of
+  every touched file is the same before and after once docstrings are
+  removed.
 - Two more long signatures take records (rule 4.4, 32 -> 30).
   `apply_crossing_aware_endpoint_correction_to_record` (16 parameters) takes
   `setup: EndpointCorrectionSetup` (what a run's corrections share),

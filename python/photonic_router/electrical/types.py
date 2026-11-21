@@ -81,9 +81,19 @@ class ElectricalRoutingConfig:
 
     @property
     def bus_side(self) -> Side:
+        """The side the common bus is placed on: the one opposite ``pad_side``."""
         return opposite_side(self.pad_side)
 
     def validate(self) -> None:
+        """Raise ``ValueError`` for the first setting found out of range.
+
+        Checks the signs and ranges of the dimensional settings, that
+        ``pad_pitch_um`` is at least ``bondpad_width_um + bondpad_spacing_um``,
+        and that the side, pad position, routing strategy and terminal
+        selection hold one of their allowed values. Returns None when every
+        check passes.
+        """
+
         if self.pad_side not in {"top", "bottom"}:
             raise ValueError("pad_side must be 'top' or 'bottom'")
         if self.wire_width_um <= 0:
@@ -200,6 +210,7 @@ class TerminalPairGroup:
 
     @property
     def terminals(self) -> tuple[ElectricalTerminal, ElectricalTerminal]:
+        """Both terminals, as ``(terminal_a, terminal_b)``."""
         return (self.terminal_a, self.terminal_b)
 
 
@@ -232,6 +243,15 @@ class ElectricalObstacleMap:
 
 @dataclass(frozen=True)
 class TerminalBusRoute:
+    """One heater terminal's routed branch onto the common-bus tree.
+
+    ``path`` is the branch's grid cells, ordered from the terminal;
+    ``route_start_cell`` is its first cell (None for an empty path) and
+    ``cost`` its length in grid steps. ``access_anchor_cell`` is the anchor
+    of the terminal's common-bus port access, None when it has none, and
+    ``used_access_anchor`` says whether ``path`` starts on that anchor.
+    """
+
     heater_id: str
     terminal: ElectricalTerminal
     path: tuple[GridCell, ...]
@@ -243,6 +263,14 @@ class TerminalBusRoute:
 
 @dataclass(frozen=True)
 class CommonBusRoutingResult:
+    """Which terminal of each heater joined the common bus, and by what route.
+
+    ``selected_terminals`` maps a heater id to the terminal connected to the
+    bus, ``unselected_terminals`` to that heater's other terminal.
+    ``tree_cells`` is the bus stripe's cells plus the cells of every route.
+    ``failed_heaters`` lists the ids of the heaters no route was found for.
+    """
+
     bus_side: Side
     bus: BusStripe
     selected_terminals: dict[str, ElectricalTerminal]
@@ -253,10 +281,12 @@ class CommonBusRoutingResult:
 
     @property
     def success(self) -> bool:
+        """True when no heater was left without a bus connection."""
         return not self.failed_heaters
 
     @property
     def total_cost(self) -> int:
+        """The summed ``cost`` of all routes, in grid steps."""
         return sum(route.cost for route in self.routes)
 
 
@@ -296,10 +326,12 @@ class PadPlan:
 
     @property
     def assigned_slots(self) -> tuple[PadSlot, ...]:
+        """The slot of every assignment, in ``assignments`` order."""
         return tuple(assignment.slot for assignment in self.assignments)
 
     @property
     def common_bus_assignment(self) -> PadAssignment | None:
+        """The first assignment of kind ``"common_bus"``, or None when there is none."""
         for assignment in self.assignments:
             if assignment.kind == "common_bus":
                 return assignment
@@ -318,6 +350,7 @@ class CommonBusEscapeResult:
 
     @property
     def cost(self) -> int:
+        """The path's length in grid steps (cells minus one); 0 for an empty path."""
         return max(0, len(self.path) - 1)
 
 
@@ -336,6 +369,7 @@ class EscapeTopologyRoute:
 
     @property
     def cost(self) -> int:
+        """The path's length in grid steps (cells minus one); 0 for an empty path."""
         return max(0, len(self.path) - 1)
 
 
@@ -368,6 +402,7 @@ class IndividualEscapeTopologyResult:
 
     @property
     def success(self) -> bool:
+        """True when no terminal's escape route failed."""
         return not self.failed_routes
 
 
@@ -393,6 +428,7 @@ class DetailedBundleRoute:
 
     @property
     def cost(self) -> int:
+        """The path's length in grid steps (cells minus one); 0 for an empty path."""
         return max(0, len(self.path) - 1)
 
 
@@ -409,6 +445,7 @@ class DetailedBundleRoutingResult:
 
     @property
     def success(self) -> bool:
+        """True when no detailed route failed."""
         return not self.failed_routes
 
 
@@ -432,14 +469,17 @@ class ElectricalVerificationResult:
 
     @property
     def error_count(self) -> int:
+        """The number of issues with severity ``"error"``."""
         return sum(1 for issue in self.issues if issue.severity == "error")
 
     @property
     def warning_count(self) -> int:
+        """The number of issues with severity ``"warning"``."""
         return sum(1 for issue in self.issues if issue.severity == "warning")
 
     @property
     def success(self) -> bool:
+        """True when there are no error issues; warnings do not fail verification."""
         return self.error_count == 0
 
 
@@ -477,6 +517,11 @@ class ElectricalRoutingResult:
 
 
 def opposite_side(side: Side) -> Side:
+    """Return ``"bottom"`` for ``"top"`` and ``"top"`` for ``"bottom"``.
+
+    Raises ``ValueError`` for any other value.
+    """
+
     if side == "top":
         return "bottom"
     if side == "bottom":

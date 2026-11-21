@@ -199,6 +199,13 @@ def _lidar_macro_component(
 
 
 def clements_lidar_gc() -> gf.Component:
+    """Grating coupler macro of the LiDAR Clements benchmark.
+
+    The `grating_coupler_elliptical_lumerical` cell with `GC_SETTINGS`, moved
+    so its bounding box starts at (0, 0), carrying only the port of `GC_PINS`:
+    `o1` on the left edge, facing 180 degrees. Builds a new component on
+    every call and needs the generic PDK to be active.
+    """
     return _lidar_macro_component(
         component="grating_coupler_elliptical_lumerical",
         settings=GC_SETTINGS,
@@ -207,6 +214,14 @@ def clements_lidar_gc() -> gf.Component:
 
 
 def clements_lidar_mmi1x2() -> gf.Component:
+    """1x2 MMI macro of the fan-out tree of the LiDAR Clements benchmark.
+
+    The `mmi1x2` cell with `MMI1X2_SETTINGS`, moved so its bounding box
+    starts at (0, 0), carrying only the ports of `MMI1X2_PINS`: the input
+    `o1` facing 180 degrees and the outputs `o2` (upper) and `o3` (lower)
+    facing 0 degrees, 25.5 um to the right. Builds a new component on every
+    call and needs the generic PDK to be active.
+    """
     return _lidar_macro_component(
         component="mmi1x2",
         settings=MMI1X2_SETTINGS,
@@ -215,6 +230,14 @@ def clements_lidar_mmi1x2() -> gf.Component:
 
 
 def clements_lidar_mod_mzi1x2() -> gf.Component:
+    """Two-port MZI macro (`mod_mzi1x2_*`) of the LiDAR Clements benchmark.
+
+    The `mzi` cell with `MOD_MZI1X2_SETTINGS` (1x2 MMIs as splitter and
+    combiner), moved so its bounding box starts at (0, 0), carrying only the
+    ports of `MOD_MZI1X2_PINS`: the input `o1` facing 180 degrees and the
+    output `o2` facing 0 degrees, 91.1 um to the right. Builds a new
+    component on every call and needs the generic PDK to be active.
+    """
     return _lidar_macro_component(
         component="mzi",
         settings=MOD_MZI1X2_SETTINGS,
@@ -223,6 +246,15 @@ def clements_lidar_mod_mzi1x2() -> gf.Component:
 
 
 def clements_lidar_mzi_array() -> gf.Component:
+    """2x2 MZI macro (`mzi_array_*`) of the LiDAR Clements benchmark.
+
+    The `mzi` cell with `MZI_ARRAY_SETTINGS` (2x2 MMIs, a metal heater in the
+    top arm), moved so its bounding box starts at (0, 0), carrying only the
+    ports of `MZI_ARRAY_PINS`: the inputs `o1` (lower) and `o2` (upper)
+    facing 180 degrees and the outputs `o4` (lower) and `o3` (upper) facing
+    0 degrees, 291 um to the right. Builds a new component on every call and
+    needs the generic PDK to be active.
+    """
     return _lidar_macro_component(
         component="mzi",
         settings=MZI_ARRAY_SETTINGS,

@@ -16,6 +16,12 @@ from photonic_router.records.route_keys import RoutedEdgeKey
 
 
 class SchematicLike(Protocol):
+    """The schematic a `GraphAnalysisContext` is built from.
+
+    The graph itself is built from `netlist` (`build_graph_from_schematic`);
+    `placements` is keyed by instance name.
+    """
+
     netlist: Any
     placements: Mapping[str, Any]
 
@@ -37,6 +43,12 @@ class GraphAnalysisContext:
         node_types: Mapping[str, str] | None = None,
         internal_delays_um: Mapping[str, float] | None = None,
     ) -> GraphAnalysisContext:
+        """Build the context of a schematic: its directed graph, no analysis yet.
+
+        `node_types` and `internal_delays_um` (um), both keyed by instance
+        name, are handed to `build_graph_from_schematic`. `plm` and `timing`
+        stay None until `analyze_path_lengths` runs.
+        """
         graph = build_graph_from_schematic(
             schematic,
             node_types=node_types,
@@ -48,6 +60,13 @@ class GraphAnalysisContext:
         self,
         edge_lengths_um: Mapping[RoutedEdgeKey, float],
     ) -> PathLengthAnalysisResult:
+        """Analyse the path lengths of the graph for the given routed lengths (um).
+
+        Replaces `plm` with fresh annotations carrying `edge_lengths_um` and
+        `timing` with the result of their missing-length analysis, which is
+        also returned. Raises `KeyError` when a key of `edge_lengths_um` is
+        not an edge of the graph.
+        """
         self.plm = PathLengthGraphAnnotations.from_edge_lengths(
             self.graph,
             edge_lengths_um,

@@ -20,6 +20,12 @@ from photonic_router.static_obstacle_builder import physical_to_grid
 
 
 def all_terminal_cells(obstacle_map: ElectricalObstacleMap) -> frozenset[GridCell]:
+    """Return the union of every terminal's open cells for common-bus routing.
+
+    Reads ``common_bus_terminal_open_cells`` when that map is non-empty and
+    the shared ``terminal_open_cells`` otherwise.
+    """
+
     cells: set[GridCell] = set()
     terminal_open_cells_map = (
         obstacle_map.common_bus_terminal_open_cells or obstacle_map.terminal_open_cells
@@ -35,6 +41,14 @@ def forbidden_terminal_cells(
     *,
     allowed_terminal_ids: set[str],
 ) -> frozenset[GridCell]:
+    """Return the terminal cells a route must not enter.
+
+    That is ``all_terminal_cells_set`` (as returned by ``all_terminal_cells``
+    for the same map) minus the open cells of ``allowed_terminal_ids``, so a
+    route may only touch the openings of the terminals it is allowed to
+    connect.
+    """
+
     allowed: set[GridCell] = set()
     for terminal_id in allowed_terminal_ids:
         allowed.update(terminal_open_cells(obstacle_map, terminal_id))
@@ -45,6 +59,14 @@ def terminal_open_cells(
     obstacle_map: ElectricalObstacleMap,
     terminal_id: str,
 ) -> frozenset[GridCell]:
+    """Return one terminal's open cells for common-bus routing.
+
+    Reads ``common_bus_terminal_open_cells`` when that map is non-empty and
+    the shared ``terminal_open_cells`` otherwise; an unknown terminal id
+    gives an empty set. ``wire_geometry.terminal_open_cells`` is the
+    counterpart for individual pad wires and reads a different map.
+    """
+
     if obstacle_map.common_bus_terminal_open_cells:
         return obstacle_map.common_bus_terminal_open_cells.get(terminal_id, frozenset())
     return obstacle_map.terminal_open_cells.get(terminal_id, frozenset())
@@ -54,6 +76,11 @@ def terminal_access_anchor_cell(
     obstacle_map: ElectricalObstacleMap,
     terminal_id: str,
 ) -> GridCell | None:
+    """Return the anchor cell of a terminal's common-bus port access.
+
+    None when the map holds no common-bus access for ``terminal_id``.
+    """
+
     access = _terminal_access(obstacle_map, terminal_id)
     return access.anchor_cell if access is not None else None
 
@@ -70,6 +97,12 @@ def route_uses_access_anchor(
     terminal_id: str,
     path: tuple[GridCell, ...],
 ) -> bool:
+    """Return whether ``path`` starts on the terminal's common-bus access anchor.
+
+    ``path`` is ordered from the terminal outward. False for an empty path
+    and for a terminal without a common-bus access.
+    """
+
     anchor = terminal_access_anchor_cell(obstacle_map, terminal_id)
     return bool(path) and anchor is not None and path[0] == anchor
 
@@ -79,6 +112,16 @@ def nearest_terminal_cell(
     obstacle_map: ElectricalObstacleMap,
     target_grid_x: int,
 ) -> GridCell | None:
+    """Return the terminal's route start cell nearest to column ``target_grid_x``.
+
+    Candidates are the terminal's common-bus open cells plus its access
+    anchor, limited to the grid; when there are none, the cell under the
+    terminal's center is used. The candidate with the smallest
+    ``|x - target_grid_x|`` wins, then the smallest ``|y|``, then the lowest
+    ``(x, y)``. Candidates are not tested against blocked cells. Returns None
+    when no candidate lies inside the grid.
+    """
+
     center = physical_to_grid(terminal.center[0], terminal.center[1], obstacle_map.grid)
     choice = choose_route_start_cell(
         access=_terminal_access(obstacle_map, terminal.id),
@@ -92,6 +135,13 @@ def nearest_terminal_cell(
 
 
 def axis_path(start: GridCell, end: GridCell) -> tuple[GridCell, ...]:
+    """Return the L-shaped cell path from ``start`` to ``end``, both included.
+
+    The path runs horizontally along ``start``'s row first, then vertically
+    along ``end``'s column; the corner cell appears once. ``start == end``
+    gives a single cell.
+    """
+
     x0, y0 = start
     x1, y1 = end
     cells: list[GridCell] = []
@@ -111,6 +161,12 @@ def path_hits_blockers(
     allowed: set[GridCell] | frozenset[GridCell],
     forbidden: set[GridCell] | frozenset[GridCell] = frozenset(),
 ) -> bool:
+    """Return whether any cell of ``path`` may not be routed through.
+
+    A cell is a hit when it is in ``forbidden``, or in ``blocked`` without
+    being in ``allowed``. ``allowed`` does not excuse a ``forbidden`` cell.
+    """
+
     return any((cell in blocked and cell not in allowed) or cell in forbidden for cell in path)
 
 
@@ -122,6 +178,24 @@ def shortest_path_to_tree(
     forbidden: frozenset[GridCell],
     obstacle_map: ElectricalObstacleMap,
 ) -> tuple[GridCell, ...] | None:
+    """Return a shortest cell path from ``terminal`` to the common-bus tree.
+
+    Breadth-first search over 4-connected grid cells, started from all of the
+    terminal's legal route start cells at once (its common-bus open cells and
+    access anchor, or the cell under its center when there are none). The
+    result runs from the start cell to the first reached cell of
+    ``tree_cells``, both included; it is a single cell when a start cell is
+    already on the tree.
+
+    The search never enters a ``forbidden`` cell or leaves the grid, and
+    enters a ``blocked`` cell only when it is a tree cell. Start cells are
+    not tested against ``blocked``, only against ``forbidden``. Among equally
+    short paths, steps toward the bus side are tried first.
+
+    Returns None when the terminal has no start cell, when every tree cell is
+    forbidden, or when the tree cannot be reached.
+    """
+
     grid = obstacle_map.grid
     terminal_cells = terminal_open_cells(obstacle_map, terminal.id)
     center_cell = physical_to_grid(terminal.center[0], terminal.center[1], grid)

@@ -70,6 +70,11 @@ class ChannelWire:
 
     @property
     def span(self) -> tuple[int, int]:
+        """The columns covered by the wire's horizontal track run, low to high.
+
+        ``(min(c, p), max(c, p))`` in cells, both included.
+        """
+
         return (min(self.c, self.p), max(self.c, self.p))
 
 
@@ -87,14 +92,23 @@ class BundleWire:
 
     @property
     def wire_id(self) -> str:
+        """The id of the member's terminal, used as the wire's ``ChannelWire`` id."""
+
         return self.member[1].id
 
     @property
     def row_y(self) -> int:
+        """The grid row (y cell) of the wire's terminal anchor cell."""
+
         return self.anchor_cell[1]
 
     @property
     def span(self) -> tuple[int, int]:
+        """The columns covered by the wire's horizontal track run, low to high.
+
+        ``(min(c, p), max(c, p))`` in cells, both included.
+        """
+
         return (min(self.c, self.p), max(self.c, self.p))
 
 

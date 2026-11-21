@@ -57,6 +57,11 @@ def disk_cells(
 
 
 def cells_bbox(cells: Iterable[GridCell]) -> tuple[int, int, int, int] | None:
+    """Return the inclusive cell bounds ``(xmin, ymin, xmax, ymax)`` of ``cells``.
+
+    None when ``cells`` is empty.
+    """
+
     cells = tuple(cells)
     if not cells:
         return None

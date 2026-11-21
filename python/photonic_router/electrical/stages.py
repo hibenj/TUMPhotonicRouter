@@ -81,7 +81,12 @@ class TerminalExtractor(Protocol):
         component: Component,
         schematic: Schematic | None = None,
         config: ElectricalRoutingConfig | None = None,
-    ) -> tuple[TerminalPairGroup, ...]: ...
+    ) -> tuple[TerminalPairGroup, ...]:
+        """Return one two-terminal group per heater instance of ``component``.
+
+        Implemented by ``terminal_extraction.extract_heater_terminal_pairs``.
+        """
+        ...
 
 
 class ObstacleMapBuilder(Protocol):
@@ -92,7 +97,12 @@ class ObstacleMapBuilder(Protocol):
         component: Component,
         terminal_groups: tuple[TerminalPairGroup, ...],
         config: ElectricalRoutingConfig,
-    ) -> ElectricalObstacleMap: ...
+    ) -> ElectricalObstacleMap:
+        """Return the obstacle grid built from the configured metal and heater layers.
+
+        Implemented by ``obstacle_extraction.build_electrical_obstacle_map``.
+        """
+        ...
 
 
 class CommonBusRouter(Protocol):
@@ -103,7 +113,13 @@ class CommonBusRouter(Protocol):
         terminal_groups: tuple[TerminalPairGroup, ...],
         obstacle_map: ElectricalObstacleMap,
         config: ElectricalRoutingConfig,
-    ) -> CommonBusRoutingResult: ...
+    ) -> CommonBusRoutingResult:
+        """Return the bus routes and the terminal chosen for the bus per heater.
+
+        Implemented by ``common_bus_router.route_common_bus``. Heaters that
+        could not be connected are listed in the result's ``failed_heaters``.
+        """
+        ...
 
 
 class CommonBusTrimmer(Protocol):
@@ -122,7 +138,12 @@ class CommonBusTrimmer(Protocol):
         config: ElectricalRoutingConfig,
         *,
         keep_span_to_x_um: float | None = None,
-    ) -> tuple[ElectricalObstacleMap, CommonBusRoutingResult]: ...
+    ) -> tuple[ElectricalObstacleMap, CommonBusRoutingResult]:
+        """Return the obstacle map and bus result with the stripe trimmed.
+
+        Implemented by ``common_bus_router.trim_common_bus_to_connections``.
+        """
+        ...
 
 
 class EscapeTopologyPlanner(Protocol):
@@ -133,7 +154,12 @@ class EscapeTopologyPlanner(Protocol):
         obstacle_map: ElectricalObstacleMap,
         common_bus: CommonBusRoutingResult,
         config: ElectricalRoutingConfig,
-    ) -> IndividualEscapeTopologyResult: ...
+    ) -> IndividualEscapeTopologyResult:
+        """Return coarse escape routes and bundles for the unselected terminals.
+
+        Implemented by ``individual_topology.compute_individual_escape_topology``.
+        """
+        ...
 
 
 class PadPlanner(Protocol):
@@ -149,7 +175,12 @@ class PadPlanner(Protocol):
         obstacle_map: ElectricalObstacleMap,
         config: ElectricalRoutingConfig,
         escape_topology: IndividualEscapeTopologyResult | None = None,
-    ) -> PadPlan: ...
+    ) -> PadPlan:
+        """Return the abstract pad-slot plan; no pad geometry is created.
+
+        Implemented by ``pad_slots.plan_pad_slots``.
+        """
+        ...
 
 
 class PadSideReconciler(Protocol):
@@ -169,7 +200,13 @@ class PadSideReconciler(Protocol):
         pad_plan: PadPlan | None,
         config: ElectricalRoutingConfig,
         keep_span_to_x_um: float | None = None,
-    ) -> PadSideReconciliation: ...
+    ) -> PadSideReconciliation:
+        """Return the pipeline objects after any role swap.
+
+        Implemented by ``pad_side_reconciliation.reconcile_pad_sides``. The
+        result's ``swapped_heater_ids`` names the heaters that were swapped.
+        """
+        ...
 
 
 class BusEscapeRouter(Protocol):
@@ -181,7 +218,13 @@ class BusEscapeRouter(Protocol):
         common_bus: CommonBusRoutingResult,
         pad_plan: PadPlan,
         config: ElectricalRoutingConfig,
-    ) -> CommonBusEscapeResult: ...
+    ) -> CommonBusEscapeResult:
+        """Return the grid path from the bus tree to the bus's pad slot.
+
+        Implemented by ``escape_router.route_common_bus_escape``. A failed
+        escape is reported through the result's ``success`` and ``reason``.
+        """
+        ...
 
 
 class PadWireRouter(Protocol):
@@ -195,7 +238,13 @@ class PadWireRouter(Protocol):
         topology: IndividualEscapeTopologyResult,
         pad_plan: PadPlan,
         config: ElectricalRoutingConfig,
-    ) -> DetailedBundleRoutingResult: ...
+    ) -> DetailedBundleRoutingResult:
+        """Return the detailed centerline route of every individual pad wire.
+
+        Implemented by ``bundle_detail_router.route_detailed_bundles``. Wires
+        that could not be routed are in the result's ``failed_routes``.
+        """
+        ...
 
 
 class MetalRealizer(Protocol):
@@ -210,7 +259,12 @@ class MetalRealizer(Protocol):
         detailed_bundle_routes: DetailedBundleRoutingResult | None,
         pad_plan: PadPlan | None,
         config: ElectricalRoutingConfig,
-    ) -> Component: ...
+    ) -> Component:
+        """Return a copy of ``component`` with the routed metal polygons added.
+
+        Implemented by ``metal_realization.realize_electrical_metal``.
+        """
+        ...
 
 
 class ElectricalVerifier(Protocol):
@@ -224,7 +278,12 @@ class ElectricalVerifier(Protocol):
         detailed_bundle_routes: DetailedBundleRoutingResult | None,
         pad_plan: PadPlan | None,
         config: ElectricalRoutingConfig,
-    ) -> ElectricalVerificationResult: ...
+    ) -> ElectricalVerificationResult:
+        """Return the verification issues and quality metrics of the routed run.
+
+        Implemented by ``verification.verify_electrical_routing``.
+        """
+        ...
 
 
 class DebugArtifactWriter(Protocol):
@@ -236,4 +295,10 @@ class DebugArtifactWriter(Protocol):
         debug_prefix: str,
         result: ElectricalRoutingResult,
         config: ElectricalRoutingConfig,
-    ) -> dict[str, str]: ...
+    ) -> dict[str, str]:
+        """Return the written files' paths by artifact key.
+
+        Implemented by ``debug.write_debug_artifacts``. Nothing is written and
+        the dict is empty when ``debug_dir`` is None.
+        """
+        ...

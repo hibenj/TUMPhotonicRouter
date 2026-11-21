@@ -87,8 +87,11 @@ select = [
     "ANN001", # rule 4.2: every parameter is annotated ...
     "ANN201", # ... and every public function ...
     "ANN202", # ... and private function declares its return type
-    "D100",   # rule 4.7: every module ...
-    "D104",   # ... and every package of the package has a docstring
+    "D100",   # rule 4.7: every public module,
+    "D101",   # class,
+    "D102",   # method,
+    "D103",   # function
+    "D104",   # and package of the package has a docstring
 ]
 ignore = [
     # single-line-implicit-string-concatenation: conflicts with the

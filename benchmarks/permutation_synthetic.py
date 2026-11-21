@@ -29,6 +29,13 @@ BAR_MARGIN_UM = 5.0
 
 
 def synth_config() -> dict[str, object]:
+    """Configuration of the synthetic layer: the defaults overridden by `PHOTONIC_ROUTER_SYNTH`.
+
+    Returns `k`, `m` and `seed` as int, `sp`, `tp` and `band` as float (um)
+    and `mode` as given, unchecked. Items without `=` and unknown keys are
+    skipped; a value that is not a number where one is expected raises
+    ValueError.
+    """
     raw = os.environ.get("PHOTONIC_ROUTER_SYNTH", "")
     cfg: dict[str, object] = {
         "k": 4,
@@ -76,6 +83,13 @@ def _bar(name: str, port_count: int, pitch_um: float, orientation: float) -> Com
 
 
 def register_synth_cells(k: int, sp: float) -> tuple[str, str]:
+    """Register the source and the target bar with the generic PDK and return their cell names.
+
+    The source bar has `k` ports facing east at pitch `sp` um and is named
+    after both (`synth_source_k<k>_p<sp>`, dots replaced by underscores); the
+    target bar `synth_target` has a single port facing west. Activates the
+    PDK; a name the PDK already knows is not registered again.
+    """
     pdk = get_generic_pdk()
     pdk.activate()
     source_name = f"synth_source_k{k}_p{sp:g}".replace(".", "_")
@@ -90,6 +104,13 @@ def register_synth_cells(k: int, sp: float) -> tuple[str, str]:
 
 
 def permutation(n: int, mode: str, seed: int) -> list[int]:
+    """Target index for each of `n` lanes: lane i connects to target `result[i]`.
+
+    `identity` keeps the order, `reverse` reverses it, `swap` exchanges each
+    pair of neighbours (2i, 2i + 1) and leaves the last lane of an odd `n`
+    in place, `random` shuffles with `random.Random(seed)`; `seed` is unused
+    in the other modes. Raises ValueError for any other mode.
+    """
     order = list(range(n))
     if mode == "random":
         random.Random(seed).shuffle(order)
@@ -104,6 +125,15 @@ def permutation(n: int, mode: str, seed: int) -> list[int]:
 
 
 def build_schematic() -> Schematic:
+    """Build the unrouted permutation layer that `PHOTONIC_ROUTER_SYNTH` describes.
+
+    The `m * k` targets `tgt_0`, `tgt_1`, ... run top to bottom at pitch `tp`
+    um, centred on y = 0, with their ports `band` um to the right of the
+    source ports. Source bar `src_b` sits at x = 0, centred on the rows of
+    targets b * k to (b + 1) * k - 1. Net `n_<lane>` connects source lane
+    `lane` (counted top to bottom over all bars) to the target the
+    permutation assigns it. Raises ValueError for an unknown mode.
+    """
     cfg = synth_config()
     k = int(cfg["k"])
     m = int(cfg["m"])

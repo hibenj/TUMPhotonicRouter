@@ -25,11 +25,19 @@ GridRect = tuple[int, int, int, int]
 
 @runtime_checkable
 class ObstacleMapBuilder(Protocol):
+    """The interface of a static obstacle-map builder: layout geometry in, grid cells out."""
+
     def build(
         self,
         component: object,
         config: StaticObstacleMapConfig,
-    ) -> StaticObstacleMapData: ...
+    ) -> StaticObstacleMapData:
+        """Rasterize the fixed geometry of `component` into a static obstacle map.
+
+        `config` gives the grid size, the margins and clearances (um) and the
+        layers that count as obstacles.
+        """
+        ...
 
 
 @dataclass(frozen=True)
@@ -883,6 +891,7 @@ def build_port_open_cells(
 
 
 def in_bounds(gx: int, gy: int, width: int, height: int) -> bool:
+    """Whether the cell (gx, gy) lies inside a grid of `width` by `height` cells."""
     return 0 <= gx < width and 0 <= gy < height
 
 

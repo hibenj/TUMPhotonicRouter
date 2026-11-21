@@ -25,6 +25,12 @@ from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 
 
 class SchematicLike(Protocol):
+    """What the analysis reads of a schematic: its netlist and its placements.
+
+    `placements` maps an instance name to an object with `x` and `y`; a
+    missing instance or attribute counts as 0.
+    """
+
     netlist: Any
     placements: Mapping[str, Any]
 
@@ -36,6 +42,14 @@ class TopologyEdgeRank(LaneRank):
 
 @dataclass
 class TopologyAnalysisResult:
+    """The depth/rank tables of a schematic DAG.
+
+    `topological_order` lists the instance names, sources first.
+    `node_depths` and `node_ranks` are keyed by instance name; a derived
+    rank is the instance's top-to-bottom position among the instances of its
+    depth. `edge_ranks` holds one `TopologyEdgeRank` per graph edge.
+    """
+
     topological_order: list[str]
     node_depths: dict[str, int]
     node_ranks: dict[str, int]

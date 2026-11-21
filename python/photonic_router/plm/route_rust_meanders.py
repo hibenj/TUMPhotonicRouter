@@ -50,29 +50,79 @@ GridCell = tuple[int, int]
 class MeanderRustBackendLike(Protocol):
     """Structural type for the loaded Rust backend used by meander planning."""
 
-    def GridSpec(self, *args: object, **kwargs: object) -> object: ...
-    def PrimitiveLibraryConfig(self, *args: object, **kwargs: object) -> object: ...
-    def AStarConfig(self, *args: object, **kwargs: object) -> object: ...
+    def GridSpec(self, *args: object, **kwargs: object) -> object:
+        """Build the kernel's grid description.
+
+        The planner context passes the width and height in cells, the grid
+        size in um and the origin x and y in um, in this order.
+        """
+        ...
+
+    def PrimitiveLibraryConfig(self, *args: object, **kwargs: object) -> object:
+        """Build the kernel's primitive library configuration.
+
+        The planner context passes ``grid_size_um``, ``bend_radius_cells``
+        and ``allow_45_degree_turns``.
+        """
+        ...
+
+    def AStarConfig(self, *args: object, **kwargs: object) -> object:
+        """Build the search configuration the router constructor takes.
+
+        The planner context passes ``max_iterations=1``.
+        """
+        ...
+
     def auto_meander_search_config_rs(
         self,
         *args: object,
         **kwargs: object,
-    ) -> dict[str, object]: ...
-    def PyPhotonicRouter(self, *args: object, **kwargs: object) -> MeanderRouterLike: ...
-    def MeanderPlanner(self, router: MeanderRouterLike) -> MeanderPlannerLike: ...
+    ) -> dict[str, object]:
+        """Return the meander search policy for an effective bend radius in um.
+
+        Takes the bend radius and the keywords
+        ``min_candidate_straight_length_um``, ``max_meander_height_um`` and
+        ``auto_endpoint_inset_um``. `_meander_search_config` reads the keys
+        ``min_straight_um``, ``min_segment_um``, ``max_height_um``,
+        ``box_depths_um``, ``endpoint_insets_um`` and ``endpoint_inset_um``
+        from the result.
+        """
+        ...
+
+    def PyPhotonicRouter(self, *args: object, **kwargs: object) -> MeanderRouterLike:
+        """Build a router from a grid spec, a primitive library config and a search config."""
+        ...
+
+    def MeanderPlanner(self, router: MeanderRouterLike) -> MeanderPlannerLike:
+        """Build the meander planner of ``router``, with nothing registered yet."""
+        ...
 
 
 class MeanderRouterLike(Protocol):
     """Structural type for the PyO3 router the planner context is built on."""
 
-    def set_static_cells(self, cells: list[GridCell]) -> None: ...
+    def set_static_cells(self, cells: list[GridCell]) -> None:
+        """Set the router's static (blocked) cells, given as ``(x, y)`` grid cells.
+
+        The planner context calls this only when no record has a centerline
+        to register; otherwise `MeanderPlannerLike.register` passes the
+        static cells.
+        """
+        ...
+
     # The value comes from the untyped extension, so it is `object` here and
     # `_record_centerline_for_registration` checks its shape before use.
     def route_port_corrected_centerline(
         self,
         route: object,
         **kwargs: Any,
-    ) -> object: ...
+    ) -> object:
+        """Return the port-corrected centerline of a routed kernel route.
+
+        Expected to be a sequence of ``(x, y)`` points in um; the context
+        uses it for a record that carries no ``corrected_centerline_um``.
+        """
+        ...
 
 
 class MeanderPlannerLike(Protocol):
@@ -91,28 +141,81 @@ class MeanderPlannerLike(Protocol):
         base_static_cell_handle: object | None = None,
         route_clearance_radius_cells: int = 0,
         reset: bool = True,
-    ) -> tuple[list[int], list[int], int]: ...
+    ) -> tuple[list[int], list[int], int]:
+        """Register the routes as occupied cells.
+
+        The routes' cells are inflated by ``route_clearance_radius_cells``;
+        each route's own cells stay open to its meanders where no other
+        route or base static cell claims them. Returns the registered route
+        indices, their open-cell counts and the number of distinct route
+        cells. With ``reset`` the router starts over from
+        ``base_static_cells``, or from the kernel handle
+        ``base_static_cell_handle``; without it the routes are added to
+        the router's current static map.
+        """
+        ...
+
     def register_geometries(
         self,
         centerlines: list[list[tuple[float, float]]],
         registered_opened_cell_indices: list[int],
         max_bumps_by_edge: list[int],
-    ) -> list[int]: ...
-    def reserve_rect(self, min_x: int, max_x: int, min_y: int, max_y: int) -> int: ...
-    def profile(self) -> dict[str, int | float]: ...
+    ) -> list[int]:
+        """Register one centerline per route to plan meanders on.
+
+        The three lists run in parallel: the centerline (points in um), the
+        route's index among the registered routes as `register` returned
+        it, and its bump cap. Returns the geometry indices the planning
+        calls take.
+        """
+        ...
+
+    def reserve_rect(self, min_x: int, max_x: int, min_y: int, max_y: int) -> int:
+        """Reserve a planned meander's rectangle, in grid cells, for the following plans.
+
+        Returns the number of newly reserved cells.
+        """
+        ...
+
+    def profile(self) -> dict[str, int | float]:
+        """Return the timers and counts of the last `register` call (empty before one)."""
+        ...
+
     def plan_requests(
         self,
         candidate_geometry_indices: list[list[int]],
         candidate_requested_extra_lengths_um: list[list[float]],
         **kwargs: Any,
-    ) -> dict[str, object]: ...
+    ) -> dict[str, object]:
+        """Plan one path-length requirement from its candidate bundles.
+
+        ``candidate_geometry_indices[i]`` is the i-th bundle of registered
+        geometries and ``candidate_requested_extra_lengths_um[i]`` its
+        requested extra length per edge, in um. The bundles are tried in
+        order and the first that plans as one sequence wins; when none
+        plans and the keyword ``split_geometry_index`` is given, that
+        geometry is tried as same-edge chunks of
+        ``split_requested_extra_length_um``. The result's ``status`` is
+        ``"planned"`` on success.
+        """
+        ...
+
     def plan_final(
         self,
         geometry_indices: list[int],
         requested_extra_lengths_um: list[float],
         min_insertable_extra_length_um: float,
         **kwargs: Any,
-    ) -> dict[str, object]: ...
+    ) -> dict[str, object]:
+        """Plan every physical edge's total extra length (um) in one call.
+
+        Rust tries the whole sequence, then each edge direct, then the
+        same-edge split. The result's ``status`` is ``"planned"`` on
+        success, ``planning_mode`` names the branch that planned, and
+        ``plan_input_indices`` gives, for each of ``plans``, the position
+        of its edge in ``geometry_indices``.
+        """
+        ...
 
 
 #: (edge, record, the Rust plan dict, max_bumps)

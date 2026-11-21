@@ -13,6 +13,12 @@ GDS_MAX_VERTEX_COUNT = 4000
 
 
 def gds_save_options() -> kdb.SaveLayoutOptions:
+    """Return the save options every GDS write of this repository uses.
+
+    A new KLayout options object whose only non-default setting is the split
+    threshold: polygons are written with at most `GDS_MAX_VERTEX_COUNT`
+    vertices.
+    """
     options = kdb.SaveLayoutOptions()
     options.gds2_max_vertex_count = GDS_MAX_VERTEX_COUNT
     return options

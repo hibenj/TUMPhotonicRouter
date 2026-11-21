@@ -23,6 +23,12 @@ from photonic_router.records.route_rust_types import (
 
 
 def route_attempt_as_dict(record: object) -> dict[str, object]:
+    """Return a route attempt record as a new dict.
+
+    Accepts a record with an as_dict() method (RouteAttemptRecord) or a
+    dict. Anything else, and a record whose as_dict() does not return a
+    dict, gives an empty dict.
+    """
     as_dict = getattr(record, "as_dict", None)
     if callable(as_dict):
         result = as_dict()

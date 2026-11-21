@@ -94,6 +94,10 @@ def default_net_order(*, preplaced_crossing_grids: bool, guided: bool = False) -
 
 
 def normalize_net_order(net_order: object) -> str:
+    """The name of a net order as `NET_ORDERS` spells it: stripped and lowercased.
+
+    Raises `ValueError` when the result is not one of `NET_ORDERS`.
+    """
     value = str(net_order).strip().lower()
     if value not in NET_ORDERS:
         raise ValueError(

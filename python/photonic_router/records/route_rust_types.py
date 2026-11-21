@@ -56,6 +56,20 @@ class OpticalRouteClearancePolicy:
         route_clearance_um: float,
         plm_candidate_box_clearance_radius_cells: int = 0,
     ) -> OpticalRouteClearancePolicy:
+        """Derive the cell radii from the physical dimensions, all in um.
+
+        The core radius is half the route width in cells, rounded up; the
+        keep-out radius is half the width plus the clearance in cells,
+        rounded up, and never below the core radius. Search expansion uses
+        the core radius, the commit keep-out and the PLM registered keep-out
+        the keep-out radius; ``dynamic_route_core_radius_cells`` is always 0.
+        A clearance of zero or less is taken as zero and makes the core and
+        keep-out radii 0 as well. ``plm_candidate_box_clearance_radius_cells``
+        is passed through, a negative value as 0.
+
+        Raises ``ValueError`` when the route width or the grid size is not
+        finite and positive, or the clearance is infinite.
+        """
         route_width_um = float(route_width_um)
         grid_size_um = float(grid_size_um)
         route_clearance_um = max(0.0, float(route_clearance_um))
@@ -95,6 +109,7 @@ class OpticalRouteClearancePolicy:
         )
 
     def to_debug_dict(self) -> dict[str, float | int]:
+        """The policy as a flat dict keyed by field name, for debug and analysis records."""
         return {
             "route_width_um": self.route_width_um,
             "grid_size_um": self.grid_size_um,
@@ -215,6 +230,20 @@ def _get_route_int_stat(route_obj: object, attr: str) -> int:
 
 @dataclass(frozen=True)
 class RustRouteDebugArtifacts:
+    """What a routing session returns besides the layout.
+
+    The routed-net records, the search statistics and the grid and obstacle
+    data that path-length matching, verification and reporting read
+    afterwards. ``obstacle_svg`` and ``route_svgs`` are the debug SVG files
+    of the run. ``routed_edge_lengths_um`` is the recorded length per routed
+    edge. ``static_blocked_cells`` are the obstacle map's blocked cells,
+    sorted, without the port-access reservations.
+    ``realization_grid_spec`` is (width in cells, height in cells, cell size
+    in um, origin x in um, origin y in um); ``routable_bbox_um`` is (x min,
+    y min, x max, y max). ``route_nets_timings_s`` maps a timing bucket's
+    name to seconds.
+    """
+
     obstacle_svg: Path | None
     route_svgs: list[Path]
     routed_edge_lengths_um: dict[RoutedEdgeKey, float]
@@ -238,6 +267,21 @@ class RustRouteDebugArtifacts:
 
 @dataclass(frozen=True)
 class RoutedNetRecord:
+    """One routed net as the session records it.
+
+    ``source`` and ``target`` are the net's two ports, ``route_obj`` the
+    kernel's route. ``total_length_um`` is the net's length as currently
+    recorded. Once an endpoint correction has changed it,
+    ``base_total_length_um`` keeps the length from before the first
+    correction (None otherwise) and ``corrected_centerline_um`` holds the
+    corrected centerline (points in um; empty otherwise). ``net_id`` is the
+    id of the net's ``RouteJob``.
+    ``opened_cells`` are the grid cells that were opened for the net's
+    endpoints. The port centers are in um, the port orientations in degrees.
+    ``endpoint_correction_error`` is the message of a failed endpoint
+    correction; the photonic verification reports it as an issue.
+    """
+
     net_name: str
     source: PortRef
     target: PortRef
@@ -257,6 +301,17 @@ class RoutedNetRecord:
 
 @dataclass(frozen=True)
 class RouteJob:
+    """One net to route: a link of the schematic's netlist with its two ports resolved.
+
+    ``inst1``/``port1`` name the source and ``inst2``/``port2`` the target;
+    ``source_port`` and ``target_port`` are those ports on the layout being
+    routed. ``net_id`` numbers the links from 1 in the netlist's order and
+    is the identity the obstacle map and the bookkeeping key on; it never
+    changes. ``route_index`` starts out equal to it and becomes the job's
+    position in the routing order (from 1) when the session orders the
+    jobs, which it does when repair is enabled.
+    """
+
     net_id: int
     route_index: int
     net_name: str
@@ -360,6 +415,19 @@ class RipupRerouteConfig:
 
 @dataclass
 class RouteTimingBucket:
+    """The accumulated times and search statistics of the route attempts of one kind.
+
+    A session keeps one bucket per kind of attempt (``normal_route``,
+    ``probe_route``, ``braid_ripup``, ``endpoint_correction``);
+    ``summarize_route_search`` adds them up. ``calls`` and ``failures`` count
+    the attempts and ``elapsed_s`` is their wall time in seconds. Every other
+    field is taken from the kernel's route objects of the attempts that did
+    not fail: counters are summed, ``max_heap_size`` and
+    ``max_window_area_cells`` are maxima, the ``*_by_class`` dicts count per
+    primitive class of ``PRIMITIVE_TRANSITION_CLASSES``, and the ``*_us``
+    fields are times in microseconds.
+    """
+
     calls: int = 0
     failures: int = 0
     elapsed_s: float = 0.0
@@ -451,15 +519,29 @@ class RouteTimingBucket:
 
     @property
     def successes(self) -> int:
+        """The number of recorded attempts that did not fail."""
         return self.calls - self.failures
 
     def record_elapsed(self, elapsed_s: float, *, failed: bool = False) -> None:
+        """Count one attempt and add its wall time in seconds, in place.
+
+        ``failed`` counts it as a failure too. The search statistics are left
+        alone; ``record_route`` adds them.
+        """
         self.calls += 1
         if failed:
             self.failures += 1
         self.elapsed_s += elapsed_s
 
     def record_route(self, elapsed_s: float, route_obj: object, *, failed: bool = False) -> None:
+        """Record one attempt and, unless it failed, add its route's search statistics.
+
+        ``route_obj`` is the kernel's route of the attempt. A statistic it
+        does not have, or a negative one, counts as 0. Mutates the bucket:
+        counters are summed, ``max_heap_size`` and ``max_window_area_cells``
+        keep the maximum, and a route that used the full-grid fallback
+        increments ``full_grid_fallbacks``.
+        """
         self.record_elapsed(elapsed_s, failed=failed)
         if failed:
             return
@@ -686,6 +768,19 @@ class RouteTimingBucket:
 
 @dataclass(frozen=True)
 class RouteAttemptRecord:
+    """One route attempt of a run, with the search statistics of that attempt alone.
+
+    Recorded only when the run collects timing. ``attempt_index`` is the
+    attempt's number in the run and ``bucket_name`` the timing bucket it was
+    counted in. ``net_id`` and ``route_index`` are those of the ``RouteJob``;
+    ``source`` and ``target`` are its ports as ``"instance,port"``.
+    ``elapsed_s`` is the attempt's wall time in seconds and ``repair_round``
+    the repair round it belongs to, when there is one. ``total_length_um``
+    is None when the attempt has no route, and ``route_cells`` is the number
+    of cells of the route. The remaining fields are the kernel's statistics
+    of the route (0 for a failed attempt); ``*_us`` fields are microseconds.
+    """
+
     attempt_index: int
     bucket_name: str
     net_id: int
@@ -788,9 +883,17 @@ class RouteAttemptRecord:
 
     @property
     def used_simple_route(self) -> bool:
+        """Whether the attempt succeeded without expanding a single search state."""
         return not self.failed and self.expanded_states == 0
 
     def as_dict(self) -> dict[str, object]:
+        """The record as a flat dict, with every time in seconds.
+
+        Each field is reported under its own name, except that a ``*_us``
+        field (microseconds) is reported in seconds as ``*_s``.
+        ``used_simple_route`` is included; the per-class counters and the
+        diagnostics are copies.
+        """
         return {
             "attempt_index": self.attempt_index,
             "bucket_name": self.bucket_name,
@@ -903,6 +1006,16 @@ def route_attempt_record_from_route(
     error: str | None = None,
     diagnostics: Mapping[str, object] | None = None,
 ) -> RouteAttemptRecord:
+    """Build the record of one route attempt from the kernel's route object.
+
+    The identifying arguments are stored as given (``source`` and ``target``
+    are ``"instance,port"`` strings, ``elapsed_s`` is in seconds). Every
+    search statistic is read from the attribute of the same name on
+    ``route_obj``; a missing attribute, and ``route_obj=None`` (an attempt
+    without a route), give 0. ``total_length_um`` is None when the route
+    object has no such attribute, and ``route_cells`` is the length of its
+    ``cells``. ``diagnostics`` is copied.
+    """
     route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
     total_length_um = (
         as_float(route_obj.total_length_um, 0.0)
@@ -1116,6 +1229,18 @@ def route_attempt_record_from_route(
 
 @dataclass(frozen=True)
 class RouteSearchSummary:
+    """The totals of a run's route search, as ``summarize_route_search`` builds them.
+
+    ``route_attempts``, ``route_failures`` and the search statistics are
+    taken over every timing bucket except ``endpoint_correction``: counters
+    are summed, ``max_*`` fields are maxima. The endpoint corrections are
+    reported in the three ``endpoint_correction_*`` fields, and
+    ``normal_route_time_s`` is the time of the ``normal_route`` bucket
+    alone. ``route_count``, ``simple_route_count``, ``repair_count`` and
+    ``astar_elapsed_s`` are the session's own counts and its search time.
+    Times are in seconds, except the ``*_us`` fields in microseconds.
+    """
+
     route_count: int = 0
     route_attempts: int = 0
     route_failures: int = 0
@@ -1380,6 +1505,14 @@ DEFAULT_MEANDER_MIN_STRAIGHT_UM = 1.0
 
 @dataclass(frozen=True)
 class MeanderInsertionConfig:
+    """The settings of meander insertion for path-length matching; lengths in um.
+
+    ``min_candidate_straight_length_um`` and ``max_meander_height_um`` go
+    into the kernel's meander search policy, as does
+    ``auto_meander_endpoint_inset_um``: a value is a fixed endpoint inset,
+    None selects the adaptive one.
+    """
+
     enabled: bool = True
     min_candidate_straight_length_um: float = DEFAULT_MEANDER_MIN_STRAIGHT_UM
     max_extra_length_per_region_um: float = 200.0
@@ -1389,6 +1522,11 @@ class MeanderInsertionConfig:
 
 
 def edge_key_to_dict(edge_key: RoutedEdgeKey) -> dict[str, object]:
+    """A routed edge key as a JSON-serializable dict.
+
+    ``net_name``, and ``source`` and ``target`` each as a dict with
+    ``instance`` and ``port``.
+    """
     return {
         "net_name": edge_key.net_name,
         "source": {"instance": edge_key.source.instance, "port": edge_key.source.port},
@@ -1444,6 +1582,14 @@ class MeanderEdgeReport:
     plan: Mapping[str, object] | None = None
 
     def to_info_dict(self) -> dict[str, object]:
+        """The result as a dict for the GDS meta info.
+
+        The edges are written with ``edge_key_to_dict`` and the lengths as
+        floats in um; ``candidate_reason`` appears as
+        ``selected_candidate_reason``. ``satisfied_by_requirement_edge`` is
+        present only when set, and of ``plan`` only the scalars named in
+        ``MEANDER_PLAN_INFO_KEYS`` that the plan has.
+        """
         info: dict[str, object] = {
             "edge": edge_key_to_dict(self.edge),
             "requested_extra_length_um": float(self.requested_extra_length_um),
@@ -1494,6 +1640,7 @@ class MeanderPlanningProfile:
     search_config: dict[str, object] = field(default_factory=dict)
 
     def to_info_dict(self) -> dict[str, object]:
+        """The profile as a dict keyed by field name; containers are shallow copies."""
         return {
             "planner_calls": int(self.planner_calls),
             "planner_elapsed_s": float(self.planner_elapsed_s),
@@ -1536,6 +1683,13 @@ class MeanderInsertionReport:
     profile: MeanderPlanningProfile | None = None
 
     def to_info_dict(self) -> dict[str, object]:
+        """The report as the GDS meta info dict (``meander_insertion_report``).
+
+        Lengths are floats in um. ``realized_extra_by_edge`` is written as the
+        list ``realized_extra_length_um_by_edge`` of ``edge`` and
+        ``extra_length_um`` entries. When a profile was built, its entries
+        are merged into the top level of the dict.
+        """
         info: dict[str, object] = {
             "results": [entry.to_info_dict() for entry in self.results],
             "total_requested_extra_length_um": float(self.total_requested_extra_length_um),
@@ -1565,6 +1719,15 @@ class MeanderInsertionReport:
 
 @dataclass(frozen=True)
 class RouteRustPipelineResult:
+    """What ``route_match_and_realize`` returns: the routed layout and its records.
+
+    ``debug_artifacts`` is the routing session's record.
+    ``path_length_analysis_info`` and ``meander_requirements_info`` are the
+    path-length analysis and its meander requirements in the form written
+    to the GDS meta info. ``pipeline_timings_s`` maps a pipeline step's name
+    to its wall time in seconds.
+    """
+
     routed_layout: Component
     debug_artifacts: RustRouteDebugArtifacts
     path_length_analysis_info: dict[str, object] | None = None

@@ -89,6 +89,12 @@ class RoutingFlowStats:
     step_times_s: dict[str, float] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
+        """Return every field under its own name as a plain dict.
+
+        Values are passed through unchanged, so a field that is None until its
+        step ran stays None. route_attempt_records and step_times_s are
+        shallow copies.
+        """
         return {
             "benchmark_name": self.benchmark_name,
             "total_time_s": self.total_time_s,

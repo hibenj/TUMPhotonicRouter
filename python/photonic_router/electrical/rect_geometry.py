@@ -152,16 +152,30 @@ def disjoint_union_rects(rects: Iterable[BBox]) -> tuple[BBox, ...]:
 
 
 def rect_area(rect: BBox) -> float:
+    """Return the area of ``rect``, or 0.0 when its max edge is below its min edge."""
+
     return max(0.0, rect[2] - rect[0]) * max(0.0, rect[3] - rect[1])
 
 
 def rect_intersects(left: BBox, right: BBox) -> bool:
+    """Return whether two rectangles overlap or touch.
+
+    Rectangles that only share an edge or a corner count as intersecting.
+    """
+
     return not (
         left[2] < right[0] or right[2] < left[0] or left[3] < right[1] or right[3] < left[1]
     )
 
 
 def rect_intersection(left: BBox, right: BBox) -> BBox | None:
+    """Return the rectangle common to both, or None when they are apart.
+
+    Touching rectangles intersect (see ``rect_intersects``), so the result
+    can have zero width or height; callers that need a real overlap check
+    its ``rect_area``.
+    """
+
     if not rect_intersects(left, right):
         return None
     return (
@@ -173,6 +187,12 @@ def rect_intersection(left: BBox, right: BBox) -> BBox | None:
 
 
 def rect_is_covered_by_any(rect: BBox, covers: tuple[BBox, ...]) -> bool:
+    """Return whether a single rectangle of ``covers`` contains ``rect``.
+
+    This is not a union test: a ``rect`` covered only by several ``covers``
+    together gives False.
+    """
+
     return any(rect_contains(cover, rect) for cover in covers)
 
 
@@ -331,6 +351,12 @@ def _point_rect(point: Point, half_width: float) -> BBox:
 
 
 def normalize_rect(rect: BBox) -> BBox | None:
+    """Return ``rect`` as ``(xmin, ymin, xmax, ymax)`` with min below max.
+
+    Swaps reversed edges. Returns None for a rectangle of zero width or
+    height.
+    """
+
     xmin, ymin, xmax, ymax = rect
     if xmax < xmin:
         xmin, xmax = xmax, xmin
@@ -349,6 +375,11 @@ def _normalize_non_degenerate_rect(rect: BBox) -> BBox:
 
 
 def rect_contains(outer: BBox, inner: BBox) -> bool:
+    """Return whether ``inner`` lies within ``outer``; shared edges count.
+
+    Assumes both are ``(xmin, ymin, xmax, ymax)`` with min not above max.
+    """
+
     return (
         outer[0] <= inner[0]
         and outer[1] <= inner[1]

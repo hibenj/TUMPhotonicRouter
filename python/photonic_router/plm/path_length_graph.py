@@ -14,10 +14,26 @@ from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 
 
 class SchematicLike(Protocol):
+    """The part of a schematic the graph is built from: its ``netlist``.
+
+    `build_graph_from_schematic` reads ``netlist.instances`` (instance name
+    to instance; a string ``component`` attribute names the cell) and
+    ``netlist.routes`` (net name to a bundle whose ``links`` maps one
+    ``"instance,port"`` string to another).
+    """
+
     netlist: Any
 
 
 class NodeType(str, Enum):
+    """What an instance is to the light, as the benchmark's node types say.
+
+    ``input``, ``output`` and ``sink`` decide the direction of the nets at
+    them (`build_graph_from_schematic`); the graph construction and the
+    timing walk treat the other types alike. An instance with no declared
+    type is a ``gate``.
+    """
+
     INPUT = "input"
     OUTPUT = "output"
     #: a dead end (an end cap, an open end): light only ever goes into it,
@@ -30,18 +46,29 @@ class NodeType(str, Enum):
 
 
 class PortDirection(str, Enum):
+    """Whether the light enters (``input``) or leaves (``output``) a node at a port."""
+
     INPUT = "input"
     OUTPUT = "output"
 
 
 @dataclass
 class PortMetadata:
+    """One connected port of a node and the direction the light takes through it."""
+
     name: str
     direction: PortDirection
 
 
 @dataclass
 class GraphNode:
+    """One instance of the schematic.
+
+    ``internal_delay_um`` is the path length the light travels inside the
+    instance, added between its input and its output arrival. ``ports``
+    holds only the ports a net connects, by port name.
+    """
+
     name: str
     node_type: NodeType
     internal_delay_um: float = 0.0
@@ -63,12 +90,31 @@ class GraphEdge:
 
 @dataclass
 class MissingLengthRequirement:
+    """An edge and the extra length, in um, it needs.
+
+    The timing analysis produces one for every edge that arrives before the
+    latest edge into the same node; the group lifts and the output matching
+    of `path_length_requirements` build theirs as the same record.
+    """
+
     edge_key: RoutedEdgeKey
     missing_length_um: float
 
 
 @dataclass(frozen=True)
 class DelayInsertionCandidate:
+    """One place where the extra length of a requirement may be inserted.
+
+    ``requirement_edge_key`` is the edge whose requirement this serves.
+    ``edge_keys`` are the edges that each take ``extra_length_um`` (um)
+    when the candidate is used: the required edge itself, or edges
+    upstream of it. ``affected_requirement_edge_keys`` are the required
+    edges the insertion delays, more than one where an upstream insertion
+    is shared. ``reason`` names the rule that produced the candidate
+    (``direct_edge``, ``common_mode_upstream_bundle``, ...); see
+    `path_length_requirements.build_requirement_delay_candidates`.
+    """
+
     requirement_edge_key: RoutedEdgeKey
     edge_keys: tuple[RoutedEdgeKey, ...]
     extra_length_um: float
@@ -78,6 +124,13 @@ class DelayInsertionCandidate:
 
 @dataclass
 class NodeIncomingEdgeTiming:
+    """The timing of one edge into a node, all in um.
+
+    ``edge_arrival_um`` is the source node's output arrival plus
+    ``routed_length_um``; ``missing_length_um`` is how far that is behind
+    the node's latest incoming edge (0.0 within the analysis tolerance).
+    """
+
     edge_key: RoutedEdgeKey
     routed_length_um: float
     edge_arrival_um: float
@@ -89,6 +142,13 @@ class NodeIncomingEdgeTiming:
 
 @dataclass
 class NodeTiming:
+    """The arrival of the light at one node, as accumulated path length in um.
+
+    ``input_arrival_um`` is the latest arrival over the incoming edges (0.0
+    for a node without any); ``output_arrival_um`` adds
+    ``internal_delay_um`` to it.
+    """
+
     node_name: str
     node_type: NodeType
     internal_delay_um: float
@@ -99,6 +159,14 @@ class NodeTiming:
 
 @dataclass
 class PathLengthAnalysisResult:
+    """The result of `PathLengthGraphAnnotations.analyze_missing_lengths`.
+
+    Arrivals are accumulated path lengths in um, by node name;
+    ``node_arrival_um`` is the same mapping as ``node_arrival_output_um``.
+    ``edge_missing_lengths_um`` has an entry for every edge of the graph,
+    ``requirements`` only for those with a missing length above zero.
+    """
+
     topological_order: list[str]
     node_arrival_um: dict[str, float]
     node_arrival_input_um: dict[str, float]
@@ -111,10 +179,20 @@ class PathLengthAnalysisResult:
     edge_ends: dict[RoutedEdgeKey, tuple[PortRef, PortRef]] = field(default_factory=dict)
 
     def source_instance(self, edge_key: RoutedEdgeKey) -> str:
+        """The instance the light leaves on this edge.
+
+        Falls back to the key's own source when ``edge_ends`` does not list
+        the edge.
+        """
         ends = self.edge_ends.get(edge_key)
         return ends[0].instance if ends is not None else edge_key.source.instance
 
     def target_instance(self, edge_key: RoutedEdgeKey) -> str:
+        """The instance the light arrives at on this edge.
+
+        Falls back to the key's own target when ``edge_ends`` does not list
+        the edge.
+        """
         ends = self.edge_ends.get(edge_key)
         return ends[1].instance if ends is not None else edge_key.target.instance
 
@@ -132,6 +210,10 @@ class PathLengthGraphAnnotations:
         graph: PhotonicRoutingGraph,
         lengths_um: Mapping[RoutedEdgeKey, float],
     ) -> PathLengthGraphAnnotations:
+        """New annotations holding the given routed lengths (um) of the graph's edges.
+
+        Raises ``KeyError`` for a key that is not an edge of ``graph``.
+        """
         annotations = cls()
         annotations.set_edge_lengths(graph, lengths_um)
         return annotations
@@ -141,6 +223,12 @@ class PathLengthGraphAnnotations:
         graph: PhotonicRoutingGraph,
         lengths_um: Mapping[RoutedEdgeKey, float],
     ) -> None:
+        """Record the routed length, in um, of the given edges.
+
+        Updates ``edge_lengths_um`` in place; edges not named keep the
+        length they had. Raises ``KeyError`` at the first key that is not
+        an edge of ``graph``, with the edges before it already recorded.
+        """
         for edge_key, length_um in lengths_um.items():
             if edge_key not in graph.edges:
                 raise KeyError(
@@ -156,6 +244,19 @@ class PathLengthGraphAnnotations:
         *,
         tolerance_um: float = 1.0e-9,
     ) -> PathLengthAnalysisResult:
+        """Walk the graph along the light and find what every edge is missing.
+
+        In topological order, a node's input arrival is the latest of its
+        incoming edges (the source's output arrival plus the edge's routed
+        length; 0.0 for a node without incoming edges) and its output
+        arrival adds the node's internal delay. An incoming edge is
+        missing the difference to that latest arrival; a difference of at
+        most ``tolerance_um`` counts as 0.0. All values are in um.
+
+        Replaces ``edge_missing_lengths_um`` with the result. Raises
+        ``ValueError`` when an edge has no recorded length, and
+        ``graphlib.CycleError`` when the graph has a cycle.
+        """
         order = graph.topological_order()
         input_arrivals: dict[str, float] = {}
         output_arrivals: dict[str, float] = {}
@@ -238,6 +339,14 @@ class PathLengthGraphAnnotations:
 
 @dataclass
 class PhotonicRoutingGraph:
+    """The schematic as a directed graph along the light.
+
+    ``nodes`` is keyed by instance name, ``edges`` by the net's key as
+    routed. ``incoming_edges`` and ``outgoing_edges`` list, per instance
+    name, the keys of the edges whose light arrives at or leaves that
+    node. `build_graph_from_schematic` fills all of it.
+    """
+
     nodes: dict[str, GraphNode] = field(default_factory=dict)
     edges: dict[RoutedEdgeKey, GraphEdge] = field(default_factory=dict)
     incoming_edges: dict[str, list[RoutedEdgeKey]] = field(default_factory=dict)
@@ -249,6 +358,10 @@ class PhotonicRoutingGraph:
     conflicting_nodes: list[str] = field(default_factory=list)
 
     def topological_order(self) -> list[str]:
+        """The node names, each after every node its incoming light comes from.
+
+        Raises ``graphlib.CycleError`` when the edges form a cycle.
+        """
         sorter: TopologicalSorter[str] = TopologicalSorter()
         for node_name in self.nodes:
             sorter.add(node_name)
@@ -474,10 +587,19 @@ def annotate_edge_lengths(
     graph: PhotonicRoutingGraph,
     lengths_um: Mapping[RoutedEdgeKey, float],
 ) -> PathLengthGraphAnnotations:
+    """Annotations holding the routed lengths (um) of the graph's edges.
+
+    The function form of `PathLengthGraphAnnotations.from_edge_lengths`;
+    raises ``KeyError`` for a key that is not an edge of ``graph``.
+    """
     return PathLengthGraphAnnotations.from_edge_lengths(graph, lengths_um)
 
 
 def list_edges_requiring_meander(
     analysis: PathLengthAnalysisResult,
 ) -> Iterable[MissingLengthRequirement]:
+    """The analysis's requirements: the edges with a missing length above zero.
+
+    Returns the analysis's own list, not a copy.
+    """
     return analysis.requirements

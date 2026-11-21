@@ -69,6 +69,11 @@ def primitive_name(switch: str, primitive: str) -> str:
 
 
 def internal_net_name(switch: str, source_primitive: str, target_primitive: str) -> str:
+    """Net name of one switch-internal connection of an expanded switch.
+
+    `n_<switch>__<source_primitive>_to_<target_primitive>`, with primitive
+    names as in `SWITCH_INTERNAL_NETS`.
+    """
     return f"n_{switch}__{source_primitive}_to_{target_primitive}"
 
 
@@ -88,18 +93,26 @@ class BenesLayerEdge:
 
 
 def switch_name(stage: int, index: int) -> str:
+    """Instance name `sw_s<stage>_<index>` of a switch.
+
+    Both numbers count from 0: stage from the input side, index from the top
+    switch of the stage downwards.
+    """
     return f"sw_s{stage}_{index}"
 
 
 def input_name(index: int) -> str:
+    """Instance name `in_<index>` of the input coupler on lane `index` (0 = top lane)."""
     return f"in_{index}"
 
 
 def output_name(index: int) -> str:
+    """Instance name `out_<index>` of the output coupler on lane `index` (0 = top lane)."""
     return f"out_{index}"
 
 
 def validate_benes_size(size: int) -> None:
+    """Raise ValueError unless `size` is a power of two and at least 4."""
     if size < 4 or size & (size - 1):
         raise ValueError(f"Benes size must be a power of two >= 4. Got {size}.")
 
@@ -163,6 +176,12 @@ def benes_mmi_heater_switch(
 
 
 def register_benes_cells() -> None:
+    """Activate the generic PDK and make the switch cell known to it.
+
+    Registers `benes_mmi_heater_switch` under the name `SWITCH_COMPONENT`
+    unless the PDK already has a cell of that name, so calling it again
+    changes nothing.
+    """
     pdk = get_generic_pdk()
     pdk.activate()
     if SWITCH_COMPONENT not in pdk.cells:
@@ -255,6 +274,20 @@ def _iter_interstage_edges(size: int) -> tuple[BenesLayerEdge, ...]:
 
 
 def benes_topology_metadata(size: int) -> dict[str, Any]:
+    """Stage depths and lane ranks of the size x size Benes with unexpanded switches.
+
+    Keys: `network` ("benes"), `size`, `address_bits` (log2 of the size),
+    `stage_count` (2 * address_bits - 1), `switches_per_stage` (size / 2),
+    `connections` (see `benes_connection_pattern`), `node_depths` (inputs 0,
+    the switches of stage s at s + 1, outputs stage_count + 1), `node_ranks`
+    (the lane index of an input or output, the switch index of a switch),
+    `interstage_edges` (one dict per `BenesLayerEdge`) and `edge_ranks` (per
+    inter-stage net name its source and target rank and depth, the rank being
+    2 * switch index + 0 for the top or 1 for the bottom port). The nets from
+    the inputs and to the outputs have no entry in `edge_ranks`.
+
+    Raises ValueError unless `size` is a power of two and at least 4.
+    """
     validate_benes_size(size)
     address_bits = int(log2(size))
     stage_count = 2 * address_bits - 1
@@ -298,6 +331,11 @@ def benes_topology_metadata(size: int) -> dict[str, Any]:
 
 
 def benes_node_types(size: int) -> dict[str, str]:
+    """Node type per instance of the unexpanded Benes.
+
+    "input" for every `in_<i>`, "output" for every `out_<i>` and "gate" for
+    every switch of every stage. Raises ValueError for an invalid `size`.
+    """
     metadata = benes_topology_metadata(size)
     stage_count = int(metadata["stage_count"])
     switches_per_stage = int(metadata["switches_per_stage"])
@@ -311,6 +349,12 @@ def benes_node_types(size: int) -> dict[str, str]:
 
 
 def benes_internal_delays_um(size: int) -> dict[str, float | str]:
+    """Internal delay per instance of the unexpanded Benes.
+
+    0.0 um for every input and output and the word "auto" for every switch,
+    which leaves the switch's length to be taken from its component. Raises
+    ValueError for an invalid `size`.
+    """
     metadata = benes_topology_metadata(size)
     stage_count = int(metadata["stage_count"])
     switches_per_stage = int(metadata["switches_per_stage"])
@@ -389,6 +433,12 @@ def benes_flat_topology_metadata(size: int) -> dict[str, Any]:
 
 
 def benes_flat_node_types(size: int) -> dict[str, str]:
+    """Node type per instance of the expanded Benes.
+
+    "input" for every `in_<i>`, "output" for every `out_<i>` and "gate" for
+    each of the four primitives (`SWITCH_PRIMITIVES`) of every switch. Raises
+    ValueError for an invalid `size`.
+    """
     metadata = benes_topology_metadata(size)
     node_types = {input_name(index): "input" for index in range(size)} | {
         output_name(index): "output" for index in range(size)
@@ -401,6 +451,13 @@ def benes_flat_node_types(size: int) -> dict[str, str]:
 
 
 def benes_flat_internal_delays_um(size: int) -> dict[str, float | str]:
+    """Internal delay per instance of the expanded Benes.
+
+    0.0 um for every input and output and the word "auto" for each of the
+    four primitives (`SWITCH_PRIMITIVES`) of every switch, which leaves the
+    primitive's length to be taken from its component. Raises ValueError for
+    an invalid `size`.
+    """
     metadata = benes_topology_metadata(size)
     io_names = [input_name(index) for index in range(size)] + [
         output_name(index) for index in range(size)

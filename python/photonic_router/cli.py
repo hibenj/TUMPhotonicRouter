@@ -735,6 +735,19 @@ def _requests_preplaced_crossing_grids(argv: list[str]) -> bool:
 
 
 def main(argv: list[str] | None = None) -> Component:
+    """Route the benchmark the command line names and return the routed layout.
+
+    `argv` is the argument list without the program name; None reads
+    `sys.argv[1:]`. Three groups of flags are parsed in this order, so that a
+    later group overrides an earlier one: the benchmark's stable flags
+    (`benchmarks/<name>.toml`, filtered by `stable_flags_for_configuration`),
+    the flags `--configuration` expands to, and the caller's own. The
+    benchmark's `[config]` table is turned into the `RoutingConfig` by
+    `build_config`. Prints one line per group that was applied.
+
+    Raises `SystemExit` (argparse) on an invalid command line, and whatever
+    `route_benchmark` raises.
+    """
     user_argv = sys.argv[1:] if argv is None else list(argv)
     configuration_argv = configuration_flags(user_argv)
     stable_flags, stable_env = _benchmark_stable_defaults(argv)

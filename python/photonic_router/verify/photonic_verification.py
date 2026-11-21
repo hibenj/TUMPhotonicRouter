@@ -27,6 +27,15 @@ NetIdPair = tuple[int, int]
 
 @dataclass(frozen=True)
 class PhotonicVerificationIssue:
+    """One finding of the photonic verification.
+
+    `code` names the check that found it (`missing_route_record`,
+    `empty_route_geometry`, ...) and `message` says it in a sentence.
+    `severity` is "error" or "warning"; only errors make the verification
+    fail. `net_name` is the net concerned, when there is one, and `details`
+    carries data specific to the check.
+    """
+
     code: str
     message: str
     severity: str = "error"
@@ -36,22 +45,32 @@ class PhotonicVerificationIssue:
 
 @dataclass(frozen=True)
 class PhotonicVerificationResult:
+    """What `verify_photonic_routing` returns: every issue found and the run's metrics."""
+
     issues: tuple[PhotonicVerificationIssue, ...]
     metrics: dict[str, object]
 
     @property
     def success(self) -> bool:
+        """Whether no issue of severity "error" was found; warnings do not count."""
         return self.error_count == 0
 
     @property
     def error_count(self) -> int:
+        """The number of issues of severity "error"."""
         return sum(1 for issue in self.issues if issue.severity == "error")
 
     @property
     def warning_count(self) -> int:
+        """The number of issues of severity "warning"."""
         return sum(1 for issue in self.issues if issue.severity == "warning")
 
     def raise_for_errors(self) -> None:
+        """Raise `AssertionError` unless the verification succeeded.
+
+        The message lists code and message of the first ten issues, of any
+        severity, and says how many more there are.
+        """
         if self.success:
             return
         formatted = "\n".join(f"- {issue.code}: {issue.message}" for issue in self.issues[:10])
@@ -59,6 +78,11 @@ class PhotonicVerificationResult:
         raise AssertionError(f"Photonic verification failed:\n{formatted}{suffix}")
 
     def as_dict(self) -> dict[str, object]:
+        """The result as a JSON-serializable dict, provided metrics and details are.
+
+        Carries `success`, the two counts, a copy of the metrics and one dict
+        per issue with the issue's five fields.
+        """
         return {
             "success": self.success,
             "error_count": self.error_count,

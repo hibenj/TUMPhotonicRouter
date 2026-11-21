@@ -50,17 +50,35 @@ ROUTER = "router"
 
 @dataclass(frozen=True)
 class StructureCost:
+    """The cost of realizing one layer's crossings with one structure.
+
+    `extra_length_um` is the lanes' total length over the octile minimum,
+    `corners` the number of pre-wired corners and `tiles` the number of
+    crossing tiles. `band_used_um` is reported only: for the X array it is
+    the band width left after the margins, for the column grid the width its
+    columns need.
+    """
+
     extra_length_um: float
     corners: int
     tiles: int
     band_used_um: float
 
     def key(self) -> tuple[float, int, int]:
+        """The sort key of the preference: extra length (rounded to 0.001 um), then
+        corners, then tiles; the smallest key wins. `band_used_um` is not part of it."""
         return (round(self.extra_length_um, 3), self.corners, self.tiles)
 
 
 @dataclass(frozen=True)
 class StructureCandidate:
+    """The evaluation of one structure on one layer.
+
+    `name` is `X_ARRAY` or `COLUMN_GRID` (or `forced`, see
+    `LayerDecision`). A feasible candidate carries its
+    `cost`; an infeasible one carries the `reason`.
+    """
+
     name: str
     feasible: bool
     reason: str = ""
@@ -69,11 +87,21 @@ class StructureCandidate:
 
 @dataclass(frozen=True)
 class LayerDecision:
+    """The structure chosen for one layer and the candidates it was chosen from.
+
+    `stage_key` is the key of the layer's `CrossingStagePlan`. `chosen` is
+    `ROUTER` when no candidate is feasible or when the configuration forces
+    the layer to the router; in the forced case `candidates` holds a single
+    infeasible entry named `forced`.
+    """
+
     stage_key: tuple[int, int]
     chosen: str  # X_ARRAY, COLUMN_GRID or ROUTER
     candidates: tuple[StructureCandidate, ...] = field(default_factory=tuple)
 
     def describe(self) -> str:
+        """One line for the log: the layer, the chosen structure and, per candidate,
+        its cost or the reason it is infeasible."""
         parts = []
         for candidate in self.candidates:
             if candidate.feasible and candidate.cost is not None:

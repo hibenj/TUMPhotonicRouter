@@ -26,6 +26,11 @@ def load_lidar_yaml(path: Path) -> dict[str, Any]:
 
 
 def clean_instance_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Copy of a LiDAR instance's settings without the keys that are not component arguments.
+
+    Drops `macro_type`, `placement` and `info` where present; the given
+    mapping is left unchanged.
+    """
     cleaned = dict(settings)
     cleaned.pop("macro_type", None)
     cleaned.pop("placement", None)
@@ -34,6 +39,13 @@ def clean_instance_settings(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def placement_from_lidar(raw: dict[str, Any]) -> Placement:
+    """Convert one `schematic_placements` entry of a LiDAR YAML file to a Placement.
+
+    `x`, `y`, `xmin`, `ymin`, `xmax`, `ymax` and `port` are passed on as
+    given (None when absent). `dx`, `dy` and `rotation` become floats, with
+    0 for a missing or empty value; `mirror` defaults to False. Every other
+    key is ignored.
+    """
     return Placement(
         x=raw.get("x"),
         y=raw.get("y"),
@@ -50,6 +62,13 @@ def placement_from_lidar(raw: dict[str, Any]) -> Placement:
 
 
 def classify_node(instance_name: str, component: str) -> str:
+    """Node type of a LiDAR instance, from its name and component.
+
+    "input" for the instance named `gc1`, "output" for every instance whose
+    name starts with `gc_array_out_`, "gate" for the components `mmi`,
+    `mmi1x2` and `mzi`, and "delay" for everything else. The name is tested
+    first, so the component of an input or output does not matter.
+    """
     if instance_name == "gc1":
         return "input"
     if instance_name.startswith("gc_array_out_"):

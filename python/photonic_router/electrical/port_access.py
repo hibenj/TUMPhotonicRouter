@@ -34,6 +34,11 @@ class RouteStartChoice:
 
     @property
     def used_access_anchor(self) -> bool:
+        """Whether the chosen start cell is the port access's anchor cell.
+
+        False when there was no port access to take an anchor from.
+        """
+
         return self.access_anchor_cell is not None and self.cell == self.access_anchor_cell
 
 

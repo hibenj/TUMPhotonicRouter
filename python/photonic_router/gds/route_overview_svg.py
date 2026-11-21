@@ -65,6 +65,12 @@ class RoutesOverviewSummary:
 
     @property
     def legend_lines(self) -> tuple[str, ...]:
+        """The legend's lines below the benchmark name, in display order.
+
+        The route count (with the number of routes not drawn, when there are
+        any), the three lengths in um, and the sizes of the routable die and
+        of the layout bounding box (width x height in um) when they are known.
+        """
         not_drawn = self.route_count - self.drawn_count
         lines = [
             f"routes: {self.route_count}" + (f" ({not_drawn} not drawn)" if not_drawn else ""),

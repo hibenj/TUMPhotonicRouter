@@ -47,6 +47,24 @@ def quality_metrics(
     pad_plan: PadPlan | None,
     config: ElectricalRoutingConfig,
 ) -> dict[str, Any]:
+    """Return the quality numbers of one routed run as a flat dict.
+
+    ``net_geometries`` is the list ``build_net_geometries`` produced for the
+    same run. The dict holds net and rectangle counts, raw and union metal
+    area per net and in total (um2), the area counted twice by overlapping
+    same-net rectangles with its attribution by reason and by source, the
+    same-net duplicate and overlap pair counts, the smallest spacing between
+    two nets next to the configured clearance (um), centerline length (um)
+    and bend count over all nets and for the bus alone, the pad channel
+    height (um), wire and pad metal area (um2), and the per-pad-wire,
+    port-access and route-start tables.
+
+    The bus length and bend count are taken from the net with id
+    ``"common_bus"`` and are zero when there is none.
+    ``cross_net_min_spacing_um`` is None when no two nets both have
+    rectangles.
+    """
+
     rects_by_net = {net.net_id: net.rects for net in net_geometries}
     all_rects = tuple(rect for net in net_geometries for rect in net.rects)
     same_net_duplicate_rects = sum(_duplicate_rect_count(net.rects) for net in net_geometries)
@@ -369,6 +387,13 @@ def min_rect_spacing(
     left_rects: tuple[BBox, ...],
     right_rects: tuple[BBox, ...],
 ) -> float | None:
+    """Return the smallest gap between a rectangle of each set, in um.
+
+    The gap of a pair is the Euclidean distance between the two rectangles,
+    so diagonal neighbours are measured corner to corner; overlapping or
+    touching rectangles give 0.0. Returns None when either set is empty.
+    """
+
     min_spacing: float | None = None
     for left in left_rects:
         for right in right_rects:

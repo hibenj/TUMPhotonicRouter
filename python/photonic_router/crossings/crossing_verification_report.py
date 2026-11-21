@@ -21,6 +21,14 @@ Point = tuple[float, float]
 
 @dataclass(frozen=True)
 class CrossingVerificationIssue:
+    """One finding of the crossing verification.
+
+    `code` is a machine-readable identifier such as
+    `illegal_realized_crossing` or `missing_crossing_component`, `message`
+    the text for a person. `severity` is `error` or `warning`; only errors
+    make the report fail. `details` carries the data behind the finding.
+    """
+
     code: str
     message: str
     severity: str = "error"
@@ -28,6 +36,7 @@ class CrossingVerificationIssue:
     details: dict[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
+        """The issue as a dict keyed by field name; `details` is a shallow copy."""
         return {
             "code": self.code,
             "message": self.message,
@@ -39,6 +48,14 @@ class CrossingVerificationIssue:
 
 @dataclass(frozen=True)
 class CrossingRecord:
+    """One realized crossing of two nets, as read from the crossing plan info.
+
+    `classification` decides its legality by prefix (`legal_...`,
+    `illegal_...`). `point_um` is the crossing point in um. `details` is the
+    source record the crossing was read from, with `source_crossing_index`
+    added when the record has none.
+    """
+
     classification: str
     point_um: Point | None = None
     net_id_a: int | None = None
@@ -50,13 +67,21 @@ class CrossingRecord:
 
     @property
     def legal(self) -> bool:
+        """True when the classification starts with `legal_`."""
         return self.classification.startswith("legal_")
 
     @property
     def illegal(self) -> bool:
+        """True when the classification starts with `illegal_`.
+
+        A record with another classification, such as `unknown`, is neither
+        legal nor illegal.
+        """
         return self.classification.startswith("illegal_")
 
     def as_dict(self) -> dict[str, object]:
+        """The record as a dict keyed by field name, with `point_um` as a list or
+        None; `details` is a shallow copy."""
         return {
             "classification": self.classification,
             "point_um": list(self.point_um) if self.point_um is not None else None,
@@ -71,6 +96,15 @@ class CrossingRecord:
 
 @dataclass(frozen=True)
 class RouteCostTerms:
+    """The cost terms of one routed net: its physical losses and its search costs.
+
+    `length_loss`, `bend_loss` and `crossing_loss` are the parts of the
+    insertion loss; `physical_insertion_loss`, when set, replaces their sum.
+    `history_cost`, `congestion_cost` and `other_search_guidance_cost` are
+    search guidance, not loss; `total_search_cost`, when set, is the search
+    cost including the physical loss.
+    """
+
     net_id: int | None = None
     net_name: str | None = None
     length_um: float = 0.0
@@ -85,17 +119,28 @@ class RouteCostTerms:
 
     @property
     def total_physical_insertion_loss(self) -> float:
+        """The route's insertion loss: `physical_insertion_loss` when it is set,
+        otherwise the sum of the length, bend and crossing losses."""
         if self.physical_insertion_loss is not None:
             return float(self.physical_insertion_loss)
         return float(self.length_loss + self.bend_loss + self.crossing_loss)
 
     @property
     def search_guidance_penalty(self) -> float:
+        """The part of the search cost that is not physical loss.
+
+        With `total_search_cost` set it is that cost minus
+        `total_physical_insertion_loss`, floored at 0; otherwise the sum of the
+        history, congestion and other guidance costs.
+        """
         if self.total_search_cost is not None:
             return max(0.0, float(self.total_search_cost) - self.total_physical_insertion_loss)
         return float(self.history_cost + self.congestion_cost + self.other_search_guidance_cost)
 
     def as_dict(self) -> dict[str, object]:
+        """The terms as a dict, with the derived `total_physical_insertion_loss`
+        and `search_guidance_penalty`; the `physical_insertion_loss` field itself
+        is not written."""
         return {
             "net_id": self.net_id,
             "net_name": self.net_name,
@@ -114,6 +159,14 @@ class RouteCostTerms:
 
 @dataclass(frozen=True)
 class CrossingVerificationReport:
+    """The result of `build_crossing_verification_report`.
+
+    `crossings` are the realized crossings, `issues` the findings on them, on
+    the realized crossing components and on the protected segments.
+    `crossing_component` is the `crossing_device` entry of the crossing plan
+    info and `metrics` the summary counts and cost totals.
+    """
+
     issues: tuple[CrossingVerificationIssue, ...]
     crossings: tuple[CrossingRecord, ...]
     route_costs: tuple[RouteCostTerms, ...] = ()
@@ -122,17 +175,22 @@ class CrossingVerificationReport:
 
     @property
     def success(self) -> bool:
+        """True when no issue has severity `error`; warnings do not fail the report."""
         return self.error_count == 0
 
     @property
     def error_count(self) -> int:
+        """The number of issues with severity `error`."""
         return sum(1 for issue in self.issues if issue.severity == "error")
 
     @property
     def warning_count(self) -> int:
+        """The number of issues with severity `warning`."""
         return sum(1 for issue in self.issues if issue.severity == "warning")
 
     def as_dict(self) -> dict[str, object]:
+        """The report as nested dicts and lists, including `success` and the two
+        issue counts; this is what `write_crossing_verification_report` writes."""
         return {
             "success": self.success,
             "error_count": self.error_count,
@@ -194,6 +252,12 @@ def build_crossing_verification_report(
 
 
 def route_cost_terms_from_mapping(values: Mapping[str, object]) -> RouteCostTerms:
+    """Build `RouteCostTerms` from a mapping keyed by its field names.
+
+    A missing, non-numeric or non-finite value becomes 0.0 for the length, the
+    three losses and the three guidance costs, and None for `net_id`,
+    `net_name`, `total_search_cost` and `physical_insertion_loss`.
+    """
     return _coerce_cost_terms(values)
 
 
@@ -201,6 +265,11 @@ def write_crossing_verification_report(
     report: CrossingVerificationReport,
     path: str | Path,
 ) -> Path:
+    """Write `report.as_dict()` to `path` as indented JSON with sorted keys (UTF-8).
+
+    Creates missing parent directories, overwrites an existing file and
+    returns the path written.
+    """
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

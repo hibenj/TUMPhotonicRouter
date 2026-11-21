@@ -13,6 +13,11 @@ def component_info(component: Component) -> Any:
 
 
 def copy_component_info(source: Component, target: Component) -> None:
+    """Copy the info entries of `source` that `target` does not have yet.
+
+    Mutates `target.info`; a key `target` already carries keeps its value.
+    Does nothing when `source` has no info.
+    """
     source_info = getattr(source, "info", None)
     if source_info is None:
         return

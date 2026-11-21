@@ -115,19 +115,25 @@ class Band:
 
     @property
     def nets(self) -> tuple[RoutedEdgeKey, ...]:
+        """The nets confined to the band, in left-wall order (top to bottom)."""
         return self.left_order
 
     @property
     def lower_bound(self) -> int:
+        """The number of invariant pairs: crossings every routing confined to the band has."""
         return len(self.invariant_pairs)
 
     def counts(self) -> dict[RoutedEdgeKey, int]:
+        """Per net, the number of invariant pairs it belongs to (nets with none are absent)."""
         counter: Counter[RoutedEdgeKey] = Counter()
         for pair in self.invariant_pairs:
             counter.update(pair)
         return dict(counter)
 
     def to_text(self, *, include_orders: bool = True) -> str:
+        """A text report: a header line (x-extent in um, net and invariant-pair
+        counts), the two wall orders unless `include_orders` is false, then one
+        line per crossing event of the stage."""
         lines = [
             (
                 f"band {self.index}->{self.index + 1} (x {self.x_min:.1f}..{self.x_max:.1f} um): "
@@ -176,13 +182,16 @@ class StageSchedule:
 
     @property
     def keys(self) -> tuple[tuple[int, int], ...]:
+        """The stage keys `(left column, right column)` of the stages, left to right."""
         return tuple(band.key for band in self.stages)
 
     @property
     def event_count(self) -> int:
+        """The number of crossing events over all stages."""
         return sum(len(band.stage.events) for band in self.stages)
 
     def to_text(self, *, include_orders: bool = True) -> str:
+        """A text report: a header line with the totals, then `Band.to_text` of every stage."""
         lines = [f"StageSchedule: {self.event_count} crossing(s) in {len(self)} stage(s)"]
         lines.extend(band.to_text(include_orders=include_orders) for band in self.stages)
         return "\n".join(lines)
@@ -193,6 +202,13 @@ class StageSchedule:
 
 @dataclass(frozen=True)
 class CrossingDemand:
+    """The crossings a placement forces, as built by `build_crossing_demand`.
+
+    Every routed link is either confined to one band (it is in that band's
+    wall orders and in `paths`) or listed in `outside` with a reason. The
+    invariant pairs and the crossing events cover the confined nets only.
+    """
+
     columns: tuple[Column, ...]
     bands: dict[int, Band]  # band index -> band; only bands with confined nets
     outside: tuple[OutsideNet, ...]
@@ -215,6 +231,7 @@ class CrossingDemand:
         return sum(band.lower_bound for band in self.bands.values())
 
     def invariant_pairs(self) -> set[frozenset[RoutedEdgeKey]]:
+        """The invariant pairs of all bands, each an unordered pair of nets."""
         return {pair for band in self.bands.values() for pair in band.invariant_pairs}
 
     def counts_by_net_name(self) -> dict[str, int]:
@@ -226,6 +243,7 @@ class CrossingDemand:
         return dict(sorted(counter.items()))
 
     def outside_by_reason(self) -> dict[str, list[OutsideNet]]:
+        """The outside nets grouped by reason; nets keep the order of `outside`."""
         grouped: dict[str, list[OutsideNet]] = {}
         for net in self.outside:
             grouped.setdefault(net.reason, []).append(net)
@@ -263,6 +281,9 @@ class CrossingDemand:
         return self.plan.events
 
     def to_text(self, *, include_orders: bool = True) -> str:
+        """A text report: a header line with the totals, `Band.to_text` of every band
+        with confined nets (left to right), then one line per reason naming the
+        outside nets with their detail."""
         lines = [
             (
                 f"CrossingDemand: {self.lower_bound()} invariant crossing(s) in "
@@ -370,6 +391,19 @@ def _wall_order(terminals: Iterable[tuple[RoutedEdgeKey, Terminal]]) -> tuple[Ro
 
 
 def demand_from_geometry(regions: RegionGraph, links: Iterable[_Link]) -> CrossingDemand:
+    """The crossing demand of links on a region graph; reads no schematic or layout.
+
+    `build_crossing_demand` calls this with the geometry of a placed layout.
+    Each link is classified in this order: a vertical terminal
+    (`vertical_port`), a terminal pointing off the chip (`chip_boundary`),
+    terminals pointing into different bands (`non_adjacent_walls`; the link
+    also gets a passage path if `plan_region_paths` finds one), both terminals
+    on one wall (`same_wall`), otherwise confined to its band. Only confined
+    links enter the wall orders, the invariant pairs and the plan.
+
+    Assumes the instance of every terminal is in one of `regions.columns`
+    (`KeyError` otherwise).
+    """
     columns = regions.columns
     column_of = {name: column.index for column in columns for name in column.instances}
     confined: dict[int, list[tuple[RoutedEdgeKey, Terminal, Terminal]]] = {}

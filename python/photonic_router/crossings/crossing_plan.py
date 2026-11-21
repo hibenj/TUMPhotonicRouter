@@ -40,6 +40,17 @@ class LaneRank:
 
 @dataclass(frozen=True)
 class CrossingEvent:
+    """One planned crossing: an adjacent swap of two lanes within a stage.
+
+    `edge_a` precedes `edge_b` in the lane order just before the swap (in a
+    band: it is the upper one). `level` is the swap round: 0 when neither
+    lane has swapped before, otherwise one more than the highest level among
+    the two lanes' earlier swaps. `order_index` counts the
+    stage's swaps from 0 in the order the bubble sort made them. The four
+    rank fields copy the lanes' `LaneRank` ranks; `source_depth` and
+    `target_depth` are the stage key.
+    """
+
     edge_a: RoutedEdgeKey
     edge_b: RoutedEdgeKey
     source_depth: int
@@ -53,6 +64,7 @@ class CrossingEvent:
 
     @property
     def edge_pair(self) -> frozenset[RoutedEdgeKey]:
+        """The two lanes as an unordered pair, the key of `CrossingPlan.events_by_pair`."""
         return frozenset((self.edge_a, self.edge_b))
 
     def __str__(self) -> str:
@@ -84,6 +96,11 @@ class CrossingStagePlan:
     events: tuple[CrossingEvent, ...]
 
     def apply_events(self) -> tuple[RoutedEdgeKey, ...]:
+        """The lane order after swapping the events' lanes in turn, from `initial_edge_order`.
+
+        Raises `ValueError` if the two lanes of an event are not adjacent when
+        the event is reached.
+        """
         current = list(self.initial_edge_order)
         for event in self.events:
             index_a = current.index(event.edge_a)
@@ -98,6 +115,7 @@ class CrossingStagePlan:
         return tuple(current)
 
     def validate(self) -> None:
+        """Raise `ValueError` unless `apply_events()` yields `final_edge_order`."""
         realized = self.apply_events()
         if realized != self.final_edge_order:
             realized_names = [edge.net_name for edge in realized]
@@ -108,6 +126,8 @@ class CrossingStagePlan:
             )
 
     def to_text(self, *, include_orders: bool = True) -> str:
+        """A text report: a header line with the stage key and event count, the entry
+        and exit orders unless `include_orders` is false, then one line per event."""
         lines = [
             (f"stage {self.source_depth}->{self.target_depth}: {len(self.events)} crossing(s)")
         ]
@@ -126,17 +146,26 @@ class CrossingStagePlan:
 
 @dataclass(frozen=True)
 class CrossingPlan:
+    """The stages of a design with their crossing events, as built by `build_crossing_plan`.
+
+    `stages` is keyed `(source_depth, target_depth)`. `events_by_edge` and
+    `events_by_pair` index the same events by lane and by unordered lane
+    pair; a lane without an event has no entry in `events_by_edge`.
+    """
+
     stages: dict[tuple[int, int], CrossingStagePlan]
     events_by_edge: dict[RoutedEdgeKey, tuple[CrossingEvent, ...]]
     events_by_pair: dict[frozenset[RoutedEdgeKey], CrossingEvent]
 
     @property
     def events(self) -> tuple[CrossingEvent, ...]:
+        """All events: the stages in ascending key order, each stage's events in its own order."""
         return tuple(
             event for stage_key in sorted(self.stages) for event in self.stages[stage_key].events
         )
 
     def events_for_edge(self, edge_key: RoutedEdgeKey) -> tuple[CrossingEvent, ...]:
+        """The events of one lane, by `(source_depth, level, order_index)`; empty if it has none."""
         return self.events_by_edge.get(edge_key, ())
 
     def event_for_pair(
@@ -144,6 +173,7 @@ class CrossingPlan:
         edge_a: RoutedEdgeKey,
         edge_b: RoutedEdgeKey,
     ) -> CrossingEvent | None:
+        """The event in which the two lanes cross, in either argument order, or None."""
         return self.events_by_pair.get(frozenset((edge_a, edge_b)))
 
     def to_text(
@@ -152,6 +182,9 @@ class CrossingPlan:
         include_empty_stages: bool = False,
         include_orders: bool = True,
     ) -> str:
+        """A text report: a header line with the totals, then `CrossingStagePlan.to_text`
+        of every stage in ascending key order. Stages without events are left out
+        unless `include_empty_stages` is true."""
         lines = [(f"CrossingPlan: {len(self.events)} crossing(s), {len(self.stages)} stage(s)")]
         for stage_key in sorted(self.stages):
             stage = self.stages[stage_key]

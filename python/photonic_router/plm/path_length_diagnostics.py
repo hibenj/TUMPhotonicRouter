@@ -24,18 +24,32 @@ REALIZED_PATH_LENGTH_TOLERANCE_UM = 1.0e-3
 
 
 def object_to_float(value: object, default: float = 0.0) -> float:
+    """Convert a number or a numeric string to float; any other type gives ``default``.
+
+    Raises ``ValueError`` for a string that is not a number.
+    """
     if isinstance(value, (str, bytes, bytearray, int, float)):
         return float(value)
     return default
 
 
 def object_to_int(value: object, default: int = 0) -> int:
+    """Convert a number or an integer string to int; any other type gives ``default``.
+
+    A float is truncated towards zero. Raises ``ValueError`` for a string
+    that is not an integer.
+    """
     if isinstance(value, (str, bytes, bytearray, int, float)):
         return int(value)
     return default
 
 
 def node_timing_to_dict(timing: NodeTiming) -> dict[str, object]:
+    """The node timing as a plain dict for the reports, lengths in um.
+
+    ``node_type`` is the type's string value. Each of ``incoming_edges``
+    carries the edge with its routed length, arrival and missing length.
+    """
     return {
         "node_name": timing.node_name,
         "node_type": timing.node_type.value,
@@ -49,6 +63,14 @@ def node_timing_to_dict(timing: NodeTiming) -> dict[str, object]:
 
 
 def matching_groups_to_info(analysis: PathLengthAnalysisResult) -> list[dict[str, object]]:
+    """The matching groups of the analysis as plain dicts, in topological order.
+
+    A group is a node with at least two incoming edges, the edges that must
+    arrive together. Each dict carries the node, the arrival the edges are
+    matched to (``target_input_arrival_um``), the largest and the summed
+    missing length, how many edges need a meander (a missing length above
+    zero) and the incoming edges themselves. Lengths are in um.
+    """
     groups: list[dict[str, object]] = []
     for node_name in analysis.topological_order:
         timing = analysis.node_timings.get(node_name)
@@ -81,6 +103,30 @@ def matching_group_diagnostics_to_info(
     lifted_groups: list[dict[str, object]] | None = None,
     tolerance_um: float = PATH_LENGTH_MATCH_TOLERANCE_UM,
 ) -> list[dict[str, object]]:
+    """Build the acceptance diagnostics of every matching group.
+
+    One dict per group: the groups of `matching_groups_to_info`, or
+    ``lifted_groups`` in their place when given. Each incoming edge is
+    extended with what the meander report booked for it: the inserted
+    extra length, the physical residual (the missing length less the
+    inserted one, not below zero), the accepted unmatched length, the
+    meander status and reason, and the realized length and arrival with
+    the meander actually drawn on that edge (`realized_arrivals`). An
+    edge's missing length is its own ``adjusted_missing_length_um`` if
+    the group dict has one, else the one in ``adjusted_requirements``,
+    else the analysis's.
+
+    A residual of an edge with status ``below_minimum_bump`` is reported
+    as disregarded and does not count as unmatched. The group is
+    ``within_tolerance`` when no edge has an accepted unmatched length
+    above ``tolerance_um``, and ``realized_within_tolerance`` when its
+    realized arrivals differ by at most
+    `REALIZED_PATH_LENGTH_TOLERANCE_UM`. Lengths are in um.
+
+    An edge that is not an incoming edge of the group's node in
+    ``analysis`` is left out. Raises ``KeyError`` when a group names a
+    node the analysis does not have.
+    """
     results = _meander_results(meander_report)
     inserted_by_edge, status_by_edge, unmatched_by_edge, reason_by_edge = _meander_result_maps(
         results
@@ -450,6 +496,12 @@ def format_path_length_acceptance_failure(summary: dict[str, object]) -> str:
 
 
 def analysis_to_info_dict(analysis: PathLengthAnalysisResult) -> dict[str, object]:
+    """The whole analysis as a plain dict for the reports, lengths in um.
+
+    Holds the topological order, the node arrivals, the node timings
+    (`node_timing_to_dict`), every edge's missing length, the requirements
+    and the matching groups (`matching_groups_to_info`).
+    """
     return {
         "topological_order": list(analysis.topological_order),
         "node_arrival_um": {

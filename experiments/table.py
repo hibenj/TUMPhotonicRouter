@@ -50,6 +50,14 @@ Cell = dict[str, object]
 
 
 def load_records(path: Path) -> dict[tuple[str, str], Cell]:
+    """Cells of one record file, keyed by (benchmark, config).
+
+    Each cell holds `ok` (exit code 0 and a GDS length in the metrics), `x`
+    (crossing count), `len` (GDS length, um), `err` (verifier error count),
+    `rounds` (negotiated rounds) and `wall` (wall seconds); a value the
+    record lacks is None. Assumes the file is the JSON that
+    `experiments/record_table.py` writes.
+    """
     doc = json.loads(path.read_text())
     out: dict[tuple[str, str], Cell] = {}
     for c in doc["cells"]:
@@ -67,6 +75,16 @@ def load_records(path: Path) -> dict[tuple[str, str], Cell]:
 
 
 def load_pins(path: Path) -> dict[tuple[str, str], Cell]:
+    """Cells of the pinned table, in the shape `load_records` returns.
+
+    Reads the `baseline`, `contribution1` and `contribution2` blocks of every
+    entry under `sources` and files them under the entry's `ours_benchmark`
+    and the configuration `PIN_KEYS` maps the block to. Crossings and length
+    come from the block's `current` sub-block where it has them, otherwise
+    from the block itself. A block that is missing or has no `gds_length_um`
+    gives no cell; every cell is `ok` with 0 errors and no rounds or wall
+    time. Assumes a block with a length also has a `crossing_count`.
+    """
     doc = json.loads(path.read_text())
     out: dict[tuple[str, str], Cell] = {}
     for rec in doc["sources"].values():
@@ -88,6 +106,7 @@ def load_pins(path: Path) -> dict[tuple[str, str], Cell]:
 
 
 def fmt(v: object, digits: int = 3) -> str:
+    """Text of one table value: `-` for None, `digits` decimals for a float, `str` otherwise."""
     if v is None:
         return "-"
     if isinstance(v, float):
@@ -96,6 +115,13 @@ def fmt(v: object, digits: int = 3) -> str:
 
 
 def main() -> int:
+    """Print the comparison table for the command-line arguments as Markdown and return 0.
+
+    Rows follow `ORDER` and `CONFIGS`; a cell appears only when the reference
+    has it and at least one variant does, so benchmarks outside `ORDER` are
+    never shown. Assumes at least one variant; with only a reference the
+    table is a header and empty totals.
+    """
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

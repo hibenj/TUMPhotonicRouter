@@ -177,7 +177,7 @@ like the violation counts: a commit that adds one says why in its message.
    scripts (ruff `T201`). The `SUMMARY` line stays as it is. *Tool,
    proposed.*
 7. Every public module, class and function has a docstring that says what
-   it is for and what it assumes (ruff `D1xx`). *Tool, proposed.*
+   it is for and what it assumes (ruff `D100` to `D104`). *Tool, in force.*
 8. Comments explain why, not what. A comment that restates the code is
    removed. *Review, in force.*
 9. An error message names what failed with the values that identify it (net
@@ -239,9 +239,10 @@ and `crates/router-core`. `scripts/quality_ratchet.py` measures the counts
 below and `tests/baselines/quality_ratchet.json` pins them. The table shows
 the first measurement and the counts after the first two work packages (both
 2026-11-19); the file is the current truth. Rules 4.2 (annotations, and mypy with 348
-errors at the first measurement), 4.10 (absolute imports), 5.3 (no `unwrap()`) and the module and package half of 4.7 (ruff
-`D100`, `D104`) left the table when their counts reached zero and the lint
-sets took them over.
+errors at the first measurement), 4.7 (docstrings, ruff `D100` to `D104`;
+56 classes, 136 methods and 77 functions were without one at the first
+measurement), 4.10 (absolute imports) and 5.3 (no `unwrap()`) left the
+table when their counts reached zero and the lint sets took them over.
 
 | Rule | Measure (name in the pin) | at the first measurement | after S1 and S2 slice 3 |
 | --- | --- | --- | --- |
@@ -253,7 +254,6 @@ sets took them over.
 | 4.5 | functions over 50 statements (`ruff_PLR0915`) | 43 | 40 |
 | 4.5 | functions over complexity 10 (`ruff_C901`) | 70 | 68 |
 | 4.6 | print calls in the package (`ruff_T201`) | 157 | 157 |
-| 4.7 | public classes, methods, functions without a docstring (`ruff_D101`, `ruff_D102`, `ruff_D103`) | 56, 136, 77 | 52, 127, 67 |
 | 4.9 | blind `except Exception` (`ruff_BLE001`) | 35 | 35 |
 | 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 | 2 |
 | 5.4 | public items of `router-core` without a doc comment (`rust_missing_docs`) | 796 | 796 |

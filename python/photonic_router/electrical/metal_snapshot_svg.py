@@ -61,6 +61,20 @@ def electrical_metal_snapshot_svg(
     *,
     max_px: int = 1400,
 ) -> str:
+    """Return the SVG markup of the realized electrical metal, in physical coordinates.
+
+    Draws the die and source layout boxes, the raw metal obstacle boxes, the
+    heater-layer polygons, the terminal boxes and contacts, the assigned
+    pads, the port-access centerlines and the polygons on
+    ``config.metal_layer``. The view box is in um with y pointing up as in
+    the layout, 20 um wider than the drawn content on every side; the pixel
+    size is scaled so the longer side is ``max_px``.
+
+    ``routed_component`` only needs a ``get_polygons(merge=False,
+    by="tuple")`` method; an object without one contributes no polygons.
+    Writes nothing to disk (``export_electrical_metal_snapshot_svg`` does).
+    """
+
     metal_polygons = _component_layer_polygons_um(routed_component, config.metal_layer)
     heater_polygons = tuple(
         polygon
