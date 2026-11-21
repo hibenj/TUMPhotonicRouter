@@ -14,6 +14,11 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `docs/CODING_STANDARDS.md` is adopted (owner, 2026-11-22), on the
+  condition that it stays close to the public standards of its section 1;
+  every departure is listed there as a deviation. Rules marked *proposed*
+  are binding for new code, and the quality ratchet holds the existing
+  violations.
 - `docs/CODING_STANDARDS.md` has the rules of the logic harness (6.5 to
   6.9: statements per stage, checked on the real product by pure
   functions, each with a test that breaks one thing, findings pinned per

@@ -1,8 +1,12 @@
 # Coding standards
 
-Status: **draft, proposed 2026-11-19; not yet adopted.** The rules marked
-*proposed* become binding when the repository owner adopts this document;
-the rules marked *in force* are already checked by CI today.
+Status: **adopted by the repository owner on 2026-11-22** (proposed
+2026-11-19), on the condition that it stays close to the public standards
+of section 1: a rule that departs from them is listed there as a deviation
+with its reason, and a new deviation is the owner's decision. The rules
+marked *in force* are checked today. The rules marked *proposed* are
+binding for new code; where existing code does not meet one yet, section 8
+holds the count and it may only fall.
 
 This is the one normative document for how code in this repository is
 written. `CONTRIBUTING.md` says how to build, test and commit;

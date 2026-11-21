@@ -159,11 +159,12 @@ Both `--check` options (`generate_config_reference.py --check`,
 
 ## Style
 
-[`docs/CODING_STANDARDS.md`](docs/CODING_STANDARDS.md) is a draft of the
-normative rules (limits, typing, documentation, how a rule is enforced) and
-the measured distance of the code from them, which the quality ratchet
-holds; the document is not adopted yet. What is
-in force today:
+[`docs/CODING_STANDARDS.md`](docs/CODING_STANDARDS.md) holds the normative
+rules (limits, typing, documentation, how a rule is enforced) and the
+measured distance of the code from them, which the quality ratchet holds.
+The owner adopted it on 2026-11-22 on the condition that it stays close to
+the public standards it names. What a tool checks
+today:
 
 - Python: `ruff format` and the `ruff check` rules in `pyproject.toml`. A new
   ignore carries a comment with its reason.
