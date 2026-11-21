@@ -79,6 +79,33 @@ Playbook](https://microsoft.github.io/code-with-engineering-playbook/code-review
 has a Python review recipe that points to PEP 8 with type hints and adds
 nothing to the rows above.
 
+**Checks between the stages (the logic harness).** No reference standard
+says how a router checks what one stage hands to the next. The harness of
+`python/photonic_router/logic_checks/` (rules 6.5 to 6.9,
+`docs/ARCHITECTURE.md` section 8.1) follows practices that others
+document; they were read on 2026-11-21, and the table says what is taken
+from each.
+
+| Practice | Source | What is taken here |
+| --- | --- | --- |
+| A verifier for the intermediate product, run after a transformation | LLVM, [Module Verifier](https://llvm.org/docs/Passes.html) ("useful to run after an optimization which is undergoing testing"; front ends are encouraged to verify their output before optimizing; it "just tries to ensure that code is well-formed") | one module of statements per stage; `--verify-stages` runs them inside a normal run; they say a product is well-formed, not that the routing is good |
+| Checks that cost time are a switch, off by default | LLVM, [CMake options](https://llvm.org/docs/CMake.html) (`LLVM_ENABLE_ASSERTIONS`, on only in debug builds; `LLVM_ENABLE_EXPENSIVE_CHECKS`, "Defaults to OFF"); GCC, [`--enable-checking`](https://gcc.gnu.org/install/configure.html) (internal consistency checks that do not change the generated code and slow the compiler down) | the verifier is off by default and changes no routed result; the wide designs are routed by the harness only on request |
+| State the precondition as a check with a message | LLVM, [Coding Standards](https://llvm.org/docs/CodingStandards.html), "Assert Liberally" ("Check all of your preconditions and assumptions"; "put some kind of error message in the assertion statement") | every finding names its check, its subject and the values that disagree |
+| An invariant is different from something that is only expected | SQLite, [The Use Of assert()](https://www.sqlite.org/assert.html) (`assert(X)`: "X is an invariant"; `ALWAYS(X)`: true "as far as the developers know"; `testcase(X)`: "definitely not an invariant") | two severities: an *error* is a product that contradicts itself, a *note* is legal and has to be handled by a later stage |
+| A failed check has a defined consequence; a check has no side effect | Holzmann, "The Power of 10: Rules for Developing Safety-Critical Code", IEEE Computer 39 (6), 2006, rule 5, read as quoted in the [Wikipedia article](https://en.wikipedia.org/wiki/The_Power_of_10:_Rules_for_Developing_Safety-Critical_Code) (the paper itself could not be retrieved) | a check is a pure function of the product; an error ends a verified run with `StageVerificationError` |
+| Expectations on the data between pipeline stages, reviewed by a person and kept under version control | TensorFlow, [Data Validation guide](https://www.tensorflow.org/tfx/guide/tfdv) (a schema "codifies properties which the input data is expected to satisfy"; validation is "invoked multiple times" in a pipeline) | the findings per benchmark are a pinned file; a pin that moves is re-pinned with the reason |
+| Show that a check can fail | SQLite, [How SQLite Is Tested](https://www.sqlite.org/testing.html), mutation testing ("verifies that the test suite catches the mutation") | every statement has a test that breaks one thing in a real product and expects exactly that finding |
+
+Not taken over: assertion density as a number (Power of 10 asks for two
+per function; here the statements sit at the stage boundaries, not in
+every function), SQLite's rule that an `assert` is compiled out of a
+release (a Python check that is not called costs nothing; the switch does
+that job), and SQLite's 100 % branch coverage. Named by the owner's
+question and not read: Meyer's design by contract and Microsoft's Code
+Contracts. Fetched and not readable: Breck et al., "Data Validation for
+Machine Learning" (MLSys 2019); the TensorFlow guide above stands in for
+it.
+
 ## 2. How a rule is enforced
 
 Every rule below carries one of three levels. A rule without a level is not
@@ -216,6 +243,24 @@ like the violation counts: a commit that adds one says why in its message.
 4. Synthetic layouts live in `tests/fixtures/`; a test does not assert a
    whole benchmark's literal numbers when a behaviour says the same.
    *Review, in force for new tests.*
+5. Every stage a run reports has its statements in one module of
+   `logic_checks/`, listed in the module docstring as errors and notes.
+   An error is a product that contradicts itself; a note is legal and has
+   to be handled by a later stage. *Review, in force for the stages of
+   `docs/ARCHITECTURE.md` section 8.1.*
+6. A statement is checked on the product the stage really hands on, by a
+   pure function that recomputes what it states by its own means and
+   changes nothing. *Review, in force.*
+7. Every statement has a test in `tests/logic/` that breaks one thing in a
+   real product and expects exactly that finding. *Review, in force.*
+8. The findings per public benchmark are pinned in
+   `tests/baselines/logic_findings.json`; an error that stays in the code
+   is named there per benchmark with what it is (`KNOWN_ERRORS`).
+   *Test, in force (`tests/logic/test_logic_findings.py`).*
+9. A stage that is added reports its product (`routing/stage_observer.py`)
+   and gets its checks in `logic_checks/stages.py`, so that
+   `--verify-stages` and `scripts/logic_check.py` read it on one path.
+   *Review, in force.*
 
 ## 7. Documentation
 

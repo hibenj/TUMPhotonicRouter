@@ -14,6 +14,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `docs/CODING_STANDARDS.md` has the rules of the logic harness (6.5 to
+  6.9: statements per stage, checked on the real product by pure
+  functions, each with a test that breaks one thing, findings pinned per
+  benchmark, one path for a new stage) and, in section 1, the practices
+  they follow with their sources as read on 2026-11-21 (LLVM's module
+  verifier and its assertion and expensive-check switches, GCC's
+  `--enable-checking`, SQLite's `assert`/`ALWAYS`/`testcase` and mutation
+  testing, Power of 10 rule 5, TensorFlow Data Validation), and what was
+  not taken over or not read. The document stays a draft.
 - `--verify-stages`: a normal run of the flow checks what every stage
   hands on. `logic_checks/stages.py` holds which checks read which stage
   (`stage_findings`) and the verifier (`verify_stages()`, around
