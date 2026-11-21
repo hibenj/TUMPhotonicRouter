@@ -61,6 +61,13 @@ git config core.hooksPath scripts/hooks   # once per clone: the fast stage runs 
 lint configuration, `tests/test_quality_ratchet.py` covers the ratchet). Run
 the full stage before a slice is committed.
 
+`scripts/logic_check.py <benchmark>` (or `--all`) runs the logic harness:
+after each stage it tests what the stage hands on against statements that
+have to hold for the next stage to mean anything (docs/ARCHITECTURE.md
+section 8.1). Its findings per public benchmark are pinned in
+`tests/baselines/logic_findings.json` and compared in the test baseline; a
+benchmark you add needs an entry (`--all --update`).
+
 ## Lint
 
 ```bash

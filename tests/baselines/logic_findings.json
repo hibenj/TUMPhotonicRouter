@@ -1,0 +1,105 @@
+{
+  "benes_128x128": {},
+  "benes_128x128_flat": {
+    "reading.port_recessed": 3328
+  },
+  "benes_16x16": {},
+  "benes_16x16_flat": {
+    "reading.port_recessed": 224
+  },
+  "benes_32x32": {},
+  "benes_32x32_flat": {
+    "reading.port_recessed": 576
+  },
+  "benes_4x4": {},
+  "benes_4x4_flat": {
+    "reading.port_recessed": 24
+  },
+  "benes_64x64": {},
+  "benes_64x64_flat": {
+    "reading.port_recessed": 1408
+  },
+  "benes_64x64_stages2": {},
+  "benes_8x8": {},
+  "benes_8x8_flat": {
+    "reading.port_recessed": 80
+  },
+  "cascade_12_compact": {
+    "reading.port_recessed": 66
+  },
+  "cascade_12_diagonal": {
+    "reading.port_recessed": 66
+  },
+  "cascade_12_folded": {
+    "reading.port_recessed": 66
+  },
+  "cascade_12_folded_compact": {
+    "reading.port_recessed": 66
+  },
+  "cascade_16_compact": {
+    "reading.port_recessed": 90
+  },
+  "cascade_16_diagonal": {
+    "reading.port_recessed": 90
+  },
+  "cascade_16_folded": {
+    "reading.port_recessed": 90
+  },
+  "cascade_16_folded_compact": {
+    "reading.port_recessed": 90
+  },
+  "cascade_8_compact": {
+    "reading.port_recessed": 42
+  },
+  "cascade_8_diagonal": {
+    "reading.port_recessed": 42
+  },
+  "cascade_8_folded": {
+    "reading.port_recessed": 42
+  },
+  "cascade_8_folded_compact": {
+    "reading.port_recessed": 42
+  },
+  "clements_8x8": {},
+  "heater_lanes_20": {
+    "reading.instances_overlap": 20
+  },
+  "heater_lanes_ripup": {
+    "reading.instances_overlap": 11
+  },
+  "heater_s_mod": {
+    "reading.port_recessed": 42
+  },
+  "heater_single": {
+    "reading.port_recessed": 2
+  },
+  "multiportmmi_128x128": {
+    "reading.port_recessed": 1280
+  },
+  "multiportmmi_16x16": {
+    "reading.port_recessed": 160
+  },
+  "multiportmmi_32x32": {
+    "reading.port_recessed": 320
+  },
+  "multiportmmi_64x64": {
+    "reading.port_recessed": 640
+  },
+  "multiportmmi_64x64_bands1to2": {},
+  "multiportmmi_64x64_bands4to5": {
+    "reading.port_recessed": 128
+  },
+  "multiportmmi_64x64_bands6to9": {
+    "reading.port_recessed": 192
+  },
+  "multiportmmi_64x64_bands7to9": {
+    "reading.port_recessed": 128
+  },
+  "multiportmmi_64x64_bands8to9": {
+    "reading.port_recessed": 64
+  },
+  "multiportmmi_8x8": {
+    "reading.port_recessed": 80
+  },
+  "permutation_synthetic": {}
+}

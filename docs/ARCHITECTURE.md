@@ -757,7 +757,7 @@ or the `photonic_router.routing` re-exports.
 | path | contents |
 | --- | --- |
 | `benchmarks/` | one module per benchmark (`build_schematic()`), `benchmarks/<name>.toml` defaults, shared builders (`benes.py`, `cascade.py`), `data/` (mesh YAML), `private/` (git-ignored) |
-| `scripts/` | `check.sh` (the one entry to every check), `hooks/pre-commit`, `lint.sh`, `test_baseline.sh`, `quality_ratchet.py`, the generators (`generate_config_reference.py`, `generate_rust_stubs.py`), `benchmark_photonic.py`, `benchmark_electrical.py`, `profile_astar.py`, `extract_private_benchmark.py`, `make_mesh_slice_benchmark.py`, `crossing_benchmark_report.py`, `lidar_bridge/`, `path_investigation/` (an exploratory harness kept as written) |
+| `scripts/` | `check.sh` (the one entry to every check), `hooks/pre-commit`, `lint.sh`, `test_baseline.sh`, `quality_ratchet.py`, `logic_check.py` (the logic harness on benchmarks), the generators (`generate_config_reference.py`, `generate_rust_stubs.py`), `benchmark_photonic.py`, `benchmark_electrical.py`, `profile_astar.py`, `extract_private_benchmark.py`, `make_mesh_slice_benchmark.py`, `crossing_benchmark_report.py`, `lidar_bridge/`, `path_investigation/` (an exploratory harness kept as written) |
 | `scripts/results/` | the oracles and the archive tooling (section 8) |
 | `tests/` | unit tests by module, `e2e/` (full runs, marker `e2e`), `electrical/` (one module per electrical stage), `fixtures/` (synthetic layouts, sessions, PLM fixtures), `baselines/` (pinned numbers) |
 | `docs/` | this document, the generated configuration reference, the reproduction documents and their pinned tables, `history/` (earlier states) |
@@ -817,6 +817,25 @@ compared: they depend on the machine.
 
 A change that moves a pinned number on purpose re-pins it in the same
 commit and says why in the message (CONTRIBUTING.md).
+
+**The logic harness** (`python/photonic_router/logic_checks/`) sits between
+the lint stage, which checks form, and the gates, which check end numbers:
+after a stage it tests the stage's product against statements that have to
+hold for the next stage to mean anything. A finding is an *error* (the
+product contradicts itself) or a *note* (legal, but a later stage has to
+handle it). One module per stage; so far `reading.py`, the schematic and
+the placed layout: every instance placed, every link end a port that
+exists, on its instance, axis-aligned, optical, matching its partner in
+width and layer; noted are overlapping instance boxes, links within one
+instance and ports recessed from the face they point at.
+`scripts/logic_check.py <benchmark>|--all [--list N]` prints the findings;
+`tests/baselines/logic_findings.json` pins their counts per public
+benchmark (no errors; `port_recessed` on the benchmarks with heaters,
+`instances_overlap` on the two with a die outline) and
+`tests/logic/test_logic_findings.py` compares, as part of the test
+baseline. A new stage is a new module with its statements in the module
+docstring, its checks in `findings_for_benchmark` of the script, unit tests
+that each statement finds what it names, and a re-pin.
 
 ### 8.2 How to add a benchmark
 

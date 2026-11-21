@@ -14,6 +14,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The logic harness, stage "reading". `python/photonic_router/logic_checks/`
+  tests what a stage hands on against statements that have to hold for the
+  next stage to mean anything; a finding is an error (the product
+  contradicts itself) or a note (legal, a later stage has to handle it).
+  `reading.py` has 17 statements about the schematic and the placed layout.
+  `scripts/logic_check.py` runs them, `tests/baselines/logic_findings.json`
+  pins the counts on the 41 public benchmarks. Found: no error anywhere;
+  on the 29 benchmarks with heaters every heater's optical port lies 15.9 um
+  inside the heater's bounding box, short of the face it points at (9,468
+  ports), so a waveguide starts over its own instance's box; on the two
+  heater-lane benchmarks the die outline overlaps every instance, by
+  design. Test baseline python 765 -> 817 (10 unit tests, 42 pinned).
 - `mypy` passes on the whole package (348 errors at the first measurement,
   277 before this change) and is a check of `scripts/lint.sh` and CI instead
   of a count of the ratchet; `types-shapely` joins the `dev` extra. The
