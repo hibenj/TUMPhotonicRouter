@@ -986,6 +986,68 @@ def route_engine_summary(route_obj: Any) -> str:
     return f"{route_kind} length={length_um:.3f}um cost={total_cost:.3f} expanded={expanded_states}"
 
 
+_EIGHT_NEIGHBORS = (
+    (-1, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, -1),
+    (0, 1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+)
+
+
+def _cells_inflated_by(cells: set[tuple[int, int]], radius: int) -> set[tuple[int, int]]:
+    """Return ``cells`` grown by ``radius`` cells in every direction (a square), as a new set."""
+
+    if radius <= 0:
+        return set(cells)
+    inflated: set[tuple[int, int]] = set()
+    for x, y in cells:
+        for dx in range(-radius, radius + 1):
+            for dy in range(-radius, radius + 1):
+                inflated.add((x + dx, y + dy))
+    return inflated
+
+
+def _cells_reachable_from(
+    start: tuple[int, int],
+    blocked: set[tuple[int, int]],
+    grid_size: tuple[int, int],
+) -> set[tuple[int, int]]:
+    """Return the cells reachable from ``start`` over the eight neighbours.
+
+    Only cells inside the ``grid_size`` (width, height) grid and outside
+    ``blocked`` are entered; a start outside the grid or blocked gives the
+    empty set.
+    """
+
+    grid_width, grid_height = grid_size
+    sx, sy = start
+    if not (0 <= sx < grid_width and 0 <= sy < grid_height):
+        return set()
+    if start in blocked:
+        return set()
+    reached = {start}
+    queue: deque[tuple[int, int]] = deque([start])
+    while queue:
+        x, y = queue.popleft()
+        for dx, dy in _EIGHT_NEIGHBORS:
+            nx = x + dx
+            ny = y + dy
+            neighbor = (nx, ny)
+            if (
+                0 <= nx < grid_width
+                and 0 <= ny < grid_height
+                and neighbor not in blocked
+                and neighbor not in reached
+            ):
+                reached.add(neighbor)
+                queue.append(neighbor)
+    return reached
+
+
 def _corridor_clearance_diagnostic(
     state: SessionState,
     source_state: Any,
@@ -1002,26 +1064,10 @@ def _corridor_clearance_diagnostic(
 
     source = (int(source_state.x), int(source_state.y))
     target = (int(target_state.x), int(target_state.y))
-    neighbors = [
-        (-1, -1),
-        (-1, 0),
-        (-1, 1),
-        (0, -1),
-        (0, 1),
-        (1, -1),
-        (1, 0),
-        (1, 1),
-    ]
+    grid_size = (state.kernel.frame.grid_width, state.kernel.frame.grid_height)
 
     def inflate(radius: int) -> set[tuple[int, int]]:
-        if radius <= 0:
-            inflated = set(blocked_cells)
-        else:
-            inflated = set()
-            for x, y in blocked_cells:
-                for dx in range(-radius, radius + 1):
-                    for dy in range(-radius, radius + 1):
-                        inflated.add((x + dx, y + dy))
+        inflated = _cells_inflated_by(blocked_cells, radius)
         inflated.discard(source)
         inflated.discard(target)
         return inflated
@@ -1030,30 +1076,7 @@ def _corridor_clearance_diagnostic(
         start: tuple[int, int],
         blocked: set[tuple[int, int]],
     ) -> set[tuple[int, int]]:
-        sx, sy = start
-        if not (
-            0 <= sx < state.kernel.frame.grid_width and 0 <= sy < state.kernel.frame.grid_height
-        ):
-            return set()
-        if start in blocked:
-            return set()
-        reached = {start}
-        queue: deque[tuple[int, int]] = deque([start])
-        while queue:
-            x, y = queue.popleft()
-            for dx, dy in neighbors:
-                nx = x + dx
-                ny = y + dy
-                neighbor = (nx, ny)
-                if (
-                    0 <= nx < state.kernel.frame.grid_width
-                    and 0 <= ny < state.kernel.frame.grid_height
-                    and neighbor not in blocked
-                    and neighbor not in reached
-                ):
-                    reached.add(neighbor)
-                    queue.append(neighbor)
-        return reached
+        return _cells_reachable_from(start, blocked, grid_size)
 
     last_connected_radius: int | None = None
     first_disconnected_radius: int | None = None

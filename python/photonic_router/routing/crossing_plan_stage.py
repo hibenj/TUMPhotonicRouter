@@ -118,6 +118,27 @@ def _instance_ref_by_name(state: SessionState, instance_name: str) -> Any | None
     return None
 
 
+def _static_columns_in_row(state: SessionState, cell_y: int, min_x: int, max_x: int) -> set[int]:
+    """Columns ``min_x..max_x`` of row ``cell_y`` that hold static geometry.
+
+    The explicit static cells of the row and the columns its heater opening
+    rectangles cover.
+    """
+
+    xs: set[int] = set()
+    xs.update(
+        cell_x
+        for cell_x in state.kernel.raw_static_cells_by_y.get(cell_y, set())
+        if min_x <= int(cell_x) <= max_x
+    )
+    for rect_min_x, rect_max_x in state.kernel.heater_opening_rect_ranges_by_y.get(cell_y, ()):
+        start_x = max(min_x, int(rect_min_x))
+        end_x = min(max_x, int(rect_max_x))
+        if start_x <= end_x:
+            xs.update(range(start_x, end_x + 1))
+    return xs
+
+
 def _instance_static_geometry_open_cells(
     state: SessionState,
     *,
@@ -205,21 +226,8 @@ def _instance_static_geometry_open_cells(
     opening_top = float(top) + opening_margin_distance
 
     candidate_cells: set[tuple[int, int]] = set()
-    explicit_cells_by_y = state.kernel.raw_static_cells_by_y
-    heater_rect_ranges_by_y = state.kernel.heater_opening_rect_ranges_by_y
     for cell_y in range(search_min_y, search_max_y + 1):
-        xs: set[int] = set()
-        xs.update(
-            cell_x
-            for cell_x in explicit_cells_by_y.get(cell_y, set())
-            if search_min_x <= int(cell_x) <= search_max_x
-        )
-        for rect_min_x, rect_max_x in heater_rect_ranges_by_y.get(cell_y, ()):
-            start_x = max(search_min_x, int(rect_min_x))
-            end_x = min(search_max_x, int(rect_max_x))
-            if start_x <= end_x:
-                xs.update(range(start_x, end_x + 1))
-        for cell_x in xs:
+        for cell_x in _static_columns_in_row(state, cell_y, search_min_x, search_max_x):
             inside_instance_bbox = min_x <= int(cell_x) <= max_x and min_y <= int(cell_y) <= max_y
             cell_center = state_cell_center_um(state, int(cell_x), int(cell_y))
             if (

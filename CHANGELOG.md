@@ -531,6 +531,19 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Seven functions within the limit of 50 statements (rule 4.5), each by
+  moving a self-contained part into a function of its own, no behaviour
+  change: `cli._build_arg_parser` (six argument groups; the `--help`
+  text is byte-identical), `path_length_graph._propagate_roles`
+  (`_component_sides`, `_port_neighbours`),
+  `gds_circuit_rebuild.generic_schematic` (`_nets_in_order`),
+  `diagnostics._corridor_clearance_diagnostic` (`_cells_inflated_by`,
+  `_cells_reachable_from`), `handoff.states_and_openings`
+  (`_endpoint_grid_state`, one implementation for source and target),
+  `crossing_plan_stage._instance_static_geometry_open_cells`
+  (`_static_columns_in_row`) and
+  `route_jobs._dense_source_port_runway_lengths` (one function per
+  fan-out access mode).
 - No module imports a private name of another (rule 3.5);
   `private_imports` falls from 7 to 0. The five functions that other
   modules used are public now, each with a docstring:

@@ -127,8 +127,8 @@ def _parse_bool_flag(value: str) -> bool:
     raise argparse.ArgumentTypeError(f"expected boolean value, got {value!r}")
 
 
-def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the photonic routing flow for a benchmark.")
+def _add_run_and_debug_arguments(parser: argparse.ArgumentParser) -> None:
+    """The benchmark, the named configuration and the debug and output switches."""
     parser.add_argument(
         "benchmark",
         nargs="?",
@@ -206,6 +206,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=SCRIPT_SHOW_KLAYOUT,
         help="Open the routed layout in KLayout instead of only writing GDS.",
     )
+
+
+def _add_layout_and_matching_arguments(parser: argparse.ArgumentParser) -> None:
+    """The turn and bend settings and the path-length matching options."""
     parser.add_argument(
         "--allow-45-degree-turns",
         type=_parse_bool_flag,
@@ -280,6 +284,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             f"(default: {SCRIPT_PATH_LENGTH_MEANDER_HEIGHT_UM})."
         ),
     )
+
+
+def _add_crossing_and_search_arguments(parser: argparse.ArgumentParser) -> None:
+    """The crossing options, port access and the search limits."""
     parser.add_argument(
         "--crossings",
         type=_parse_bool_flag,
@@ -387,6 +395,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             f"(default: {SCRIPT_ROUTING_WINDOW_SCALE})."
         ),
     )
+
+
+def _add_obstacle_arguments(parser: argparse.ArgumentParser) -> None:
+    """The obstacle map: grid size, clearances and the chip margin."""
     parser.add_argument(
         "--include-heater-obstacles",
         type=_parse_bool_flag,
@@ -470,6 +482,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             f"(default: {str(SCRIPT_CLEAR_PORT_OPEN_CELLS_FROM_STATIC).lower()})."
         ),
     )
+
+
+def _add_ripup_and_electrical_arguments(parser: argparse.ArgumentParser) -> None:
+    """Rip-up and reroute, attempt diagnostics and the electrical router."""
     parser.add_argument(
         "--ripup-reroute",
         type=_parse_bool_flag,
@@ -574,6 +590,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="UM",
         help=(f"Electrical bondpad pitch (default: {SCRIPT_ELECTRICAL_PAD_PITCH_UM})."),
     )
+
+
+def _add_search_engine_arguments(parser: argparse.ArgumentParser) -> None:
+    """The search engine's internals: heap, primitives, heuristic and net order."""
     parser.add_argument(
         "--use-indexed-heap",
         type=_parse_bool_flag,
@@ -643,6 +663,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "historical smaller-g behavior."
         ),
     )
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the photonic routing flow for a benchmark.")
+    _add_run_and_debug_arguments(parser)
+    _add_layout_and_matching_arguments(parser)
+    _add_crossing_and_search_arguments(parser)
+    _add_obstacle_arguments(parser)
+    _add_ripup_and_electrical_arguments(parser)
+    _add_search_engine_arguments(parser)
     return parser
 
 

@@ -1074,64 +1074,96 @@ def _dense_source_port_runway_lengths(
     jobs: list[RouteJob],
 ) -> dict[str, int]:
     """Reserve staggered source-port access in dense MMI fanout runs."""
-    lengths_by_spec: dict[str, int] = {}
     if settings.fanout_access_mode_normalized == "static-stubs":
-        grouped_specs: dict[tuple[str, int], set[str]] = {}
-        source_specs = {
-            f"{run_job.inst1},{run_job.port1}"
-            for run_job in jobs
-            if f"{run_job.inst1},{run_job.port1}" in state.fanout.anchor_by_port_spec
-        }
-        for port_spec in source_specs:
+        return _static_stub_runway_lengths(settings, state, jobs)
+    if settings.fanout_access_mode_normalized == "legacy-runway":
+        return _legacy_runway_lengths(settings, state, jobs)
+    return {}
+
+
+def _static_stub_runway_lengths(
+    settings: SessionSettings,
+    state: SessionState,
+    jobs: list[RouteJob],
+) -> dict[str, int]:
+    """Runway length in cells per source port spec, for ports with a fan-out anchor.
+
+    The anchored source ports are grouped by instance and heading; a group
+    below the dense fan-out threshold gets nothing. Within a group the
+    ports are ordered across the heading: the lower half gets one lane
+    spacing more per port going inward, the upper half one less, so the
+    middle ports reach farthest. The reach of a group is then equalized.
+    """
+    lengths_by_spec: dict[str, int] = {}
+    grouped_specs: dict[tuple[str, int], set[str]] = {}
+    source_specs = {
+        f"{run_job.inst1},{run_job.port1}"
+        for run_job in jobs
+        if f"{run_job.inst1},{run_job.port1}" in state.fanout.anchor_by_port_spec
+    }
+    for port_spec in source_specs:
+        anchor = state.fanout.anchor_by_port_spec[port_spec]
+        instance_name = port_spec.split(",", 1)[0]
+        grouped_specs.setdefault(
+            (instance_name, int(anchor.physical_angle) % 8),
+            set(),
+        ).add(port_spec)
+
+    for (_instance_name, angle), specs in grouped_specs.items():
+        if len(specs) < dense_fanout_min_ports(settings):
+            continue
+        step_x, step_y = angle_to_step(angle)
+        lateral_x, lateral_y = -step_y, step_x
+
+        def anchor_lateral_position(
+            port_spec: str, lateral_x: int = lateral_x, lateral_y: int = lateral_y
+        ) -> int:
             anchor = state.fanout.anchor_by_port_spec[port_spec]
-            instance_name = port_spec.split(",", 1)[0]
-            grouped_specs.setdefault(
-                (instance_name, int(anchor.physical_angle) % 8),
-                set(),
-            ).add(port_spec)
+            return int(anchor.state_x) * lateral_x + int(anchor.state_y) * lateral_y
 
-        for (_instance_name, angle), specs in grouped_specs.items():
-            if len(specs) < dense_fanout_min_ports(settings):
-                continue
-            step_x, step_y = angle_to_step(angle)
-            lateral_x, lateral_y = -step_y, step_x
+        ordered_specs = sorted(
+            specs,
+            key=lambda port_spec: (
+                anchor_lateral_position(port_spec),
+                port_spec,
+            ),
+        )
+        count = len(ordered_specs)
+        spacing_cells = fanout_int_or_default(
+            settings.config.fanout.fanout_protected_lane_spacing_cells,
+            fanout_int_or_default(
+                settings.config.fanout.fanout_lane_spacing_cells,
+                3,
+            ),
+        )
+        spacing_cells = max(1, int(spacing_cells))
+        lower_specs = ordered_specs[: count // 2]
+        upper_specs = ordered_specs[count // 2 :]
+        for port_index, port_spec in enumerate(lower_specs):
+            runway_rank = int(port_index) + 1
+            lengths_by_spec[port_spec] = spacing_cells * runway_rank
+        upper_count = len(upper_specs)
+        for port_index, port_spec in enumerate(upper_specs):
+            runway_rank = upper_count - int(port_index)
+            lengths_by_spec[port_spec] = spacing_cells * runway_rank
+        _equalize_dense_runway_reach(state, lengths_by_spec, list(ordered_specs))
+    return lengths_by_spec
 
-            def anchor_lateral_position(
-                port_spec: str, lateral_x: int = lateral_x, lateral_y: int = lateral_y
-            ) -> int:
-                anchor = state.fanout.anchor_by_port_spec[port_spec]
-                return int(anchor.state_x) * lateral_x + int(anchor.state_y) * lateral_y
 
-            ordered_specs = sorted(
-                specs,
-                key=lambda port_spec: (
-                    anchor_lateral_position(port_spec),
-                    port_spec,
-                ),
-            )
-            count = len(ordered_specs)
-            spacing_cells = fanout_int_or_default(
-                settings.config.fanout.fanout_protected_lane_spacing_cells,
-                fanout_int_or_default(
-                    settings.config.fanout.fanout_lane_spacing_cells,
-                    3,
-                ),
-            )
-            spacing_cells = max(1, int(spacing_cells))
-            lower_specs = ordered_specs[: count // 2]
-            upper_specs = ordered_specs[count // 2 :]
-            for port_index, port_spec in enumerate(lower_specs):
-                runway_rank = int(port_index) + 1
-                lengths_by_spec[port_spec] = spacing_cells * runway_rank
-            upper_count = len(upper_specs)
-            for port_index, port_spec in enumerate(upper_specs):
-                runway_rank = upper_count - int(port_index)
-                lengths_by_spec[port_spec] = spacing_cells * runway_rank
-            _equalize_dense_runway_reach(state, lengths_by_spec, list(ordered_specs))
-        return lengths_by_spec
+def _legacy_runway_lengths(
+    settings: SessionSettings,
+    state: SessionState,
+    jobs: list[RouteJob],
+) -> dict[str, int]:
+    """Runway length in cells per source port spec, from runs of jobs of one dense instance.
 
-    if settings.fanout_access_mode_normalized != "legacy-runway":
-        return {}
+    Consecutive jobs with the same dense source instance form a run; its
+    jobs are grouped by source heading, and a dense group is ordered
+    across the heading. The first port gets the longest runway, 3 cells
+    less per following port, down to 3. The reach of a group is then
+    equalized.
+    """
+    lengths_by_spec: dict[str, int] = {}
 
     index = 0
     while index < len(jobs):

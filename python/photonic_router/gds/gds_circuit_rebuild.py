@@ -120,6 +120,34 @@ def _port_side(port: ExtractedPort, light_direction: tuple[float, float] | None)
     return port.local_side
 
 
+def _nets_in_order(circuit: ExtractedCircuit, net_order: NetOrder) -> list[Any]:
+    """The circuit's two-ported nets that need a route, in ``net_order``.
+
+    ``chord`` sorts by the straight distance between the two ports, shortest
+    first, ``chord_desc`` longest first, both with the net name as the
+    tie-break; ``extraction`` keeps the circuit's order. A net shorter than
+    ``ABUT_UM`` joins two abutting components and is left out. Raises
+    ``ValueError`` for another order.
+    """
+
+    ports_by_name = {component.name: component.ports for component in circuit.components}
+
+    def chord_um(net: Any) -> float:
+        (a_name, a_index), (b_name, b_index) = net.endpoints
+        ax, ay = ports_by_name[a_name][a_index].position
+        bx, by = ports_by_name[b_name][b_index].position
+        return math.hypot(bx - ax, by - ay)
+
+    two_ported = [net for net in circuit.nets if len(net.endpoints) == 2]
+    if net_order == "chord":
+        two_ported.sort(key=lambda net: (chord_um(net), net.name))
+    elif net_order == "chord_desc":
+        two_ported.sort(key=lambda net: (-chord_um(net), net.name))
+    elif net_order != "extraction":
+        raise ValueError(f"unknown net order {net_order!r}")
+    return [net for net in two_ported if chord_um(net) >= ABUT_UM]
+
+
 def generic_schematic(
     circuit: ExtractedCircuit,
     mappings: dict[str, GenericMapping],
@@ -181,24 +209,7 @@ def generic_schematic(
             if name is None:
                 raise ValueError(f"{component.name}: no generic port for side {label!r}")
             port_name_of[(component.name, index)] = name
-    ports_by_name = {component.name: component.ports for component in circuit.components}
-
-    def chord_um(net: Any) -> float:
-        (a_name, a_index), (b_name, b_index) = net.endpoints
-        ax, ay = ports_by_name[a_name][a_index].position
-        bx, by = ports_by_name[b_name][b_index].position
-        return math.hypot(bx - ax, by - ay)
-
-    two_ported = [net for net in circuit.nets if len(net.endpoints) == 2]
-    if net_order == "chord":
-        two_ported.sort(key=lambda net: (chord_um(net), net.name))
-    elif net_order == "chord_desc":
-        two_ported.sort(key=lambda net: (-chord_um(net), net.name))
-    elif net_order != "extraction":
-        raise ValueError(f"unknown net order {net_order!r}")
-    for net in two_ported:
-        if chord_um(net) < ABUT_UM:
-            continue  # the components abut; nothing to route
+    for net in _nets_in_order(circuit, net_order):
         (a_name, a_index), (b_name, b_index) = net.endpoints
         p1 = f"{a_name},{port_name_of[(a_name, a_index)]}"
         p2 = f"{b_name},{port_name_of[(b_name, b_index)]}"

@@ -469,6 +469,39 @@ def build_graph_from_schematic(
     return graph
 
 
+def _component_sides(
+    schematic: SchematicLike,
+    input_ports_by_component: Mapping[str, Iterable[str]] | None,
+) -> dict[str, tuple[frozenset[str], frozenset[str]] | None]:
+    """The two port sides of every instance whose component is named by a string.
+
+    The value is what `component_port_sides` gives for the component, None
+    for a component it does not know.
+    """
+
+    component_of: dict[str, str] = {}
+    for name, instance in schematic.netlist.instances.items():
+        component = getattr(instance, "component", None)
+        if isinstance(component, str):
+            component_of[str(name)] = component
+    return {
+        name: component_port_sides(component, input_ports_by_component)
+        for name, component in component_of.items()
+    }
+
+
+def _port_neighbours(
+    links: list[tuple[str, PortRef, PortRef]],
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    """``(instance, port) -> the ports it is linked to``, both directions, in link order."""
+
+    neighbours: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for _net_name, a, b in links:
+        neighbours.setdefault((a.instance, a.port), []).append((b.instance, b.port))
+        neighbours.setdefault((b.instance, b.port), []).append((a.instance, a.port))
+    return neighbours
+
+
 def _propagate_roles(
     schematic: SchematicLike,
     graph: PhotonicRoutingGraph,
@@ -477,19 +510,8 @@ def _propagate_roles(
 ) -> tuple[dict[tuple[str, str], str], list[str]]:
     """``(instance, port) -> role`` from the light's propagation out of the inputs."""
 
-    component_of: dict[str, str] = {}
-    for name, instance in schematic.netlist.instances.items():
-        component = getattr(instance, "component", None)
-        if isinstance(component, str):
-            component_of[str(name)] = component
-    sides_of: dict[str, tuple[frozenset[str], frozenset[str]] | None] = {
-        name: component_port_sides(component, input_ports_by_component)
-        for name, component in component_of.items()
-    }
-    neighbours: dict[tuple[str, str], list[tuple[str, str]]] = {}
-    for _net_name, a, b in links:
-        neighbours.setdefault((a.instance, a.port), []).append((b.instance, b.port))
-        neighbours.setdefault((b.instance, b.port), []).append((a.instance, a.port))
+    sides_of = _component_sides(schematic, input_ports_by_component)
+    neighbours = _port_neighbours(links)
 
     roles: dict[tuple[str, str], str] = {}
     entered_by: dict[str, str] = {}  # instance -> the port the light first arrived at

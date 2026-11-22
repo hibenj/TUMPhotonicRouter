@@ -401,6 +401,35 @@ def _endpoint_bump_candidate_open_cells_for_state(
     return cells
 
 
+def _endpoint_grid_state(
+    state: SessionState, port: Port, port_spec: str, *, as_target: bool
+) -> tuple[Any, Any | None]:
+    """Return the grid state a route starts or ends in at a port, and the port's fan-out anchor.
+
+    With a fan-out anchor the state is the anchor's cell and heading, the
+    heading reversed for a target. Without one (the second value is None)
+    it is the port's own grid state, moved by the port's lane offset when
+    it has one.
+    """
+
+    anchor = state.fanout.anchor_by_port_spec.get(port_spec)
+    if anchor is not None:
+        heading = int(anchor.physical_angle) + (4 if as_target else 0)
+        return (
+            state.rust_backend.State(int(anchor.state_x), int(anchor.state_y), heading % 8),
+            anchor,
+        )
+    grid_state = port_to_grid_state(state, port, as_target=as_target)
+    lane_offset = state.ports.state_lane_offsets.get((port_spec, as_target))
+    if lane_offset is not None:
+        grid_state = state.rust_backend.State(
+            int(grid_state.x) + int(lane_offset[0]),
+            int(grid_state.y) + int(lane_offset[1]),
+            int(grid_state.angle),
+        )
+    return grid_state, None
+
+
 def states_and_openings(
     settings: SessionSettings,
     state: SessionState,
@@ -421,46 +450,12 @@ def states_and_openings(
     """
     port1_spec = f"{job.inst1},{job.port1}"
     port2_spec = f"{job.inst2},{job.port2}"
-    source_fanout_anchor = state.fanout.anchor_by_port_spec.get(port1_spec)
-    target_fanout_anchor = state.fanout.anchor_by_port_spec.get(port2_spec)
-    if source_fanout_anchor is None:
-        source_state = port_to_grid_state(
-            state,
-            job.source_port,
-            as_target=False,
-        )
-    else:
-        source_state = state.rust_backend.State(
-            int(source_fanout_anchor.state_x),
-            int(source_fanout_anchor.state_y),
-            int(source_fanout_anchor.physical_angle) % 8,
-        )
-    if target_fanout_anchor is None:
-        target_state = port_to_grid_state(
-            state,
-            job.target_port,
-            as_target=True,
-        )
-    else:
-        target_state = state.rust_backend.State(
-            int(target_fanout_anchor.state_x),
-            int(target_fanout_anchor.state_y),
-            (int(target_fanout_anchor.physical_angle) + 4) % 8,
-        )
-    source_lane_offset = state.ports.state_lane_offsets.get((f"{job.inst1},{job.port1}", False))
-    if source_lane_offset is not None and source_fanout_anchor is None:
-        source_state = state.rust_backend.State(
-            int(source_state.x) + int(source_lane_offset[0]),
-            int(source_state.y) + int(source_lane_offset[1]),
-            int(source_state.angle),
-        )
-    target_lane_offset = state.ports.state_lane_offsets.get((f"{job.inst2},{job.port2}", True))
-    if target_lane_offset is not None and target_fanout_anchor is None:
-        target_state = state.rust_backend.State(
-            int(target_state.x) + int(target_lane_offset[0]),
-            int(target_state.y) + int(target_lane_offset[1]),
-            int(target_state.angle),
-        )
+    source_state, source_fanout_anchor = _endpoint_grid_state(
+        state, job.source_port, port1_spec, as_target=False
+    )
+    target_state, target_fanout_anchor = _endpoint_grid_state(
+        state, job.target_port, port2_spec, as_target=True
+    )
     if source_fanout_anchor is None and target_fanout_anchor is None:
         source_state, target_state, original_anchor_cells = _snap_nearly_collinear_states(
             state,
