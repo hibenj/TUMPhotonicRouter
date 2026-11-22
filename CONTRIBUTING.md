@@ -64,9 +64,12 @@ the full stage before a slice is committed.
 `scripts/logic_check.py <benchmark>` (or `--all`) runs the logic harness:
 after each stage it tests what the stage hands on against statements that
 have to hold for the next stage to mean anything (docs/ARCHITECTURE.md
-section 8.1). Its findings per public benchmark are pinned in
-`tests/baselines/logic_findings.json` and compared in the test baseline; a
-benchmark you add needs an entry (`--all --update`).
+section 8.1), once per router configuration (`baseline`, `contribution1`,
+`contribution2`). Its findings per public benchmark and configuration are
+pinned in `tests/baselines/logic_findings.json` and compared in the test
+baseline; a benchmark you add needs an entry (`--all --update --jobs 6`).
+`--route-wide` also routes the designs from 16 x 16 on, which the pin
+checks only up to the hand-off.
 `python -m photonic_router <benchmark> --verify-stages` runs the same checks
 inside a normal run and ends it at the first stage that hands on an error.
 

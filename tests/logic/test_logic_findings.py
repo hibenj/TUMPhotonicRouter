@@ -1,8 +1,9 @@
-"""The logic harness on every public benchmark, against the pin.
+"""The logic harness on every public benchmark in every router configuration, against the pin.
 
-`tests/baselines/logic_findings.json` holds, per benchmark, how many
+`tests/baselines/logic_findings.json` holds, per benchmark and per router
+configuration (`baseline`, `contribution1`, `contribution2`), how many
 findings each check of `photonic_router.logic_checks` has, so that a change
-in what a stage hands on is seen. The only errors a benchmark may have are
+in what a stage hands on is seen. The only errors a run may have are
 those of `KNOWN_ERRORS`: found by the harness, not fixed yet. Re-pin with
 `scripts/logic_check.py --all --update` and give the reason in the commit.
 """
@@ -22,15 +23,18 @@ PIN = json.loads(
     (REPO_ROOT / "tests" / "baselines" / "logic_findings.json").read_text(encoding="utf-8")
 )
 
-#: errors the harness found that are still there, per (benchmark, check), with what they are
-KNOWN_ERRORS: dict[tuple[str, str], str] = {
-    ("heater_single", "routing.net_not_routed"): (
+#: errors the harness found that are still there, per (benchmark, configuration, check)
+KNOWN_ERRORS: dict[tuple[str, str, str], str] = {
+    ("heater_single", "baseline", "routing.net_not_routed"): (
         "the optical router finds no path for gc_1,o1 -> mmi_0,o1; a known limit of "
         "this placement, written down in benchmarks/heater_single.py"
     ),
-    ("permutation_synthetic", "routing.net_not_routed"): (
-        "the default run (baseline, no pre-placed crossings) does not converge on the "
-        "random permutation; the design is made for contribution 2"
+    ("heater_single", "contribution1", "routing.net_not_routed"): (
+        "as in the baseline: no path for gc_1,o1 -> mmi_0,o1"
+    ),
+    ("permutation_synthetic", "baseline", "routing.net_not_routed"): (
+        "the standard router does not converge on the random permutation within 10 "
+        "rounds; the design is made for the two contributions, which route it"
     ),
 }
 
@@ -48,33 +52,53 @@ logic_check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(logic_check)
 
 
+RUNS = [
+    (benchmark, configuration)
+    for benchmark in sorted(PIN)
+    for configuration in logic_check.CONFIGURATIONS
+]
+
+
 @pytest.mark.e2e
-def test_the_pin_lists_every_public_benchmark() -> None:
+def test_the_pin_lists_every_public_benchmark_in_the_three_configurations() -> None:
     assert sorted(PIN) == logic_check.public_benchmarks()
+    assert all(tuple(sorted(PIN[name])) == logic_check.CONFIGURATIONS for name in PIN)
+
+
+def test_every_known_error_is_an_error_of_the_pin() -> None:
+    """A known error that is fixed leaves the list."""
+    for (benchmark, configuration, check), reason in KNOWN_ERRORS.items():
+        assert PIN[benchmark][configuration].get(check, 0) > 0, reason
 
 
 @pytest.mark.e2e
-@pytest.mark.parametrize("benchmark", sorted(PIN))
-def test_a_benchmark_has_the_pinned_findings_and_only_known_errors(benchmark: str) -> None:
+@pytest.mark.parametrize(("benchmark", "configuration"), RUNS)
+def test_a_run_has_the_pinned_findings_and_only_known_errors(
+    benchmark: str, configuration: str
+) -> None:
+    pinned = PIN[benchmark][configuration]
     if _is_large(benchmark) and os.environ.get("LOGIC_CHECK_LARGE") != "1":
         # The session stages take over a minute each here; the pin is still
         # written from a full run (`scripts/logic_check.py --all --update`).
-        findings = logic_check.findings_for_benchmark(benchmark, session=False)
+        findings = logic_check.findings_for_benchmark(
+            benchmark, configuration=configuration, session=False
+        )
         loaded = {
             check: count
-            for check, count in PIN[benchmark].items()
+            for check, count in pinned.items()
             if check.startswith(("reading.", "crossing_plan."))
         }
         assert count_by_check(findings) == loaded
         return
-    findings = logic_check.findings_for_benchmark(benchmark)
+    findings = logic_check.findings_for_benchmark(benchmark, configuration=configuration)
     unknown = [
         str(finding)
         for finding in findings
-        if finding.severity == ERROR and (benchmark, finding.check) not in KNOWN_ERRORS
+        if finding.severity == ERROR
+        and (benchmark, configuration, finding.check) not in KNOWN_ERRORS
     ]
     assert unknown == []
-    assert count_by_check(findings) == PIN[benchmark]
+    assert count_by_check(findings) == pinned
 
 
 def test_the_wide_designs_stop_at_the_hand_off_and_the_others_run_to_the_polygons() -> None:
@@ -83,3 +107,4 @@ def test_the_wide_designs_stop_at_the_hand_off_and_the_others_run_to_the_polygon
     assert logic_check.last_stage("heater_single") == "realized"
     assert logic_check.last_stage("benes_16x16") == "handoff"
     assert logic_check.last_stage("multiportmmi_64x64_bands1to2") == "handoff"
+    assert logic_check.last_stage("benes_16x16", route_wide=True) == "realized"

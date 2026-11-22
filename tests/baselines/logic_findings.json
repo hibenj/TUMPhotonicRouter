@@ -1,185 +1,617 @@
 {
   "benes_128x128": {
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2
+    }
   },
   "benes_128x128_flat": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 3328
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 3328
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 3328
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 3328
+    }
   },
   "benes_16x16": {
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2
+    }
   },
   "benes_16x16_flat": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 224
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 224
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 224
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 224
+    }
   },
   "benes_32x32": {
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2
+    }
   },
   "benes_32x32_flat": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 576
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 576
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 576
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 576
+    }
   },
   "benes_4x4": {
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2
+    }
   },
   "benes_4x4_flat": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 24
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 24
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 24
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 24
+    }
   },
   "benes_64x64": {
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2
+    }
   },
   "benes_64x64_flat": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 1408
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 1408
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 1408
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 1408
+    }
   },
   "benes_64x64_stages2": {
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2
+    }
   },
   "benes_8x8": {
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2
+    }
   },
   "benes_8x8_flat": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 80
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 80
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 80
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 80
+    }
   },
   "cascade_12_compact": {
-    "crossing_plan.net_outside_band_model": 41,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 66,
-    "realized.net_with_meander": 41
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 41,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 66,
+      "realized.net_with_meander": 41
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 41,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 66,
+      "realized.net_with_meander": 41
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 41,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 66
+    }
   },
   "cascade_12_diagonal": {
-    "crossing_plan.net_outside_band_model": 41,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 66,
-    "realized.net_with_meander": 41
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 41,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 66,
+      "realized.net_with_meander": 41
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 41,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 66,
+      "realized.net_with_meander": 41
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 41,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 66
+    }
   },
   "cascade_12_folded": {
-    "crossing_plan.net_outside_band_model": 44,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 66,
-    "realized.net_with_meander": 41
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 44,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 66,
+      "realized.net_with_meander": 41
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 44,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 66,
+      "realized.net_with_meander": 41
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 44,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 66
+    }
   },
   "cascade_12_folded_compact": {
-    "crossing_plan.net_outside_band_model": 44,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 66,
-    "realized.net_with_meander": 41
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 44,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 66,
+      "realized.net_with_meander": 41
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 44,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 66,
+      "realized.net_with_meander": 41
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 44,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 66
+    }
   },
   "cascade_16_compact": {
-    "crossing_plan.net_outside_band_model": 57,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 90,
-    "realized.net_with_meander": 57
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 57,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 90,
+      "realized.net_with_meander": 57
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 57,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 90,
+      "realized.net_with_meander": 57
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 57,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 90
+    }
   },
   "cascade_16_diagonal": {
-    "crossing_plan.net_outside_band_model": 57,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 90,
-    "realized.net_with_meander": 57
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 57,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 90,
+      "realized.net_with_meander": 57
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 57,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 90,
+      "realized.net_with_meander": 57
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 57,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 90
+    }
   },
   "cascade_16_folded": {
-    "crossing_plan.net_outside_band_model": 62,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 90,
-    "realized.net_with_meander": 57
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 62,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 90,
+      "realized.net_with_meander": 57
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 62,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 90,
+      "realized.net_with_meander": 57
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 62,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 90
+    }
   },
   "cascade_16_folded_compact": {
-    "crossing_plan.net_outside_band_model": 62,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 90,
-    "realized.net_with_meander": 57
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 62,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 90,
+      "realized.net_with_meander": 57
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 62,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 90,
+      "realized.net_with_meander": 57
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 62,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 90
+    }
   },
   "cascade_8_compact": {
-    "crossing_plan.net_outside_band_model": 25,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 42,
-    "realized.net_with_meander": 25
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 25,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 25,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 25,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 42
+    }
   },
   "cascade_8_diagonal": {
-    "crossing_plan.net_outside_band_model": 25,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 42,
-    "realized.net_with_meander": 25
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 25,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 25,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 25,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 42
+    }
   },
   "cascade_8_folded": {
-    "crossing_plan.net_outside_band_model": 26,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 42,
-    "realized.net_with_meander": 25
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 26,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 26,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 26,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 42
+    }
   },
   "cascade_8_folded_compact": {
-    "crossing_plan.net_outside_band_model": 26,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 42,
-    "realized.net_with_meander": 25
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 26,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 26,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 26,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 42
+    }
   },
   "clements_8x8": {
-    "crossing_plan.net_outside_band_model": 8,
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 8,
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 8,
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 8,
+      "flow.design_refused": 1
+    }
   },
   "heater_lanes_20": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.instances_overlap": 20
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.instances_overlap": 20
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.instances_overlap": 20
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.instances_overlap": 20
+    }
   },
   "heater_lanes_ripup": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.instances_overlap": 11
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.instances_overlap": 11
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.instances_overlap": 11
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.instances_overlap": 11
+    }
   },
   "heater_s_mod": {
-    "crossing_plan.net_outside_band_model": 26,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 42,
-    "realized.net_with_meander": 25
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 26,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 26,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 42,
+      "realized.net_with_meander": 25
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 26,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 42
+    }
   },
   "heater_single": {
-    "crossing_plan.net_outside_band_model": 1,
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 2,
-    "routing.net_not_routed": 1
+    "baseline": {
+      "crossing_plan.net_outside_band_model": 1,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 2,
+      "routing.net_not_routed": 1
+    },
+    "contribution1": {
+      "crossing_plan.net_outside_band_model": 1,
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 2,
+      "routing.net_not_routed": 1
+    },
+    "contribution2": {
+      "crossing_plan.net_outside_band_model": 1,
+      "flow.design_refused": 1,
+      "reading.port_recessed": 2
+    }
   },
   "multiportmmi_128x128": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 1280
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 1280
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 1280
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 1280
+    }
   },
   "multiportmmi_16x16": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 160
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 160
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 160
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 160
+    }
   },
   "multiportmmi_32x32": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 320
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 320
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 320
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 320
+    }
   },
   "multiportmmi_64x64": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 640
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 640
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 640
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 640
+    }
   },
   "multiportmmi_64x64_bands1to2": {
-    "obstacle_map.routable_cell_outside_routable_box": 1
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2
+    }
   },
   "multiportmmi_64x64_bands4to5": {
-    "reading.port_recessed": 128
+    "baseline": {
+      "reading.port_recessed": 128
+    },
+    "contribution1": {
+      "reading.port_recessed": 128
+    },
+    "contribution2": {
+      "reading.port_recessed": 128
+    }
   },
   "multiportmmi_64x64_bands6to9": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 192
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 192
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 192
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 192
+    }
   },
   "multiportmmi_64x64_bands7to9": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 128
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 128
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 128
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 128
+    }
   },
   "multiportmmi_64x64_bands8to9": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 64
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 64
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 64
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 64
+    }
   },
   "multiportmmi_8x8": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "reading.port_recessed": 80
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 80
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "reading.port_recessed": 80
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2,
+      "reading.port_recessed": 80
+    }
   },
   "permutation_synthetic": {
-    "obstacle_map.routable_cell_outside_routable_box": 1,
-    "routing.net_not_routed": 1
+    "baseline": {
+      "obstacle_map.routable_cell_outside_routable_box": 1,
+      "routing.net_not_routed": 1
+    },
+    "contribution1": {
+      "obstacle_map.routable_cell_outside_routable_box": 1
+    },
+    "contribution2": {
+      "obstacle_map.routable_cell_outside_routable_box": 2
+    }
   }
 }

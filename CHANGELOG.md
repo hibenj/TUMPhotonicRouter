@@ -14,6 +14,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- The logic harness runs every public benchmark in the three router
+  configurations (`scripts/logic_check.py`: `--configuration`, repeatable,
+  default all three; `--jobs N`; `--route-wide` for the designs from
+  16 x 16 on). The pin `tests/baselines/logic_findings.json` is per
+  benchmark and configuration (123 runs). A run the flow ends is a finding
+  (`routing.net_not_routed`, the note `flow.design_refused` for the 15
+  designs contribution 2 refuses as not band-layered, `flow.run_failed`).
 - `docs/CODING_STANDARDS.md` is adopted (owner, 2026-11-22), on the
   condition that it stays close to the public standards of its section 1;
   every departure is listed there as a deviation. Rules marked *proposed*
@@ -439,6 +446,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Fixed
 
+- Contribution 1 routes a design whose crossing plan has no crossing.
+  The hand-off took "the plan has no event" for "there is no plan" and
+  ended the run with "run with --crossing-mode lidar-guided" although that
+  was set (found by the logic harness on `clements_8x8`,
+  `heater_lanes_20`, `heater_lanes_ripup`, `heater_single` and
+  `multiportmmi_64x64_bands1to2`). The plan-based net order is refused
+  only when no plan was made, and the message names why.
 - `build_stats["blocked_cell_count"]` and `raw_blocked_cell_count` of the
   static obstacle map are the blocked area: a cell under several boxes
   counts once. In bounding-box mode the Rust builder added up the areas of

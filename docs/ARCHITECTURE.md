@@ -889,19 +889,26 @@ after a stage, and an observer can end the run with `StopAfterStage`).
   with an error. Off by default; a run without it pays one lookup per
   stage.
 * `scripts/logic_check.py` runs the flow with the benchmark's stable
-  defaults and collects the findings: until the routes are polygons, or,
-  from 16 x 16 on where the search takes over a minute, up to the
-  hand-off (`last_stage`). A run in which the kernel gives up on a net is
-  the error `routing.net_not_routed`.
+  defaults once per router configuration (`--configuration baseline`, the
+  standard router; `contribution1`, crossings planned ahead and the search
+  guided; `contribution2`, pre-placed crossing structures) and collects
+  the findings: until the routes are polygons, or, from 16 x 16 on where
+  the search takes over a minute, up to the hand-off (`last_stage`;
+  `--route-wide` routes those too, on request and outside the pin). A run
+  the flow ends with an exception is a finding: the error
+  `routing.net_not_routed` when the kernel gives up on a net, the note
+  `flow.design_refused` when contribution 2 says the design is not
+  band-layered, the error `flow.run_failed` for anything else.
 
-`scripts/logic_check.py <benchmark>|--all [--list N]` prints the findings;
-`tests/baselines/logic_findings.json` pins their counts per public
-benchmark and `tests/logic/test_logic_findings.py` compares, as part of the
-test baseline (the 64 x 64 and 128 x 128 designs without the session
-stages, unless `LOGIC_CHECK_LARGE=1`: their session stages take over a minute
-each; `--all --update` always runs everything, about eight minutes); the
-errors a benchmark may have are named there, per benchmark
-(`KNOWN_ERRORS`), until they are fixed. A new stage is a new module, a
+`scripts/logic_check.py <benchmark>|--all [--configuration NAME] [--list N]`
+prints the findings; `tests/baselines/logic_findings.json` pins their
+counts per public benchmark and configuration and
+`tests/logic/test_logic_findings.py` compares, as part of the test baseline
+(the 64 x 64 and 128 x 128 designs without the session stages, unless
+`LOGIC_CHECK_LARGE=1`: their session stages take over a minute each;
+`--all --update` always runs everything, about thirteen minutes with
+`--jobs 6`); the errors a run may have are named there, per benchmark and
+configuration (`KNOWN_ERRORS`), until they are fixed. A new stage is a new module, a
 `notify` in the session if the product is not reported yet, its checks in
 the script, unit tests that each statement finds what it names, and a
 re-pin.

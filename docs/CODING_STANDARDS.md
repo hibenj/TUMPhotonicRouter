@@ -257,9 +257,11 @@ like the violation counts: a commit that adds one says why in its message.
    changes nothing. *Review, in force.*
 7. Every statement has a test in `tests/logic/` that breaks one thing in a
    real product and expects exactly that finding. *Review, in force.*
-8. The findings per public benchmark are pinned in
+8. The findings per public benchmark and router configuration (baseline,
+   contribution 1, contribution 2) are pinned in
    `tests/baselines/logic_findings.json`; an error that stays in the code
-   is named there per benchmark with what it is (`KNOWN_ERRORS`).
+   is named there per benchmark and configuration with what it is
+   (`KNOWN_ERRORS`).
    *Test, in force (`tests/logic/test_logic_findings.py`).*
 9. A stage that is added reports its product (`routing/stage_observer.py`)
    and gets its checks in `logic_checks/stages.py`, so that

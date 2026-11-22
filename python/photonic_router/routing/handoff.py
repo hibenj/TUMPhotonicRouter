@@ -298,11 +298,14 @@ def _topological_net_route_order(
             stub_by_net_id[int(job.net_id)] = max(lengths) if lengths else 0
     planned_by_net_id: dict[int, int] | None = None
     if settings.net_order.startswith("plan-crossings"):
-        raw_counts = state.crossing_plan_info.expected_crossings_by_net_id
-        if not state.crossing_plan_info.event_count:
+        plan_info = state.crossing_plan_info
+        raw_counts = plan_info.expected_crossings_by_net_id
+        if not plan_info.enabled or plan_info.reason is not None:
+            # No plan was made. A plan without a crossing is a plan: every
+            # net has zero planned crossings and the declaration order decides.
             raise ValueError(
                 f"net_order {settings.net_order!r} needs the topology plan: run with "
-                "--crossing-mode lidar-guided"
+                f"--crossing-mode lidar-guided (no plan: {plan_info.reason or 'crossings are off'})"
             )
         planned_by_net_id = {int(key): int(value) for key, value in raw_counts.items()}
     ordered = order_route_jobs(
