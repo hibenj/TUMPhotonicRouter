@@ -183,7 +183,6 @@ def dump_photonic_probe_failure_artifacts(
     records: Iterable[RoutedNetRecord],
     router: ProbeCenterlineRouter,
     realization_grid_spec: tuple[int, int, float, float, float],
-    allow_unchecked_bumps: bool,
 ) -> dict[str, str]:
     """Write the debug files of a failed photonic verification probe and return their paths.
 
@@ -254,7 +253,7 @@ def dump_photonic_probe_failure_artifacts(
                         record.route_obj,
                         source_port_um=record.source_port_center_um,
                         target_port_um=record.target_port_center_um,
-                        allow_unchecked_bumps=allow_unchecked_bumps,
+                        allow_unchecked_bumps=True,
                     )
                 )
             except Exception as exc:

@@ -1072,7 +1072,6 @@ def repair_and_verify_final_geometry(
                 records=state.probe.records or state.search.bookkeeping.ordered_records(),
                 router=state.kernel.router,
                 realization_grid_spec=state.run.realization_grid_spec,
-                allow_unchecked_bumps=True,
             )
             state.crossing_plan_info.photonic_probe_failure_artifacts = probe_failure_artifacts
             timing.record_pipeline_timing(

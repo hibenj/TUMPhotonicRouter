@@ -571,11 +571,9 @@ def _derive_crossing_tiles(
         from photonic_router.crossings.crossing_structures import (
             COLUMN_GRID,
             ROUTER,
-            X_ARRAY,
             select_layer_structure,
         )
 
-        allowed = (X_ARRAY, COLUMN_GRID)
         decision = select_layer_structure(
             schematic,
             unrouted_layout,
@@ -583,7 +581,6 @@ def _derive_crossing_tiles(
             geometry,
             anchors,
             stage_key=stage_key,
-            allowed=allowed,
             config=config,
         )
         decisions.append(decision)

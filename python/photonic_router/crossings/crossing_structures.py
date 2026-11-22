@@ -256,11 +256,10 @@ def select_layer_structure(
     anchors: Mapping[str, tuple[float, float]],
     *,
     stage_key: tuple[int, int],
-    allowed: tuple[str, ...] = (X_ARRAY, COLUMN_GRID),
     config: CrossingGridConfig | None = None,
 ) -> LayerDecision:
-    """Evaluate every allowed alignment on the layer and pick the cheapest
-    feasible one; ROUTER when none is feasible."""
+    """Evaluate the X array and the column grid on the layer and pick the
+    cheapest feasible one; ROUTER when none is feasible."""
     config = config if config is not None else CrossingGridConfig()
     if stage_key[0] in config.router_layers:
         return LayerDecision(
@@ -269,12 +268,10 @@ def select_layer_structure(
             (StructureCandidate("forced", False, "PHOTONIC_ROUTER_CROSSING_GRID_ROUTER_LAYERS"),),
         )
     candidates: list[StructureCandidate] = []
-    if X_ARRAY in allowed:
-        candidates.append(evaluate_x_array(schematic, unrouted_layout, stage_plan, geometry))
-    if COLUMN_GRID in allowed:
-        candidates.append(
-            evaluate_column_grid(schematic, unrouted_layout, stage_plan, geometry, anchors)
-        )
+    candidates.append(evaluate_x_array(schematic, unrouted_layout, stage_plan, geometry))
+    candidates.append(
+        evaluate_column_grid(schematic, unrouted_layout, stage_plan, geometry, anchors)
+    )
     feasible = [c for c in candidates if c.feasible and c.cost is not None]
     if not feasible:
         return LayerDecision(stage_key, ROUTER, tuple(candidates))

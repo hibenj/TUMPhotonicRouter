@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import klayout.db as kdb
 import numpy as np
@@ -491,8 +491,6 @@ def _verify_record_connectivity(
         record,
         route_region,
         dbu=dbu,
-        center_um=record.source_port_center_um,
-        endpoint=record.source,
         role="source",
         port_contact_radius_um=port_contact_radius_um,
     )
@@ -501,8 +499,6 @@ def _verify_record_connectivity(
         record,
         route_region,
         dbu=dbu,
-        center_um=record.target_port_center_um,
-        endpoint=record.target,
         role="target",
         port_contact_radius_um=port_contact_radius_um,
     )
@@ -514,11 +510,21 @@ def _verify_one_port_connection(
     route_region: kdb.Region,
     *,
     dbu: float,
-    center_um: tuple[float, float] | None,
-    endpoint: Any,
-    role: str,
+    role: Literal["source", "target"],
     port_contact_radius_um: float,
 ) -> None:
+    """Check that the route of ``record`` meets its source or target port.
+
+    Appends an issue when the record has no centre for that port, when
+    ``route_region`` does not touch the square of half side
+    ``port_contact_radius_um`` around the centre, or when the corrected
+    centerline ends farther from the centre than that radius.
+    """
+
+    if role == "source":
+        center_um, endpoint = record.source_port_center_um, record.source
+    else:
+        center_um, endpoint = record.target_port_center_um, record.target
     if center_um is None:
         issues.append(
             PhotonicVerificationIssue(

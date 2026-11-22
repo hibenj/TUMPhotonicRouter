@@ -526,6 +526,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Four more signatures within the limit of 7 parameters, no behaviour
+  change; `ruff_PLR0913` falls from 16 to 12:
+  `photonic_verification._verify_one_port_connection` reads the port
+  centre and the endpoint from the record by its `role`;
+  `route_rust_meanders._planned_record` takes the meander search
+  config instead of three of its fields;
+  `dump_photonic_probe_failure_artifacts` lost `allow_unchecked_bumps`
+  (its one caller passed True); `select_layer_structure` lost `allowed`
+  (never passed, both structures are always evaluated).
 - No parameter that the function does not read: 73 functions, most of
   them in `photonic_router/routing/`, lost a `settings` or `state`
   parameter they only passed on or never touched (left over from the
