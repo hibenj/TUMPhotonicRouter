@@ -293,16 +293,12 @@ def route_match_and_realize(
         pipeline_timings_s["meander_obstacle_map"] = time.perf_counter() - t_meander_obstacle_start
 
         meander_config = MeanderInsertionConfig(
-            enabled=True,
             max_meander_height_um=float(matching.path_length_meander_height_um),
         )
         analysis_info["meander_config"] = {
-            "enabled": bool(meander_config.enabled),
             "min_candidate_straight_length_um": float(
                 meander_config.min_candidate_straight_length_um
             ),
-            "max_extra_length_per_region_um": float(meander_config.max_extra_length_per_region_um),
-            "conservative_legal_check": bool(meander_config.conservative_legal_check),
             "max_meander_height_um": float(meander_config.max_meander_height_um),
             "auto_meander_endpoint_inset_um": (
                 None

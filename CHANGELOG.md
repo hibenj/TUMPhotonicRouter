@@ -1294,6 +1294,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 - `electrical/pitch_grid.cells_bbox` and
   `PhotonicVerificationResult.raise_for_errors`: no caller.
+- `MeanderInsertionConfig.enabled`, `max_extra_length_per_region_um` and
+  `conservative_legal_check` (owner, 2026-11-22): nothing read them, the
+  run only copied them into `analysis_info["meander_config"]`, which loses
+  the three keys.
 - The parameter `config` of
   `electrical/wire_geometry.wire_reservation_cells_from_point_path`
   (not read) and a comparison in `plm/path_length_requirements.py` that

@@ -345,7 +345,6 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
         records,
         [req],
         config=MeanderInsertionConfig(
-            enabled=True,
             min_candidate_straight_length_um=2.0,
             auto_meander_endpoint_inset_um=4.0,
         ),
@@ -457,7 +456,6 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
         records,
         requirements,
         config=MeanderInsertionConfig(
-            enabled=True,
             min_candidate_straight_length_um=2.0,
             auto_meander_endpoint_inset_um=4.0,
         ),
@@ -574,7 +572,6 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
         records,
         [req],
         config=MeanderInsertionConfig(
-            enabled=True,
             min_candidate_straight_length_um=2.0,
             auto_meander_endpoint_inset_um=4.0,
         ),
@@ -627,7 +624,6 @@ def test_main_meander_report_uses_auto_multi_bump_path():
         [record],
         [req],
         config=MeanderInsertionConfig(
-            enabled=True,
             min_candidate_straight_length_um=5.0,
             max_meander_height_um=40.0,
             auto_meander_endpoint_inset_um=0.0,
@@ -670,7 +666,6 @@ def test_meander_report_builds_no_profile_without_debug_meanders():
     req = MissingLengthRequirement(edge_key=edge, missing_length_um=32.0)
     kwargs: dict[str, Any] = {
         "config": MeanderInsertionConfig(
-            enabled=True,
             min_candidate_straight_length_um=5.0,
             max_meander_height_um=40.0,
             auto_meander_endpoint_inset_um=0.0,
@@ -730,7 +725,6 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
         [record],
         [req],
         config=MeanderInsertionConfig(
-            enabled=True,
             max_meander_height_um=40.0,
             auto_meander_endpoint_inset_um=7.0,
         ),
@@ -750,7 +744,6 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
         [record],
         [req],
         config=MeanderInsertionConfig(
-            enabled=True,
             max_meander_height_um=40.0,
             auto_meander_endpoint_inset_um=None,
         ),
@@ -957,7 +950,6 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
         [record],
         [req],
         config=MeanderInsertionConfig(
-            enabled=True,
             min_candidate_straight_length_um=2.0,
             max_meander_height_um=20.0,
         ),
@@ -1012,7 +1004,7 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
     updated, report = analyze_meander_insertion_for_requirements(
         [record],
         [req],
-        config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=5.0),
+        config=MeanderInsertionConfig(min_candidate_straight_length_um=5.0),
         space=MeanderPlanningSpace(
             realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
             allow_45_degree_turns=True,
@@ -1114,7 +1106,7 @@ def test_too_short_route_reports_no_meander_candidate():
     _, report = analyze_meander_insertion_for_requirements(
         [record],
         [req],
-        config=MeanderInsertionConfig(enabled=True, min_candidate_straight_length_um=10.0),
+        config=MeanderInsertionConfig(min_candidate_straight_length_um=10.0),
         space=MeanderPlanningSpace(
             realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
             allow_45_degree_turns=True,
@@ -1143,7 +1135,7 @@ def test_near_minimum_meander_request_normalizes_roundoff():
 
 def test_meander_search_config_uses_one_um_default_internal_straight():
     search = _meander_search_config(
-        config=MeanderInsertionConfig(enabled=True, max_meander_height_um=80.0),
+        config=MeanderInsertionConfig(max_meander_height_um=80.0),
         bend_radius_um=10.0,
     )
 
@@ -1152,7 +1144,7 @@ def test_meander_search_config_uses_one_um_default_internal_straight():
 
 def test_meander_search_config_includes_large_user_height():
     search = _meander_search_config(
-        config=MeanderInsertionConfig(enabled=True, max_meander_height_um=1000.0),
+        config=MeanderInsertionConfig(max_meander_height_um=1000.0),
         bend_radius_um=8.0,
     )
 

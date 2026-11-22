@@ -1517,10 +1517,7 @@ class MeanderInsertionConfig:
     None selects the adaptive one.
     """
 
-    enabled: bool = True
     min_candidate_straight_length_um: float = DEFAULT_MEANDER_MIN_STRAIGHT_UM
-    max_extra_length_per_region_um: float = 200.0
-    conservative_legal_check: bool = True
     max_meander_height_um: float = DEFAULT_MEANDER_MAX_HEIGHT_UM
     auto_meander_endpoint_inset_um: float | None = None
 
