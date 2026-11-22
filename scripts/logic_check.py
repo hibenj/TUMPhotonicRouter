@@ -5,6 +5,7 @@ Usage:
     logic_check.py --all [--configuration NAME] [--list N]
     logic_check.py --all --update
     logic_check.py <benchmark> --route-wide
+    logic_check.py --paper [--jobs N]
 
 Runs the checks of `photonic_router.logic_checks` stage by stage, once per
 router configuration (`baseline`: the standard router; `contribution1`:
@@ -17,7 +18,10 @@ the pin and exits 0; the test of the pin names the errors that are known).
 
 The wide designs (16 x 16 and up) are checked up to the hand-off and not
 routed; `--route-wide` routes them too (minutes per design and
-configuration; not part of the pin).
+configuration; not part of the pin). `--paper` routes exactly the 27 cells
+of the paper's results table, each benchmark with the configurations it has
+there (`PAPER_CELLS`; the 128 x 128 designs only with contribution 2);
+the largest cells take over an hour each.
 
 `--all` takes every module of `benchmarks/` with a `build_schematic()`
 (not `benchmarks/private/`; name those modules as `private.<name>`).
@@ -54,6 +58,19 @@ PIN = REPO_ROOT / "tests" / "baselines" / "logic_findings.json"
 
 #: the three router configurations of the paper, as `--configuration` names them
 CONFIGURATIONS = ("baseline", "contribution1", "contribution2")
+
+_BENES = [f"benes_{n}x{n}_flat" for n in (4, 8, 16, 32)]
+_ADEPT = [f"multiportmmi_{n}x{n}" for n in (8, 16, 32, 64)]
+
+#: the cells of the paper's results table (`scripts/results/reproduce_paper.sh all`):
+#: the designs the router has to route, each with the configurations it has there
+PAPER_CELLS: tuple[tuple[str, str], ...] = (
+    *((name, configuration) for name in _BENES for configuration in CONFIGURATIONS),
+    ("benes_64x64_flat", "contribution2"),
+    ("benes_128x128_flat", "contribution2"),
+    *((name, configuration) for name in _ADEPT for configuration in CONFIGURATIONS),
+    ("multiportmmi_128x128", "contribution2"),
+)
 
 
 def public_benchmarks() -> list[str]:
@@ -161,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--route-wide", action="store_true", help="route the wide designs too (not for the pin)"
     )
+    parser.add_argument("--paper", action="store_true", help="route the paper's 27 cells")
     parser.add_argument("--jobs", type=int, default=1, metavar="N", help="runs in parallel")
     parser.add_argument("--update", action="store_true", help="write the pin (needs --all)")
     args = parser.parse_args(argv)
@@ -169,15 +187,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.update and (args.configuration or args.route_wide):
         parser.error("--update pins all three configurations without --route-wide")
     configurations = tuple(args.configuration or CONFIGURATIONS)
+    if args.paper and (args.all or args.benchmarks or args.configuration or args.update):
+        parser.error("--paper stands alone (with --jobs and --list)")
     names = public_benchmarks() if args.all else args.benchmarks
-    if not names:
-        parser.error("name a benchmark or pass --all")
+    if not names and not args.paper:
+        parser.error("name a benchmark or pass --all or --paper")
 
     counts: dict[str, dict[str, dict[str, int]]] = {}
     failed = False
-    tasks = [
-        (name, configuration, args.route_wide) for name in names for configuration in configurations
-    ]
+    tasks = [(name, configuration, True) for name, configuration in PAPER_CELLS]
+    tasks = (
+        tasks
+        if args.paper
+        else [
+            (name, configuration, args.route_wide)
+            for name in names
+            for configuration in configurations
+        ]
+    )
     with contextlib.ExitStack() as stack:
         if args.jobs > 1:
             # one process per run: a run shares nothing with the one before it

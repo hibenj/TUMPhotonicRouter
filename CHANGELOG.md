@@ -21,6 +21,9 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   benchmark and configuration (123 runs). A run the flow ends is a finding
   (`routing.net_not_routed`, the note `flow.design_refused` for the 15
   designs contribution 2 refuses as not band-layered, `flow.run_failed`).
+  `--paper` routes the 27 cells of the paper's results table
+  (`PAPER_CELLS`): what the router has to route for now (owner,
+  2026-11-22), each design with the configurations it has in the paper.
 - `docs/CODING_STANDARDS.md` is adopted (owner, 2026-11-22), on the
   condition that it stays close to the public standards of its section 1;
   every departure is listed there as a deviation. Rules marked *proposed*

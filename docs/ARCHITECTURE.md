@@ -894,7 +894,10 @@ after a stage, and an observer can end the run with `StopAfterStage`).
   guided; `contribution2`, pre-placed crossing structures) and collects
   the findings: until the routes are polygons, or, from 16 x 16 on where
   the search takes over a minute, up to the hand-off (`last_stage`;
-  `--route-wide` routes those too, on request and outside the pin). A run
+  `--route-wide` routes those too, on request and outside the pin;
+  `--paper` routes the 27 cells of the paper's results table, the designs
+  the router has to route, each with the configurations it has there, so
+  the 128 x 128 designs only with contribution 2). A run
   the flow ends with an exception is a finding: the error
   `routing.net_not_routed` when the kernel gives up on a net, the note
   `flow.design_refused` when contribution 2 says the design is not

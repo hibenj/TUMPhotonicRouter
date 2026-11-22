@@ -101,6 +101,14 @@ def test_a_run_has_the_pinned_findings_and_only_known_errors(
     assert count_by_check(findings) == pinned
 
 
+def test_the_paper_cells_are_the_27_of_the_results_table() -> None:
+    cells = logic_check.PAPER_CELLS
+    assert len(cells) == len(set(cells)) == 27
+    assert {name for name, _ in cells} <= set(PIN)
+    wide = {configuration for name, configuration in cells if "128x128" in name}
+    assert wide == {"contribution2"}
+
+
 def test_the_wide_designs_stop_at_the_hand_off_and_the_others_run_to_the_polygons() -> None:
     assert logic_check.last_stage("benes_8x8_flat") == "realized"
     assert logic_check.last_stage("cascade_16_folded") == "realized"
