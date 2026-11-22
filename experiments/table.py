@@ -83,7 +83,8 @@ def load_pins(path: Path) -> dict[tuple[str, str], Cell]:
     come from the block's `current` sub-block where it has them, otherwise
     from the block itself. A block that is missing or has no `gds_length_um`
     gives no cell; every cell is `ok` with 0 errors and no rounds or wall
-    time. Assumes a block with a length also has a `crossing_count`.
+    time. A block with a length has a `crossing_count`, its own or that of
+    `current`.
     """
     doc = json.loads(path.read_text())
     out: dict[tuple[str, str], Cell] = {}
@@ -96,8 +97,8 @@ def load_pins(path: Path) -> dict[tuple[str, str], Cell]:
             cur = r.get("current") or {}
             out[(bench, cfg)] = {
                 "ok": True,
-                "x": cur.get("crossing_count", r["crossing_count"]),
-                "len": cur.get("gds_length_um", r["gds_length_um"]),
+                "x": cur["crossing_count"] if "crossing_count" in cur else r["crossing_count"],
+                "len": cur["gds_length_um"] if "gds_length_um" in cur else r["gds_length_um"],
                 "err": 0,
                 "rounds": None,
                 "wall": None,
@@ -144,6 +145,7 @@ def main() -> int:
     print("|" + "---|" * len(head))
     same = [0] * len(variants)
     counted = [0] * len(variants)
+    with_ratio = [0] * len(variants)
     log_len = [0.0] * len(variants)
     wall_ref = [0.0] * len(variants)
     wall_var = [0.0] * len(variants)
@@ -165,10 +167,11 @@ def main() -> int:
                 wr = (c["wall"] / r["wall"]) if (c["wall"] and r["wall"]) else None
                 row.append(f"{fmt(lr, 4)} / {fmt(wr, 2)}")
                 counted[i] += 1
-                if c["x"] == r["x"] and abs(c["len"] - r["len"]) < 0.01:
+                if c["x"] == r["x"] and r["len"] is not None and abs(c["len"] - r["len"]) < 0.01:
                     same[i] += 1
                 if lr:
                     log_len[i] += math.log(lr)
+                    with_ratio[i] += 1
                 if wr:
                     wall_ref[i] += r["wall"]
                     wall_var[i] += c["wall"]
@@ -179,7 +182,7 @@ def main() -> int:
     print("| " + " | ".join(foot) + " |")
     foot = ["geometric mean length ratio / total wall ratio", "", ""]
     for i in range(len(variants)):
-        gm = math.exp(log_len[i] / counted[i]) if counted[i] else None
+        gm = math.exp(log_len[i] / with_ratio[i]) if with_ratio[i] else None
         wr = (wall_var[i] / wall_ref[i]) if wall_ref[i] else None
         foot += ["", f"{fmt(gm, 4)} / {fmt(wr, 2)}"]
     print("| " + " | ".join(foot) + " |")

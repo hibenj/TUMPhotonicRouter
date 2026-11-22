@@ -68,11 +68,15 @@ class OpticalRouteClearancePolicy:
         is passed through, a negative value as 0.
 
         Raises ``ValueError`` when the route width or the grid size is not
-        finite and positive, or the clearance is infinite.
+        finite and positive, or the clearance is infinite or not a number.
         """
         route_width_um = float(route_width_um)
         grid_size_um = float(grid_size_um)
-        route_clearance_um = max(0.0, float(route_clearance_um))
+        route_clearance_um = float(route_clearance_um)
+        if math.isnan(route_clearance_um):
+            # `max(0.0, nan)` is 0.0: the clamp below would hide it
+            raise ValueError("route_clearance_um must be finite")
+        route_clearance_um = max(0.0, route_clearance_um)
         if not math.isfinite(route_width_um) or route_width_um <= 0.0:
             raise ValueError("route_width_um must be finite and > 0")
         if not math.isfinite(grid_size_um) or grid_size_um <= 0.0:

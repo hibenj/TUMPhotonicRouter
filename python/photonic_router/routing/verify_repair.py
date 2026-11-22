@@ -1031,7 +1031,7 @@ def repair_and_verify_final_geometry(
     crossing event model and can repair/reroute before final realization. The full
     photonic probe verification is intentionally diagnostic: it was useful while
     chasing endpoint-correction and crossing-model mismatches, but the normal flow
-    skips this expensive pass unless `self.enable_internal_photonic_probe_verification`
+    skips this expensive pass unless `settings.enable_internal_photonic_probe_verification`
     asks for it. The external Python verifier in `routing_flow.py` remains the final
     GDS/layout-level gate. Repairs up to `final_crossing_repair_round_limit=12` rounds
     of illegal realized crossings; if crossings are clean and internal photonic-probe

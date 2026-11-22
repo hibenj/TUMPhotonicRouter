@@ -126,7 +126,7 @@ class MeanderRouterLike(Protocol):
 
 
 class MeanderPlannerLike(Protocol):
-    """Structural type for the PyO3 `MeanderPlanner` (`src/bindings/meander_py.rs`),
+    """Structural type for the PyO3 `MeanderPlanner` (`crates/router-py/src/meander_py.rs`),
     the registration state and planning calls of one router.
 
     The two planning methods are the request-vector form of the selection

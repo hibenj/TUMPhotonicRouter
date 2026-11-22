@@ -186,14 +186,19 @@ def rect_intersection(left: BBox, right: BBox) -> BBox | None:
     )
 
 
-def rect_is_covered_by_any(rect: BBox, covers: tuple[BBox, ...]) -> bool:
-    """Return whether a single rectangle of ``covers`` contains ``rect``.
+def rect_is_covered(rect: BBox, covers: tuple[BBox, ...]) -> bool:
+    """Return whether the union of ``covers`` contains ``rect``.
 
-    This is not a union test: a ``rect`` covered only by several ``covers``
-    together gives False.
+    A ``rect`` that no single cover contains but several cover together is
+    covered. Compared by area: the parts of ``rect`` inside the covers
+    have the area of ``rect`` (``_same_area``).
     """
 
-    return any(rect_contains(cover, rect) for cover in covers)
+    if any(rect_contains(cover, rect) for cover in covers):
+        return True
+    inside = (rect_intersection(rect, cover) for cover in covers)
+    covered_area = union_rect_area(part for part in inside if part is not None)
+    return _same_area(covered_area, rect_area(rect))
 
 
 def union_rect_area(rects: Iterable[BBox]) -> float:

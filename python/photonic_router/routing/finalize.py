@@ -283,7 +283,7 @@ def _apply_checked_endpoint_corrections_for_net_ids(
             failed_net_ids.append(net_id)
             # Every net reaching this point was already excluded from
             # crossing handling above (crossing_net_ids), regardless of
-            # self.enable_crossings, so there is no later pass that will
+            # settings.enable_crossings, so there is no later pass that will
             # still process it and no reason to withhold recording this
             # failure. Withholding it here used to leave
             # corrected_centerline_um empty with endpoint_correction_error
@@ -1079,11 +1079,11 @@ def finalize_routing_results(
 
     Computes `astar_elapsed_s` from `t_astar_start` (see
     `_finalize_route_jobs_and_static_handoff`'s docstring for why that reading was
-    taken before this method's caller's own precompute work, not at native-dispatch
-    time). Applies checked endpoint corrections if `self.enable_checked_endpoint_correction`,
-    assembles `routed_net_records` from `self.route_bookkeeping` and raises
+    taken before the caller's own precompute work, not at native-dispatch
+    time). Applies checked endpoint corrections if `settings.enable_checked_endpoint_correction`,
+    assembles `routed_net_records` from `state.search.bookkeeping` and raises
     `RuntimeError` if any duplicate net record was produced, then — only if
-    `self.debug_timing and self.verbose_route_diagnostics` — prints the per-bucket A*
+    `settings.debug_timing and settings.verbose_route_diagnostics` — prints the per-bucket A*
     timing breakdown. Returns the assembled records and `astar_elapsed_s` for the
     final verification/realization phases.
     """

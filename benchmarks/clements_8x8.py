@@ -1,7 +1,8 @@
 """LiDAR Clements 8x8 benchmark converted to a gdsfactory schematic.
 
 The instance placements and logical nets come from LiDAR's clements_8x8.yml.
-The routed LiDAR GDS path is kept as reference metadata for comparisons.
+`SOURCE_YAML` and `REFERENCE_GDS` (LiDAR's routed layout, for comparisons)
+are paths inside a checkout of the LiDAR repository.
 """
 
 from __future__ import annotations
@@ -10,8 +11,8 @@ import gdsfactory as gf
 from gdsfactory.gpdk import get_generic_pdk
 from gdsfactory.schematic import Instance, Net, Placement, Schematic
 
-SOURCE_YAML = "/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute/benchmarks/clements_8x8/clements_8x8.yml"
-REFERENCE_GDS = "/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute/result/LiDAR/main_results/clements_8x8_comp_LiDAR_id-2.gds"
+SOURCE_YAML = "src/picroute/benchmarks/clements_8x8/clements_8x8.yml"
+REFERENCE_GDS = "src/picroute/result/LiDAR/main_results/clements_8x8_comp_LiDAR_id-2.gds"
 DIE_AREA_UM = ((0.0, 0.0), (4800.0, 1600.0))
 
 GC_SETTINGS = {

@@ -433,13 +433,11 @@ def demand_from_geometry(regions: RegionGraph, links: Iterable[_Link]) -> Crossi
             continue
         if band_a != band_b:
             requests.append(PathRequest(link.edge_key, band_a, a.y, band_b, b.y))
-            outside.append(
-                OutsideNet(
-                    link.edge_key,
-                    NON_ADJACENT_WALLS,
-                    f"columns {col_a}->{col_b} (skips {abs(col_a - col_b) - 1} column(s))",
-                )
-            )
+            if col_a == col_b:
+                detail = f"column {col_a}, ports into the bands {band_a} and {band_b}"
+            else:
+                detail = f"columns {col_a}->{col_b} (skips {abs(col_a - col_b) - 1} column(s))"
+            outside.append(OutsideNet(link.edge_key, NON_ADJACENT_WALLS, detail))
             continue
         if a.side == b.side:
             outside.append(

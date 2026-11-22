@@ -65,18 +65,6 @@ class PhotonicVerificationResult:
         """The number of issues of severity "warning"."""
         return sum(1 for issue in self.issues if issue.severity == "warning")
 
-    def raise_for_errors(self) -> None:
-        """Raise `AssertionError` unless the verification succeeded.
-
-        The message lists code and message of the first ten issues, of any
-        severity, and says how many more there are.
-        """
-        if self.success:
-            return
-        formatted = "\n".join(f"- {issue.code}: {issue.message}" for issue in self.issues[:10])
-        suffix = "" if len(self.issues) <= 10 else f"\n... {len(self.issues) - 10} more"
-        raise AssertionError(f"Photonic verification failed:\n{formatted}{suffix}")
-
     def as_dict(self) -> dict[str, object]:
         """The result as a JSON-serializable dict, provided metrics and details are.
 

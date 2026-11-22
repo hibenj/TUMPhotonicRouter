@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
 
 from photonic_router.benchmark_extractor import BBox
 from photonic_router.electrical.types import GridCell
@@ -54,20 +53,3 @@ def disk_cells(
             if 0 <= nx < grid.width and 0 <= ny < grid.height:
                 cells.add((nx, ny))
     return frozenset(cells)
-
-
-def cells_bbox(cells: Iterable[GridCell]) -> tuple[int, int, int, int] | None:
-    """Return the inclusive cell bounds ``(xmin, ymin, xmax, ymax)`` of ``cells``.
-
-    None when ``cells`` is empty.
-    """
-
-    cells = tuple(cells)
-    if not cells:
-        return None
-    return (
-        min(x for x, _ in cells),
-        min(y for _, y in cells),
-        max(x for x, _ in cells),
-        max(y for _, y in cells),
-    )

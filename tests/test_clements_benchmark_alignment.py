@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -8,9 +9,13 @@ from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from benchmarks.clements_8x8 import SOURCE_YAML, build_schematic
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_clements_8x8_layout_matches_lidar_macro_placements() -> None:
-    yaml_path = Path(SOURCE_YAML)
+    # `LIDAR_ROOT` names a checkout of the LiDAR repository, by default next to this one
+    lidar_root = Path(os.environ.get("LIDAR_ROOT", REPO_ROOT.parent / "LiDAR"))
+    yaml_path = lidar_root / SOURCE_YAML
     if not yaml_path.exists():
         pytest.skip(f"LiDAR benchmark YAML not available: {yaml_path}")
 

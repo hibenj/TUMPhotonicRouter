@@ -464,6 +464,27 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Fixed
 
+- Findings of the docstring pass of 2026-11-21, checked against the code:
+  - `electrical/rect_geometry.py`: `rect_is_covered` (was
+    `rect_is_covered_by_any`) tests the union of the covers. The
+    electrical verifier no longer reports an obstacle overlap as illegal
+    when two allowed contact boxes cover it together. The electrical
+    suite's numbers do not move.
+  - `OpticalRouteClearancePolicy.from_dimensions` refuses a clearance
+    that is not a number; `max(0.0, nan)` had turned it into 0.
+  - `crossings/crossing_demand.py`: a net between two ports of one column
+    that point into two bands is reported as such, no longer as "skips -1
+    column(s)".
+  - `experiments/table.py`: a failed reference cell no longer ends the
+    table with a `TypeError` and is left out of the geometric mean; a pin
+    whose crossing count is only in `current` is read.
+  - `benchmarks/clements_8x8.py`: `SOURCE_YAML` and `REFERENCE_GDS` are
+    paths inside a LiDAR checkout, not absolute paths of one machine; the
+    alignment test finds the checkout through `LIDAR_ROOT` (default: next
+    to this repository).
+  - Docstrings of `routing/finalize.py`, `routing/verify_repair.py` and
+    `MeanderPlannerLike` name the settings and the file that exist.
+
 - Contribution 1 routes a design whose crossing plan has no crossing.
   The hand-off took "the plan has no event" for "there is no plan" and
   ended the run with "run with --crossing-mode lidar-guided" although that
@@ -1263,6 +1284,9 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   measured next.
 
 ### Removed
+
+- `electrical/pitch_grid.cells_bbox` and
+  `PhotonicVerificationResult.raise_for_errors`: no caller.
 
 - The speed-pass B1 switch `NegotiationConfig.first_attempt_full_budget` /
   `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET`, its binding field,

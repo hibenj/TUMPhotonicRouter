@@ -12,7 +12,7 @@ from photonic_router.electrical.rect_geometry import (
     rect_area,
     rect_intersection,
     rect_intersects,
-    rect_is_covered_by_any,
+    rect_is_covered,
 )
 from photonic_router.electrical.terminal_contacts import terminal_contact_bboxes
 from photonic_router.electrical.types import (
@@ -291,7 +291,7 @@ def _verify_raw_physical_obstacle_overlaps(
                 overlap = rect_intersection(rect, obstacle_bbox)
                 if overlap is None or rect_area(overlap) <= 0:
                     continue
-                if rect_is_covered_by_any(overlap, net.allowed_physical_bboxes):
+                if rect_is_covered(overlap, net.allowed_physical_bboxes):
                     continue
                 illegal_overlaps.add(overlap)
         if not illegal_overlaps:
