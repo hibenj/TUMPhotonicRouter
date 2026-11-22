@@ -15,6 +15,7 @@ meander length, the total with meanders, the die area and the layout box.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -153,6 +154,78 @@ def layout_overview_shapes(component: object) -> tuple[list[InstanceBox], list[l
     return instances, polygons
 
 
+def _instance_svg(
+    instances: list[InstanceBox], to_px: Callable[[Point], tuple[float, float]]
+) -> list[str]:
+    """The SVG of the instance boxes and, above each box, its name."""
+
+    parts: list[str] = []
+    parts.append(
+        f'<g id="instances" fill="{INSTANCE_FILL}" stroke="{INSTANCE_STROKE}" stroke-width="0.5">'
+    )
+    for instance in instances:
+        (x0, y0), (x1, y1) = (
+            to_px((instance.bbox[0], instance.bbox[3])),
+            to_px((instance.bbox[2], instance.bbox[1])),
+        )
+        parts.append(
+            f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{max(x1 - x0, 0.5):.1f}" '
+            f'height="{max(y1 - y0, 0.5):.1f}"><title>{escape(instance.name)}</title></rect>'
+        )
+    parts.append("</g>")
+    parts.append(
+        f'<g id="instance-names" font-family="sans-serif" font-size="{INSTANCE_FONT_PX:.0f}" '
+        'fill="#4b5563">'
+    )
+    for instance in instances:
+        x0, y0 = to_px((instance.bbox[0], instance.bbox[3]))
+        parts.append(f'<text x="{x0:.1f}" y="{y0 - 1.5:.1f}">{escape(instance.name)}</text>')
+    parts.append("</g>")
+    return parts
+
+
+def _waveguide_svg(
+    waveguide_polygons: list[list[Point]],
+    drawn: list[RouteLike],
+    meander_nets: set[str],
+    to_px: Callable[[Point], tuple[float, float]],
+) -> list[str]:
+    """The SVG of the routed waveguides.
+
+    The layout's polygons, each in the colour of the route it belongs to;
+    without polygons, the centerlines of ``drawn``. A net of
+    ``meander_nets`` is drawn in the meander colour.
+    """
+
+    parts: list[str] = []
+    polygon_owner = _polygon_owners(waveguide_polygons, drawn)
+    # a 0.5 um waveguide is well under one pixel at this scale: the stroke
+    # keeps every route visible without hiding the meander shapes
+    parts.append('<g id="waveguides" stroke-width="0.8" stroke-linejoin="round">')
+    for index, polygon in enumerate(waveguide_polygons):
+        owner = polygon_owner.get(index)
+        color = MEANDER_ROUTE_COLOR if owner in meander_nets else ROUTE_COLOR
+        points = " ".join(f"{x:.1f},{y:.1f}" for x, y in (to_px(point) for point in polygon))
+        title = f"<title>{escape(owner)}</title>" if owner else ""
+        parts.append(
+            f'<polygon points="{points}" fill="{color}" stroke="{color}">{title}</polygon>'
+        )
+    parts.append("</g>")
+    if not waveguide_polygons:
+        parts.append('<g id="routes" fill="none" stroke-width="1">')
+        for record in drawn:
+            color = MEANDER_ROUTE_COLOR if record.net_name in meander_nets else ROUTE_COLOR
+            points = " ".join(
+                f"{x:.1f},{y:.1f}" for x, y in (to_px(p) for p in record.corrected_centerline_um)
+            )
+            parts.append(
+                f'<polyline points="{points}" stroke="{color}">'
+                f"<title>{escape(record.net_name)}</title></polyline>"
+            )
+        parts.append("</g>")
+    return parts
+
+
 def write_routes_overview_svg(
     path: Path,
     *,
@@ -225,27 +298,7 @@ def write_routes_overview_svg(
             f"<title>{label}: {_bbox_size(bbox)}</title></rect>"
         )
 
-    parts.append(
-        f'<g id="instances" fill="{INSTANCE_FILL}" stroke="{INSTANCE_STROKE}" stroke-width="0.5">'
-    )
-    for instance in instances:
-        (x0, y0), (x1, y1) = (
-            to_px((instance.bbox[0], instance.bbox[3])),
-            to_px((instance.bbox[2], instance.bbox[1])),
-        )
-        parts.append(
-            f'<rect x="{x0:.1f}" y="{y0:.1f}" width="{max(x1 - x0, 0.5):.1f}" '
-            f'height="{max(y1 - y0, 0.5):.1f}"><title>{escape(instance.name)}</title></rect>'
-        )
-    parts.append("</g>")
-    parts.append(
-        f'<g id="instance-names" font-family="sans-serif" font-size="{INSTANCE_FONT_PX:.0f}" '
-        'fill="#4b5563">'
-    )
-    for instance in instances:
-        x0, y0 = to_px((instance.bbox[0], instance.bbox[3]))
-        parts.append(f'<text x="{x0:.1f}" y="{y0 - 1.5:.1f}">{escape(instance.name)}</text>')
-    parts.append("</g>")
+    parts.extend(_instance_svg(instances, to_px))
 
     # the routed waveguides: real polygons, each colored by the route it belongs to
     meander_nets = {
@@ -253,31 +306,7 @@ def write_routes_overview_svg(
         for record in records
         if float(realized_extra_um_by_net.get(record.net_name, 0.0)) > 0.0
     }
-    polygon_owner = _polygon_owners(waveguide_polygons, drawn)
-    # a 0.5 um waveguide is well under one pixel at this scale: the stroke
-    # keeps every route visible without hiding the meander shapes
-    parts.append('<g id="waveguides" stroke-width="0.8" stroke-linejoin="round">')
-    for index, polygon in enumerate(waveguide_polygons):
-        owner = polygon_owner.get(index)
-        color = MEANDER_ROUTE_COLOR if owner in meander_nets else ROUTE_COLOR
-        points = " ".join(f"{x:.1f},{y:.1f}" for x, y in (to_px(point) for point in polygon))
-        title = f"<title>{escape(owner)}</title>" if owner else ""
-        parts.append(
-            f'<polygon points="{points}" fill="{color}" stroke="{color}">{title}</polygon>'
-        )
-    parts.append("</g>")
-    if not waveguide_polygons:
-        parts.append('<g id="routes" fill="none" stroke-width="1">')
-        for record in drawn:
-            color = MEANDER_ROUTE_COLOR if record.net_name in meander_nets else ROUTE_COLOR
-            points = " ".join(
-                f"{x:.1f},{y:.1f}" for x, y in (to_px(p) for p in record.corrected_centerline_um)
-            )
-            parts.append(
-                f'<polyline points="{points}" stroke="{color}">'
-                f"<title>{escape(record.net_name)}</title></polyline>"
-            )
-        parts.append("</g>")
+    parts.extend(_waveguide_svg(waveguide_polygons, drawn, meander_nets, to_px))
 
     parts.append(
         f'<g id="labels" font-family="sans-serif" font-size="{LABEL_FONT_PX:.0f}" '

@@ -176,6 +176,57 @@ def record_initial_route_stats(stats: RoutingFlowStats | None) -> None:
     stats.step_times_s["baseline_gdsfactory_routing"] = 0.0
 
 
+#: Counters `populate_route_stats` copies from the route search summary to
+#: the field of the same name.
+_SUMMARY_COUNTERS = (
+    "simple_route_count",
+    "repair_count",
+    "expanded_states",
+    "generated_neighbors",
+    "heap_pushes",
+    "heap_pops",
+    "skipped_duplicate_heap_entries",
+    "stale_generation_heap_entries",
+    "closed_heap_entries",
+    "max_heap_size",
+    "dense_search_states",
+    "dense_search_storage_bytes",
+    "best_cost_updates",
+    "parent_updates",
+    "obstacle_clearance_checks",
+    "footprint_checks",
+    "footprint_rect_checks",
+    "crossing_candidate_checks",
+    "crossing_accepted",
+    "crossing_reject_non_straight",
+    "crossing_reject_not_perpendicular",
+    "crossing_reject_margin",
+    "crossing_reject_wrong_order",
+    "crossing_reject_unexpected_owner",
+    "crossing_reject_unmatched_owner",
+    "crossing_reject_unmatched_centerline",
+    "crossing_reject_unmatched_footprint",
+    "crossing_reject_unmatched_route_centerline",
+    "crossing_reject_unmatched_route_footprint",
+    "crossing_reject_pending_straight",
+    "full_grid_fallbacks",
+)
+
+#: Times it copies likewise: `<name>_us` of the summary (microseconds) to
+#: `<name>_s` (seconds).
+_SUMMARY_TIMES = (
+    "neighbor_generation_time",
+    "heap_operation_time",
+    "legality_check_time",
+    "reconstruction_time",
+    "search_loop_time",
+    "obstacle_map_prepare_time",
+    "simple_route_time",
+    "commit_prepare_time",
+    "commit_time",
+)
+
+
 def populate_route_stats(
     stats: RoutingFlowStats,
     *,
@@ -212,58 +263,10 @@ def populate_route_stats(
         int(route_summary.route_failures) if int(route_summary.route_attempts) > 0 else None
     )
     stats.detour_pass_reroutes = debug_artifacts.detour_pass_reroutes
-    stats.simple_route_count = int(route_summary.simple_route_count)
-    stats.repair_count = int(route_summary.repair_count)
-    stats.expanded_states = int(route_summary.expanded_states)
-    stats.generated_neighbors = int(route_summary.generated_neighbors)
-    stats.heap_pushes = int(route_summary.heap_pushes)
-    stats.heap_pops = int(route_summary.heap_pops)
-    stats.skipped_duplicate_heap_entries = int(route_summary.skipped_duplicate_heap_entries)
-    stats.stale_generation_heap_entries = int(route_summary.stale_generation_heap_entries)
-    stats.closed_heap_entries = int(route_summary.closed_heap_entries)
-    stats.max_heap_size = int(route_summary.max_heap_size)
-    stats.dense_search_states = int(route_summary.dense_search_states)
-    stats.dense_search_storage_bytes = int(route_summary.dense_search_storage_bytes)
-    stats.best_cost_updates = int(route_summary.best_cost_updates)
-    stats.parent_updates = int(route_summary.parent_updates)
-    stats.obstacle_clearance_checks = int(route_summary.obstacle_clearance_checks)
-    stats.footprint_checks = int(route_summary.footprint_checks)
-    stats.footprint_rect_checks = int(route_summary.footprint_rect_checks)
-    stats.crossing_candidate_checks = int(route_summary.crossing_candidate_checks)
-    stats.crossing_accepted = int(route_summary.crossing_accepted)
-    stats.crossing_reject_non_straight = int(route_summary.crossing_reject_non_straight)
-    stats.crossing_reject_not_perpendicular = int(route_summary.crossing_reject_not_perpendicular)
-    stats.crossing_reject_margin = int(route_summary.crossing_reject_margin)
-    stats.crossing_reject_wrong_order = int(route_summary.crossing_reject_wrong_order)
-    stats.crossing_reject_unexpected_owner = int(route_summary.crossing_reject_unexpected_owner)
-    stats.crossing_reject_unmatched_owner = int(route_summary.crossing_reject_unmatched_owner)
-    stats.crossing_reject_unmatched_centerline = int(
-        route_summary.crossing_reject_unmatched_centerline
-    )
-    stats.crossing_reject_unmatched_footprint = int(
-        route_summary.crossing_reject_unmatched_footprint
-    )
-    stats.crossing_reject_unmatched_route_centerline = int(
-        route_summary.crossing_reject_unmatched_route_centerline
-    )
-    stats.crossing_reject_unmatched_route_footprint = int(
-        route_summary.crossing_reject_unmatched_route_footprint
-    )
-    stats.crossing_reject_pending_straight = int(route_summary.crossing_reject_pending_straight)
-    stats.full_grid_fallbacks = int(route_summary.full_grid_fallbacks)
-    stats.neighbor_generation_time_s = (
-        float(route_summary.neighbor_generation_time_us) / 1_000_000.0
-    )
-    stats.heap_operation_time_s = float(route_summary.heap_operation_time_us) / 1_000_000.0
-    stats.legality_check_time_s = float(route_summary.legality_check_time_us) / 1_000_000.0
-    stats.reconstruction_time_s = float(route_summary.reconstruction_time_us) / 1_000_000.0
-    stats.search_loop_time_s = float(route_summary.search_loop_time_us) / 1_000_000.0
-    stats.obstacle_map_prepare_time_s = (
-        float(route_summary.obstacle_map_prepare_time_us) / 1_000_000.0
-    )
-    stats.simple_route_time_s = float(route_summary.simple_route_time_us) / 1_000_000.0
-    stats.commit_prepare_time_s = float(route_summary.commit_prepare_time_us) / 1_000_000.0
-    stats.commit_time_s = float(route_summary.commit_time_us) / 1_000_000.0
+    for name in _SUMMARY_COUNTERS:
+        setattr(stats, name, int(getattr(route_summary, name)))
+    for name in _SUMMARY_TIMES:
+        setattr(stats, f"{name}_s", float(getattr(route_summary, f"{name}_us")) / 1_000_000.0)
     stats.route_attempt_records = route_attempt_records
 
 

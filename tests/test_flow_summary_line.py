@@ -76,6 +76,54 @@ def test_route_failures_print_a_dash_without_per_route_collection():
     assert "route_failures=4 " in format_flow_summary_line(populated(132, 4))
 
 
+def test_every_search_counter_and_time_reaches_the_stats():
+    """``populate_route_stats`` copies the counters and times by name: every
+    listed name is a field on both sides, and each value arrives (the times
+    converted from microseconds to seconds)."""
+
+    import dataclasses
+
+    import gdsfactory as gf
+    from photonic_router import flow_stats
+    from photonic_router.records.route_rust_types import (
+        RouteRustPipelineResult,
+        RouteSearchSummary,
+        RustRouteDebugArtifacts,
+    )
+
+    counters = flow_stats._SUMMARY_COUNTERS
+    times = flow_stats._SUMMARY_TIMES
+    assert len(counters) == 31 and len(set(counters)) == 31
+    assert len(times) == 9 and len(set(times)) == 9
+    stats_fields = {field.name for field in dataclasses.fields(RoutingFlowStats)}
+    summary_fields = {field.name for field in dataclasses.fields(RouteSearchSummary)}
+    assert set(counters) <= stats_fields & summary_fields
+    assert {f"{name}_s" for name in times} <= stats_fields
+    assert {f"{name}_us" for name in times} <= summary_fields
+
+    values = {name: 100 + index for index, name in enumerate(counters)}
+    values.update({f"{name}_us": 1_000_000 * (index + 1) for index, name in enumerate(times)})
+    summary = RouteSearchSummary(**values)
+    artifacts = RustRouteDebugArtifacts(
+        obstacle_svg=None, route_svgs=[], routed_edge_lengths_um={}, route_search_summary=summary
+    )
+    stats = RoutingFlowStats()
+    flow_stats.populate_route_stats(
+        stats,
+        route_result=RouteRustPipelineResult(
+            routed_layout=gf.Component(), debug_artifacts=artifacts
+        ),
+        debug_artifacts=artifacts,
+        route_summary=summary,
+        route_attempt_records=[],
+        route_time_s=0.0,
+    )
+    for index, name in enumerate(counters):
+        assert getattr(stats, name) == 100 + index, name
+    for index, name in enumerate(times):
+        assert getattr(stats, f"{name}_s") == float(index + 1), name
+
+
 def test_summary_line_tells_zero_heaters_from_a_skipped_electrical_stage():
     stats = RoutingFlowStats()
     stats.benchmark_name = "plain"

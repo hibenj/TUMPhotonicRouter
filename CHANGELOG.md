@@ -531,6 +531,20 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Three more functions within the limit of 50 statements, no behaviour
+  change: `route_overview_svg.write_routes_overview_svg` hands the
+  instance boxes and the waveguides to `_instance_svg` and
+  `_waveguide_svg`; `flow_stats.populate_route_stats` copies the 31 search
+  counters and the 9 search times by name from two tables
+  (`_SUMMARY_COUNTERS`, `_SUMMARY_TIMES`) instead of one assignment
+  each, and `dump_photonic_probe_failure_artifacts` hands the issue
+  scan and the per-net centerlines to two functions (the per-net entry
+  is the TypedDict `_NetCenterlines`). The last two got a test:
+  every listed counter and time is a field on both sides and arrives
+  (`tests/test_flow_summary_line.py`), and the probe failure files hold
+  the centerlines of every net an issue names
+  (`tests/test_probe_failure_artifacts.py`, the first test of that
+  writer).
 - Seven functions within the limit of 50 statements (rule 4.5), each by
   moving a self-contained part into a function of its own, no behaviour
   change: `cli._build_arg_parser` (six argument groups; the `--help`

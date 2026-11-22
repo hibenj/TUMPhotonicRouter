@@ -6,7 +6,7 @@ import json
 import math
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, TypedDict
 
 from gdsfactory.component import Component
 
@@ -174,6 +174,92 @@ def _write_centerline_probe_svg(
     path.write_text("\n".join(parts) + "\n", encoding="utf-8")
 
 
+class _NetCenterlines(TypedDict, total=False):
+    """One net's entry of the probe failure centerline file; lengths in um."""
+
+    net_id: int | None
+    source: str
+    target: str
+    source_port_center_um: tuple[float, float] | None
+    target_port_center_um: tuple[float, float] | None
+    endpoint_correction_error: str | None
+    primitive_centerline_um: list[tuple[float, float]]
+    corrected_centerline_um: list[tuple[float, float]]
+    primitive_centerline_error: str
+    corrected_centerline_error: str
+
+
+def _issue_nets_and_overlap_boxes(
+    verification: PhotonicVerificationResult,
+) -> tuple[set[str], list[tuple[float, float, float, float]]]:
+    """The nets the issues of a verification name, and the overlap boxes they report (um)."""
+
+    issue_net_names: set[str] = set()
+    overlap_bboxes: list[tuple[float, float, float, float]] = []
+    for issue in verification.issues:
+        if issue.net_name:
+            issue_net_names.add(str(issue.net_name))
+        other = (issue.details or {}).get("other_net_name")
+        if isinstance(other, str):
+            issue_net_names.add(other)
+        bbox = _normalize_um_bbox((issue.details or {}).get("overlap_bbox_um"))
+        if bbox is not None:
+            overlap_bboxes.append(bbox)
+    return issue_net_names, overlap_bboxes
+
+
+def _centerlines_of_nets(
+    net_names: Iterable[str],
+    records: Iterable[RoutedNetRecord],
+    router: ProbeCenterlineRouter,
+) -> dict[str, _NetCenterlines]:
+    """One entry per named net that has a record: its endpoints and both centerlines in um.
+
+    The primitive centerline comes from the router, the corrected one from
+    the record, or from the router when the record has none. A centerline
+    the router cannot produce is an empty list, with the error text under
+    ``primitive_centerline_error`` or ``corrected_centerline_error``.
+    """
+
+    records_by_name = {record.net_name: record for record in records}
+    centerlines_by_net: dict[str, _NetCenterlines] = {}
+    for net_name in net_names:
+        record = records_by_name.get(net_name)
+        if record is None:
+            continue
+        item: _NetCenterlines = {
+            "net_id": record.net_id,
+            "source": str(record.source),
+            "target": str(record.target),
+            "source_port_center_um": record.source_port_center_um,
+            "target_port_center_um": record.target_port_center_um,
+            "endpoint_correction_error": record.endpoint_correction_error,
+        }
+        try:
+            primitive = _as_point_list(router.route_primitive_centerline(record.route_obj))
+        except Exception as exc:
+            primitive = []
+            item["primitive_centerline_error"] = str(exc)
+        corrected = _as_point_list(record.corrected_centerline_um)
+        if not corrected:
+            try:
+                corrected = _as_point_list(
+                    router.route_port_corrected_centerline(
+                        record.route_obj,
+                        source_port_um=record.source_port_center_um,
+                        target_port_um=record.target_port_center_um,
+                        allow_unchecked_bumps=True,
+                    )
+                )
+            except Exception as exc:
+                corrected = []
+                item["corrected_centerline_error"] = str(exc)
+        item["primitive_centerline_um"] = primitive
+        item["corrected_centerline_um"] = corrected
+        centerlines_by_net[net_name] = item
+    return centerlines_by_net
+
+
 def dump_photonic_probe_failure_artifacts(
     *,
     debug_path: Path,
@@ -214,54 +300,8 @@ def dump_photonic_probe_failure_artifacts(
     )
     artifacts["issues_json"] = str(issues_path)
 
-    issue_net_names: set[str] = set()
-    overlap_bboxes: list[tuple[float, float, float, float]] = []
-    for issue in verification.issues:
-        if issue.net_name:
-            issue_net_names.add(str(issue.net_name))
-        other = (issue.details or {}).get("other_net_name")
-        if isinstance(other, str):
-            issue_net_names.add(other)
-        bbox = _normalize_um_bbox((issue.details or {}).get("overlap_bbox_um"))
-        if bbox is not None:
-            overlap_bboxes.append(bbox)
-
-    records_by_name = {record.net_name: record for record in records}
-    centerlines_by_net: dict[str, dict[str, object]] = {}
-    for net_name in sorted(issue_net_names):
-        record = records_by_name.get(net_name)
-        if record is None:
-            continue
-        item: dict[str, object] = {
-            "net_id": record.net_id,
-            "source": str(record.source),
-            "target": str(record.target),
-            "source_port_center_um": record.source_port_center_um,
-            "target_port_center_um": record.target_port_center_um,
-            "endpoint_correction_error": record.endpoint_correction_error,
-        }
-        try:
-            primitive = _as_point_list(router.route_primitive_centerline(record.route_obj))
-        except Exception as exc:
-            primitive = []
-            item["primitive_centerline_error"] = str(exc)
-        corrected = _as_point_list(record.corrected_centerline_um)
-        if not corrected:
-            try:
-                corrected = _as_point_list(
-                    router.route_port_corrected_centerline(
-                        record.route_obj,
-                        source_port_um=record.source_port_center_um,
-                        target_port_um=record.target_port_center_um,
-                        allow_unchecked_bumps=True,
-                    )
-                )
-            except Exception as exc:
-                corrected = []
-                item["corrected_centerline_error"] = str(exc)
-        item["primitive_centerline_um"] = primitive
-        item["corrected_centerline_um"] = corrected
-        centerlines_by_net[net_name] = item
+    issue_net_names, overlap_bboxes = _issue_nets_and_overlap_boxes(verification)
+    centerlines_by_net = _centerlines_of_nets(sorted(issue_net_names), records, router)
 
     centerline_path = probe_dir / f"{stem}_centerlines.json"
     centerline_path.write_text(
@@ -273,12 +313,8 @@ def dump_photonic_probe_failure_artifacts(
     svg_centerlines: dict[str, Mapping[str, list[tuple[float, float]]]] = {}
     for net_name, item in centerlines_by_net.items():
         svg_centerlines[net_name] = {
-            "primitive_centerline_um": cast(
-                list[tuple[float, float]], item.get("primitive_centerline_um", [])
-            ),
-            "corrected_centerline_um": cast(
-                list[tuple[float, float]], item.get("corrected_centerline_um", [])
-            ),
+            "primitive_centerline_um": item["primitive_centerline_um"],
+            "corrected_centerline_um": item["corrected_centerline_um"],
         }
     focus_bbox = (
         overlap_bboxes[0]
