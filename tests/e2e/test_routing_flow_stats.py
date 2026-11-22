@@ -737,7 +737,7 @@ def test_z_fallback_never_crosses_committed_metal(monkeypatch):
     river_footprint: set = set()
     for route in river_routes:
         river_footprint |= wire_reservation_cells_from_point_path(
-            route.centerline, obstacle_map, config, radius=spacing_radius
+            route.centerline, obstacle_map, radius=spacing_radius
         )
     for route in fallback_routes:
         fallback_centerline = set(cells_from_point_path(route.centerline))

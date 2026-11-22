@@ -156,7 +156,6 @@ def route_detailed_bundles(
             wire_reservation_cells_from_point_path(
                 detailed_path,
                 obstacle_map,
-                config,
                 radius=wire_spacing_radius_cells(obstacle_map, config),
             )
         )

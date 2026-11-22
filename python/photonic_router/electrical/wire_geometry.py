@@ -84,7 +84,6 @@ def dilate_cells(
 def wire_reservation_cells_from_point_path(
     path: tuple[tuple[float, float], ...],
     obstacle_map: ElectricalObstacleMap,
-    config: ElectricalRoutingConfig,
     *,
     radius: int,
 ) -> frozenset[GridCell]:

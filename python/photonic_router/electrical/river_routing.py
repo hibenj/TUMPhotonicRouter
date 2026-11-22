@@ -550,7 +550,7 @@ def _check_static_collision(
     member_hard_blocked.update(all_terminal_cells.difference(source_cells))
     member_hard_blocked.update(all_assigned_pad_cells.difference(own_pad_cells))
     reservation = wire_reservation_cells_from_point_path(
-        centerline, obstacle_map, config, radius=obstacle_radius
+        centerline, obstacle_map, radius=obstacle_radius
     )
     if reservation & member_hard_blocked:
         return f"{terminal_id}'s channel wire collides"

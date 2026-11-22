@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class RoutingFlowStats:
-    """Compatibility container for legacy routing-flow timing/stat collection."""
+    """The timings and counters of one flow run, filled stage by stage; the SUMMARY line reads it."""
 
     benchmark_name: str | None = None
     total_time_s: float = 0.0
@@ -169,7 +169,7 @@ class RoutingFlowStats:
 
 
 def record_initial_route_stats(stats: RoutingFlowStats | None) -> None:
-    """Initialize legacy route timing fields before the optical router runs."""
+    """Set the route timing fields to 0 before the optical router runs."""
     if stats is None:
         return
     stats.step_times_s["build_static_obstacle_map"] = 0.0
@@ -185,7 +185,7 @@ def populate_route_stats(
     route_attempt_records: list[dict[str, object]],
     route_time_s: float,
 ) -> None:
-    """Copy optical route counters into the legacy stats object."""
+    """Copy the optical route counters and timings into `stats`."""
     stats.step_times_s["baseline_gdsfactory_routing"] = route_time_s
     if "build_static_obstacle_map" not in stats.step_times_s:
         stats.step_times_s["build_static_obstacle_map"] = 0.0

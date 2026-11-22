@@ -1,8 +1,9 @@
 """The one environment-variable overlay loader (owner decision D4 of
 `.agent/execplans/2026-09-22-modular-readable-router-restructure.md`): every
 `PHOTONIC_ROUTER_*` name from the Milestone 1 inventory -- Rust-side
-(Slice 1) and Python-side (Slice 2) -- maps to exactly one field of
-`photonic_router.config.RoutingConfig`, applied here and only here.
+(Slice 1) and Python-side (Slice 2) -- maps to one field of
+`photonic_router.config.RoutingConfig` (`PHOTONIC_ROUTER_MOVE_DIAG` to two:
+its presence and its cell pair), applied here and only here.
 Everything else in the codebase takes a `RoutingConfig` (or, at the
 Rust boundary, a `RouterConfig`) object explicitly; this module exists for
 the benchmarks' `[config]` tables (`benchmarks/<name>.toml`), the reproduction

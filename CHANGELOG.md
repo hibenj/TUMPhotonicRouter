@@ -1287,6 +1287,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 - `electrical/pitch_grid.cells_bbox` and
   `PhotonicVerificationResult.raise_for_errors`: no caller.
+- The parameter `config` of
+  `electrical/wire_geometry.wire_reservation_cells_from_point_path`
+  (not read) and a comparison in `plm/path_length_requirements.py` that
+  could not be true after the deduplication before it.
 
 - The speed-pass B1 switch `NegotiationConfig.first_attempt_full_budget` /
   `PHOTONIC_ROUTER_NEGOTIATED_FIRST_ATTEMPT_FULL_BUDGET`, its binding field,

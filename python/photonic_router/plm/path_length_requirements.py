@@ -226,7 +226,7 @@ def build_requirement_delay_candidates(
         affected_requirement_edge_keys: tuple[RoutedEdgeKey, ...],
     ) -> None:
         edge_keys = _dedupe_edge_tuple(edge_keys)
-        if not edge_keys or len(edge_keys) != len(set(edge_keys)):
+        if not edge_keys:
             return
         affected_requirement_edge_keys = tuple(
             sorted(
