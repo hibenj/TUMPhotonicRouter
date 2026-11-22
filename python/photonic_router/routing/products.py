@@ -347,6 +347,21 @@ class RunPlan:
         return cls([], {}, {}, {}, {}, (0, 0, 0.0, 0.0, 0.0), RipupRerouteConfig(), False, False)
 
 
+class MatchedLengths(NamedTuple):
+    """What `route_match_and_realize` reports once the meanders are planned (`stage_observer`)."""
+
+    analysis: Any
+    """The `PathLengthAnalysisResult`: the graph along the light and the lengths inside the nodes."""
+    records: list[Any]
+    """The routed net records, each with the meander plan the matching gave it."""
+    meander_report: Any
+    """The `MeanderInsertionReport` of the planning."""
+    declared_unmatched_groups: tuple[str, ...]
+    """The groups the benchmark leaves unmatched on purpose."""
+    output_scope: str | None
+    """`all` or `depth` when the outputs are matched, else None."""
+
+
 class RealizedNets(NamedTuple):
     """What `route_match_and_realize` reports once the routes are polygons (`stage_observer`)."""
 
@@ -358,6 +373,8 @@ class RealizedNets(NamedTuple):
     route_width_um: float
     crossing_plan_info: CrossingPlanInfo | None
     """The session's crossing plan info with the crossing components that were placed."""
+    matched: MatchedLengths | None = None
+    """What path-length matching handed on, None when the run does not match lengths."""
 
 
 class LoadedDesign(NamedTuple):

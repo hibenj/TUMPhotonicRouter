@@ -52,6 +52,7 @@ from typing import Any
 import shapely
 
 from photonic_router.logic_checks.findings import ERROR, NOTE, Finding
+from photonic_router.logic_checks.matching import check_layout_matching
 
 EDGE_TOLERANCE_UM = 2e-3
 """Polygons are on the layout's database grid (1 nm); a centerline is not."""
@@ -97,7 +98,36 @@ def check_realized(realized: Any) -> list[Finding]:
     polygons = route_layer_polygons(realized.routed_layout, realized.route_layer)
     info = realized.crossing_plan_info
     components = (info.realized_crossing_components if info is not None else None) or []
-    return check_polygons(polygons, realized.records, float(realized.route_width_um), components)
+    width_um = float(realized.route_width_um)
+    findings = check_polygons(polygons, realized.records, width_um, components)
+    if realized.matched is not None:
+        lengths = polygon_lengths_um(polygons, realized.records, width_um, components)
+        findings.extend(check_layout_matching(realized.matched, lengths))
+    return findings
+
+
+def polygon_lengths_um(
+    polygons: list[shapely.Polygon],
+    records: list[Any],
+    route_width_um: float,
+    crossing_components: list[Any],
+) -> dict[str, float]:
+    """Per net name, the length drawn on the route layer: polygon area by route width.
+
+    Only the nets whose polygons hold their whole length: a net through a
+    crossing component is left out (the component's footprint is not a
+    route polygon), and so is a net without a polygon.
+    """
+    valid = [polygon for polygon in polygons if polygon.is_valid]
+    lines = [shapely.LineString(record.corrected_centerline_um) for record in records]
+    pieces = _pieces_by_record(valid, lines)
+    crossed = set(_footprints_by_net(crossing_components))
+    return {
+        str(record.net_name): sum(float(valid[index].area) for index in pieces[number])
+        / route_width_um
+        for number, record in enumerate(records)
+        if number in pieces and str(record.net_name) not in crossed
+    }
 
 
 def check_polygons(

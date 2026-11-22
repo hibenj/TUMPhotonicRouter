@@ -14,6 +14,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- Logic harness, stage `matched` (`logic_checks/matching.py`): are the
+  path lengths equal where the design needs them equal? After the
+  meanders are planned, `route_match_and_realize` reports a
+  `MatchedLengths`; the checks recompute every arrival along the graph
+  from the records' final lengths (to 1 nm) and, at `realized`, from the
+  polygons of the layout (area over width, to 0.5 um), for every group
+  and for the matched outputs. A group the benchmark declares unmatched
+  is a note. Every run with path-length matching is checked, in the pin
+  and under `--verify-stages`.
 - The logic harness runs every public benchmark in the three router
   configurations (`scripts/logic_check.py`: `--configuration`, repeatable,
   default all three; `--jobs N`; `--route-wide` for the designs from

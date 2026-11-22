@@ -62,7 +62,7 @@ from photonic_router.records.route_rust_types import (
 )
 from photonic_router.routing import stage_observer
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions, SessionOptions
-from photonic_router.routing.products import RealizedNets
+from photonic_router.routing.products import MatchedLengths, RealizedNets
 from photonic_router.routing.route_jobs import build_route_jobs_and_fanout_clustering
 
 # re-exported here as part of the module-level routing API
@@ -174,6 +174,7 @@ def route_match_and_realize(
     analysis_info = None
     requirements_info = None
     meander_report = None
+    matched: MatchedLengths | None = None
     meander_report_info = None
     records_for_realization = debug_artifacts.routed_net_records
     if matching.enable_path_length_matching:
@@ -361,6 +362,16 @@ def route_match_and_realize(
                 # leaves unmatched on purpose; the run finishes and reports them
                 # (SUMMARY plm_over_tolerance).
                 print(f"      - WARNING: {failure} (declared unmatched groups)")
+        matched = MatchedLengths(
+            analysis=analysis,
+            records=list(records_for_realization),
+            meander_report=meander_report,
+            declared_unmatched_groups=tuple(matching.path_length_declared_unmatched_groups),
+            output_scope=(
+                matching.path_length_output_scope if matching.path_length_match_outputs else None
+            ),
+        )
+        stage_observer.notify("matched", None, matched)
 
     if debug_artifacts.realization_grid_spec is None:
         raise RuntimeError("Missing realization grid spec from routing phase.")
@@ -449,6 +460,7 @@ def route_match_and_realize(
             route_layer=realization.route_layer,
             route_width_um=float(realization.route_width_um),
             crossing_plan_info=plan_info,
+            matched=matched,
         ),
     )
     return RouteRustPipelineResult(

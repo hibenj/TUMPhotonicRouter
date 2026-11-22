@@ -876,6 +876,18 @@ docstring:
   components; the polygons' length (area over width) is the centerline's,
   or for a net with a meander the recorded length plus the extra length
   its plan asked for; polygons of two nets do not overlap.
+* `matching.py`, what path-length matching hands on once the meanders are
+  planned (only a run that matches lengths reports the stage `matched`):
+  the nets of the graph along the light are the records; no plan makes a
+  net shorter, and a plan's extra length is what the meander report
+  booked; the arrivals over the nets into one node, recomputed from the
+  records' final lengths and the lengths inside the instances, are equal
+  to 1 nm unless the benchmark declared the group unmatched, and so are
+  the arrivals at the outputs when they are matched. At `realized` the
+  same two statements are made on the layout itself, with each net's
+  length measured as polygon area over route width (to 0.5 um; a net
+  follows its record to a few hundredths). The orientation of the nets
+  along the light is taken from the analysis and not checked.
 
 The stages are read from a real run: `routing/stage_observer.py` is the
 seam (`observe_stages(observer)`; the flow and the session call `notify`

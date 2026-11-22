@@ -10,7 +10,8 @@ error.
 Stages, in the order a run reports them: `loaded` (the schematic and the
 placed layout; the reading checks and the crossing demand), `obstacle_map`,
 `router_setup` (no checks yet), `handoff` (route jobs and crossing plan
-info), `routed`, `records`, `verified`, `realized`.
+info), `routed`, `records`, `verified`, `matched` (only a run with
+path-length matching reports it), `realized`.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from photonic_router.logic_checks.crossing_plan import (
     check_crossing_plan_info,
 )
 from photonic_router.logic_checks.findings import ERROR, Finding
+from photonic_router.logic_checks.matching import check_matched
 from photonic_router.logic_checks.obstacle_map import check_obstacle_map
 from photonic_router.logic_checks.reading import check_layout, check_schematic
 from photonic_router.logic_checks.realized import check_realized, check_verified
@@ -42,6 +44,7 @@ STAGES = (
     "routed",
     "records",
     "verified",
+    "matched",
     "realized",
 )
 
@@ -61,7 +64,7 @@ def stage_findings(stage: str, settings: Any, product: Any) -> list[Finding]:
     """The findings of the checks that read the product of `stage`.
 
     `settings` is the `SessionSettings` of the session that reports, None
-    for the stages the flow reports itself (`loaded`, `realized`).
+    for the stages the flow reports itself (`loaded`, `matched`, `realized`).
     """
     if stage == "loaded":
         schematic, layout = product.schematic, product.unrouted_layout
@@ -71,6 +74,8 @@ def stage_findings(stage: str, settings: Any, product: Any) -> list[Finding]:
             *check_layout(schematic, layout),
             *check_crossing_demand(schematic, layout, demand),
         ]
+    if stage == "matched":
+        return check_matched(product)
     if stage == "realized":
         return check_realized(product)
     if settings is None:

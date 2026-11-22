@@ -64,9 +64,18 @@ def test_the_flag_checks_every_stage_of_a_run_and_a_run_without_it_checks_none(c
     cli.main(["benes_4x4", "--verify-stages"])
     verified = capsys.readouterr().out
     for stage in STAGES:
-        assert f"      - verify {stage}: 0 error(s)" in verified
+        # Benes has no path-length matching: that stage is not reported
+        assert (f"      - verify {stage}: 0 error(s)" in verified) == (stage != "matched")
     cli.main(["benes_4x4"])
     assert "verify " not in capsys.readouterr().out
+
+
+@pytest.mark.e2e
+def test_a_run_with_path_length_matching_reports_the_stage_matched(capsys) -> None:
+    cli.main(["heater_s_mod", "--verify-stages"])
+    verified = capsys.readouterr().out
+    for stage in STAGES:
+        assert f"      - verify {stage}: 0 error(s)" in verified
 
 
 @pytest.mark.e2e
