@@ -70,6 +70,10 @@ pinned in `tests/baselines/logic_findings.json` and compared in the test
 baseline; a benchmark you add needs an entry (`--all --update --jobs 6`).
 `--route-wide` also routes the designs from 16 x 16 on, which the pin
 checks only up to the hand-off.
+What the router has to route without an error is `REQUIRED_CELLS` there:
+the paper's 27 cells (`--paper`) and the 13 path-length-matching benchmarks
+with the standard router (`--plm`); the two crossing contributions are made
+for the Benes and ADEPT designs.
 `python -m photonic_router <benchmark> --verify-stages` runs the same checks
 inside a normal run and ends it at the first stage that hands on an error.
 

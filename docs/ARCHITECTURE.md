@@ -909,7 +909,9 @@ after a stage, and an observer can end the run with `StopAfterStage`).
   `--route-wide` routes those too, on request and outside the pin;
   `--paper` routes the 27 cells of the paper's results table, the designs
   the router has to route, each with the configurations it has there, so
-  the 128 x 128 designs only with contribution 2). A run
+  the 128 x 128 designs only with contribution 2; `--plm` routes the 13
+  path-length-matching benchmarks with the standard router, the
+  configuration they are made for; together `REQUIRED_CELLS`). A run
   the flow ends with an exception is a finding: the error
   `routing.net_not_routed` when the kernel gives up on a net, the note
   `flow.design_refused` when contribution 2 says the design is not

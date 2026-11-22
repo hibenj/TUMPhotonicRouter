@@ -14,6 +14,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `scripts/logic_check.py --plm` routes the 13 path-length-matching
+  benchmarks with the standard router, the configuration they are made for
+  (owner, 2026-11-22: the two crossing contributions are meant for the
+  Benes and ADEPT designs). `REQUIRED_CELLS` (the paper's 27 cells and
+  these 13) is what the router has to route; a test holds that none of them
+  has a known error or is refused.
+
 - Logic harness, stage `matched` (`logic_checks/matching.py`): are the
   path lengths equal where the design needs them equal? After the
   meanders are planned, `route_match_and_realize` reports a

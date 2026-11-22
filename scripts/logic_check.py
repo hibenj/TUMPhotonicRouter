@@ -6,6 +6,7 @@ Usage:
     logic_check.py --all --update
     logic_check.py <benchmark> --route-wide
     logic_check.py --paper [--jobs N]
+    logic_check.py --plm [--jobs N]
 
 Runs the checks of `photonic_router.logic_checks` stage by stage, once per
 router configuration (`baseline`: the standard router; `contribution1`:
@@ -21,7 +22,10 @@ routed; `--route-wide` routes them too (minutes per design and
 configuration; not part of the pin). `--paper` routes exactly the 27 cells
 of the paper's results table, each benchmark with the configurations it has
 there (`PAPER_CELLS`; the 128 x 128 designs only with contribution 2);
-the largest cells take over an hour each.
+the largest cells take over an hour each. `--plm` routes the 13
+path-length-matching benchmarks with the standard router, the configuration
+they are made for (`PLM_CELLS`; about a minute with `--jobs 6`). The two
+together are `REQUIRED_CELLS`: what the router has to route.
 
 `--all` takes every module of `benchmarks/` with a `build_schematic()`
 (not `benchmarks/private/`; name those modules as `private.<name>`).
@@ -71,6 +75,24 @@ PAPER_CELLS: tuple[tuple[str, str], ...] = (
     *((name, configuration) for name in _ADEPT for configuration in CONFIGURATIONS),
     ("multiportmmi_128x128", "contribution2"),
 )
+
+#: the path-length-matching benchmarks (`scripts/results/plm_baseline.sh --list`)
+PLM_BENCHMARKS: tuple[str, ...] = (
+    "heater_s_mod",
+    *(
+        f"cascade_{n}_{layout}"
+        for n in (8, 12, 16)
+        for layout in ("compact", "diagonal", "folded", "folded_compact")
+    ),
+)
+
+#: the path-length-matching benchmarks with the configuration they are made
+#: for: the standard router (owner, 2026-11-22: the two crossing contributions
+#: are meant for the Benes and ADEPT designs)
+PLM_CELLS: tuple[tuple[str, str], ...] = tuple((name, "baseline") for name in PLM_BENCHMARKS)
+
+#: every (benchmark, configuration) the router has to route without an error
+REQUIRED_CELLS: tuple[tuple[str, str], ...] = (*PAPER_CELLS, *PLM_CELLS)
 
 
 def public_benchmarks() -> list[str]:
@@ -179,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         "--route-wide", action="store_true", help="route the wide designs too (not for the pin)"
     )
     parser.add_argument("--paper", action="store_true", help="route the paper's 27 cells")
+    parser.add_argument("--plm", action="store_true", help="route the 13 PLM benchmarks")
     parser.add_argument("--jobs", type=int, default=1, metavar="N", help="runs in parallel")
     parser.add_argument("--update", action="store_true", help="write the pin (needs --all)")
     args = parser.parse_args(argv)
@@ -187,18 +210,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.update and (args.configuration or args.route_wide):
         parser.error("--update pins all three configurations without --route-wide")
     configurations = tuple(args.configuration or CONFIGURATIONS)
-    if args.paper and (args.all or args.benchmarks or args.configuration or args.update):
-        parser.error("--paper stands alone (with --jobs and --list)")
+    cells = (*(PAPER_CELLS if args.paper else ()), *(PLM_CELLS if args.plm else ()))
+    if cells and (args.all or args.benchmarks or args.configuration or args.update):
+        parser.error("--paper and --plm stand alone (with --jobs and --list)")
     names = public_benchmarks() if args.all else args.benchmarks
-    if not names and not args.paper:
-        parser.error("name a benchmark or pass --all or --paper")
+    if not names and not cells:
+        parser.error("name a benchmark or pass --all, --paper or --plm")
 
     counts: dict[str, dict[str, dict[str, int]]] = {}
     failed = False
-    tasks = [(name, configuration, True) for name, configuration in PAPER_CELLS]
+    tasks = [(name, configuration, True) for name, configuration in cells]
     tasks = (
         tasks
-        if args.paper
+        if cells
         else [
             (name, configuration, args.route_wide)
             for name in names

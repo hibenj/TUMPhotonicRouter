@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,27 @@ def test_the_paper_cells_are_the_27_of_the_results_table() -> None:
     assert {name for name, _ in cells} <= set(PIN)
     wide = {configuration for name, configuration in cells if "128x128" in name}
     assert wide == {"contribution2"}
+
+
+def test_the_plm_cells_are_the_plm_benchmarks_on_the_standard_router() -> None:
+    listed = subprocess.run(
+        [str(REPO_ROOT / "scripts" / "results" / "plm_baseline.sh"), "--list"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert [name for name, _ in logic_check.PLM_CELLS] == listed
+    assert {configuration for _, configuration in logic_check.PLM_CELLS} == {"baseline"}
+
+
+def test_no_required_cell_has_a_known_error_or_is_refused() -> None:
+    """What the router has to route, it routes: the paper's cells and the PLM benchmarks."""
+    ended = {"routing.net_not_routed", "flow.design_refused", "flow.run_failed"}
+    assert len(logic_check.REQUIRED_CELLS) == len(set(logic_check.REQUIRED_CELLS)) == 40
+    for benchmark, configuration in logic_check.REQUIRED_CELLS:
+        assert not ended & set(PIN[benchmark][configuration]), (benchmark, configuration)
+        known = [key for key in KNOWN_ERRORS if key[:2] == (benchmark, configuration)]
+        assert known == [], known
 
 
 def test_the_wide_designs_stop_at_the_hand_off_and_the_others_run_to_the_polygons() -> None:
