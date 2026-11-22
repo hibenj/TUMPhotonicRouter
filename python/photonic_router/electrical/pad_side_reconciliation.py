@@ -133,7 +133,7 @@ def _apply_pad_side_consistency_swap(
     all_terminal_cells_set = all_terminal_cells(obstacle_map)
     # Dilated by the branch wire's own reservation radius: shortest_path_to_tree
     # only checks the bare centerline against `blocked`, and the branch is
-    # realized with untrimmed bend corners (trim_route_tail_bends=False), so a
+    # realized with untrimmed bend corners (trim_route_tail=False), so a
     # bend placed right at an obstacle's edge can still draw metal that clips
     # it. The router's own route_common_bus loop never hit this because no
     # bend it chose ever landed that close; a swap-driven reroute is not

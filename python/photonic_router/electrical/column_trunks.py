@@ -137,7 +137,6 @@ def route_column_trunks(
         for _, terminal, anchor in members:
             allowed_cells.update(common_bus_terminal_open_cells(obstacle_map, terminal.id))
             allowed_cells.add(anchor)
-        forbidden_cells = all_terminal_cells_set.difference(allowed_cells)
 
         start_index = 0
         resolution: (
@@ -149,7 +148,6 @@ def route_column_trunks(
                 anchor_column,
                 exit_dx,
                 allowed_cells=allowed_cells,
-                forbidden_cells=forbidden_cells,
                 blocked=blocked,
                 tree_cells=tree_cells,
                 all_terminal_cells=all_terminal_cells_set,
@@ -208,7 +206,6 @@ def _find_legal_column_trunk(
     exit_dx: int,
     *,
     allowed_cells: set[GridCell],
-    forbidden_cells: frozenset[GridCell],
     blocked: set[GridCell],
     tree_cells: set[GridCell],
     all_terminal_cells: frozenset[GridCell],
@@ -223,7 +220,8 @@ def _find_legal_column_trunk(
     has a bus stripe cell; when the trunk's wire band (half the wire width
     plus the obstacle clearance, from the topmost junction to the stripe
     edge) overlaps no raw obstacle box; and when the trunk's cells hit
-    neither ``blocked`` nor ``forbidden_cells``.
+    neither ``blocked`` nor a terminal cell outside ``allowed_cells``.
+    ``all_terminal_cells`` is ``bus_search.all_terminal_cells`` of the map.
     """
 
     grid = obstacle_map.grid
@@ -231,6 +229,7 @@ def _find_legal_column_trunk(
     bus_side = bus.side
     half_band = config.wire_width_um / 2.0 + config.obstacle_clearance_um
     vertical_allowed = allowed_cells | tree_cells
+    forbidden_cells = all_terminal_cells.difference(allowed_cells)
     raw_obstacle_bboxes = obstacle_map.raw_obstacle_bboxes
 
     member_stub_allowed: dict[str, frozenset[GridCell]] = {}
@@ -335,7 +334,6 @@ def straight_drop_to_bus(
         access.anchor_cell[0],
         exit_dx,
         allowed_cells=allowed_cells,
-        forbidden_cells=all_terminal_cells_set.difference(allowed_cells),
         blocked=blocked,
         tree_cells=set(tree_cells),
         all_terminal_cells=all_terminal_cells_set,

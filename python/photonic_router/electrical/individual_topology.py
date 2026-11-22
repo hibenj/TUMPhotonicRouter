@@ -75,16 +75,12 @@ def compute_individual_escape_topology(
     failed_routes: list[EscapeTopologyRoute] = []
     cell_usage: dict[GridCell, int] = {}
     for terminal in _individual_terminals(common_bus):
-        source_cells = _terminal_open_cells(obstacle_map, terminal.id)
         access = _terminal_access(obstacle_map, terminal.id)
         path = _best_source_path_to_boundary(
-            source_cells=source_cells,
             access=access,
             next_cell=next_cell,
             targets=target_cells,
-            blocked=blocked.difference(source_cells),
-            width=obstacle_map.grid.width,
-            height=obstacle_map.grid.height,
+            blocked=blocked,
             pad_side=config.pad_side,
             terminal=terminal,
             obstacle_map=obstacle_map,
@@ -207,17 +203,27 @@ def _trace_to_boundary(
 
 def _best_source_path_to_boundary(
     *,
-    source_cells: frozenset[GridCell],
     access: object | None,
     next_cell: dict[GridCell, GridCell | None],
     targets: frozenset[GridCell],
     blocked: set[GridCell],
-    width: int,
-    height: int,
     pad_side: str,
     terminal: ElectricalTerminal,
     obstacle_map: ElectricalObstacleMap,
 ) -> tuple[GridCell, ...]:
+    """Return the shortest path from ``terminal``'s open cells to ``targets``, or ``()``.
+
+    Starts at the cells ``ordered_route_start_cells`` gives for ``access``
+    and follows ``next_cell`` (the field of ``_distance_field_to_targets``).
+    ``blocked`` is the field's blocked set; the terminal's own open cells
+    are taken out of it here. Paths of equal length are ordered by the rank
+    of their start cell.
+    """
+
+    source_cells = _terminal_open_cells(obstacle_map, terminal.id)
+    blocked = blocked.difference(source_cells)
+    width = obstacle_map.grid.width
+    height = obstacle_map.grid.height
     candidates: list[tuple[tuple[int, int, int, GridCell], tuple[GridCell, ...]]] = []
     starts = ordered_route_start_cells(
         access=access,  # type: ignore[arg-type]

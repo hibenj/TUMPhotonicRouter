@@ -129,14 +129,45 @@ class ChannelRoutingResult:
     unplaced: tuple[tuple[Member, str], ...]
 
 
+@dataclass(frozen=True)
+class PadWireBlockers:
+    """The cells a pad wire may not cover, before any wire is committed.
+
+    ``hard`` is closed to every wire (obstacles, the bus tree, the bus
+    escape). ``terminal_cells`` are the open cells of all individual
+    terminals and ``pad_cells`` the cells of all assigned pads; a wire may
+    cover its own terminal's and its own pad's cells, see ``for_member``.
+    ``pad_cells_by_slot`` maps a slot index to that pad's cells.
+    """
+
+    hard: set[GridCell]
+    terminal_cells: set[GridCell]
+    pad_cells: set[GridCell]
+    pad_cells_by_slot: dict[int, frozenset[GridCell]]
+
+    def for_member(self, member: Member, obstacle_map: ElectricalObstacleMap) -> set[GridCell]:
+        """Return the cells closed to ``member``'s wire, as a new set.
+
+        ``hard``, every other terminal's open cells and every other pad's
+        cells. The member's own pad is the one of its assignment's slot; a
+        slot without an entry in ``pad_cells_by_slot`` falls back to the
+        member's target cells.
+        """
+
+        _rank, terminal, assignment, _topology_route, target_cells = member
+        source_cells = pad_wire_terminal_open_cells(obstacle_map, terminal.id)
+        own_pad_cells = self.pad_cells_by_slot.get(assignment.slot.index, target_cells)
+        blocked = set(self.hard)
+        blocked.update(self.terminal_cells.difference(source_cells))
+        blocked.update(self.pad_cells.difference(own_pad_cells))
+        return blocked
+
+
 def route_bundles_as_channels(
     bundle_entries: list[tuple[int, list[Member]]],
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
-    hard_blocked: set[GridCell],
-    all_terminal_cells: set[GridCell],
-    all_assigned_pad_cells: set[GridCell],
-    assigned_pad_cells_by_slot: dict[int, frozenset[GridCell]],
+    blockers: PadWireBlockers,
 ) -> ChannelRoutingResult:
     """Channel-route every bundle's members jointly: lanes, tracks, paths.
 
@@ -196,11 +227,7 @@ def route_bundles_as_channels(
             wire,
             centerline,
             obstacle_map,
-            config,
-            hard_blocked,
-            all_terminal_cells,
-            all_assigned_pad_cells,
-            assigned_pad_cells_by_slot,
+            blockers,
             obstacle_radius,
         )
         if reason is not None:
@@ -524,11 +551,7 @@ def _check_static_collision(
     wire: BundleWire,
     centerline: tuple[GridPoint, ...],
     obstacle_map: ElectricalObstacleMap,
-    config: ElectricalRoutingConfig,
-    hard_blocked: set[GridCell],
-    all_terminal_cells: set[GridCell],
-    all_assigned_pad_cells: set[GridCell],
-    assigned_pad_cells_by_slot: dict[int, frozenset[GridCell]],
+    blockers: PadWireBlockers,
     obstacle_radius: int,
 ) -> str | None:
     """Check one wire's dilated centerline against obstacles, other terminals, other pads.
@@ -543,16 +566,10 @@ def _check_static_collision(
         return f"{wire.wire_id}'s channel centerline is degenerate"
 
     terminal_id = wire.wire_id
-    _rank, _terminal, assignment, _topology_route, target_cells = wire.member
-    source_cells = pad_wire_terminal_open_cells(obstacle_map, terminal_id)
-    own_pad_cells = assigned_pad_cells_by_slot.get(assignment.slot.index, target_cells)
-    member_hard_blocked = set(hard_blocked)
-    member_hard_blocked.update(all_terminal_cells.difference(source_cells))
-    member_hard_blocked.update(all_assigned_pad_cells.difference(own_pad_cells))
     reservation = wire_reservation_cells_from_point_path(
         centerline, obstacle_map, radius=obstacle_radius
     )
-    if reservation & member_hard_blocked:
+    if reservation & blockers.for_member(wire.member, obstacle_map):
         return f"{terminal_id}'s channel wire collides"
     return None
 

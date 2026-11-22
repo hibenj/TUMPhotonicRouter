@@ -67,9 +67,7 @@ def realize_electrical_metal(
             route.terminal,
             route.path,
             obstacle_map,
-            width_um=config.wire_width_um,
-            contact_width_um=config.terminal_contact_width_um,
-            trim_route_tail_bends=False,
+            config,
             entry_clip_bbox=common_bus.bus.bbox,
             access=_common_bus_access(obstacle_map, route.terminal),
         )
@@ -92,9 +90,7 @@ def realize_electrical_metal(
                 detail_route.terminal,
                 detail_route.centerline,
                 obstacle_map,
-                width_um=config.wire_width_um,
-                contact_width_um=config.terminal_contact_width_um,
-                trim_route_tail_bends=True,
+                config,
                 access=_individual_access(obstacle_map, detail_route.terminal),
                 preferred_port_name=detail_route.contact_port_name,
             )
@@ -154,10 +150,8 @@ def _append_terminal_grid_route(
     terminal: ElectricalTerminal,
     path: tuple[GridCell, ...],
     obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
     *,
-    width_um: float,
-    contact_width_um: float,
-    trim_route_tail_bends: bool,
     entry_clip_bbox: BBox | None = None,
     access: ElectricalPortAccess | None = None,
 ) -> None:
@@ -168,9 +162,8 @@ def _append_terminal_grid_route(
         rects,
         terminal,
         points,
-        width_um=width_um,
-        contact_width_um=contact_width_um,
-        trim_route_tail_bends=trim_route_tail_bends,
+        config,
+        trim_route_tail=False,
         access=access,
     )
 
@@ -180,10 +173,8 @@ def _append_terminal_point_route(
     terminal: ElectricalTerminal,
     points_grid: tuple[GridPoint, ...],
     obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
     *,
-    width_um: float,
-    contact_width_um: float,
-    trim_route_tail_bends: bool,
     access: ElectricalPortAccess | None = None,
     preferred_port_name: str | None = None,
 ) -> None:
@@ -192,10 +183,8 @@ def _append_terminal_point_route(
         rects,
         terminal,
         points,
-        width_um=width_um,
-        contact_width_um=contact_width_um,
-        trim_route_tail_bends=trim_route_tail_bends,
-        trim_route_tail_start=True,
+        config,
+        trim_route_tail=True,
         access=access,
         preferred_port_name=preferred_port_name,
     )
@@ -205,17 +194,19 @@ def _append_terminal_um_route(
     rects: RectList,
     terminal: ElectricalTerminal,
     route_points_um: tuple[tuple[float, float], ...],
+    config: ElectricalRoutingConfig,
     *,
-    width_um: float,
-    contact_width_um: float,
-    trim_route_tail_bends: bool,
-    trim_route_tail_start: bool = False,
+    trim_route_tail: bool,
     access: ElectricalPortAccess | None = None,
     preferred_port_name: str | None = None,
 ) -> None:
     """Draw a physical-port adapter and only the usable snapped route tail.
 
-    ``trim_route_tail_start`` drops the tail's leading half-width end cap: the
+    The contact falls back to ``config.terminal_contact_width_um`` and the
+    tail is ``config.wire_width_um`` wide.
+
+    ``trim_route_tail`` is set for a pad wire and clear for a bus branch. It
+    trims the tail's bends and drops its leading half-width end cap: the
     tail always starts at the port-anchored grid cell, a boundary of the
     terminal's own opened region rather than a genuine open terminus, so the
     cap would otherwise extend back over the terminal's own metal (see
@@ -235,7 +226,7 @@ def _append_terminal_um_route(
     access_path = terminal_access_path(
         terminal,
         route_points_um,
-        fallback_width_um=contact_width_um,
+        fallback_width_um=config.terminal_contact_width_um,
         preferred_port_name=resolved_port_name,
     )
     _append_rect(rects, access_path.contact_bbox)
@@ -247,9 +238,9 @@ def _append_terminal_um_route(
     _append_um_wire_path(
         rects,
         access_path.route_tail_points,
-        width_um=width_um,
-        trim_bends=trim_route_tail_bends,
-        trim_start=trim_route_tail_start,
+        width_um=config.wire_width_um,
+        trim_bends=trim_route_tail,
+        trim_start=trim_route_tail,
     )
 
 

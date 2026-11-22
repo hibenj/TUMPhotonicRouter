@@ -25,7 +25,6 @@ from photonic_router.electrical.types import (
     PadAssignment,
     PadPlan,
     PadSlot,
-    Side,
 )
 from photonic_router.electrical.wire_geometry import wire_reservation_radius_cells
 
@@ -135,8 +134,7 @@ def plan_pad_slots(
         obstacle_map,
         config,
         pad_offset_um,
-        width_um=config.common_bus_bondpad_width_um,
-        length_um=config.common_bus_bondpad_length_um,
+        size_um=(config.common_bus_bondpad_width_um, config.common_bus_bondpad_length_um),
         center_x_um=_snap_x_to_grid_center(
             origin_x + common_bus_index * config.pad_pitch_um,
             obstacle_map,
@@ -306,20 +304,26 @@ def _make_slot(
     config: ElectricalRoutingConfig,
     pad_offset_um: float,
     *,
-    width_um: float | None = None,
-    length_um: float | None = None,
+    size_um: tuple[float, float] | None = None,
     center_x_um: float | None = None,
-    center_y_um: float | None = None,
-    side: Side | None = None,
 ) -> PadSlot:
-    slot_side = config.pad_side if side is None else side
+    """Return pad slot ``index`` on ``config.pad_side``.
+
+    The pad is ``size_um`` (width, length) large, the individual bond pad
+    size of ``config`` without it. Its centre is ``center_x_um``, or
+    ``origin_x + index * config.pad_pitch_um`` without it, and sits
+    ``pad_offset_um`` plus half the pad length outside the layout box.
+    """
+
+    slot_side = config.pad_side
     center_x = origin_x + index * config.pad_pitch_um if center_x_um is None else center_x_um
-    half_width = (config.bondpad_width_um if width_um is None else width_um) / 2.0
-    half_length = (config.bondpad_length_um if length_um is None else length_um) / 2.0
+    width_um, length_um = (
+        (config.bondpad_width_um, config.bondpad_length_um) if size_um is None else size_um
+    )
+    half_width = width_um / 2.0
+    half_length = length_um / 2.0
     _, layout_ymin, _, layout_ymax = obstacle_map.layout_bbox
-    if center_y_um is not None:
-        center_y = center_y_um
-    elif slot_side == "top":
+    if slot_side == "top":
         center_y = layout_ymax + pad_offset_um + half_length
     else:
         center_y = layout_ymin - pad_offset_um - half_length

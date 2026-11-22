@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from typing import Any, cast
@@ -17,6 +18,16 @@ from photonic_router.electrical.types import (
     PadPlan,
     TerminalPairGroup,
 )
+
+
+@dataclass(frozen=True)
+class _ShapeStyle:
+    """Fill colour, opacity, outline colour and outline width (px) of one drawn shape."""
+
+    fill: str
+    opacity: float
+    stroke: str
+    stroke_width: float
 
 
 class _SnapshotContext:
@@ -136,20 +147,14 @@ def electrical_metal_snapshot_svg(
         parts,
         ctx,
         obstacle_map.die_bbox,
-        fill="none",
-        opacity=1.0,
-        stroke="#6c757d",
-        stroke_width=1.0,
+        style=_ShapeStyle(fill="none", opacity=1.0, stroke="#6c757d", stroke_width=1.0),
         title="electrical die bbox",
     )
     _append_snapshot_rect(
         parts,
         ctx,
         obstacle_map.layout_bbox,
-        fill="none",
-        opacity=1.0,
-        stroke="#adb5bd",
-        stroke_width=0.7,
+        style=_ShapeStyle(fill="none", opacity=1.0, stroke="#adb5bd", stroke_width=0.7),
         title="source layout bbox",
     )
     for bbox in sorted(obstacle_map.raw_obstacle_bboxes):
@@ -157,10 +162,7 @@ def electrical_metal_snapshot_svg(
             parts,
             ctx,
             bbox,
-            fill="#ced4da",
-            opacity=0.34,
-            stroke="#868e96",
-            stroke_width=0.35,
+            style=_ShapeStyle(fill="#ced4da", opacity=0.34, stroke="#868e96", stroke_width=0.35),
             title="metal obstacle",
         )
     for polygon in sorted(heater_polygons):
@@ -168,10 +170,7 @@ def electrical_metal_snapshot_svg(
             parts,
             ctx,
             polygon,
-            fill="#f59f00",
-            opacity=0.28,
-            stroke="#e67700",
-            stroke_width=0.35,
+            style=_ShapeStyle(fill="#f59f00", opacity=0.28, stroke="#e67700", stroke_width=0.35),
             title="heater layer",
         )
     for bbox in sorted(terminal_bboxes):
@@ -179,10 +178,7 @@ def electrical_metal_snapshot_svg(
             parts,
             ctx,
             bbox,
-            fill="none",
-            opacity=1.0,
-            stroke="#d9480f",
-            stroke_width=0.7,
+            style=_ShapeStyle(fill="none", opacity=1.0, stroke="#d9480f", stroke_width=0.7),
             title="terminal bbox",
         )
     for bbox in sorted(contact_bboxes):
@@ -190,10 +186,7 @@ def electrical_metal_snapshot_svg(
             parts,
             ctx,
             bbox,
-            fill="#15aabf",
-            opacity=0.55,
-            stroke="#0b7285",
-            stroke_width=0.45,
+            style=_ShapeStyle(fill="#15aabf", opacity=0.55, stroke="#0b7285", stroke_width=0.45),
             title="terminal contact",
         )
     for bbox in sorted(pad_bboxes):
@@ -201,10 +194,7 @@ def electrical_metal_snapshot_svg(
             parts,
             ctx,
             bbox,
-            fill="#ffd43b",
-            opacity=0.35,
-            stroke="#e67700",
-            stroke_width=0.5,
+            style=_ShapeStyle(fill="#ffd43b", opacity=0.35, stroke="#e67700", stroke_width=0.5),
             title="assigned pad",
         )
     for access in port_accesses:
@@ -222,10 +212,7 @@ def electrical_metal_snapshot_svg(
             parts,
             ctx,
             polygon,
-            fill="#4263eb",
-            opacity=0.72,
-            stroke="#1c3faa",
-            stroke_width=0.45,
+            style=_ShapeStyle(fill="#4263eb", opacity=0.72, stroke="#1c3faa", stroke_width=0.45),
             title="realized metal",
         )
     parts.append("</svg>")
@@ -319,10 +306,7 @@ def _append_snapshot_rect(
     ctx: _SnapshotContext,
     bbox: BBox,
     *,
-    fill: str,
-    opacity: float,
-    stroke: str,
-    stroke_width: float,
+    style: _ShapeStyle,
     title: str,
 ) -> None:
     xmin, ymin, xmax, ymax = bbox
@@ -334,8 +318,8 @@ def _append_snapshot_rect(
         return
     parts.append(
         f'<rect x="{x:.6g}" y="{y:.6g}" width="{width:.6g}" height="{height:.6g}" '
-        f'fill="{fill}" opacity="{opacity:.6g}" stroke="{stroke}" '
-        f'stroke-width="{stroke_width:.6g}" vector-effect="non-scaling-stroke">'
+        f'fill="{style.fill}" opacity="{style.opacity:.6g}" stroke="{style.stroke}" '
+        f'stroke-width="{style.stroke_width:.6g}" vector-effect="non-scaling-stroke">'
         f"<title>{escape(title)}</title></rect>"
     )
 
@@ -345,18 +329,15 @@ def _append_snapshot_polygon(
     ctx: _SnapshotContext,
     polygon: tuple[tuple[float, float], ...],
     *,
-    fill: str,
-    opacity: float,
-    stroke: str,
-    stroke_width: float,
+    style: _ShapeStyle,
     title: str,
 ) -> None:
     if len(polygon) < 3:
         return
     points = " ".join(f"{x - ctx.xmin:.6g},{ctx.ymax - y:.6g}" for x, y in polygon)
     parts.append(
-        f'<polygon points="{points}" fill="{fill}" opacity="{opacity:.6g}" '
-        f'stroke="{stroke}" stroke-width="{stroke_width:.6g}" '
+        f'<polygon points="{points}" fill="{style.fill}" opacity="{style.opacity:.6g}" '
+        f'stroke="{style.stroke}" stroke-width="{style.stroke_width:.6g}" '
         f'vector-effect="non-scaling-stroke"><title>{escape(title)}</title></polygon>'
     )
 

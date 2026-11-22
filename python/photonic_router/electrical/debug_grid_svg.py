@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 from typing import Protocol
@@ -13,6 +14,16 @@ from photonic_router.electrical.types import (
     ElectricalRoutingResult,
     GridCell,
 )
+
+
+@dataclass(frozen=True)
+class _LineStyle:
+    """Colour, width (grid cells), opacity and optional SVG dash pattern of one drawn line."""
+
+    stroke: str
+    stroke_width: float
+    opacity: float
+    dasharray: str | None = None
 
 
 class _DebugGrid(Protocol):
@@ -148,10 +159,7 @@ def electrical_debug_svg(
                 parts,
                 grid.height,
                 route.path,
-                stroke="#9c4f00",
-                stroke_width=0.16,
-                opacity=0.85,
-                offset=(0.0, 0.0),
+                style=_LineStyle(stroke="#9c4f00", stroke_width=0.16, opacity=0.85),
                 title=(
                     f"common bus terminal={route.terminal.id} "
                     f"start={route.route_start_cell} "
@@ -208,10 +216,7 @@ def electrical_debug_svg(
                     parts,
                     grid.height,
                     detail_route.path,
-                    stroke=color,
-                    stroke_width=0.24,
-                    opacity=0.95,
-                    offset=(0.0, 0.0),
+                    style=_LineStyle(stroke=color, stroke_width=0.24, opacity=0.95),
                     title=title,
                 )
 
@@ -231,15 +236,14 @@ def electrical_debug_svg(
                     parts,
                     grid.height,
                     topology_route.path,
-                    stroke=color,
-                    stroke_width=0.28,
-                    opacity=0.45,
+                    style=_LineStyle(
+                        stroke=color, stroke_width=0.28, opacity=0.45, dasharray="1.2 0.8"
+                    ),
                     offset=offset,
                     title=(
                         f"topology bundle={bundle.bundle_id} rank={rank} "
                         f"tracks={bundle.required_tracks} terminal={terminal.id}"
                     ),
-                    dasharray="1.2 0.8",
                 )
 
     for terminal_id, cells in sorted(obstacle_map.terminal_open_cells.items()):
@@ -382,12 +386,9 @@ def _append_route_polyline(
     grid_height: int,
     cells: tuple[GridCell, ...],
     *,
-    stroke: str,
-    stroke_width: float,
-    opacity: float,
-    offset: tuple[float, float],
+    style: _LineStyle,
     title: str,
-    dasharray: str | None = None,
+    offset: tuple[float, float] = (0.0, 0.0),
 ) -> None:
     if not cells:
         return
@@ -395,10 +396,10 @@ def _append_route_polyline(
     points = " ".join(
         f"{gx + 0.5 + offset_x:.3f},{grid_height - gy - 0.5 + offset_y:.3f}" for gx, gy in cells
     )
-    dash_attr = f' stroke-dasharray="{dasharray}"' if dasharray is not None else ""
+    dash_attr = f' stroke-dasharray="{style.dasharray}"' if style.dasharray is not None else ""
     parts.append(
-        f'<polyline points="{points}" fill="none" stroke="{stroke}" '
-        f'stroke-width="{stroke_width}" opacity="{opacity}" '
+        f'<polyline points="{points}" fill="none" stroke="{style.stroke}" '
+        f'stroke-width="{style.stroke_width}" opacity="{style.opacity}" '
         f'stroke-linecap="round" stroke-linejoin="round" '
         f'vector-effect="non-scaling-stroke"{dash_attr}>'
         f"<title>{escape(title)}</title></polyline>"

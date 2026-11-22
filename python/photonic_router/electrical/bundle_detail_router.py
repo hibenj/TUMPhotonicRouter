@@ -18,6 +18,8 @@ from photonic_router.electrical.pad_slots import pad_access_cells
 from photonic_router.electrical.pad_wire_search import route_full_grid_pad_wire
 from photonic_router.electrical.pitch_grid import bbox_to_grid_cells
 from photonic_router.electrical.river_routing import (
+    Member,
+    PadWireBlockers,
     count_direction_changes,
     route_bundles_as_channels,
 )
@@ -120,22 +122,26 @@ def route_detailed_bundles(
         set().union(*assigned_pad_cells_by_slot.values()) if assigned_pad_cells_by_slot else set()
     )
 
+    blockers = PadWireBlockers(
+        hard=hard_blocked,
+        terminal_cells=all_terminal_cells,
+        pad_cells=all_assigned_pad_cells,
+        pad_cells_by_slot=assigned_pad_cells_by_slot,
+    )
+
     def commit(
         detailed_path: tuple[tuple[float, float], ...],
+        member: Member,
         *,
-        bundle: EscapeBundle,
-        rank: int,
-        terminal: ElectricalTerminal,
-        assignment: PadAssignment,
-        topology_route: EscapeTopologyRoute,
-        target_cells: frozenset[GridCell],
+        bundle_id: int,
         shape: Literal["L", "Z"],
         contact_port_name: str | None,
         construction: Literal["river", "fallback"],
     ) -> None:
+        rank, terminal, assignment, topology_route, target_cells = member
         path = cells_from_point_path(detailed_path)
         route = DetailedBundleRoute(
-            bundle_id=bundle.bundle_id,
+            bundle_id=bundle_id,
             rank=rank,
             terminal=terminal,
             pad_assignment=assignment,
@@ -202,7 +208,6 @@ def route_detailed_bundles(
             ],
         ]
     ] = []
-    bundle_by_id = {bundle.bundle_id: bundle for bundle in topology.bundles}
     bundle_id_by_terminal_id: dict[str, int] = {}
     for bundle in topology.bundles:
         route_side = bundle_route_side(bundle, obstacle_map)
@@ -248,10 +253,7 @@ def route_detailed_bundles(
         bundle_entries,
         obstacle_map,
         config,
-        hard_blocked,
-        all_terminal_cells,
-        all_assigned_pad_cells,
-        assigned_pad_cells_by_slot,
+        blockers,
     )
 
     fallback_reasons_by_bundle_id: dict[int, list[str]] = {}
@@ -286,12 +288,8 @@ def route_detailed_bundles(
         terminal_access = obstacle_map.individual_port_accesses[terminal.id]
         commit(
             centerline,
-            bundle=bundle_by_id[bundle_id_by_terminal_id[terminal.id]],
-            rank=rank,
-            terminal=terminal,
-            assignment=assignment,
-            topology_route=topology_route,
-            target_cells=target_cells,
+            member,
+            bundle_id=bundle_id_by_terminal_id[terminal.id],
             shape=shape,
             contact_port_name=_pad_wire_contact_port_name(terminal, terminal_access, centerline),
             construction="river",
@@ -303,11 +301,7 @@ def route_detailed_bundles(
         _note_fallback(terminal.id, reason)
         bundle_id = bundle_id_by_terminal_id[terminal.id]
         fallback_access = obstacle_map.individual_port_accesses.get(terminal.id)
-        source_cells = pad_wire_terminal_open_cells(obstacle_map, terminal.id)
-        own_pad_cells = assigned_pad_cells_by_slot.get(assignment.slot.index, target_cells)
-        raw_fallback_blocked = set(hard_blocked)
-        raw_fallback_blocked.update(all_terminal_cells.difference(source_cells))
-        raw_fallback_blocked.update(all_assigned_pad_cells.difference(own_pad_cells))
+        raw_fallback_blocked = blockers.for_member(member, obstacle_map)
         detailed_path = (
             route_full_grid_pad_wire(
                 fallback_access,
@@ -354,12 +348,8 @@ def route_detailed_bundles(
         fallback_bends = count_direction_changes(detailed_path)
         commit(
             detailed_path,
-            bundle=bundle_by_id[bundle_id],
-            rank=rank,
-            terminal=terminal,
-            assignment=assignment,
-            topology_route=topology_route,
-            target_cells=target_cells,
+            member,
+            bundle_id=bundle_id,
             shape="L" if fallback_bends <= 1 else "Z",
             contact_port_name=_pad_wire_contact_port_name(terminal, fallback_access, detailed_path),
             construction="fallback",

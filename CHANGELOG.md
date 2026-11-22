@@ -526,6 +526,26 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Shorter signatures in the electrical router (rule 4.4, at most 7
+  parameters), no behaviour change; `ruff_PLR0913` falls from 30 to 18:
+  - the terminal route helpers of `electrical/metal_realization.py` and
+    `electrical/net_geometry.py` take the `ElectricalRoutingConfig`
+    instead of the wire and contact widths, and one `trim_route_tail`
+    flag replaces the two trim flags that were always set together;
+  - `river_routing.PadWireBlockers` holds the four cell sets a pad wire
+    is checked against, and `PadWireBlockers.for_member` is the one place
+    that takes a wire's own terminal and pad out of them (the channel
+    router and the full-grid fallback each had a copy);
+  - the `commit` step of `bundle_detail_router` takes the bundle member
+    instead of its five parts;
+  - `_ShapeStyle` (`metal_snapshot_svg.py`) and `_LineStyle`
+    (`debug_grid_svg.py`) carry the drawing style of the SVG helpers;
+  - `pad_slots._make_slot` lost the `center_y_um` and `side` parameters
+    no caller passed and takes the pad size as one `size_um` pair;
+    `individual_topology._best_source_path_to_boundary` reads the grid
+    size and the terminal's open cells from the obstacle map;
+    `column_trunks._find_legal_column_trunk` derives the forbidden cells
+    itself (8 parameters, still counted).
 - One implementation where there were copies (rule "one implementation
   per concern"), no behaviour change:
   - `photonic_router/schematic_protocols.py` holds `SchematicLike` (read
