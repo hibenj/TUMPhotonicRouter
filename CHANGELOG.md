@@ -531,6 +531,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Another three functions within the limit of 50 statements, no
+  behaviour change: `column_trunks.route_column_trunks`
+  (`_commit_trunk_members`),
+  `plan_requirement_requests_registered` of the meander planner
+  (`_registered_candidate_inputs`) and
+  `finalize._record_terminal_bump_distance_check_candidates`
+  (`_bump_room`, `_print_terminal_bump_checks`, with
+  `tests/test_terminal_bump_room.py`).
 - Three more functions within the limit of 50 statements, no behaviour
   change: `route_overview_svg.write_routes_overview_svg` hands the
   instance boxes and the waveguides to `_instance_svg` and

@@ -438,6 +438,38 @@ class _MeanderPlannerContext:
             self.max_bumps_by_edge[edge_key] = max_bumps
         return max_bumps
 
+    def _registered_candidate_inputs(
+        self, work_items: list[_CandidateWorkItem]
+    ) -> tuple[list[int], list[list[int]], list[list[float]]] | None:
+        """The planner inputs of the work items that still need length.
+
+        Three parallel lists, one entry per such work item: its index in
+        ``work_items``, the registered geometry index of each of its edges
+        and the length requested on each edge (0.0 for an edge without a
+        request). None when an edge has no routed record or no registered
+        geometry; the work items before it have been looked at by then.
+        """
+        work_indices: list[int] = []
+        geometry_indices_by_item: list[list[int]] = []
+        requests_by_item: list[list[float]] = []
+        for work_index, work_item in enumerate(work_items):
+            if work_item.already_satisfied:
+                continue
+            geometry_indices: list[int] = []
+            requests: list[float] = []
+            for candidate_edge_key in work_item.candidate.edge_keys:
+                record = self.by_edge.get(candidate_edge_key)
+                geometry_index = self.registered_geometry_index_by_edge.get(candidate_edge_key)
+                if record is None or geometry_index is None:
+                    return None
+                self.max_bumps_for_edge(candidate_edge_key, record)
+                geometry_indices.append(geometry_index)
+                requests.append(float(work_item.requests_by_edge.get(candidate_edge_key, 0.0)))
+            work_indices.append(work_index)
+            geometry_indices_by_item.append(geometry_indices)
+            requests_by_item.append(requests)
+        return work_indices, geometry_indices_by_item, requests_by_item
+
     def plan_requirement_requests_registered(
         self,
         *,
@@ -456,33 +488,11 @@ class _MeanderPlannerContext:
         geometry) takes the candidates out of the call, as the batch did
         before; the split is still tried.
         """
-        candidate_work_indices: list[int] = []
-        candidate_geometry_indices: list[list[int]] = []
-        candidate_requests: list[list[float]] = []
-        prepared = True
-        for work_index, work_item in enumerate(work_items):
-            if work_item.already_satisfied:
-                continue
-            geometry_indices: list[int] = []
-            requests: list[float] = []
-            for candidate_edge_key in work_item.candidate.edge_keys:
-                record = self.by_edge.get(candidate_edge_key)
-                geometry_index = self.registered_geometry_index_by_edge.get(candidate_edge_key)
-                if record is None or geometry_index is None:
-                    prepared = False
-                    break
-                self.max_bumps_for_edge(candidate_edge_key, record)
-                geometry_indices.append(geometry_index)
-                requests.append(float(work_item.requests_by_edge.get(candidate_edge_key, 0.0)))
-            if not prepared:
-                break
-            candidate_work_indices.append(work_index)
-            candidate_geometry_indices.append(geometry_indices)
-            candidate_requests.append(requests)
-        if not prepared:
-            candidate_work_indices = []
-            candidate_geometry_indices = []
-            candidate_requests = []
+        inputs = self._registered_candidate_inputs(work_items)
+        prepared = inputs is not None
+        candidate_work_indices, candidate_geometry_indices, candidate_requests = (
+            inputs if inputs is not None else ([], [], [])
+        )
 
         split_geometry_index = (
             self.registered_geometry_index_by_edge.get(split_edge_key)

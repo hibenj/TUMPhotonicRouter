@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import time
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from photonic_router.crossings.route_rust_crossing_verification import (
     populate_realized_intersections_from_native_crossing_events,
@@ -646,6 +646,55 @@ def _route_target_angle(
         return None
 
 
+class _BumpRoom(TypedDict):
+    """What `_bump_room` returns; lengths in um."""
+
+    distance_to_target_um: float
+    crossing_half_um: float
+    available_um: float
+    required_bump_um: float
+    satisfies: bool
+
+
+def _bump_room(
+    distance_to_target_um: float, crossing_half_um: float, required_bump_um: float, eps: float
+) -> _BumpRoom:
+    """The room between a crossing and the target against the room a bump needs (um).
+
+    The available room is the distance less the crossing's half size, at
+    least 0; ``satisfies`` says whether it reaches the required room within
+    ``eps``. Lengths are rounded to six decimals.
+    """
+
+    available_um = max(0.0, distance_to_target_um - crossing_half_um)
+    return {
+        "distance_to_target_um": round(float(distance_to_target_um), 6),
+        "crossing_half_um": round(float(crossing_half_um), 6),
+        "available_um": round(float(available_um), 6),
+        "required_bump_um": round(float(required_bump_um), 6),
+        "satisfies": bool(available_um + eps >= required_bump_um),
+    }
+
+
+def _print_terminal_bump_checks(
+    net_label: str, target_text: str, checks: Sequence[Mapping[str, object]]
+) -> None:
+    """Print the trace lines of one net: its target, then one line per same-axis crossing."""
+
+    print(
+        f"terminal_bump_distance_check {net_label} {target_text} same_axis_crossings={len(checks)}"
+    )
+    for item in checks:
+        print(
+            "terminal_bump_distance_check "
+            f"{net_label} "
+            f"crossing={item['crossing_um']} "
+            f"available_um={item['available_um']} "
+            f"required_um={item['required_bump_um']} "
+            f"satisfies={item['satisfies']}"
+        )
+
+
 def _record_terminal_bump_distance_check_candidates(
     settings: SessionSettings,
     state: SessionState,
@@ -726,57 +775,45 @@ def _record_terminal_bump_distance_check_candidates(
             crossing_x = float(crossing_point[0])
             crossing_y = float(crossing_point[1])
             if target_x_active and abs(crossing_x - float(target_grid_um[0])) <= axis_eps:
-                distance_to_target_um = abs(float(target_grid_um[1]) - crossing_y)
-                available_um = max(0.0, distance_to_target_um - crossing_half_um)
                 active_checks.append(
                     {
                         **net_entry,
                         "axis": "target_x",
                         "crossing_um": [round(crossing_x, 6), round(crossing_y, 6)],
-                        "distance_to_target_um": round(float(distance_to_target_um), 6),
-                        "crossing_half_um": round(float(crossing_half_um), 6),
-                        "available_um": round(float(available_um), 6),
-                        "required_bump_um": round(float(required_bump_um), 6),
-                        "satisfies": bool(available_um + eps >= required_bump_um),
+                        **_bump_room(
+                            abs(float(target_grid_um[1]) - crossing_y),
+                            crossing_half_um,
+                            required_bump_um,
+                            eps,
+                        ),
                     }
                 )
             if target_y_active and abs(crossing_y - float(target_grid_um[1])) <= axis_eps:
-                distance_to_target_um = abs(float(target_grid_um[0]) - crossing_x)
-                available_um = max(0.0, distance_to_target_um - crossing_half_um)
                 active_checks.append(
                     {
                         **net_entry,
                         "axis": "target_y",
                         "crossing_um": [round(crossing_x, 6), round(crossing_y, 6)],
-                        "distance_to_target_um": round(float(distance_to_target_um), 6),
-                        "crossing_half_um": round(float(crossing_half_um), 6),
-                        "available_um": round(float(available_um), 6),
-                        "required_bump_um": round(float(required_bump_um), 6),
-                        "satisfies": bool(available_um + eps >= required_bump_um),
+                        **_bump_room(
+                            abs(float(target_grid_um[0]) - crossing_x),
+                            crossing_half_um,
+                            required_bump_um,
+                            eps,
+                        ),
                     }
                 )
 
-        should_trace = trace_all or record.net_name in trace_tokens or str(net_id) in trace_tokens
-        if should_trace:
-            matching_checks = [item for item in active_checks if item["net_id"] == int(net_id)]
-            print(
-                "terminal_bump_distance_check "
-                f"net={record.net_name} id={net_id} "
-                f"target_port={job.inst2},{job.port2} "
-                f"target_port={target_port_um} target_grid={target_grid_um} "
-                f"target_axis={target_axis} "
-                f"target_dx={target_dx_um:.6f} target_dy={target_dy_um:.6f} "
-                f"same_axis_crossings={len(matching_checks)}"
+        if trace_all or record.net_name in trace_tokens or str(net_id) in trace_tokens:
+            _print_terminal_bump_checks(
+                f"net={record.net_name} id={net_id}",
+                (
+                    f"target_port={job.inst2},{job.port2} "
+                    f"target_port={target_port_um} target_grid={target_grid_um} "
+                    f"target_axis={target_axis} "
+                    f"target_dx={target_dx_um:.6f} target_dy={target_dy_um:.6f}"
+                ),
+                [item for item in active_checks if item["net_id"] == int(net_id)],
             )
-            for item in matching_checks:
-                print(
-                    "terminal_bump_distance_check "
-                    f"net={record.net_name} id={net_id} "
-                    f"crossing={item['crossing_um']} "
-                    f"available_um={item['available_um']} "
-                    f"required_um={item['required_bump_um']} "
-                    f"satisfies={item['satisfies']}"
-                )
 
     state.crossing_plan_info.terminal_bump_target_x_offset_nets = target_x_offset_nets
     state.crossing_plan_info.terminal_bump_target_x_offset_net_count = len(target_x_offset_nets)

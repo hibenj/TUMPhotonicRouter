@@ -82,9 +82,6 @@ def route_column_trunks(
     """
 
     remaining = progress.remaining
-    selected = progress.selected
-    unselected = progress.unselected
-    routes = progress.routes
     tree_cells = progress.tree_cells
     blocked = progress.blocked
     terminal_cluster, cluster_trunk_column, cluster_heater_ids = _column_groups(
@@ -162,42 +159,67 @@ def route_column_trunks(
             continue
 
         _trunk_column, stripe_entry, stubs, junctions = resolution
-        served_members = members[start_index:]
-        for index, (heater_id, terminal, _) in enumerate(served_members):
-            stub = stubs[heater_id]
-            junction = junctions[heater_id]
-            if index + 1 < len(served_members):
-                next_junction = junctions[served_members[index + 1][0]]
-                vertical = axis_path(junction, next_junction)
-            else:
-                vertical = axis_path(junction, stripe_entry)
-            path = tuple(dict.fromkeys((*stub, *vertical)))
-            group = remaining[heater_id]
-            selected[heater_id] = terminal
-            other_terminal = (
-                group.terminal_b if group.terminal_a.id == terminal.id else group.terminal_a
+        _commit_trunk_members(
+            progress, obstacle_map, members[start_index:], stripe_entry, stubs, junctions
+        )
+
+
+def _commit_trunk_members(
+    progress: CommonBusProgress,
+    obstacle_map: ElectricalObstacleMap,
+    served_members: list[tuple[str, ElectricalTerminal, GridCell]],
+    stripe_entry: GridCell,
+    stubs: dict[str, tuple[GridCell, ...]],
+    junctions: dict[str, GridCell],
+) -> None:
+    """Record one bus route per served member of a trunk and take the members out of ``remaining``.
+
+    A member's route is its stub followed by the vertical run to the next
+    member's junction, or to ``stripe_entry`` for the last member. The
+    member's terminal becomes the heater's selected one and the heater's
+    other terminal the unselected one; the route's cells join the tree.
+    """
+
+    remaining = progress.remaining
+    selected = progress.selected
+    unselected = progress.unselected
+    routes = progress.routes
+    tree_cells = progress.tree_cells
+    for index, (heater_id, terminal, _) in enumerate(served_members):
+        stub = stubs[heater_id]
+        junction = junctions[heater_id]
+        if index + 1 < len(served_members):
+            next_junction = junctions[served_members[index + 1][0]]
+            vertical = axis_path(junction, next_junction)
+        else:
+            vertical = axis_path(junction, stripe_entry)
+        path = tuple(dict.fromkeys((*stub, *vertical)))
+        group = remaining[heater_id]
+        selected[heater_id] = terminal
+        other_terminal = (
+            group.terminal_b if group.terminal_a.id == terminal.id else group.terminal_a
+        )
+        unselected[heater_id] = other_terminal
+        routes.append(
+            TerminalBusRoute(
+                heater_id=heater_id,
+                terminal=terminal,
+                path=path,
+                cost=max(0, len(path) - 1),
+                access_anchor_cell=terminal_access_anchor_cell(
+                    obstacle_map,
+                    terminal.id,
+                ),
+                route_start_cell=path[0] if path else None,
+                used_access_anchor=route_uses_access_anchor(
+                    obstacle_map,
+                    terminal.id,
+                    path,
+                ),
             )
-            unselected[heater_id] = other_terminal
-            routes.append(
-                TerminalBusRoute(
-                    heater_id=heater_id,
-                    terminal=terminal,
-                    path=path,
-                    cost=max(0, len(path) - 1),
-                    access_anchor_cell=terminal_access_anchor_cell(
-                        obstacle_map,
-                        terminal.id,
-                    ),
-                    route_start_cell=path[0] if path else None,
-                    used_access_anchor=route_uses_access_anchor(
-                        obstacle_map,
-                        terminal.id,
-                        path,
-                    ),
-                )
-            )
-            tree_cells.update(path)
-            remaining.pop(heater_id, None)
+        )
+        tree_cells.update(path)
+        remaining.pop(heater_id, None)
 
 
 def _find_legal_column_trunk(
