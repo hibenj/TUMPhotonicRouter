@@ -679,7 +679,7 @@ def test_fanout_access_mode_env_override_beats_the_constructor_argument(monkeypa
     class _DummySchematic:
         netlist: _DummyNetlist = field(default_factory=_DummyNetlist)
 
-    monkeypatch.setattr(routing_session, "_load_rust_backend", lambda: SimpleNamespace())
+    monkeypatch.setattr(routing_session, "load_rust_backend", lambda: SimpleNamespace())
 
     from uuid import uuid4
 

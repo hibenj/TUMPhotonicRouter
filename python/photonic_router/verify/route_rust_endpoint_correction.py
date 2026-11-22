@@ -36,7 +36,7 @@ from photonic_router.records.route_rust_types import (
 
 
 def _load_rust_backend() -> Any | None:
-    from photonic_router.routing.session import _load_rust_backend as route_rust_load_backend
+    from photonic_router.routing.session import load_rust_backend as route_rust_load_backend
 
     return route_rust_load_backend()
 
@@ -95,7 +95,8 @@ def _apply_endpoint_corrections_to_debug_artifacts(
     )
 
 
-def _centerline_length_um(points: tuple[tuple[float, float], ...]) -> float:
+def polyline_length_um(points: tuple[tuple[float, float], ...]) -> float:
+    """Return the summed length of the straight pieces between consecutive ``points``."""
     total = 0.0
     for start, end in itertools.pairwise(points):
         total += math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
@@ -636,9 +637,9 @@ def apply_crossing_aware_endpoint_correction_to_record(
                         try:
                             corrected_total_length_um = float(centerline_length(list(centerline)))
                         except Exception:
-                            corrected_total_length_um = _centerline_length_um(centerline)
+                            corrected_total_length_um = polyline_length_um(centerline)
                     else:
-                        corrected_total_length_um = _centerline_length_um(centerline)
+                        corrected_total_length_um = polyline_length_um(centerline)
                     return replace(
                         record,
                         total_length_um=corrected_total_length_um,
@@ -856,9 +857,9 @@ def apply_crossing_aware_endpoint_correction_to_record(
                     try:
                         corrected_total_length_um = float(centerline_length(list(candidate)))
                     except Exception:
-                        corrected_total_length_um = _centerline_length_um(candidate)
+                        corrected_total_length_um = polyline_length_um(candidate)
                 else:
-                    corrected_total_length_um = _centerline_length_um(candidate)
+                    corrected_total_length_um = polyline_length_um(candidate)
                 return replace(
                     record,
                     total_length_um=corrected_total_length_um,

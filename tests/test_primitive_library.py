@@ -21,7 +21,7 @@ from photonic_router.primitive_library import (
     get_primitive_library,
     reset_primitive_library,
 )
-from photonic_router.static_obstacle_builder import _load_rust_backend
+from photonic_router.static_obstacle_builder import load_rust_backend
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +34,7 @@ def _isolated_singleton():
 
 
 def _rust_primitive_descriptions() -> list[dict]:
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     assert backend is not None, "the Rust extension must be built for this test"
     # The smallest router that carries a default primitive library; the grid
     # size does not affect which primitives the library holds.

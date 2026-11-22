@@ -8,7 +8,7 @@ from html import escape
 from pathlib import Path
 from typing import Protocol
 
-from photonic_router.electrical.svg_support import _all_port_accesses
+from photonic_router.electrical.port_access import all_port_accesses
 from photonic_router.electrical.types import (
     ElectricalPortAccess,
     ElectricalRoutingResult,
@@ -271,7 +271,7 @@ def electrical_debug_svg(
         fill="#0081a7",
         opacity=0.95,
     )
-    for access in _all_port_accesses(obstacle_map):
+    for access in all_port_accesses(obstacle_map):
         _append_point_polyline(
             parts,
             grid.height,

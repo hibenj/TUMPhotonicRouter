@@ -21,7 +21,7 @@ from photonic_router.records.route_rust_types import (
 )
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
-_load_rust_backend = _sob._load_rust_backend
+load_rust_backend = _sob.load_rust_backend
 _require_rust_backend = _sob._require_rust_backend
 
 
@@ -180,7 +180,7 @@ def build_realization_router(
     reuse it, instead of paying for a fresh grid-sized obstacle map and
     primitive library on every record.
     """
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         raise RuntimeError(
             "Rust router backend is not available. Build it with `cargo build` "

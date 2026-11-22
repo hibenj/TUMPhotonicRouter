@@ -19,7 +19,7 @@ from photonic_router.records.route_rust_realization import (
 )
 from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions
-from photonic_router.static_obstacle_builder import _load_rust_backend
+from photonic_router.static_obstacle_builder import load_rust_backend
 from photonic_router.verify.photonic_verification import (
     LegalCrossings,
     PhotonicVerificationIssue,
@@ -671,7 +671,7 @@ def test_photonic_verifier_reports_static_overlap_inside_broad_port_window(monke
 
 
 def test_photonic_verifier_reports_realized_bend_static_overlap():
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     assert backend is not None
     router = backend.PyPhotonicRouter(
         backend.GridSpec(40, 40, 1.0, -15.0, -20.0),
@@ -1325,7 +1325,7 @@ def test_realized_record_region_equals_component_path():
     route_layer = (1, 0)
     realization_grid_spec = (40, 40, 1.0, -15.0, -20.0)
 
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     assert backend is not None
     router = backend.PyPhotonicRouter(
         backend.GridSpec(40, 40, 1.0, -15.0, -20.0),
@@ -1519,7 +1519,7 @@ def test_realized_record_polygons_returns_dbu_polygons_matching_component_add_po
     realization_grid_spec = (40, 40, 1.0, -15.0, -20.0)
     dbu = 0.001
 
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     assert backend is not None
     router = backend.PyPhotonicRouter(
         backend.GridSpec(40, 40, 1.0, -15.0, -20.0),

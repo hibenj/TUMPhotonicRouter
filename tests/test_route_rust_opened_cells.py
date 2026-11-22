@@ -21,7 +21,7 @@ from photonic_router.routing import finalize as routing_finalize
 from photonic_router.routing import obstacle_context as routing_obstacle_context
 from photonic_router.routing import route_jobs as routing_route_jobs
 from photonic_router.routing import session as routing_session
-from photonic_router.routing.session import _load_rust_backend, route_nets_rust
+from photonic_router.routing.session import load_rust_backend, route_nets_rust
 from photonic_router.routing.state import SessionState
 from photonic_router.routing_layers import ComponentPortAccessRule
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
@@ -171,7 +171,7 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
         }
         return ports[(inst, port)]
 
-    monkeypatch.setattr(routing_session, "_load_rust_backend", lambda: fake_backend)
+    monkeypatch.setattr(routing_session, "load_rust_backend", lambda: fake_backend)
     monkeypatch.setattr(
         routing_obstacle_context, "build_static_obstacle_map", fake_build_static_obstacle_map
     )
@@ -490,7 +490,7 @@ def test_route_nets_rust_does_not_open_static_geometry(monkeypatch, tmp_path):
 
 
 def test_rust_dynamic_clearance_exempt_batch_covers_endpoint_boxes_and_run_in_corridors():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend is not available")
 

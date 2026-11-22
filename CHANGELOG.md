@@ -526,6 +526,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- No module imports a private name of another (rule 3.5);
+  `private_imports` falls from 7 to 0. The five functions that other
+  modules used are public now, each with a docstring:
+  `static_obstacle_builder.load_rust_backend` (was `_load_rust_backend`,
+  also under that name in the modules that re-export it),
+  `route_rust_debug_artifacts.cells_bbox`,
+  `route_rust_crossing_plan.index_records_by_net_id` (was
+  `_routed_records_by_net_id`),
+  `route_rust_endpoint_correction.polyline_length_um` (was
+  `_centerline_length_um`) and `electrical.port_access.all_port_accesses`.
+  The last one replaces two copies (`electrical/metrics.py` and
+  `electrical/svg_support.py`, which is gone).
 - Four more signatures within the limit of 7 parameters, no behaviour
   change; `ruff_PLR0913` falls from 16 to 12:
   `photonic_verification._verify_one_port_connection` reads the port

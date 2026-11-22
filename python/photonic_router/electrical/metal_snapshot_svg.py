@@ -8,7 +8,7 @@ from html import escape
 from pathlib import Path
 from typing import Any, cast
 
-from photonic_router.electrical.svg_support import _all_port_accesses
+from photonic_router.electrical.port_access import all_port_accesses
 from photonic_router.electrical.terminal_contacts import terminal_contact_bboxes
 from photonic_router.electrical.types import (
     BBox,
@@ -104,7 +104,7 @@ def electrical_metal_snapshot_svg(
         for terminal in terminals
         for bbox in _terminal_contact_bboxes(terminal, config.terminal_contact_width_um)
     )
-    port_accesses = _all_port_accesses(obstacle_map)
+    port_accesses = all_port_accesses(obstacle_map)
 
     view_bbox = _expanded_bbox(
         (

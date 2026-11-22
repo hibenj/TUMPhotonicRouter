@@ -20,7 +20,6 @@ from photonic_router.static_obstacle_builder import (
     _apply_perpendicular_heater_clearance,
     _build_static_obstacle_map_rust,
     _expand_rect_perpendicular_to_long_axis,
-    _load_rust_backend,
     _materialize_grid_rects,
     build_port_open_cells,
     build_static_obstacle_map,
@@ -29,6 +28,7 @@ from photonic_router.static_obstacle_builder import (
     grid_cell_center,
     grid_to_svg,
     inflate_cells,
+    load_rust_backend,
     make_grid_spec,
     physical_to_grid,
     resolve_routable_bbox,
@@ -557,7 +557,7 @@ def test_clear_port_open_cells_default_is_strict():
             port_open_radius_um=0.0,
             die_bbox=(0.0, 0.0, 4.0, 4.0),
         ),
-        _load_rust_backend(),
+        load_rust_backend(),
     )
 
     assert (1, 1) in data.port_open_cells

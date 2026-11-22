@@ -83,9 +83,13 @@ PLANNED_CROSSING_BUDGET_ENV = "PHOTONIC_ROUTER_PLANNED_CROSSING_BUDGET"
 DEFAULT_SINGLE_DISCOUNTED_CROSSING_PER_PAIR = False
 
 
-def _routed_records_by_net_id(
+def index_records_by_net_id(
     records: Iterable[RoutedNetRecord],
 ) -> dict[int, RoutedNetRecord]:
+    """Return ``records`` keyed by net id; the last record of an id wins.
+
+    A record without a net id, or with one that is not an integer, is left out.
+    """
     records_by_id: dict[int, RoutedNetRecord] = {}
     for record in records:
         if record.net_id is None:

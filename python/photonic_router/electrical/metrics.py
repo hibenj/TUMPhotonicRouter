@@ -9,13 +9,13 @@ from collections import Counter
 from typing import Any
 
 from photonic_router.electrical.net_geometry import NetGeometry, detailed_route_centerline_points
+from photonic_router.electrical.port_access import all_port_accesses
 from photonic_router.electrical.rect_geometry import rect_area, rect_intersection, union_rect_area
 from photonic_router.electrical.types import (
     BBox,
     CommonBusRoutingResult,
     DetailedBundleRoutingResult,
     ElectricalObstacleMap,
-    ElectricalPortAccess,
     ElectricalRoutingConfig,
     PadPlan,
 )
@@ -325,7 +325,7 @@ def _route_start_metrics(
 
 
 def _port_access_metrics(obstacle_map: ElectricalObstacleMap) -> dict[str, Any]:
-    accesses = tuple(_all_port_accesses(obstacle_map))
+    accesses = tuple(all_port_accesses(obstacle_map))
     blocked = set(obstacle_map.blocked_cells)
     blocked_anchors = tuple(access for access in accesses if access.anchor_cell in blocked)
     missing_contact_accesses = tuple(access for access in accesses if not access.contact_bbox)
@@ -350,23 +350,6 @@ def _port_access_metrics(obstacle_map: ElectricalObstacleMap) -> dict[str, Any]:
         "port_access_blocked_anchor_count": len(blocked_anchors),
         "port_access_missing_contact_count": len(missing_contact_accesses),
     }
-
-
-def _all_port_accesses(
-    obstacle_map: ElectricalObstacleMap,
-) -> tuple[ElectricalPortAccess, ...]:
-    accesses_by_key: dict[tuple[str, str], ElectricalPortAccess] = {}
-    for terminal_id, access in obstacle_map.common_bus_port_accesses.items():
-        accesses_by_key[("common_bus", terminal_id)] = access
-    for terminal_id, access in obstacle_map.individual_port_accesses.items():
-        accesses_by_key[("individual", terminal_id)] = access
-    return tuple(
-        access
-        for _, access in sorted(
-            accesses_by_key.items(),
-            key=lambda item: (item[0][0], item[0][1]),
-        )
-    )
 
 
 def _min_cross_net_spacing(

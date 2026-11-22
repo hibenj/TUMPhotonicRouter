@@ -15,8 +15,8 @@ from photonic_router.crossings.route_rust_crossing_components import (
     place_realized_crossing_components,
 )
 from photonic_router.crossings.route_rust_crossing_plan import (
-    _routed_records_by_net_id,
     augment_insertion_loss_report_from_realized_intersections,
+    index_records_by_net_id,
     write_crossing_debug_artifacts,
 )
 from photonic_router.crossings.route_rust_crossing_verification import (
@@ -76,8 +76,8 @@ from photonic_router.routing.session import (
     route_nets_rust,
 )
 from photonic_router.static_obstacle_builder import (
-    _load_rust_backend,
     build_static_obstacle_map,
+    load_rust_backend,
 )
 
 
@@ -85,7 +85,7 @@ def analyze_meander_insertion_for_requirements(
     *args: Any, **kwargs: Any
 ) -> tuple[list[RoutedNetRecord], MeanderInsertionReport]:
     """Plan the meanders with this module's backend loader; see the function in `plm`."""
-    _meander_impl._load_rust_backend = _load_rust_backend
+    _meander_impl.load_rust_backend = load_rust_backend
     return _meander_impl.analyze_meander_insertion_for_requirements(*args, **kwargs)
 
 
@@ -379,7 +379,7 @@ def route_match_and_realize(
         else None
     )
     if plan_info is not None and options.enable_internal_photonic_probe_verification:
-        final_records_by_net_id = _routed_records_by_net_id(records_for_realization)
+        final_records_by_net_id = index_records_by_net_id(records_for_realization)
         if final_records_by_net_id:
             illegal_realized_crossings = verify_realized_route_intersections(
                 crossing_plan_info=plan_info,

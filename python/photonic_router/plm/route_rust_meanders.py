@@ -39,7 +39,7 @@ from photonic_router.records.route_rust_types import (
 )
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
-_load_rust_backend = _sob._load_rust_backend
+load_rust_backend = _sob.load_rust_backend
 
 EXACT_MEANDER_EPS_UM = 1.0e-6
 #: the most same-edge chunks the split fallback tries (selection and final pass)
@@ -1127,7 +1127,7 @@ def _meander_search_config(
     rust_backend: MeanderRustBackendLike | None = None,
 ) -> _MeanderSearchConfig:
     """The search policy (straights, box depths, endpoint insets) as Rust defines it."""
-    backend = rust_backend if rust_backend is not None else _load_rust_backend()
+    backend = rust_backend if rust_backend is not None else load_rust_backend()
     if backend is None:
         raise RuntimeError("Rust router backend unavailable for meander analysis.")
     raw_config = backend.auto_meander_search_config_rs(
@@ -1576,7 +1576,7 @@ def analyze_meander_insertion_for_requirements(
     ``MeanderPlanningProfile``; without it no timer, counter or attempt list
     is built.
     """
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         raise RuntimeError("Rust router backend unavailable for meander analysis.")
     rust_backend = cast(MeanderRustBackendLike, rust_backend)

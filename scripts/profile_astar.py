@@ -28,7 +28,7 @@ for path in (PROJECT_ROOT, PYTHON_SOURCE):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from photonic_router.static_obstacle_builder import _load_rust_backend
+from photonic_router.static_obstacle_builder import load_rust_backend
 
 DEFAULT_BASELINE_PATH = PROJECT_ROOT / "docs" / "astar_quality_baseline.json"
 PrimitiveClass: TypeAlias = Literal["straight_short", "straight_long", "bend45", "bend90"]
@@ -773,7 +773,7 @@ def _write_text(path: Path, text: str) -> None:
 
 def main() -> int:
     args = _parse_args()
-    rust_backend_obj = _load_rust_backend()
+    rust_backend_obj = load_rust_backend()
     if rust_backend_obj is None:
         raise RuntimeError("Rust router backend is not available. Build it with `maturin develop`.")
     rust_backend = cast(RustBackend, rust_backend_obj)

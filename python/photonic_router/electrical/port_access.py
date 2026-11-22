@@ -14,6 +14,7 @@ from photonic_router.electrical.terminal_contacts import (
     select_terminal_port_for_side,
 )
 from photonic_router.electrical.types import (
+    ElectricalObstacleMap,
     ElectricalPortAccess,
     ElectricalRoutingConfig,
     ElectricalTerminal,
@@ -278,3 +279,13 @@ def _fallback_contact_bbox(point: Point, width_um: float) -> tuple[float, float,
 
 def _in_bounds(cell: GridCell, grid: GridSpec) -> bool:
     return 0 <= cell[0] < int(grid.width) and 0 <= cell[1] < int(grid.height)
+
+
+def all_port_accesses(obstacle_map: ElectricalObstacleMap) -> tuple[ElectricalPortAccess, ...]:
+    """Return every port access of the map, bus accesses first, each group by terminal id."""
+
+    accesses = [
+        *obstacle_map.common_bus_port_accesses.values(),
+        *obstacle_map.individual_port_accesses.values(),
+    ]
+    return tuple(sorted(accesses, key=lambda access: (access.purpose, access.terminal_id)))

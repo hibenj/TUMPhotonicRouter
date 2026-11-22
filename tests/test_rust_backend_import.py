@@ -7,11 +7,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
-from photonic_router.static_obstacle_builder import _load_rust_backend
+from photonic_router.static_obstacle_builder import load_rust_backend
 
 
 def test_rust_backend_exposes_router_class():
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     assert backend is not None
     assert hasattr(backend, "PyPhotonicRouter")
     assert hasattr(backend, "GridSpec")
@@ -20,7 +20,7 @@ def test_rust_backend_exposes_router_class():
 
 
 def test_astar_config_exposes_proactive_congestion_fields():
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     assert backend is not None
     cfg = backend.AStarConfig()
 
@@ -33,7 +33,7 @@ def test_astar_config_exposes_proactive_congestion_fields():
 
 
 def test_router_crossing_context_is_disabled_by_default():
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     assert backend is not None
     router = backend.PyPhotonicRouter(
         backend.GridSpec(20, 20, 1.0, 0.0, 0.0),
@@ -47,7 +47,7 @@ def test_router_crossing_context_is_disabled_by_default():
 
 
 def _collision_crossing_router(*, crossing_half_size_cells: int = 0):
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     assert backend is not None
 
     primitive = backend.PrimitiveLibraryConfig(
@@ -283,7 +283,7 @@ def test_collision_crossing_route_rejects_invalid_local_crossing_move():
 
 
 def test_route_debug_svg_can_use_obstacle_snapshot():
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     assert backend is not None
 
     primitive = backend.PrimitiveLibraryConfig()

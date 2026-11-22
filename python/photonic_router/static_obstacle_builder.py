@@ -598,7 +598,14 @@ def _build_static_obstacle_map_rust(
     )
 
 
-def _load_rust_backend() -> Any | None:
+def load_rust_backend() -> Any | None:
+    """Return the compiled extension `photonic_router._rust`, or None when there is none.
+
+    Imports the installed module first. Without one, loads the first
+    `libphotonic_router.so` that exists under the repository's `target/`
+    (release before debug) and registers it under that module name, so a
+    plain `cargo build` is enough during development.
+    """
     try:
         return import_module("photonic_router._rust")
     except ImportError:
@@ -637,7 +644,7 @@ def _load_rust_backend() -> Any | None:
 
 
 def _require_rust_backend() -> Any:
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     if backend is None:
         raise ImportError(
             "photonic_router._rust is not importable; build the extension with "

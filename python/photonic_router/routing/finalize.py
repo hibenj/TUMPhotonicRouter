@@ -39,11 +39,11 @@ from photonic_router.verify.route_rust_endpoint_correction import (
     EndpointClearance,
     EndpointCorrectionScope,
     EndpointCorrectionSetup,
-    _centerline_length_um,
     apply_crossing_aware_endpoint_correction_to_record,
     dedupe_centerline,
     legal_crossing_points_by_net_id,
     merge_terminal_corrected_route_centerline,
+    polyline_length_um,
     primitive_centerline_for_record,
 )
 
@@ -560,9 +560,9 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
             try:
                 corrected_total_length_um = float(centerline_length(list(merged_centerline)))
             except Exception:
-                corrected_total_length_um = _centerline_length_um(merged_centerline)
+                corrected_total_length_um = polyline_length_um(merged_centerline)
         else:
-            corrected_total_length_um = _centerline_length_um(merged_centerline)
+            corrected_total_length_um = polyline_length_um(merged_centerline)
         state.search.bookkeeping.records_by_id[net_id] = replace(
             record,
             total_length_um=corrected_total_length_um,
@@ -1051,7 +1051,7 @@ def _append_target_fanout_stubs_after_correction(state: SessionState) -> None:
         if len(new_centerline) < 2:
             continue
         try:
-            new_total_length_um = float(_centerline_length_um(new_centerline))
+            new_total_length_um = float(polyline_length_um(new_centerline))
         except Exception:
             continue
         state.search.bookkeeping.records_by_id[net_id] = replace(

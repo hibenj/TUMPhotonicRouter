@@ -42,7 +42,7 @@ _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 GridSpec = _sob.GridSpec
 StaticObstacleMapConfig = _sob.StaticObstacleMapConfig
 build_static_obstacle_map = _sob.build_static_obstacle_map
-_load_rust_backend = _sob._load_rust_backend
+load_rust_backend = _sob.load_rust_backend
 
 
 class RouteNetsRustSession:
@@ -66,7 +66,7 @@ class RouteNetsRustSession:
             unrouted_layout, schematic, options if options is not None else SessionOptions()
         )
 
-        rust_backend = _load_rust_backend()
+        rust_backend = load_rust_backend()
         if rust_backend is None:
             raise RuntimeError(
                 "Rust router backend is not available. Build it with `cargo build` "

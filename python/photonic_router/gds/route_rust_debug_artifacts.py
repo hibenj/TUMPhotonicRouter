@@ -315,7 +315,8 @@ def dump_photonic_probe_failure_artifacts(
     return artifacts
 
 
-def _cells_bbox(cells: set[tuple[int, int]]) -> tuple[int, int, int, int] | None:
+def cells_bbox(cells: set[tuple[int, int]]) -> tuple[int, int, int, int] | None:
+    """Return ``(min x, max x, min y, max y)`` of ``cells``, or None for an empty set."""
     if not cells:
         return None
     xs = [c[0] for c in cells]

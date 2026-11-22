@@ -28,7 +28,7 @@ from photonic_router.records.route_rust_types import (
     RoutedNetRecord,
 )
 from photonic_router.schematic_protocols import PlacedSchematicLike
-from photonic_router.static_obstacle_builder import _load_rust_backend
+from photonic_router.static_obstacle_builder import load_rust_backend
 
 GridCell = tuple[int, int]
 Centerline = list[tuple[float, float]]
@@ -310,7 +310,7 @@ class FakeLayout:
 
 
 def real_backend() -> Any:
-    backend = _load_rust_backend()
+    backend = load_rust_backend()
     if backend is None:
         pytest.skip("Rust backend unavailable.")
     return backend

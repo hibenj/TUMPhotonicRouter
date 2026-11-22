@@ -14,7 +14,7 @@ from photonic_router.records.route_rust_records import (
 )
 from photonic_router.records.route_rust_types import RoutedNetRecord
 from photonic_router.routing.options import CircuitMetadata, MatchingOptions
-from photonic_router.static_obstacle_builder import _load_rust_backend
+from photonic_router.static_obstacle_builder import load_rust_backend
 from photonic_router.verify.route_rust_endpoint_correction import (
     EndpointCorrectionSetup,
     apply_crossing_aware_endpoint_correction_to_record,
@@ -167,7 +167,7 @@ def test_endpoint_correction_failure_prints_net_and_endpoints(capsys):
 
 def test_heater_s_mod_pass0_characterizes_current_port_alignment():
     pytest.importorskip("gdsfactory")
-    if _load_rust_backend() is None:
+    if load_rust_backend() is None:
         pytest.skip("Rust backend unavailable for heater_s_mod alignment diagnostics.")
 
     from photonic_router.flow import load_benchmark
@@ -227,7 +227,7 @@ def test_heater_s_mod_pass0_characterizes_current_port_alignment():
 
 def test_heater_s_mod_route_match_uses_corrected_records_for_realization():
     pytest.importorskip("gdsfactory")
-    if _load_rust_backend() is None:
+    if load_rust_backend() is None:
         pytest.skip("Rust backend unavailable for heater_s_mod endpoint correction.")
 
     from photonic_router.benchmark_metadata import resolve_internal_delays_for_instances
@@ -284,7 +284,7 @@ def test_heater_s_mod_route_match_uses_corrected_records_for_realization():
 
 
 def test_py_router_exposes_endpoint_corrected_centerline_and_polygon():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -323,7 +323,7 @@ def test_py_router_exposes_endpoint_corrected_centerline_and_polygon():
 
 
 def test_py_router_corrects_full_diagonal_45_degree_centerline():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -354,7 +354,7 @@ def test_py_router_corrects_full_diagonal_45_degree_centerline():
 
 
 def test_py_router_safe_endpoint_correction_rejects_unchecked_bump():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -404,7 +404,7 @@ def _checked_case4_test_router_and_route(rust_backend, *, allow_45_degree_turns:
 
 
 def test_checked_case4_bump_allows_local_static_port_opening():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -428,7 +428,7 @@ def test_checked_case4_bump_allows_local_static_port_opening():
 
 
 def test_checked_case4_bump_uses_clear_mirrored_side_when_static_blocks_first_candidate():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -454,7 +454,7 @@ def test_checked_case4_bump_uses_clear_mirrored_side_when_static_blocks_first_ca
 
 
 def test_checked_case4_bump_rejects_static_without_active_port_opening():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -477,7 +477,7 @@ def test_checked_case4_bump_rejects_static_without_active_port_opening():
 
 
 def test_checked_case4_bump_skips_dynamic_blocked_start_top_candidate():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -504,7 +504,7 @@ def test_checked_case4_bump_skips_dynamic_blocked_start_top_candidate():
 
 
 def test_checked_case4_bump_allows_dynamic_only_in_inflated_footprint():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -529,7 +529,7 @@ def test_checked_case4_bump_allows_dynamic_only_in_inflated_footprint():
 
 
 def test_checked_case4_bump_rejects_dynamic_in_core_footprint():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -554,7 +554,7 @@ def test_checked_case4_bump_rejects_dynamic_in_core_footprint():
 
 
 def test_batch_checked_endpoint_correction_returns_per_net_metadata():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -592,7 +592,7 @@ def test_batch_checked_endpoint_correction_returns_per_net_metadata():
 
 
 def test_checked_endpoint_correction_dry_run_does_not_mutate_router_state():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -627,7 +627,7 @@ def test_checked_endpoint_correction_dry_run_does_not_mutate_router_state():
 
 
 def test_batch_checked_endpoint_correction_dry_run_returns_metadata_without_commit():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -664,7 +664,7 @@ def test_batch_checked_endpoint_correction_dry_run_returns_metadata_without_comm
 
 
 def test_checked_case4_bump_with_45_enabled_uses_clear_mirrored_side():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -848,7 +848,7 @@ def test_crossing_free_endpoint_correction_uses_normal_corrected_centerline():
 
 
 def test_checked_no_bump_endpoint_correction_allows_active_endpoint_static_contact():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -887,7 +887,7 @@ def test_checked_no_bump_endpoint_correction_allows_own_route_middle_static_cont
     # time) -- this test previously asserted the opposite (a RuntimeError)
     # and had been silently stale since that change; updated here to match
     # current, intended behavior instead of the pre-2026-07-16 contract.
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 
@@ -927,7 +927,7 @@ def test_checked_no_bump_endpoint_correction_rejects_other_net_dynamic_overlap()
     # given that cell first via a route that is never committed for net 7
     # (route_single_net, not route_single_net_and_commit) so the only
     # occupant at (5, 5) is the other net, not net 7's own prior geometry.
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for endpoint correction API test.")
 

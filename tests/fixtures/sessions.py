@@ -50,7 +50,7 @@ from photonic_router.routing.products import (
 )
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SearchLog, SessionState
-from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, _load_rust_backend
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig, load_rust_backend
 
 from tests.fixtures.synthetic_layouts import (
     GRID_HEIGHT,
@@ -226,7 +226,7 @@ class Pipeline:
                 **overrides,
             ),
         )
-        rust_backend = _load_rust_backend()
+        rust_backend = load_rust_backend()
         if rust_backend is None:  # pragma: no cover - the kernel is built in CI
             pytest.skip("Rust router backend unavailable.")
         self._rust_backend = rust_backend

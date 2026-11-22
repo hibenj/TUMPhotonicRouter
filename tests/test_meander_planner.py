@@ -23,7 +23,7 @@ from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import MeanderInsertionConfig, RoutedNetRecord
 from photonic_router.routing import api as routing_api
 from photonic_router.routing.api import analyze_meander_insertion_for_requirements
-from photonic_router.static_obstacle_builder import _load_rust_backend
+from photonic_router.static_obstacle_builder import load_rust_backend
 
 from tests.fixtures.path_length import (
     FakePlanner,
@@ -303,7 +303,7 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
     backend = fake_backend(
         centerline=_centerline, plan_requests=_plan_requests, plan_final=_plan_final
     )
-    monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: backend)
+    monkeypatch.setattr(routing_api, "load_rust_backend", lambda: backend)
 
     requirement_edge = RoutedEdgeKey(
         net_name="mmi_to_out",
@@ -426,7 +426,7 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
         plan_requests=_plan_requests,
         plan_final=_plan_final,
     )
-    monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: backend)
+    monkeypatch.setattr(routing_api, "load_rust_backend", lambda: backend)
 
     physical_edge = RoutedEdgeKey(
         net_name="src_to_gate",
@@ -530,7 +530,7 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
         }
 
     backend = fake_backend(centerline=_centerline, plan_requests=_plan_requests)
-    monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: backend)
+    monkeypatch.setattr(routing_api, "load_rust_backend", lambda: backend)
 
     requirement_edge = RoutedEdgeKey(
         net_name="mmi_to_out",
@@ -772,7 +772,7 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
 
 
 def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for registered meander path test.")
 
@@ -915,7 +915,7 @@ def test_registered_meander_geometry_requirement_matches_legacy_opened_cells():
 
 
 def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
-    rust_backend = _load_rust_backend()
+    rust_backend = load_rust_backend()
     if rust_backend is None:
         pytest.skip("Rust backend unavailable for adaptive meander test.")
 
@@ -981,7 +981,7 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
 
 def test_meander_planning_requires_registered_rust_planner(monkeypatch):
     backend = fake_backend()
-    monkeypatch.setattr(routing_api, "_load_rust_backend", lambda: backend)
+    monkeypatch.setattr(routing_api, "load_rust_backend", lambda: backend)
 
     class _RouteObj:
         cells = [(1, 1), (2, 2), (3, 3)]
