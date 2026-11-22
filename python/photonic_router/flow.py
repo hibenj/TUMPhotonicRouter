@@ -21,6 +21,7 @@ is `photonic_router.cli`, which builds both objects and calls
 from __future__ import annotations
 
 import importlib
+import logging
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -229,6 +230,41 @@ def _print_flow_footer(stats: RoutingFlowStats | None = None) -> None:
     print(f"\n{'=' * 60}\n")
 
 
+_LOGGER = logging.getLogger(__name__)
+
+#: start of the warning a run logs when contribution 2 is asked for on a design
+#: that is not band-layered and the standard router routes it instead
+STANDARD_ROUTER_FALLBACK = "fallback to the standard router"
+
+
+def _standard_router_fallback(analysis: PlacementAnalysis) -> bool:
+    """Whether a run with pre-placed crossing grids routes with the standard router instead.
+
+    Pre-placed crossing grids need a band-layered design: every net
+    confined to the band between two adjacent component columns. A design
+    with nets outside that model (the path-length-matching benchmarks, a
+    Clements mesh) is routed with the standard router, as
+    `--configuration baseline` routes it, and the run says so in a warning
+    (owner, 2026-11-22: the crossing contributions are meant for the Benes
+    and ADEPT designs). The analysis is read for this question only; the
+    standard router gets no plan.
+    """
+    demand = analysis.crossing_demand
+    if not demand.outside:
+        return False
+    reasons = ", ".join(
+        f"{reason}: {len(nets)}" for reason, nets in sorted(demand.outside_by_reason().items())
+    )
+    _LOGGER.warning(
+        "%s: pre-placed crossing grids need a band-layered design, this one has "
+        "%d net(s) outside the band model (%s); no crossing grid is placed",
+        STANDARD_ROUTER_FALLBACK,
+        len(demand.outside),
+        reasons,
+    )
+    return True
+
+
 def _preplaced_crossing_grids_stage(
     *,
     schematic: Schematic,
@@ -258,8 +294,9 @@ def _preplaced_crossing_grids_stage(
     The stage needs a band-layered design: every net confined to the band
     between two adjacent component columns. A design with nets outside that
     model (`CrossingDemand.require_band_layered`) is refused here with the
-    nets and reasons, before anything is placed; those designs route with
-    `--crossing-mode lidar-pure` or `lidar-guided`.
+    nets and reasons, before anything is placed. `_route_schematic` does
+    not get here with such a design: it routes it with the standard router
+    (`_standard_router_fallback`).
     """
     from photonic_router.crossings.preplaced_crossing_grids import (
         derive_preplaced_crossing_layout,
@@ -432,6 +469,30 @@ def _route_schematic(
     enable_crossings = optical.enable_crossings
     crossing_mode = optical.crossing_mode
     preplaced_crossing_grids = options.preplaced_grids.preplaced_crossing_grids
+    original_analysis: PlacementAnalysis | None = None
+    original_analysis_seconds = 0.0
+    if preplaced_crossing_grids:
+        if is_guided_mode(crossing_mode):
+            raise ValueError(
+                "preplaced_crossing_grids (contribution 2) and crossing_mode "
+                "'lidar-guided' (contribution 1) are alternative contributions; "
+                "run exactly one of lidar-pure / lidar-guided / preplaced grids."
+            )
+        if enable_crossings:
+            raise ValueError(
+                "preplaced_crossing_grids and enable_crossings are mutually exclusive: "
+                "pre-placed grids resolve every crossing before routing, so the router "
+                "must run with crossings disabled."
+            )
+        original_analysis, original_analysis_seconds = _placement_analysis_stage(
+            schematic=schematic,
+            unrouted_layout=unrouted_layout,
+            total_steps=total_steps,
+            stats=stats,
+        )
+        if _standard_router_fallback(original_analysis):
+            preplaced_crossing_grids = False
+            enable_crossings = options.preplaced_grids.standard_router_crossings
     net_order = optical.net_order
     if net_order is None:
         net_order = default_net_order(
@@ -458,25 +519,7 @@ def _route_schematic(
     )
     preplaced_report_metadata: dict[str, object] | None = None
     crossing_guidance_net_names: frozenset[str] | None = None
-    if preplaced_crossing_grids:
-        if is_guided_mode(crossing_mode):
-            raise ValueError(
-                "preplaced_crossing_grids (contribution 2) and crossing_mode "
-                "'lidar-guided' (contribution 1) are alternative contributions; "
-                "run exactly one of lidar-pure / lidar-guided / preplaced grids."
-            )
-        if enable_crossings:
-            raise ValueError(
-                "preplaced_crossing_grids and enable_crossings are mutually exclusive: "
-                "pre-placed grids resolve every crossing before routing, so the router "
-                "must run with crossings disabled."
-            )
-        original_analysis, original_analysis_seconds = _placement_analysis_stage(
-            schematic=schematic,
-            unrouted_layout=unrouted_layout,
-            total_steps=total_steps,
-            stats=stats,
-        )
+    if preplaced_crossing_grids and original_analysis is not None:
         (
             schematic,
             unrouted_layout,

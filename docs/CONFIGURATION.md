@@ -34,7 +34,7 @@ Rust twin's doc comment in `src/config.rs`, which these dataclasses mirror.
 section below has a command-line column only, like `FlowOptions`.
 See `docs/ARCHITECTURE.md` for how the trees reach the stages.
 
-Totals: 79 `RoutingConfig` fields (79 with an overlay variable), 50 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 166 in total.
+Totals: 79 `RoutingConfig` fields (79 with an overlay variable), 51 `FlowOptions` fields (42 with a command-line flag), 37 `ElectricalRoutingConfig` fields (7 with a command-line flag), 167 in total.
 
 ## `RoutingConfig` -- the router's settings
 
@@ -235,11 +235,12 @@ Waveguide geometry the layout and every routing stage must agree on. Read by the
 
 ### `preplaced_grids` -- `PreplacedCrossingGridOptions`
 
-Contribution 2: the pre-placed crossing grid stage (stage 2b).
+Contribution 2: the pre-placed crossing grid stage (stage 2b). `standard_router_crossings` is `enable_crossings` of the standard router for this design: what the run uses when the design is not band-layered and the flow routes it with the standard router instead (`flow.STANDARD_ROUTER_FALLBACK`).
 
 | field | type | default | command line | description |
 | --- | --- | --- | --- | --- |
 | `preplaced_crossing_grids` | `bool` | `False` | `--preplaced-crossing-grids` | -- |
+| `standard_router_crossings` | `bool` | `True` | -- | -- |
 
 ### `optical` -- `OpticalStageOptions`
 

@@ -24,6 +24,7 @@ from photonic_router.flow_config import (
     SCRIPT_BEND_RADIUS_UM,
     SCRIPT_CHIP_ADD_X_UM,
     SCRIPT_CHIP_ADD_Y_UM,
+    SCRIPT_ENABLE_CROSSINGS,
     SCRIPT_FANOUT_ACCESS_MODE,
     SCRIPT_FOREIGN_PORT_KEEPOUT_CELLS,
     SCRIPT_GRID_SIZE_UM,
@@ -78,9 +79,16 @@ class ObstacleOptions:
 
 @dataclass(frozen=True)
 class PreplacedCrossingGridOptions:
-    """Contribution 2: the pre-placed crossing grid stage (stage 2b)."""
+    """Contribution 2: the pre-placed crossing grid stage (stage 2b).
+
+    `standard_router_crossings` is `enable_crossings` of the standard router
+    for this design: what the run uses when the design is not band-layered
+    and the flow routes it with the standard router instead
+    (`flow.STANDARD_ROUTER_FALLBACK`).
+    """
 
     preplaced_crossing_grids: bool = False
+    standard_router_crossings: bool = SCRIPT_ENABLE_CROSSINGS
 
 
 @dataclass(frozen=True)

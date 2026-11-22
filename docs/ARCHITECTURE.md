@@ -131,9 +131,13 @@ whose two terminals point into one band from its two walls is *confined* to
 it; two confined nets must cross iff their top-to-bottom order differs
 between the two walls. `CrossingDemand.require_band_layered()` refuses a
 design with nets outside that model (same wall, non-adjacent walls, a
-vertical port, a port pointing off the chip); the flow re-raises that as a
-`RuntimeError` naming the nets and suggesting `--crossing-mode lidar-pure` or
-`lidar-guided`. `stage_schedule()` lists the bands with crossing events, left
+vertical port, a port pointing off the chip). The flow does not hand such a
+design to the stage: it routes it with the standard router, as
+`--configuration baseline` does, and logs one warning
+(`flow._standard_router_fallback`; owner, 2026-11-22: the crossing
+contributions are meant for the Benes and ADEPT designs, the
+path-length-matching benchmarks belong to the standard router).
+`stage_schedule()` lists the bands with crossing events, left
 to right; `crossings/preplaced_crossing_grids.py`
 (`derive_preplaced_crossing_layout`) places a tile of crossing components
 per band from it, and the session then routes the stubs between ports and
@@ -913,9 +917,10 @@ after a stage, and an observer can end the run with `StopAfterStage`).
   path-length-matching benchmarks with the standard router, the
   configuration they are made for; together `REQUIRED_CELLS`). A run
   the flow ends with an exception is a finding: the error
-  `routing.net_not_routed` when the kernel gives up on a net, the note
-  `flow.design_refused` when contribution 2 says the design is not
-  band-layered, the error `flow.run_failed` for anything else.
+  `routing.net_not_routed` when the kernel gives up on a net, the error
+  `flow.run_failed` for anything else. A run of contribution 2 on a design
+  that is not band-layered is routed with the standard router and gets the
+  note `flow.standard_router_fallback`.
 
 `scripts/logic_check.py <benchmark>|--all [--configuration NAME] [--list N]`
 prints the findings; `tests/baselines/logic_findings.json` pins their

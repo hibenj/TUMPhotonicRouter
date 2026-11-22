@@ -33,6 +33,9 @@ KNOWN_ERRORS: dict[tuple[str, str, str], str] = {
     ("heater_single", "contribution1", "routing.net_not_routed"): (
         "as in the baseline: no path for gc_1,o1 -> mmi_0,o1"
     ),
+    ("heater_single", "contribution2", "routing.net_not_routed"): (
+        "the design is not band-layered, so the standard router routes it: as in the baseline"
+    ),
     ("permutation_synthetic", "baseline", "routing.net_not_routed"): (
         "the standard router does not converge on the random permutation within 10 "
         "rounds; the design is made for the two contributions, which route it"
@@ -123,12 +126,30 @@ def test_the_plm_cells_are_the_plm_benchmarks_on_the_standard_router() -> None:
 
 def test_no_required_cell_has_a_known_error_or_is_refused() -> None:
     """What the router has to route, it routes: the paper's cells and the PLM benchmarks."""
-    ended = {"routing.net_not_routed", "flow.design_refused", "flow.run_failed"}
+    ended = {"routing.net_not_routed", "flow.standard_router_fallback", "flow.run_failed"}
     assert len(logic_check.REQUIRED_CELLS) == len(set(logic_check.REQUIRED_CELLS)) == 40
     for benchmark, configuration in logic_check.REQUIRED_CELLS:
         assert not ended & set(PIN[benchmark][configuration]), (benchmark, configuration)
         known = [key for key in KNOWN_ERRORS if key[:2] == (benchmark, configuration)]
         assert known == [], known
+
+
+def test_contribution_2_falls_back_to_the_standard_router_exactly_where_bands_are_missing() -> None:
+    """The fallback run has the findings of the baseline run and the note, nothing else."""
+    note = "flow.standard_router_fallback"
+    for benchmark, by_configuration in PIN.items():
+        pinned = dict(by_configuration["contribution2"])
+        outside = by_configuration["baseline"].get("crossing_plan.net_outside_band_model", 0)
+        assert pinned.pop(note, 0) == (1 if outside else 0), benchmark
+        if outside and not _is_wide(benchmark):
+            assert pinned == by_configuration["baseline"], benchmark
+    assert set(logic_check.PLM_BENCHMARKS) <= {
+        name for name in PIN if note in PIN[name]["contribution2"]
+    }
+
+
+def _is_wide(benchmark: str) -> bool:
+    return logic_check.last_stage(benchmark) == "handoff"
 
 
 def test_the_wide_designs_stop_at_the_hand_off_and_the_others_run_to_the_polygons() -> None:

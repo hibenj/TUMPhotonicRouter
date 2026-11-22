@@ -35,8 +35,7 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   default all three; `--jobs N`; `--route-wide` for the designs from
   16 x 16 on). The pin `tests/baselines/logic_findings.json` is per
   benchmark and configuration (123 runs). A run the flow ends is a finding
-  (`routing.net_not_routed`, the note `flow.design_refused` for the 15
-  designs contribution 2 refuses as not band-layered, `flow.run_failed`).
+  (`routing.net_not_routed`, `flow.run_failed`).
   `--paper` routes the 27 cells of the paper's results table
   (`PAPER_CELLS`): what the router has to route for now (owner,
   2026-11-22), each design with the configurations it has in the paper.
@@ -490,6 +489,21 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   513 -> 515, python 835 -> 836.
 
 ### Changed
+
+- Contribution 2 (`--configuration contribution2`,
+  `--preplaced-crossing-grids true`) on a design that is not band-layered
+  no longer ends with "pre-placed crossing grids need a band-layered
+  design": the flow routes the design with the standard router, exactly as
+  `--configuration baseline` does, and logs one warning that names how
+  many nets are outside the band model and why (owner decision,
+  2026-11-22). This concerns 15 public designs (the 13
+  path-length-matching benchmarks, `clements_8x8`, `heater_single`); a
+  band-layered design runs as before. `PreplacedCrossingGridOptions`
+  gets `standard_router_crossings`, which `cli.main` sets from the
+  benchmark's stable block. The logic harness reports the note
+  `flow.standard_router_fallback` in place of `flow.design_refused`; the
+  pin of the 15 contribution-2 runs moves from the refusal to the
+  baseline's findings plus the note.
 
 - The obstacle map's `build_stats` count every port and every port-open
   cell once. With heater obstacles the map is merged from two layer groups

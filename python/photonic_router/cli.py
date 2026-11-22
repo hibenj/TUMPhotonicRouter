@@ -26,6 +26,7 @@ import importlib
 import importlib.util
 import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import tomllib
@@ -144,7 +145,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "'baseline' = --crossing-mode lidar-pure; 'contribution1' = "
             "--crossing-mode lidar-guided (crossing-guided A*); "
             "'contribution2' = --preplaced-crossing-grids true "
-            "--verbose-routes (pre-placed crossing structures). The flags are "
+            "--verbose-routes (pre-placed crossing structures; a design that "
+            "is not band-layered is routed with the standard router, with a "
+            "warning). The flags are "
             "inserted before the ones given here, so an explicit flag wins."
         ),
     )
@@ -736,6 +739,19 @@ def stable_flags_for_configuration(
     return kept
 
 
+def _standard_router_crossings(stable_flags: list[str]) -> bool:
+    """`--crossings` of the benchmark's standard-router run: its stable flag, else the default.
+
+    Contribution 2 drops the flag from the stable block
+    (`stable_flags_for_configuration`); the flow needs it back when it
+    routes a design that is not band-layered with the standard router.
+    """
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("--crossings", type=_parse_bool_flag, default=None)
+    known, _ = probe.parse_known_args(stable_flags)
+    return SCRIPT_ENABLE_CROSSINGS if known.crossings is None else bool(known.crossings)
+
+
 def _requests_preplaced_crossing_grids(argv: list[str]) -> bool:
     probe = argparse.ArgumentParser(add_help=False)
     probe.add_argument("--preplaced-crossing-grids", type=_parse_bool_flag, default=False)
@@ -760,6 +776,7 @@ def main(argv: list[str] | None = None) -> Component:
     user_argv = sys.argv[1:] if argv is None else list(argv)
     configuration_argv = configuration_flags(user_argv)
     stable_flags, stable_env = _benchmark_stable_defaults(argv)
+    standard_router_crossings = _standard_router_crossings(stable_flags)
     stable_flags = stable_flags_for_configuration(
         stable_flags,
         preplaced_crossing_grids=_requests_preplaced_crossing_grids(configuration_argv + user_argv),
@@ -779,11 +796,19 @@ def main(argv: list[str] | None = None) -> Component:
             f"      - Configuration '{args.configuration}' flags applied: "
             f"{' '.join(configuration_argv)}"
         )
-    return route_benchmark(config, _flow_options(args))
+    options = _flow_options(args)
+    preplaced_grids = replace(
+        options.preplaced_grids, standard_router_crossings=standard_router_crossings
+    )
+    return route_benchmark(config, replace(options, preplaced_grids=preplaced_grids))
 
 
 def _flow_options(args: argparse.Namespace) -> FlowOptions:
-    """The parsed command line as the flow's option tree."""
+    """The parsed command line as the flow's option tree.
+
+    `preplaced_grids.standard_router_crossings` is not on the command line;
+    `main` sets it from the benchmark's stable block.
+    """
     return FlowOptions(
         loading=LoadingOptions(benchmark_name=args.benchmark),
         layout=LayoutOptions(
