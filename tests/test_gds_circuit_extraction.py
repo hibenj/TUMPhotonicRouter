@@ -97,6 +97,9 @@ def test_extractor_recovers_components_nets_and_placements(tmp_path: Path):
     kinds = {component.kind for component in circuit.components}
     assert kinds == {"mmi2x2", "heater", "gc"}
     assert len(circuit.components) == 7
+    # two of the grating couplers are turned by 180 degrees
+    assert {component.rotation_deg for component in circuit.components} > {0.0}
+    assert _assert_local_ports_are_in_the_placement_frame(circuit) >= 14
     routed = [net for net in circuit.nets if len(net.endpoints) == 2 and not net.stub]
     assert len(routed) == 7, circuit.report()
     assert all(len(net.endpoints) == 2 for net in circuit.nets), circuit.report()
@@ -661,3 +664,48 @@ def test_extractor_keeps_a_directional_coupler_as_one_component(tmp_path: Path):
         tuple(round(v, 2) for v in ends[key]) for key in ends if key.startswith("heater")
     )
     assert inner == heater_ports
+
+
+def _assert_local_ports_are_in_the_placement_frame(circuit) -> int:
+    """Every port's local position, moved by its component's rotation and origin, is its position.
+
+    Returns the number of ports checked.
+    """
+
+    import klayout.db as kdb
+
+    checked = 0
+    for component in circuit.components:
+        frame = kdb.DCplxTrans(1.0, component.rotation_deg, False, kdb.DVector(*component.origin))
+        for port in component.ports:
+            placed = frame * kdb.DPoint(*port.local_position)
+            assert (placed.x, placed.y) == pytest.approx(port.position, abs=1e-6), component.name
+            normal = frame * kdb.DVector(*port.local_normal)
+            assert (normal.x, normal.y) == pytest.approx(port.normal, abs=1e-6), component.name
+            checked += 1
+    return checked
+
+
+def test_local_port_positions_of_a_grouped_coupler_are_in_its_frame(tmp_path: Path):
+    # the outer ports of a grouped directional coupler are set after the
+    # nets are traced; they use the same frame as every other port
+    gds_path = tmp_path / "coupler_mzi.gds"
+    _synthetic_coupler_mzi_gds(gds_path)
+    config = ExtractionConfig(
+        core_layers=((1, 0),),
+        rules=(
+            ClassificationRule("heater", ("straight_heater_metal",)),
+            ClassificationRule("gc", ("grating_coupler",)),
+            ClassificationRule("net", ("straight", "bend", "coupler")),
+        ),
+        composites=(
+            CompositeRule("heater", "straight_heater_metal"),
+            CompositeRule("gc", "grating_coupler"),
+        ),
+        heater_metal_layers=((47, 0),),
+        directional_couplers=(DirectionalCouplerRule(("heater",), max_separation_um=70.0),),
+    )
+    circuit = extract_circuit(gds_path, config)
+    couplers = [c for c in circuit.components if c.kind == "directional_coupler"]
+    assert [len(c.ports) for c in couplers] == [4, 4]
+    assert _assert_local_ports_are_in_the_placement_frame(circuit) >= 16
