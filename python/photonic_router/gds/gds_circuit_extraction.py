@@ -383,6 +383,16 @@ def _leaf_region(layout: Any, leaf: _Leaf, core_indexes: list[int], fallback: bo
     return kdb.Region()
 
 
+def _local_frame(leaf: _Leaf) -> kdb.DCplxTrans:
+    """The frame the local positions and normals of a component's ports are given in.
+
+    The instance's rotation and displacement without its mirror: a mirrored
+    instance keeps its absolute geometry, the cell's y is folded in, so the
+    generic replacement is placed with a rotation and no mirror.
+    """
+    return kdb.DCplxTrans(1.0, float(leaf.trans.angle), False, leaf.trans.disp)
+
+
 def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> ExtractedCircuit:
     """Extract the components and nets of a GDS file's top cell.
 
@@ -477,12 +487,7 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
         key = (component_index, round(position[0] * 100), round(position[1] * 100))
         if key in seen_ports:
             return seen_ports[key]
-        leaf = components[component_index].leaf
-        # the local frame is the instance's rotation-only frame: a mirrored
-        # instance keeps its absolute geometry, the cell's y is folded in, so
-        # the generic replacement is placed with a rotation and no mirror
-        frame = kdb.DCplxTrans(1.0, float(leaf.trans.angle), False, leaf.trans.disp)
-        inverse = frame.inverted()
+        inverse = _local_frame(components[component_index].leaf).inverted()
         local = inverse * kdb.DPoint(*position)
         local_normal = inverse * kdb.DVector(*normal)
         ports_by_component[component_index].append(
@@ -559,12 +564,13 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
         if not isinstance(outer_ports, tuple) or not outer_ports or len(ports) != 2:
             continue
         ports.sort(key=lambda port: port.position[1])
+        inverse = _local_frame(component.leaf).inverted()
         for port_index, (port, (x, y)) in enumerate(zip(ports, outer_ports, strict=True)):
-            normal = port.normal
+            local = inverse * kdb.DPoint(x, y)
             ports[port_index] = ExtractedPort(
                 position=(x, y),
-                normal=normal,
-                local_position=(x - component.leaf.trans.disp.x, y - component.leaf.trans.disp.y),
+                normal=port.normal,
+                local_position=(local.x, local.y),
                 local_normal=port.local_normal,
             )
 

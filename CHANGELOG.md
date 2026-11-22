@@ -464,6 +464,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Fixed
 
+- `gds/gds_circuit_extraction.py`: the outer ports of a grouped coupler get
+  their local position in the frame every other port has (rotation and
+  displacement, `_local_frame`); only the displacement was undone, which
+  is wrong for a rotated instance. The extraction of the five private
+  circuits is unchanged (hash of all components and ports before and
+  after, read in place).
+
 - Findings of the docstring pass of 2026-11-21, checked against the code:
   - `electrical/rect_geometry.py`: `rect_is_covered` (was
     `rect_is_covered_by_any`) tests the union of the covers. The
