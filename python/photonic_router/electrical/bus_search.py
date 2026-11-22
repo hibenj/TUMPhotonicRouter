@@ -15,7 +15,7 @@ from photonic_router.electrical.types import (
     ElectricalTerminal,
     GridCell,
 )
-from photonic_router.electrical.wire_geometry import in_bounds
+from photonic_router.electrical.wire_geometry import in_bounds, manhattan
 from photonic_router.static_obstacle_builder import physical_to_grid
 
 
@@ -51,11 +51,11 @@ def forbidden_terminal_cells(
 
     allowed: set[GridCell] = set()
     for terminal_id in allowed_terminal_ids:
-        allowed.update(terminal_open_cells(obstacle_map, terminal_id))
+        allowed.update(common_bus_terminal_open_cells(obstacle_map, terminal_id))
     return frozenset(all_terminal_cells_set.difference(allowed))
 
 
-def terminal_open_cells(
+def common_bus_terminal_open_cells(
     obstacle_map: ElectricalObstacleMap,
     terminal_id: str,
 ) -> frozenset[GridCell]:
@@ -63,7 +63,7 @@ def terminal_open_cells(
 
     Reads ``common_bus_terminal_open_cells`` when that map is non-empty and
     the shared ``terminal_open_cells`` otherwise; an unknown terminal id
-    gives an empty set. ``wire_geometry.terminal_open_cells`` is the
+    gives an empty set. ``wire_geometry.pad_wire_terminal_open_cells`` is the
     counterpart for individual pad wires and reads a different map.
     """
 
@@ -125,7 +125,7 @@ def nearest_terminal_cell(
     center = physical_to_grid(terminal.center[0], terminal.center[1], obstacle_map.grid)
     choice = choose_route_start_cell(
         access=_terminal_access(obstacle_map, terminal.id),
-        opened_cells=terminal_open_cells(obstacle_map, terminal.id),
+        opened_cells=common_bus_terminal_open_cells(obstacle_map, terminal.id),
         grid=obstacle_map.grid,
         fallback_cell=center,
         bias_key=lambda cell: (abs(cell[0] - target_grid_x), abs(cell[1]), cell[0], cell[1]),
@@ -197,14 +197,14 @@ def shortest_path_to_tree(
     """
 
     grid = obstacle_map.grid
-    terminal_cells = terminal_open_cells(obstacle_map, terminal.id)
+    terminal_cells = common_bus_terminal_open_cells(obstacle_map, terminal.id)
     center_cell = physical_to_grid(terminal.center[0], terminal.center[1], grid)
     starts = ordered_route_start_cells(
         access=_terminal_access(obstacle_map, terminal.id),
         opened_cells=terminal_cells,
         grid=grid,
         fallback_cell=center_cell,
-        bias_key=lambda cell: (_manhattan(cell, center_cell), cell[0], cell[1]),
+        bias_key=lambda cell: (manhattan(cell, center_cell), cell[0], cell[1]),
     )
     if not starts:
         return None
@@ -262,7 +262,3 @@ def _reconstruct_path(
         current = parent[current]
     path.reverse()
     return tuple(path)
-
-
-def _manhattan(a: GridCell, b: GridCell) -> int:
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])

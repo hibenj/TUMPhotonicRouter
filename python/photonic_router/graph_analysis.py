@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
 
 from photonic_router.plm.path_length_graph import (
     PathLengthAnalysisResult,
@@ -13,24 +12,14 @@ from photonic_router.plm.path_length_graph import (
     build_graph_from_schematic,
 )
 from photonic_router.records.route_keys import RoutedEdgeKey
-
-
-class SchematicLike(Protocol):
-    """The schematic a `GraphAnalysisContext` is built from.
-
-    The graph itself is built from `netlist` (`build_graph_from_schematic`);
-    `placements` is keyed by instance name.
-    """
-
-    netlist: Any
-    placements: Mapping[str, Any]
+from photonic_router.schematic_protocols import PlacedSchematicLike
 
 
 @dataclass
 class GraphAnalysisContext:
     """Own one schematic graph and attach optional analysis products to it."""
 
-    schematic: SchematicLike
+    schematic: PlacedSchematicLike
     graph: PhotonicRoutingGraph
     plm: PathLengthGraphAnnotations | None = None
     timing: PathLengthAnalysisResult | None = None
@@ -38,7 +27,7 @@ class GraphAnalysisContext:
     @classmethod
     def from_schematic(
         cls,
-        schematic: SchematicLike,
+        schematic: PlacedSchematicLike,
         *,
         node_types: Mapping[str, str] | None = None,
         internal_delays_um: Mapping[str, float] | None = None,

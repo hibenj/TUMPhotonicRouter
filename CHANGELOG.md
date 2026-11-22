@@ -526,6 +526,20 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- One implementation where there were copies (rule "one implementation
+  per concern"), no behaviour change:
+  - `photonic_router/schematic_protocols.py` holds `SchematicLike` (read
+    for the netlist) and `PlacedSchematicLike` (netlist and placements);
+    the four Protocols named `SchematicLike` in `benchmark_metadata.py`,
+    `graph_analysis.py`, `plm/path_length_graph.py` and
+    `crossings/topology_analysis.py` are gone.
+  - `electrical/wire_geometry.manhattan` is the one Manhattan distance of
+    the electrical router; the private copies in `bus_search.py` and
+    `port_access.py` are gone.
+  - The two functions named `terminal_open_cells` read different maps and
+    say so in their names: `bus_search.common_bus_terminal_open_cells`
+    and `wire_geometry.pad_wire_terminal_open_cells`.
+
 - Contribution 2 (`--configuration contribution2`,
   `--preplaced-crossing-grids true`) on a design that is not band-layered
   no longer ends with "pre-placed crossing grids need a band-layered

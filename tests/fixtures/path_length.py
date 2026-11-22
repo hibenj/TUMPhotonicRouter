@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from types import SimpleNamespace
-from typing import Any, Protocol
+from typing import Any
 
 import pytest
 from photonic_router.plm.route_rust_meanders import _MeanderSearchConfig
@@ -27,15 +27,11 @@ from photonic_router.records.route_rust_types import (
     MeanderInsertionReport,
     RoutedNetRecord,
 )
+from photonic_router.schematic_protocols import PlacedSchematicLike
 from photonic_router.static_obstacle_builder import _load_rust_backend
 
 GridCell = tuple[int, int]
 Centerline = list[tuple[float, float]]
-
-
-class SchematicLike(Protocol):
-    netlist: Any
-    placements: dict[str, object]
 
 
 # --- netlists from links ----------------------------------------------------
@@ -61,7 +57,7 @@ class _Schematic:
 def schematic_from_links(
     instances: list[str] | Mapping[str, str],
     links_by_net: Mapping[str, Mapping[str, str]],
-) -> SchematicLike:
+) -> PlacedSchematicLike:
     """A netlist-only schematic: the instances by name (with a `component`
     name each when a mapping is given, for the tests that tell nodes by
     structure rather than by name) and one bundle per net, its links

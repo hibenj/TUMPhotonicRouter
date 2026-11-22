@@ -19,7 +19,6 @@ from photonic_router.plm.path_length_graph import (
     PathLengthAnalysisResult,
     PathLengthGraphAnnotations,
     PhotonicRoutingGraph,
-    SchematicLike,
     build_graph_from_schematic,
     list_edges_requiring_meander,
 )
@@ -29,6 +28,7 @@ from photonic_router.records.route_rust_types import (
     RoutedNetRecord,
     edge_key_to_dict,
 )
+from photonic_router.schematic_protocols import SchematicLike
 
 PATH_LENGTH_MATCH_TOLERANCE_UM = 1.0e-6
 

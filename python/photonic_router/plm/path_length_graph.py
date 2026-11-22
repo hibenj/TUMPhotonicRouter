@@ -7,22 +7,10 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from graphlib import TopologicalSorter
-from typing import Any, Protocol
 
 from photonic_router.port_roles import INPUT, OUTPUT, PortRole, component_port_sides
 from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
-
-
-class SchematicLike(Protocol):
-    """The part of a schematic the graph is built from: its ``netlist``.
-
-    `build_graph_from_schematic` reads ``netlist.instances`` (instance name
-    to instance; a string ``component`` attribute names the cell) and
-    ``netlist.routes`` (net name to a bundle whose ``links`` maps one
-    ``"instance,port"`` string to another).
-    """
-
-    netlist: Any
+from photonic_router.schematic_protocols import SchematicLike
 
 
 class NodeType(str, Enum):

@@ -22,6 +22,7 @@ from photonic_router.electrical.types import (
     Side,
     TerminalPairGroup,
 )
+from photonic_router.electrical.wire_geometry import manhattan
 from photonic_router.static_obstacle_builder import GridSpec, physical_to_grid
 
 
@@ -104,7 +105,7 @@ def choose_route_start_cell(
     def key(cell: GridCell) -> tuple[object, ...]:
         access_rank = 0 if cell == access_anchor else 1
         bias = bias_key(cell) if bias_key is not None else ()
-        fallback_rank = _manhattan(cell, fallback_cell) if fallback_cell is not None else 0
+        fallback_rank = manhattan(cell, fallback_cell) if fallback_cell is not None else 0
         if prefer_access_anchor:
             return (access_rank, *bias, fallback_rank, cell[0], cell[1])
         return (*bias, access_rank, fallback_rank, cell[0], cell[1])
@@ -139,7 +140,7 @@ def ordered_route_start_cells(
     def key(cell: GridCell) -> tuple[object, ...]:
         access_rank = 0 if cell == access_anchor else 1
         bias = bias_key(cell) if bias_key is not None else ()
-        fallback_rank = _manhattan(cell, fallback_cell) if fallback_cell is not None else 0
+        fallback_rank = manhattan(cell, fallback_cell) if fallback_cell is not None else 0
         if prefer_access_anchor:
             return (access_rank, *bias, fallback_rank, cell[0], cell[1])
         return (*bias, access_rank, fallback_rank, cell[0], cell[1])
@@ -239,12 +240,6 @@ def _anchor_cell_key(
         cell[0],
         cell[1],
     )
-
-
-def _manhattan(a: GridCell, b: GridCell | None) -> int:
-    if b is None:
-        return 0
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
 def _manhattan_centerline(start: Point, end: Point, side: Side) -> tuple[Point, ...]:

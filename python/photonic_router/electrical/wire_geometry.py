@@ -271,7 +271,7 @@ def _simplify_manhattan_path(path: tuple[GridCell, ...]) -> tuple[GridCell, ...]
     return tuple(simplified)
 
 
-def terminal_open_cells(
+def pad_wire_terminal_open_cells(
     obstacle_map: ElectricalObstacleMap,
     terminal_id: str,
 ) -> frozenset[GridCell]:

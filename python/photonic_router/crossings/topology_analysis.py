@@ -17,22 +17,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 from photonic_router.crossings.crossing_plan import LaneRank
 from photonic_router.plm.path_length_graph import PhotonicRoutingGraph, build_graph_from_schematic
 from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
-
-
-class SchematicLike(Protocol):
-    """What the analysis reads of a schematic: its netlist and its placements.
-
-    `placements` maps an instance name to an object with `x` and `y`; a
-    missing instance or attribute counts as 0.
-    """
-
-    netlist: Any
-    placements: Mapping[str, Any]
+from photonic_router.schematic_protocols import PlacedSchematicLike
 
 
 @dataclass(frozen=True)
@@ -57,7 +47,7 @@ class TopologyAnalysisResult:
 
 
 def analyze_schematic_topology(
-    schematic: SchematicLike,
+    schematic: PlacedSchematicLike,
     *,
     node_depths: Mapping[str, int] | None = None,
     node_ranks: Mapping[str, int] | None = None,
@@ -86,7 +76,7 @@ def analyze_schematic_topology(
 def analyze_graph_topology(
     graph: PhotonicRoutingGraph,
     *,
-    schematic: SchematicLike,
+    schematic: PlacedSchematicLike,
     node_depths: Mapping[str, int] | None = None,
     node_ranks: Mapping[str, int] | None = None,
     edge_ranks: Mapping[str, Mapping[str, int]] | None = None,
@@ -142,7 +132,7 @@ def _derive_node_depths(
 
 
 def _derive_node_ranks_from_placements(
-    schematic: SchematicLike,
+    schematic: PlacedSchematicLike,
     node_depths: Mapping[str, int],
 ) -> dict[str, int]:
     by_depth: dict[int, list[tuple[float, float, str]]] = {}
@@ -160,7 +150,7 @@ def _derive_node_ranks_from_placements(
 
 
 def _derive_edge_ranks(
-    schematic: SchematicLike,
+    schematic: PlacedSchematicLike,
     *,
     graph_edges: tuple[RoutedEdgeKey, ...],
     node_depths: Mapping[str, int],
@@ -196,7 +186,7 @@ def _derive_edge_ranks(
 
 
 def _derive_missing_edge_ranks_from_ports(
-    schematic: SchematicLike,
+    schematic: PlacedSchematicLike,
     *,
     unresolved_edges: tuple[RoutedEdgeKey, ...],
     node_depths: Mapping[str, int],
@@ -248,7 +238,9 @@ def _derive_missing_edge_ranks_from_ports(
     return ranked_edges
 
 
-def _placed_port_positions(schematic: SchematicLike) -> dict[tuple[str, str], tuple[float, float]]:
+def _placed_port_positions(
+    schematic: PlacedSchematicLike,
+) -> dict[tuple[str, str], tuple[float, float]]:
     try:
         from photonic_router.records.layout_from_schematic import layout_from_schematic
 
@@ -271,7 +263,7 @@ def _placed_port_positions(schematic: SchematicLike) -> dict[tuple[str, str], tu
 
 
 def _fallback_endpoint_position(
-    schematic: SchematicLike,
+    schematic: PlacedSchematicLike,
     port_ref: PortRef,
     node_ranks: Mapping[str, int],
 ) -> tuple[float, float]:

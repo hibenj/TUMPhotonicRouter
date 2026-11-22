@@ -44,8 +44,8 @@ from photonic_router.electrical.types import (
 from photonic_router.electrical.wire_geometry import (
     cell_center,
     dedupe_points,
+    pad_wire_terminal_open_cells,
     point_direction,
-    terminal_open_cells,
     wire_reservation_cells_from_point_path,
     wire_reservation_radius_cells,
 )
@@ -311,7 +311,7 @@ def bundle_opening_edge(
     xs = [
         x
         for terminal_id in terminal_ids
-        for x, _y in terminal_open_cells(obstacle_map, terminal_id)
+        for x, _y in pad_wire_terminal_open_cells(obstacle_map, terminal_id)
     ]
     if not xs:
         xs = [
@@ -544,7 +544,7 @@ def _check_static_collision(
 
     terminal_id = wire.wire_id
     _rank, _terminal, assignment, _topology_route, target_cells = wire.member
-    source_cells = terminal_open_cells(obstacle_map, terminal_id)
+    source_cells = pad_wire_terminal_open_cells(obstacle_map, terminal_id)
     own_pad_cells = assigned_pad_cells_by_slot.get(assignment.slot.index, target_cells)
     member_hard_blocked = set(hard_blocked)
     member_hard_blocked.update(all_terminal_cells.difference(source_cells))

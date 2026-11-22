@@ -20,9 +20,9 @@ from photonic_router.plm.path_length_requirements import (
 )
 from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import RoutedNetRecord
+from photonic_router.schematic_protocols import SchematicLike
 
 from tests.fixtures.path_length import (
-    SchematicLike,
     edge_key,
     records_from_links,
     schematic_from_links,

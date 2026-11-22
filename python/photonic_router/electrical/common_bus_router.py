@@ -9,13 +9,13 @@ from typing import cast
 from photonic_router.electrical.bus_search import (
     all_terminal_cells,
     axis_path,
+    common_bus_terminal_open_cells,
     forbidden_terminal_cells,
     nearest_terminal_cell,
     path_hits_blockers,
     route_uses_access_anchor,
     shortest_path_to_tree,
     terminal_access_anchor_cell,
-    terminal_open_cells,
 )
 from photonic_router.electrical.column_trunks import (
     CommonBusProgress,
@@ -172,7 +172,7 @@ def route_common_bus(
                 # search, or the dilated cells could trap it inside its own
                 # port-open zone before it ever reaches another blocked-free
                 # cell.
-                own_open = set(terminal_open_cells(obstacle_map, terminal.id))
+                own_open = set(common_bus_terminal_open_cells(obstacle_map, terminal.id))
                 own_anchor = terminal_access_anchor_cell(obstacle_map, terminal.id)
                 if own_anchor is not None:
                     own_open.add(own_anchor)
@@ -507,7 +507,7 @@ def _build_local_trunk_pair_routes(
         _, start_y = start
         trunk_cell = (target_grid_x, start_y)
         arm = axis_path(start, trunk_cell)
-        allowed_terminal_cells = set(terminal_open_cells(obstacle_map, terminal.id))
+        allowed_terminal_cells = set(common_bus_terminal_open_cells(obstacle_map, terminal.id))
         access_anchor = terminal_access_anchor_cell(obstacle_map, terminal.id)
         if access_anchor is not None:
             allowed_terminal_cells.add(access_anchor)

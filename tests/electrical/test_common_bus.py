@@ -12,7 +12,9 @@ from dataclasses import replace
 
 import pytest
 from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
-from photonic_router.electrical.bus_search import terminal_open_cells as _terminal_open_cells
+from photonic_router.electrical.bus_search import (
+    common_bus_terminal_open_cells as _terminal_open_cells,
+)
 from photonic_router.electrical.common_bus_router import route_common_bus
 from photonic_router.electrical.net_geometry import _common_bus_tagged_rects
 from photonic_router.electrical.types import (

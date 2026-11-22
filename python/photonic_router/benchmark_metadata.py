@@ -4,17 +4,9 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
-
-class SchematicLike(Protocol):
-    """What this module reads of a schematic: `netlist.instances`.
-
-    A mapping from instance name to an instance whose `component` is the
-    cell's name or an object with a `name`.
-    """
-
-    netlist: Any
+from photonic_router.schematic_protocols import SchematicLike
 
 
 def _coerce_nonnegative_float(value: Any) -> float | None:

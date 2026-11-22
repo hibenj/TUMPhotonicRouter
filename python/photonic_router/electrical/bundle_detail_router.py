@@ -42,8 +42,8 @@ from photonic_router.electrical.types import (
 from photonic_router.electrical.wire_geometry import (
     cells_from_point_path,
     individual_terminal_open_cells,
+    pad_wire_terminal_open_cells,
     terminal_exit_direction_x,
-    terminal_open_cells,
     wire_reservation_cells_from_point_path,
     wire_spacing_radius_cells,
 )
@@ -303,7 +303,7 @@ def route_detailed_bundles(
         _note_fallback(terminal.id, reason)
         bundle_id = bundle_id_by_terminal_id[terminal.id]
         fallback_access = obstacle_map.individual_port_accesses.get(terminal.id)
-        source_cells = terminal_open_cells(obstacle_map, terminal.id)
+        source_cells = pad_wire_terminal_open_cells(obstacle_map, terminal.id)
         own_pad_cells = assigned_pad_cells_by_slot.get(assignment.slot.index, target_cells)
         raw_fallback_blocked = set(hard_blocked)
         raw_fallback_blocked.update(all_terminal_cells.difference(source_cells))
@@ -442,7 +442,7 @@ def _detail_failure_reason(
         return "terminal has no successful topology route"
     if not target_cells:
         return "assigned pad slot has no access cells"
-    source_cells = terminal_open_cells(obstacle_map, terminal.id)
+    source_cells = pad_wire_terminal_open_cells(obstacle_map, terminal.id)
     if not source_cells:
         return "terminal has no source cells in electrical grid"
     route_cells = set(topology_route.path)

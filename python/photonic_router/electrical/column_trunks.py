@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from photonic_router.electrical.bus_search import (
     all_terminal_cells,
     axis_path,
+    common_bus_terminal_open_cells,
     nearest_terminal_cell,
     path_hits_blockers,
     route_uses_access_anchor,
     terminal_access_anchor_cell,
-    terminal_open_cells,
 )
 from photonic_router.electrical.pitch_grid import grid_cell_center_um
 from photonic_router.electrical.types import (
@@ -135,7 +135,7 @@ def route_column_trunks(
 
         allowed_cells: set[GridCell] = set()
         for _, terminal, anchor in members:
-            allowed_cells.update(terminal_open_cells(obstacle_map, terminal.id))
+            allowed_cells.update(common_bus_terminal_open_cells(obstacle_map, terminal.id))
             allowed_cells.add(anchor)
         forbidden_cells = all_terminal_cells_set.difference(allowed_cells)
 
@@ -236,7 +236,7 @@ def _find_legal_column_trunk(
     member_stub_allowed: dict[str, frozenset[GridCell]] = {}
     member_stub_forbidden: dict[str, frozenset[GridCell]] = {}
     for heater_id, terminal, _ in members:
-        own_open = set(terminal_open_cells(obstacle_map, terminal.id))
+        own_open = set(common_bus_terminal_open_cells(obstacle_map, terminal.id))
         own_anchor = terminal_access_anchor_cell(obstacle_map, terminal.id)
         if own_anchor is not None:
             own_open.add(own_anchor)
@@ -328,7 +328,7 @@ def straight_drop_to_bus(
     if exit_dx == 0:
         return None
     all_terminal_cells_set = all_terminal_cells(obstacle_map)
-    allowed_cells = set(terminal_open_cells(obstacle_map, terminal.id))
+    allowed_cells = set(common_bus_terminal_open_cells(obstacle_map, terminal.id))
     allowed_cells.add(access.anchor_cell)
     resolution = _find_legal_column_trunk(
         [(terminal.heater_id, terminal, access.anchor_cell)],

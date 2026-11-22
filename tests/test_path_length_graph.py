@@ -13,9 +13,9 @@ from photonic_router.plm.path_length_graph import build_graph_from_schematic
 from photonic_router.plm.path_length_requirements import analyze_path_length_matching
 from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import RoutedNetRecord
+from photonic_router.schematic_protocols import SchematicLike
 
 from tests.fixtures.path_length import (
-    SchematicLike,
     schematic_from_links,
 )
 from tests.fixtures.synthetic_layouts import (
