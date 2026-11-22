@@ -1,4 +1,4 @@
-﻿source: /home/benjamin/Documents/Repositories/working/LiDAR/src/picroute/benchmarks/multiportmmi_8x8/multiportmmi_8x8.yml
+﻿source: LiDAR repository, src/picroute/benchmarks/multiportmmi_8x8/multiportmmi_8x8.yml
 design: multiportmmi_8x8
 instances:
   gc1:

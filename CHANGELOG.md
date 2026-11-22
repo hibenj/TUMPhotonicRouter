@@ -471,6 +471,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   circuits is unchanged (hash of all components and ports before and
   after, read in place).
 
+- No file names a path of one machine any more: the LiDAR comparison
+  scripts (`scripts/results/lidar_12h.sh`, `lidar_12h_adept64.sh`,
+  `queue_night.sh`, `rerun_all.sh`) find the LiDAR checkout through
+  `LIDAR_ROOT` (default: next to this repository), the `source:` line of
+  `benchmarks/data/multiportmmi_8x8.yml` and two notes in `docs/history/`
+  name paths inside the checkout. Removed:
+  `scripts/path_investigation/benes32_layer273_testbed.sh`, a one-off
+  testbed bound to one machine that nothing referred to.
 - Findings of the docstring pass of 2026-11-21, checked against the code:
   - `electrical/rect_geometry.py`: `rect_is_covered` (was
     `rect_is_covered_by_any`) tests the union of the covers. The

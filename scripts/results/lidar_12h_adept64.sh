@@ -3,7 +3,8 @@
 #   price 0  benes_32x32 (was 1 h timeout), price 300 benes_32x32 (was 4 h), price 300 multiportmmi_64x64 (was 4 h, peak 17 GB).
 # Memory watchdog: below 2 GB MemAvailable the largest picroute process is killed and its run marked OOM.
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$R" || exit 1
-L=/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute; LP=/home/benjamin/Documents/Repositories/working/LiDAR/.venv/bin/python
+# LIDAR_ROOT: a checkout of the LiDAR repository with its own .venv (default: next to this repository)
+LIDAR_ROOT="${LIDAR_ROOT:-$R/../LiDAR}"; L="$LIDAR_ROOT/src/picroute"; LP="$LIDAR_ROOT/.venv/bin/python"
 log="$R/results/rerun_all.txt"; say() { echo "$(date -Is) $*" >> "$log"; }
 lidar() { # <benchmark> <price_cfg: comp_LiDAR|comp_LiDAR_x200> <config label>
   local b="$1" cfg="$2" label="$3"

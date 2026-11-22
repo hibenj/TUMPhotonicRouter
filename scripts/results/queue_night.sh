@@ -15,7 +15,8 @@ for b in benes_4x4 multiportmmi_8x8 benes_8x8 multiportmmi_16x16 benes_16x16 mul
   ours contribution2 $b 3600 --preplaced-crossing-grids true --verbose-routes
 done
 say "contribution 2 verbose done, LiDAR price 300"
-L=/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute; LP=/home/benjamin/Documents/Repositories/working/LiDAR/.venv/bin/python
+# LIDAR_ROOT: a checkout of the LiDAR repository with its own .venv (default: next to this repository)
+LIDAR_ROOT="${LIDAR_ROOT:-$R/../LiDAR}"; L="$LIDAR_ROOT/src/picroute"; LP="$LIDAR_ROOT/.venv/bin/python"
 lidar() { # <benchmark> <cap_s>
   [ -f "$R/results/STOP" ] && { say "STOP: skipped lidar_p300 $1"; return; }
   local out="$R/results/$1/lidar_p300/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$out" "$L/result/LiDAR/x200"

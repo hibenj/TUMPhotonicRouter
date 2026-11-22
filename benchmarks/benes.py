@@ -171,6 +171,9 @@ def benes_mmi_heater_switch(
     c.add_port("o2", port=mmi_in.ports["o2"])
     c.add_port("o3", port=mmi_out.ports["o3"])
     c.add_port("o4", port=mmi_out.ports["o4"])
+    # The heater length of LiDAR's Benes switch (`length: 320.0` in its
+    # benes_8x8.yml): the internal delay the path-length graph gives the
+    # cell. Read only by path-length matching, which the Benes runs leave off.
     c.info["optical_length_um"] = 320.0
     return c
 

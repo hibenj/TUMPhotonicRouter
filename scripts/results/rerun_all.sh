@@ -25,7 +25,8 @@ ours contribution2 benes_64x64 3600 --preplaced-crossing-grids true
 ours contribution2 benes_128x128 3600 --preplaced-crossing-grids true
 say "ours done"
 # original LiDAR, price 0
-L=/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute; LP=/home/benjamin/Documents/Repositories/working/LiDAR/.venv/bin/python
+# LIDAR_ROOT: a checkout of the LiDAR repository with its own .venv (default: next to this repository)
+LIDAR_ROOT="${LIDAR_ROOT:-$R/../LiDAR}"; L="$LIDAR_ROOT/src/picroute"; LP="$LIDAR_ROOT/.venv/bin/python"
 lidar() { # <benchmark> <cap_s>
   [ -f "$R/results/STOP" ] && { say "STOP: skipped lidar_p0 $1"; return; }
   local out="$R/results/$1/lidar_p0/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$out" "$L/result/LiDAR/p0"

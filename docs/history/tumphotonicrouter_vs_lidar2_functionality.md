@@ -4,7 +4,7 @@ This note compares functionality only. It is based on the local LiDAR 2.0 paper
 PDF at:
 
 ```text
-/home/benjamin/Documents/Paper/Photonics/Lidar/2505.17239v2.pdf
+2505.17239v2.pdf (arXiv:2505.17239v2; not in this repository)
 ```
 
 ## Short Answer

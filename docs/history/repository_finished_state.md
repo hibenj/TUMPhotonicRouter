@@ -159,8 +159,8 @@ equivalent benchmark definitions that both crossing modes can run.
 Local LiDAR source checkouts are available at:
 
 ```text
-/home/benjamin/Documents/Repositories/working/LiDAR
-/home/benjamin/Documents/Repositories/original/LiDAR
+../LiDAR
+../../original/LiDAR
 ```
 
 Important naming note: the LiDAR 2.0 paper calls the ADEPT tensor-core
@@ -168,9 +168,9 @@ benchmarks `ADEPT_*`, but the local LiDAR code stores these as
 `multiportmmi_*` benchmarks:
 
 ```text
-/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute/benchmarks/multiportmmi_8x8/multiportmmi_8x8.yml
-/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute/benchmarks/multiportmmi_16x16/multiportmmi_16x16.yml
-/home/benjamin/Documents/Repositories/working/LiDAR/src/picroute/benchmarks/multiportmmi_32x32/multiportmmi_32x32.yml
+../LiDAR/src/picroute/benchmarks/multiportmmi_8x8/multiportmmi_8x8.yml
+../LiDAR/src/picroute/benchmarks/multiportmmi_16x16/multiportmmi_16x16.yml
+../LiDAR/src/picroute/benchmarks/multiportmmi_32x32/multiportmmi_32x32.yml
 ```
 
 The `original/LiDAR` checkout also contains corresponding `.layout.yml` files
