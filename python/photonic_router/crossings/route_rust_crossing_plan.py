@@ -9,7 +9,7 @@ from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 from gdsfactory.component import Component
 from gdsfactory.schematic import Schematic
@@ -20,6 +20,7 @@ from photonic_router.crossings.route_rust_crossing_components import (
     crossing_component_bbox_size_um,
 )
 from photonic_router.placement_analysis import PlacementAnalysis, analyze_placement
+from photonic_router.records.route_keys import RoutedEdgeKey
 from photonic_router.records.route_rust_records import route_edge_key
 from photonic_router.records.route_rust_types import RoutedNetRecord, RouteJob
 
@@ -228,6 +229,102 @@ class CrossingPlanRequest:
     """None is the default `CrossingPlanConfig`."""
 
 
+class _PlanEventRecord(TypedDict, total=False):
+    """One planned crossing event in the crossing plan info.
+
+    The ranks and depths are the event's; ``loaded`` says whether both
+    edges have a route job, and the net ids and names are present when
+    they do. A record of ``missing_events`` carries the two ``found``
+    flags in place of ``loaded``.
+    """
+
+    edge_a: object
+    edge_b: object
+    source_depth: int
+    target_depth: int
+    level: int
+    order_index: int
+    edge_a_source_rank: int
+    edge_a_target_rank: int
+    edge_b_source_rank: int
+    edge_b_target_rank: int
+    loaded: bool
+    net_id_a: int
+    net_id_b: int
+    net_name_a: str
+    net_name_b: str
+    edge_a_found: bool
+    edge_b_found: bool
+
+
+def _plan_event_records(
+    events: Iterable[Any],
+    jobs_by_edge: Mapping[RoutedEdgeKey, RouteJob],
+    guidance_net_names: frozenset[str] | None,
+) -> tuple[list[_PlanEventRecord], list[_PlanEventRecord], Counter[int], Counter[str]]:
+    """The planned crossing events as records, and the planned crossings per net.
+
+    Returns the record of every event, the records of the events with an
+    edge no route job has (``loaded`` False in the first list), and the
+    number of loaded events per net id and per net name. With
+    ``guidance_net_names`` an event is left out unless both its nets have a
+    job and are named there.
+    """
+
+    missing_events: list[_PlanEventRecord] = []
+    event_records: list[_PlanEventRecord] = []
+    crossing_counts_by_net_id: Counter[int] = Counter()
+    crossing_counts_by_net_name: Counter[str] = Counter()
+
+    for event in events:
+        job_a = jobs_by_edge.get(event.edge_a)
+        job_b = jobs_by_edge.get(event.edge_b)
+        if guidance_net_names is not None and (
+            job_a is None
+            or job_b is None
+            or str(job_a.net_name) not in guidance_net_names
+            or str(job_b.net_name) not in guidance_net_names
+        ):
+            continue
+        event_record: _PlanEventRecord = {
+            "edge_a": _edge_key_to_info(event.edge_a),
+            "edge_b": _edge_key_to_info(event.edge_b),
+            "source_depth": int(event.source_depth),
+            "target_depth": int(event.target_depth),
+            "level": int(event.level),
+            "order_index": int(event.order_index),
+            "edge_a_source_rank": int(event.edge_a_source_rank),
+            "edge_a_target_rank": int(event.edge_a_target_rank),
+            "edge_b_source_rank": int(event.edge_b_source_rank),
+            "edge_b_target_rank": int(event.edge_b_target_rank),
+        }
+        if job_a is None or job_b is None:
+            missing_record: _PlanEventRecord = {
+                **event_record,
+                "edge_a_found": job_a is not None,
+                "edge_b_found": job_b is not None,
+            }
+            missing_events.append(missing_record)
+            event_records.append({**event_record, "loaded": False})
+            continue
+
+        event_record.update(
+            {
+                "loaded": True,
+                "net_id_a": int(job_a.net_id),
+                "net_id_b": int(job_b.net_id),
+                "net_name_a": str(job_a.net_name),
+                "net_name_b": str(job_b.net_name),
+            }
+        )
+        event_records.append(event_record)
+        crossing_counts_by_net_id[int(job_a.net_id)] += 1
+        crossing_counts_by_net_id[int(job_b.net_id)] += 1
+        crossing_counts_by_net_name[str(job_a.net_name)] += 1
+        crossing_counts_by_net_name[str(job_b.net_name)] += 1
+    return event_records, missing_events, crossing_counts_by_net_id, crossing_counts_by_net_name
+
+
 def build_crossing_plan_info(
     *,
     rust_backend: CrossingRustBackendLike,
@@ -246,26 +343,20 @@ def build_crossing_plan_info(
     ``placement_analysis`` is the flow's; without one (a session entered
     directly) the design is analysed here.
     ``request`` holds the crossing settings of the run."""
-    enable_crossings = request.enable_crossings
-    crossing_mode = request.crossing_mode
-    crossing_loss = request.crossing_loss
-    crossing_search_loss = request.crossing_search_loss
-    crossing_half_size_cells = request.crossing_half_size_cells
-    guidance_net_names = request.guidance_net_names
     config = request.plan_config if request.plan_config is not None else CrossingPlanConfig()
     info: dict[str, object] = {
-        "enabled": bool(enable_crossings),
+        "enabled": bool(request.enable_crossings),
         "event_count": 0,
         "missing_event_count": 0,
         "missing_events": [],
         "events": [],
         "expected_crossings_by_net_id": {},
         "expected_crossings_by_net_name": {},
-        "crossing_loss": float(crossing_loss),
-        "crossing_search_loss": float(crossing_search_loss),
-        "crossing_half_size_cells": int(crossing_half_size_cells),
+        "crossing_loss": float(request.crossing_loss),
+        "crossing_search_loss": float(request.crossing_search_loss),
+        "crossing_half_size_cells": int(request.crossing_half_size_cells),
     }
-    if not enable_crossings:
+    if not request.enable_crossings:
         return info
 
     required_backend = ("CrossingConfig",)
@@ -282,12 +373,12 @@ def build_crossing_plan_info(
     router.set_crossing_config(
         rust_backend.CrossingConfig(
             enabled=True,
-            crossing_loss=float(crossing_search_loss),
-            crossing_half_size_cells=int(crossing_half_size_cells),
+            crossing_loss=float(request.crossing_search_loss),
+            crossing_half_size_cells=int(request.crossing_half_size_cells),
         )
     )
 
-    if not is_guided_mode(crossing_mode):
+    if not is_guided_mode(request.crossing_mode):
         # "lidar-pure" is the router-discovered crossing path: A* explores
         # and decides, live, whether a collision it finds can legally
         # become a crossing -- it must not be informed by a precomputed
@@ -316,57 +407,9 @@ def build_crossing_plan_info(
     info["plan_text"] = demand.to_text()
 
     jobs_by_edge = {route_edge_key(job): job for job in route_jobs}
-    missing_events: list[dict[str, object]] = []
-    event_records: list[dict[str, object]] = []
-    crossing_counts_by_net_id: Counter[int] = Counter()
-    crossing_counts_by_net_name: Counter[str] = Counter()
-
-    for event in crossing_plan.events:
-        job_a = jobs_by_edge.get(event.edge_a)
-        job_b = jobs_by_edge.get(event.edge_b)
-        if guidance_net_names is not None and (
-            job_a is None
-            or job_b is None
-            or str(job_a.net_name) not in guidance_net_names
-            or str(job_b.net_name) not in guidance_net_names
-        ):
-            continue
-        event_record: dict[str, object] = {
-            "edge_a": _edge_key_to_info(event.edge_a),
-            "edge_b": _edge_key_to_info(event.edge_b),
-            "source_depth": int(event.source_depth),
-            "target_depth": int(event.target_depth),
-            "level": int(event.level),
-            "order_index": int(event.order_index),
-            "edge_a_source_rank": int(event.edge_a_source_rank),
-            "edge_a_target_rank": int(event.edge_a_target_rank),
-            "edge_b_source_rank": int(event.edge_b_source_rank),
-            "edge_b_target_rank": int(event.edge_b_target_rank),
-        }
-        if job_a is None or job_b is None:
-            missing_record = {
-                **event_record,
-                "edge_a_found": job_a is not None,
-                "edge_b_found": job_b is not None,
-            }
-            missing_events.append(missing_record)
-            event_records.append({**event_record, "loaded": False})
-            continue
-
-        event_record.update(
-            {
-                "loaded": True,
-                "net_id_a": int(job_a.net_id),
-                "net_id_b": int(job_b.net_id),
-                "net_name_a": str(job_a.net_name),
-                "net_name_b": str(job_b.net_name),
-            }
-        )
-        event_records.append(event_record)
-        crossing_counts_by_net_id[int(job_a.net_id)] += 1
-        crossing_counts_by_net_id[int(job_b.net_id)] += 1
-        crossing_counts_by_net_name[str(job_a.net_name)] += 1
-        crossing_counts_by_net_name[str(job_b.net_name)] += 1
+    event_records, missing_events, crossing_counts_by_net_id, crossing_counts_by_net_name = (
+        _plan_event_records(crossing_plan.events, jobs_by_edge, request.guidance_net_names)
+    )
 
     # Contribution 1 (the only path that reaches here): the plan reaches the
     # router ONLY as soft guidance (planned pairs + planned search price). The
@@ -381,9 +424,7 @@ def build_crossing_plan_info(
             "`maturin develop --release`."
         )
     planned_pairs = [
-        (int(cast(int, record["net_id_a"])), int(cast(int, record["net_id_b"])))
-        for record in event_records
-        if record.get("loaded")
+        (record["net_id_a"], record["net_id_b"]) for record in event_records if record.get("loaded")
     ]
     planned_loss = _effective_planned_crossing_search_loss(config)
     single_per_pair = _effective_single_discounted_crossing_per_pair(config)

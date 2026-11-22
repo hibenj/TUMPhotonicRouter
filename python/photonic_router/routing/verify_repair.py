@@ -352,6 +352,105 @@ def _final_crossing_repair_batches(
     return capped_batches
 
 
+def _not_perpendicular_repair_priority(
+    state: SessionState, illegal_crossings: list[dict[str, object]]
+) -> list[int]:
+    """The nets to re-route first for crossings that are not perpendicular.
+
+    Per crossing its second net, its first net and then the nets of its
+    footprint blockers, each once and only nets that have a route job.
+    """
+
+    priority: list[int] = []
+    for item in illegal_crossings:
+        for key in ("net_id_b", "net_id_a"):
+            net_id = int_or_none(item.get(key))
+            if net_id is None:
+                continue
+            if net_id in state.run.route_jobs_by_id and net_id not in priority:
+                priority.append(net_id)
+        blockers = item.get("crossing_footprint_blockers")
+        if not isinstance(blockers, IterableABC) or isinstance(
+            blockers,
+            (str, bytes, bytearray),
+        ):
+            continue
+        for blocker in blockers:
+            if not isinstance(blocker, Mapping):
+                continue
+            blocker_net_id = int_or_none(blocker.get("net_id"))
+            if blocker_net_id is None:
+                continue
+            if blocker_net_id in state.run.route_jobs_by_id and blocker_net_id not in priority:
+                priority.append(blocker_net_id)
+    return priority
+
+
+def _reroute_for_crossing_repair(
+    settings: SessionSettings,
+    state: SessionState,
+    repair_net_ids: list[int],
+    keepout_cells: set[tuple[int, int]],
+    attempt: dict[str, object],
+) -> bool:
+    """Close ``keepout_cells``, rip up the nets and route them again; True when all are routed.
+
+    The router's status and the routed net ids are written to ``attempt``.
+    On success the new routes are recorded and, with checked endpoint
+    correction on, corrected at their endpoints. On failure the nets stay
+    ripped up and nothing is recorded.
+    """
+
+    state.kernel.router.add_static_cells(sorted(keepout_cells))
+    for net_id in repair_net_ids:
+        state.kernel.router.ripup_route(int(net_id))
+        state.search.bookkeeping.clear_route(int(net_id))
+
+    repair_jobs = native_route_jobs(
+        state, (state.run.route_jobs_by_id[net_id] for net_id in repair_net_ids)
+    )
+    opened_by_id = {int(job.net_id): job.opened_cells for job in repair_jobs}
+
+    raw_repair_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
+        repair_jobs,
+        state.kernel.radii.block_radius_cells,
+        state.kernel.radii.commit_radius_cells,
+        state.kernel.radii.core_commit_radius_cells,
+        NEGOTIATED_MAX_ROUNDS,
+        float(state.run.repair_config.history_weight),
+        int(state.run.repair_config.history_increment),
+    )
+    repair_result = dict(raw_repair_result)
+    attempt["router_status"] = str(repair_result.get("status", ""))
+    attempt["routed_net_ids"] = [
+        int(dict(raw_entry)["net_id"])
+        for raw_entry in cast(Iterable[Any], repair_result.get("routes", []))
+    ]
+    if str(repair_result.get("status", "")) != "routed":
+        return False
+
+    repaired_records: list[RoutedNetRecord] = []
+    for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
+        entry = dict(raw_entry)
+        net_id = int(entry["net_id"])
+        job = state.run.route_jobs_by_id[net_id]
+        route_obj = entry["route"]
+        record_route(settings, state, job, route_obj, opened_by_id[net_id])
+        repaired_records.append(state.search.bookkeeping.records_by_id[net_id])
+
+    if settings.enable_checked_endpoint_correction and repaired_records:
+        repaired_net_ids = [
+            int(record.net_id) for record in repaired_records if record.net_id is not None
+        ]
+        apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
+            settings,
+            state,
+            repaired_net_ids,
+            record_pipeline_timing=False,
+        )
+    return True
+
+
 def _repair_final_illegal_crossings(
     settings: SessionSettings,
     state: SessionState,
@@ -406,28 +505,7 @@ def _repair_final_illegal_crossings(
         return False
     repair_net_ids = _final_crossing_repair_net_ids(state, selected_illegal_crossings)
     if selected_reason == "not_perpendicular" and repair_net_ids:
-        priority: list[int] = []
-        for item in selected_illegal_crossings:
-            for key in ("net_id_b", "net_id_a"):
-                net_id = int_or_none(item.get(key))
-                if net_id is None:
-                    continue
-                if net_id in state.run.route_jobs_by_id and net_id not in priority:
-                    priority.append(net_id)
-            blockers = item.get("crossing_footprint_blockers")
-            if not isinstance(blockers, IterableABC) or isinstance(
-                blockers,
-                (str, bytes, bytearray),
-            ):
-                continue
-            for blocker in blockers:
-                if not isinstance(blocker, Mapping):
-                    continue
-                blocker_net_id = int_or_none(blocker.get("net_id"))
-                if blocker_net_id is None:
-                    continue
-                if blocker_net_id in state.run.route_jobs_by_id and blocker_net_id not in priority:
-                    priority.append(blocker_net_id)
+        priority = _not_perpendicular_repair_priority(state, selected_illegal_crossings)
         repair_net_ids = [net_id for net_id in priority if net_id in repair_net_ids] + [
             net_id for net_id in repair_net_ids if net_id not in priority
         ]
@@ -457,55 +535,10 @@ def _repair_final_illegal_crossings(
         attempts.append(attempt)
         return False
 
-    state.kernel.router.add_static_cells(sorted(keepout_cells))
-    for net_id in repair_net_ids:
-        state.kernel.router.ripup_route(int(net_id))
-        state.search.bookkeeping.clear_route(int(net_id))
-
-    repair_jobs = native_route_jobs(
-        state, (state.run.route_jobs_by_id[net_id] for net_id in repair_net_ids)
-    )
-    opened_by_id = {int(job.net_id): job.opened_cells for job in repair_jobs}
-
-    raw_repair_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
-        repair_jobs,
-        state.kernel.radii.block_radius_cells,
-        state.kernel.radii.commit_radius_cells,
-        state.kernel.radii.core_commit_radius_cells,
-        NEGOTIATED_MAX_ROUNDS,
-        float(state.run.repair_config.history_weight),
-        int(state.run.repair_config.history_increment),
-    )
-    repair_result = dict(raw_repair_result)
-    attempt["router_status"] = str(repair_result.get("status", ""))
-    attempt["routed_net_ids"] = [
-        int(dict(raw_entry)["net_id"])
-        for raw_entry in cast(Iterable[Any], repair_result.get("routes", []))
-    ]
-    if str(repair_result.get("status", "")) != "routed":
+    if not _reroute_for_crossing_repair(settings, state, repair_net_ids, keepout_cells, attempt):
         attempt["status"] = "failed"
         attempts.append(attempt)
         return False
-
-    repaired_records: list[RoutedNetRecord] = []
-    for raw_entry in cast(Iterable[Any], repair_result.get("routes", [])):
-        entry = dict(raw_entry)
-        net_id = int(entry["net_id"])
-        job = state.run.route_jobs_by_id[net_id]
-        route_obj = entry["route"]
-        record_route(settings, state, job, route_obj, opened_by_id[net_id])
-        repaired_records.append(state.search.bookkeeping.records_by_id[net_id])
-
-    if settings.enable_checked_endpoint_correction and repaired_records:
-        repaired_net_ids = [
-            int(record.net_id) for record in repaired_records if record.net_id is not None
-        ]
-        apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids(
-            settings,
-            state,
-            repaired_net_ids,
-            record_pipeline_timing=False,
-        )
     attempt["status"] = "routed"
     attempts.append(attempt)
     return True

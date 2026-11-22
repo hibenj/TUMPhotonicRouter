@@ -531,6 +531,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Two more functions of the crossing code within the limit of 50
+  statements, no behaviour change:
+  `route_rust_crossing_plan.build_crossing_plan_info` reads the request
+  where it copied six of its fields into locals, and
+  `_plan_event_records` builds the event records (typed as the
+  TypedDict `_PlanEventRecord`, which removes two casts);
+  `verify_repair._repair_final_illegal_crossings` hands the re-route
+  order of a not-perpendicular crossing to
+  `_not_perpendicular_repair_priority` and the rip-up and re-route to
+  `_reroute_for_crossing_repair`.
 - Three functions of the routing core within the limit of 50
   statements, no behaviour change:
   `photonic_verification.verify_photonic_routing` reads its options
