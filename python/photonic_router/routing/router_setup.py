@@ -32,6 +32,70 @@ def fanout_int_or_default(value: int | None, default: int) -> int:
     return int(default) if value is None else int(value)
 
 
+def _tune_search(settings: SessionSettings, astar_cfg: Any) -> None:
+    """Set the kernel's A* configuration from the settings, in place.
+
+    Simple routes, the indexed heap (always on with 45-degree turns),
+    detailed timing, the primitive ordering, the heuristic mode and the heap
+    tie-breaker (both changed for 45-degree turns, the tie-breaker
+    overridden by an explicit search setting), the minimum bend weight with
+    45-degree turns, proactive congestion, and the routing window's scale,
+    expansion count and full-grid fallback where the settings give them.
+    """
+    astar_cfg.enable_simple_routes = bool(settings.enable_simple_routes)
+    astar_cfg.use_indexed_heap = bool(settings.use_indexed_heap or settings.allow_45_degree_turns)
+    astar_cfg.collect_detailed_timing = bool(
+        settings.debug_timing
+        or settings.collect_route_stats
+        or settings.collect_attempt_diagnostics
+    )
+    astar_cfg.primitive_ordering = str(settings.primitive_ordering)
+    effective_heuristic_mode = str(settings.heuristic_mode)
+    if settings.allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
+        effective_heuristic_mode = "diagonal_aware"
+    astar_cfg.heuristic_mode = effective_heuristic_mode
+    if settings.allow_45_degree_turns and hasattr(astar_cfg, "bend_weight"):
+        # A bend costs bend_weight per angle-eighth of turn (see
+        # src/primitives.rs's bend_cost field); boosting it keeps 45-degree
+        # A* from spending work on short zig-zag variants. This applies
+        # uniformly regardless of crossing_mode -- crossing-awareness only
+        # changes whether/what a *crossing* costs (see crossing_loss,
+        # python/photonic_router/crossings/route_rust_crossing_plan.py), not how bends are priced.
+        # Experiment gate for the heuristics audit
+        # (.agent/execplans/2026-08-31-heuristics-inventory.md): the
+        # magnitude 12.0 has no recorded derivation; the env var lets the
+        # neutral-value ladder run without a code edit. Default unchanged.
+        min_bend_weight = float(settings.config.search.min_bend_weight)
+        astar_cfg.bend_weight = max(float(astar_cfg.bend_weight), min_bend_weight)
+    effective_heap_tie_breaker = str(settings.heap_tie_breaker)
+    if settings.allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":
+        effective_heap_tie_breaker = "larger_g"
+    # Experiment gate (same audit): the 45-degree-only tie-break flip is
+    # unjustified in-repo; an explicit env value overrides the outcome.
+    env_tie_breaker = settings.config.search.heap_tie_breaker
+    if env_tie_breaker is not None:
+        effective_heap_tie_breaker = env_tie_breaker
+    astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
+    if hasattr(astar_cfg, "proactive_congestion_weight"):
+        astar_cfg.proactive_congestion_weight = float(settings.proactive_congestion_weight)
+    if hasattr(astar_cfg, "proactive_congestion_radius_cells"):
+        astar_cfg.proactive_congestion_radius_cells = int(
+            settings.proactive_congestion_radius_cells
+        )
+    if settings.routing_window_scale is not None:
+        astar_cfg.routing_window_scale = float(settings.routing_window_scale)
+    # Speed pass S4 (2026-11-05): the window ladder's length and its
+    # full-grid fallback, env-only strategy switches; unset keeps the
+    # kernel's defaults (3 expansions, fallback on).
+    search_tuning = settings.config.search
+    if search_tuning.routing_window_max_expansions is not None:
+        astar_cfg.routing_window_max_expansions = int(search_tuning.routing_window_max_expansions)
+    if search_tuning.routing_window_fallback_full_grid is not None:
+        astar_cfg.routing_window_fallback_full_grid = bool(
+            search_tuning.routing_window_fallback_full_grid
+        )
+
+
 def configure_router_and_grid(
     settings: SessionSettings,
     rust_backend: Any,
@@ -91,58 +155,7 @@ def configure_router_and_grid(
     astar_cfg.max_dense_obstacle_cells = dense_obstacle_cell_cap(
         int(context.grid.width), int(context.grid.height), int(astar_cfg.max_dense_obstacle_cells)
     )
-    astar_cfg.enable_simple_routes = bool(settings.enable_simple_routes)
-    astar_cfg.use_indexed_heap = bool(settings.use_indexed_heap or settings.allow_45_degree_turns)
-    astar_cfg.collect_detailed_timing = bool(
-        settings.debug_timing
-        or settings.collect_route_stats
-        or settings.collect_attempt_diagnostics
-    )
-    astar_cfg.primitive_ordering = str(settings.primitive_ordering)
-    effective_heuristic_mode = str(settings.heuristic_mode)
-    if settings.allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
-        effective_heuristic_mode = "diagonal_aware"
-    astar_cfg.heuristic_mode = effective_heuristic_mode
-    if settings.allow_45_degree_turns and hasattr(astar_cfg, "bend_weight"):
-        # A bend costs bend_weight per angle-eighth of turn (see
-        # src/primitives.rs's bend_cost field); boosting it keeps 45-degree
-        # A* from spending work on short zig-zag variants. This applies
-        # uniformly regardless of crossing_mode -- crossing-awareness only
-        # changes whether/what a *crossing* costs (see crossing_loss,
-        # python/photonic_router/crossings/route_rust_crossing_plan.py), not how bends are priced.
-        # Experiment gate for the heuristics audit
-        # (.agent/execplans/2026-08-31-heuristics-inventory.md): the
-        # magnitude 12.0 has no recorded derivation; the env var lets the
-        # neutral-value ladder run without a code edit. Default unchanged.
-        min_bend_weight = float(settings.config.search.min_bend_weight)
-        astar_cfg.bend_weight = max(float(astar_cfg.bend_weight), min_bend_weight)
-    effective_heap_tie_breaker = str(settings.heap_tie_breaker)
-    if settings.allow_45_degree_turns and effective_heap_tie_breaker == "smaller_g":
-        effective_heap_tie_breaker = "larger_g"
-    # Experiment gate (same audit): the 45-degree-only tie-break flip is
-    # unjustified in-repo; an explicit env value overrides the outcome.
-    env_tie_breaker = settings.config.search.heap_tie_breaker
-    if env_tie_breaker is not None:
-        effective_heap_tie_breaker = env_tie_breaker
-    astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
-    if hasattr(astar_cfg, "proactive_congestion_weight"):
-        astar_cfg.proactive_congestion_weight = float(settings.proactive_congestion_weight)
-    if hasattr(astar_cfg, "proactive_congestion_radius_cells"):
-        astar_cfg.proactive_congestion_radius_cells = int(
-            settings.proactive_congestion_radius_cells
-        )
-    if settings.routing_window_scale is not None:
-        astar_cfg.routing_window_scale = float(settings.routing_window_scale)
-    # Speed pass S4 (2026-11-05): the window ladder's length and its
-    # full-grid fallback, env-only strategy switches; unset keeps the
-    # kernel's defaults (3 expansions, fallback on).
-    search_tuning = settings.config.search
-    if search_tuning.routing_window_max_expansions is not None:
-        astar_cfg.routing_window_max_expansions = int(search_tuning.routing_window_max_expansions)
-    if search_tuning.routing_window_fallback_full_grid is not None:
-        astar_cfg.routing_window_fallback_full_grid = bool(
-            search_tuning.routing_window_fallback_full_grid
-        )
+    _tune_search(settings, astar_cfg)
 
     route_clearance_um = max(
         0.0,

@@ -531,6 +531,17 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Three functions of the routing core within the limit of 50
+  statements, no behaviour change:
+  `photonic_verification.verify_photonic_routing` reads its options
+  from the three option objects where it used to copy 16 of their
+  fields into locals, and `_crossing_clip_plan_info` builds the clip
+  record; `router_setup.configure_router_and_grid` hands the A*
+  settings to `_tune_search`;
+  `finalize._apply_checked_endpoint_corrections_for_net_ids` and its
+  fan-out stub variant store a failed correction through one function,
+  `_fail_endpoint_correction` (four copies before; the stub variant is
+  shorter but still over the limit).
 - Another three functions within the limit of 50 statements, no
   behaviour change: `column_trunks.route_column_trunks`
   (`_commit_trunk_members`),

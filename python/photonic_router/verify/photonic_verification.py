@@ -134,6 +134,38 @@ class VerificationChecks:
     min_crossing_component_overlap_area_um2: float = 0.25
 
 
+def _crossing_clip_plan_info(
+    polygons_by_net_id_pair_um: Mapping[tuple[int, int], Iterable[object]],
+) -> Mapping[str, object] | None:
+    """The legal crossing polygons as the crossing plan record the realization clips by.
+
+    One ``legal_verification_clip`` intersection per polygon; a pair whose
+    net ids are not integers is left out. None without any polygon.
+    """
+
+    crossing_clip_intersections: list[dict[str, object]] = []
+    for pair, polygons in polygons_by_net_id_pair_um.items():
+        try:
+            net_id_a = int(pair[0])
+            net_id_b = int(pair[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        for polygon in polygons:
+            crossing_clip_intersections.append(
+                {
+                    "classification": "legal_verification_clip",
+                    "net_id_a": net_id_a,
+                    "net_id_b": net_id_b,
+                    "crossing_footprint_polygon_um": polygon,
+                }
+            )
+    return (
+        {"enabled": True, "realized_intersections": crossing_clip_intersections}
+        if crossing_clip_intersections
+        else None
+    )
+
+
 def verify_photonic_routing(
     routed_layout: Component,
     schematic: Any,
@@ -153,72 +185,36 @@ def verify_photonic_routing(
     """
     crossings = crossings if crossings is not None else LegalCrossings()
     checks = checks if checks is not None else VerificationChecks()
-    realization_grid_spec = geometry.realization_grid_spec
-    route_layer = geometry.route_layer
-    obstacle_layers = geometry.obstacle_layers
-    allow_45_degree_turns = geometry.allow_45_degree_turns
-    bend_radius_cells = geometry.bend_radius_cells
-    routable_bbox_um = geometry.routable_bbox_um
-    legal_overlap_polygons_um = crossings.overlap_polygons_um
-    legal_overlap_polygons_by_net_id_pair_um = crossings.overlap_polygons_by_net_id_pair_um
-    crossing_component_footprints_um = crossings.component_footprints_um
-    check_route_coverage = checks.check_route_coverage
-    check_endpoint_connectivity = checks.check_endpoint_connectivity
     port_contact_radius_um = checks.port_contact_radius_um
-    port_obstacle_exemption_radius_um = checks.port_obstacle_exemption_radius_um
-    min_route_overlap_area_um2 = checks.min_route_overlap_area_um2
-    min_obstacle_overlap_area_um2 = checks.min_obstacle_overlap_area_um2
-    min_crossing_component_route_overlap_area_um2 = (
-        checks.min_crossing_component_route_overlap_area_um2
-    )
-    min_crossing_component_overlap_area_um2 = checks.min_crossing_component_overlap_area_um2
     route_width_um = float(geometry.route_width_um)
     if route_width_um <= 0.0:
         raise ValueError("route_width_um must be > 0")
     if port_contact_radius_um is None:
-        port_contact_radius_um = max(route_width_um, float(realization_grid_spec[2]))
+        port_contact_radius_um = max(route_width_um, float(geometry.realization_grid_spec[2]))
 
     records = tuple(routed_net_records)
     issues: list[PhotonicVerificationIssue] = []
     expected_keys = _expected_route_keys(schematic)
     actual_keys = [_record_key(record) for record in records]
 
-    if check_route_coverage:
+    if checks.check_route_coverage:
         _verify_record_coverage(issues, expected_keys, actual_keys)
 
     dbu = _component_dbu(routed_layout)
     all_port_contact_windows = kdb.Region()
     route_obstacle_windows_by_key: dict[RouteKey, kdb.Region] = {}
     non_route_obstacle_windows_by_key: dict[RouteKey, kdb.Region] = {}
-    legal_route_overlap_region = _polygons_region_um(legal_overlap_polygons_um, dbu)
+    legal_route_overlap_region = _polygons_region_um(crossings.overlap_polygons_um, dbu)
     legal_route_overlap_regions_by_pair = _polygon_regions_by_pair_um(
-        legal_overlap_polygons_by_net_id_pair_um or {},
+        crossings.overlap_polygons_by_net_id_pair_um or {},
         dbu,
     )
     route_regions_by_key: dict[RouteKey, kdb.Region] = {}
     record_by_key: dict[RouteKey, RoutedNetRecord] = {}
     net_id_by_key: dict[RouteKey, int] = {}
-    crossing_component_footprints = tuple(crossing_component_footprints_um)
-    crossing_clip_intersections: list[dict[str, object]] = []
-    for pair, polygons in (legal_overlap_polygons_by_net_id_pair_um or {}).items():
-        try:
-            net_id_a = int(pair[0])
-            net_id_b = int(pair[1])
-        except (TypeError, ValueError, IndexError):
-            continue
-        for polygon in polygons:
-            crossing_clip_intersections.append(
-                {
-                    "classification": "legal_verification_clip",
-                    "net_id_a": net_id_a,
-                    "net_id_b": net_id_b,
-                    "crossing_footprint_polygon_um": polygon,
-                }
-            )
-    crossing_clip_plan_info = (
-        {"enabled": True, "realized_intersections": crossing_clip_intersections}
-        if crossing_clip_intersections
-        else None
+    crossing_component_footprints = tuple(crossings.component_footprints_um)
+    crossing_clip_plan_info = _crossing_clip_plan_info(
+        crossings.overlap_polygons_by_net_id_pair_um or {}
     )
 
     # 2026-09-25, Milestone 4 (verifier-speed-on-large-layouts): one router
@@ -230,9 +226,9 @@ def verify_photonic_routing(
     # touches no field a later call reads (see the plan's Milestone 4
     # section), so one router is safe to reuse across every record.
     realization_router = build_realization_router(
-        realization_grid_spec=realization_grid_spec,
-        allow_45_degree_turns=allow_45_degree_turns,
-        bend_radius_cells=bend_radius_cells,
+        realization_grid_spec=geometry.realization_grid_spec,
+        allow_45_degree_turns=geometry.allow_45_degree_turns,
+        bend_radius_cells=geometry.bend_radius_cells,
     )
     for record in records:
         key = _record_key(record)
@@ -244,11 +240,11 @@ def verify_photonic_routing(
         route_region = _realized_record_region(
             record,
             route_width_um=route_width_um,
-            realization_grid_spec=realization_grid_spec,
+            realization_grid_spec=geometry.realization_grid_spec,
             dbu=dbu,
             router=realization_router,
             crossing_plan_info=crossing_clip_plan_info,
-            enable_endpoint_correction=check_endpoint_connectivity,
+            enable_endpoint_correction=checks.check_endpoint_connectivity,
         )
         route_regions_by_key[key] = route_region
         _verify_record_connectivity(
@@ -257,7 +253,7 @@ def verify_photonic_routing(
             route_region,
             dbu=dbu,
             port_contact_radius_um=float(port_contact_radius_um),
-            check_endpoint_connectivity=check_endpoint_connectivity,
+            check_endpoint_connectivity=checks.check_endpoint_connectivity,
         )
         all_port_contact_windows += _record_port_windows_region(
             record,
@@ -266,7 +262,7 @@ def verify_photonic_routing(
         )
         obstacle_port_contact_radius_um = min(
             float(port_contact_radius_um),
-            float(port_obstacle_exemption_radius_um),
+            float(checks.port_obstacle_exemption_radius_um),
         )
         route_obstacle_windows_by_key[key] = _record_port_windows_region(
             record,
@@ -278,7 +274,7 @@ def verify_photonic_routing(
             dbu=dbu,
             radius_um=max(
                 float(port_contact_radius_um),
-                float(port_obstacle_exemption_radius_um),
+                float(checks.port_obstacle_exemption_radius_um),
             ),
         )
 
@@ -292,16 +288,18 @@ def verify_photonic_routing(
         ),
         net_id_by_key=net_id_by_key,
         legal_overlap_regions_by_net_id_pair=legal_route_overlap_regions_by_pair,
-        min_overlap_area_um2=float(min_route_overlap_area_um2),
+        min_overlap_area_um2=float(checks.min_route_overlap_area_um2),
     )
-    normalized_obstacle_layers = tuple(_normalize_layer(layer) for layer in obstacle_layers)
-    normalized_route_layer = _normalize_layer(route_layer)
+    normalized_obstacle_layers = tuple(
+        _normalize_layer(layer) for layer in geometry.obstacle_layers
+    )
+    normalized_route_layer = _normalize_layer(geometry.route_layer)
     obstacle_overlap_count = _verify_route_obstacle_overlaps(
         issues,
         route_regions_by_key,
         obstacle_component=unrouted_layout,
         routed_layout=routed_layout,
-        route_layer=route_layer,
+        route_layer=geometry.route_layer,
         obstacle_layers=normalized_obstacle_layers,
         dbu=dbu,
         legal_overlap_region=legal_route_overlap_region,
@@ -311,20 +309,20 @@ def verify_photonic_routing(
             for layer in normalized_obstacle_layers
             if layer != normalized_route_layer
         },
-        min_overlap_area_um2=float(min_obstacle_overlap_area_um2),
+        min_overlap_area_um2=float(checks.min_obstacle_overlap_area_um2),
     )
     crossing_component_route_overlap_count = _verify_crossing_component_route_overlaps(
         issues,
         route_regions_by_key,
         crossing_component_footprints,
         dbu=dbu,
-        min_overlap_area_um2=float(min_crossing_component_route_overlap_area_um2),
+        min_overlap_area_um2=float(checks.min_crossing_component_route_overlap_area_um2),
     )
     crossing_component_overlap_count = _verify_crossing_component_overlaps(
         issues,
         crossing_component_footprints,
         dbu=dbu,
-        min_overlap_area_um2=float(min_crossing_component_overlap_area_um2),
+        min_overlap_area_um2=float(checks.min_crossing_component_overlap_area_um2),
     )
     self_intersecting_route_count = _verify_self_intersecting_routes(
         issues,
@@ -333,8 +331,8 @@ def verify_photonic_routing(
     outside_chip_route_count = _verify_routes_inside_routable_bbox(
         issues,
         record_by_key.values(),
-        routable_bbox_um=routable_bbox_um,
-        tolerance_um=0.5 * float(realization_grid_spec[2]) + 1e-6,
+        routable_bbox_um=geometry.routable_bbox_um,
+        tolerance_um=0.5 * float(geometry.realization_grid_spec[2]) + 1e-6,
     )
 
     return PhotonicVerificationResult(

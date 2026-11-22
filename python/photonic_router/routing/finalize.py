@@ -173,6 +173,48 @@ def _classify_net_for_endpoint_correction(
     )
 
 
+def _fail_endpoint_correction(
+    state: SessionState,
+    net_id: int,
+    record: RoutedNetRecord,
+    message: str,
+    *,
+    elapsed_s: float,
+    print_warnings: bool,
+    clear_centerline: bool,
+) -> None:
+    """Store a failed endpoint correction on the net's record.
+
+    ``message`` becomes the record's ``endpoint_correction_error`` and is
+    printed as a warning when asked; with timing collected, ``elapsed_s``
+    is booked as a failed attempt. ``clear_centerline`` also empties the
+    record's corrected centerline.
+    """
+
+    if state.run.collect_timing:
+        state.search.timing_buckets["endpoint_correction"].record_elapsed(elapsed_s, failed=True)
+    if print_warnings:
+        print("WARNING: " + message)
+    if clear_centerline:
+        # Every net reaching this point was already excluded from
+        # crossing handling above (crossing_net_ids), regardless of
+        # settings.enable_crossings, so there is no later pass that will
+        # still process it and no reason to withhold recording this
+        # failure. Withholding it here used to leave
+        # corrected_centerline_um empty with endpoint_correction_error
+        # still None, which made geometry realization's own fallback
+        # (_physical_port_centerline, python/photonic_router/records/route_rust_realization.py)
+        # silently re-derive uncorrected, collision-unchecked geometry
+        # instead of surfacing the rejection -- found while confirming
+        # the Milestone 0.5 fix in
+        # .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md
+        # actually took effect end to end.
+        record = replace(record, corrected_centerline_um=())
+    state.search.bookkeeping.records_by_id[net_id] = replace(
+        record, endpoint_correction_error=message
+    )
+
+
 def _apply_checked_endpoint_corrections_for_net_ids(
     settings: SessionSettings,
     state: SessionState,
@@ -268,57 +310,22 @@ def _apply_checked_endpoint_corrections_for_net_ids(
             continue
         record, job = known_record, known_job
         error = correction.get("error")
-        if error is not None:
-            if state.run.collect_timing:
-                state.search.timing_buckets["endpoint_correction"].record_elapsed(
-                    correction_elapsed_per_job_s,
-                    failed=True,
-                )
-            message = (
-                "Checked grid-to-port endpoint correction skipped for net "
-                f"{job.net_name!r}: {error}"
-            )
-            if print_warnings:
-                print("WARNING: " + message)
-            failed_net_ids.append(net_id)
-            # Every net reaching this point was already excluded from
-            # crossing handling above (crossing_net_ids), regardless of
-            # settings.enable_crossings, so there is no later pass that will
-            # still process it and no reason to withhold recording this
-            # failure. Withholding it here used to leave
-            # corrected_centerline_um empty with endpoint_correction_error
-            # still None, which made geometry realization's own fallback
-            # (_physical_port_centerline, python/photonic_router/records/route_rust_realization.py)
-            # silently re-derive uncorrected, collision-unchecked geometry
-            # instead of surfacing the rejection -- found while confirming
-            # the Milestone 0.5 fix in
-            # .agent/execplans/2026-08-19-restructure-port-endpoint-correction.md
-            # actually took effect end to end.
-            state.search.bookkeeping.records_by_id[net_id] = replace(
-                record,
-                corrected_centerline_um=(),
-                endpoint_correction_error=message,
-            )
-            continue
-        centerline = centerline_tuple(correction.get("centerline"))
+        centerline = () if error is not None else centerline_tuple(correction.get("centerline"))
         if not centerline:
-            if state.run.collect_timing:
-                state.search.timing_buckets["endpoint_correction"].record_elapsed(
-                    correction_elapsed_per_job_s,
-                    failed=True,
-                )
-            message = (
-                "Checked grid-to-port endpoint correction skipped for net "
-                f"{job.net_name!r}: endpoint correction returned an invalid centerline"
+            reason = (
+                error if error is not None else "endpoint correction returned an invalid centerline"
             )
-            if print_warnings:
-                print("WARNING: " + message)
-            failed_net_ids.append(net_id)
-            state.search.bookkeeping.records_by_id[net_id] = replace(
+            _fail_endpoint_correction(
+                state,
+                net_id,
                 record,
-                corrected_centerline_um=(),
-                endpoint_correction_error=message,
+                f"Checked grid-to-port endpoint correction skipped for net {job.net_name!r}: "
+                f"{reason}",
+                elapsed_s=correction_elapsed_per_job_s,
+                print_warnings=print_warnings,
+                clear_centerline=True,
             )
+            failed_net_ids.append(net_id)
             continue
         if state.run.collect_timing:
             state.search.timing_buckets["endpoint_correction"].record_elapsed(
@@ -486,21 +493,19 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         record, source_has_fanout_stub, target_has_fanout_stub = context
         error = correction.get("error")
         if error is not None:
-            if state.run.collect_timing:
-                state.search.timing_buckets["endpoint_correction"].record_elapsed(
-                    correction_elapsed_per_job_s,
-                    failed=True,
-                )
             message = (
                 f"Checked fanout-stub endpoint correction skipped for net {job.net_name!r}: {error}"
             )
-            if print_warnings:
-                print("WARNING: " + message)
-            failed_net_ids.append(net_id)
-            state.search.bookkeeping.records_by_id[net_id] = replace(
+            _fail_endpoint_correction(
+                state,
+                net_id,
                 record,
-                endpoint_correction_error=message,
+                message,
+                elapsed_s=correction_elapsed_per_job_s,
+                print_warnings=print_warnings,
+                clear_centerline=False,
             )
+            failed_net_ids.append(net_id)
             continue
 
         corrected_route = dedupe_centerline(centerline_tuple(correction.get("centerline")))
@@ -518,11 +523,6 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
             freeze_target=target_has_fanout_stub,
         )
         if len(merged_centerline) < 2:
-            if state.run.collect_timing:
-                state.search.timing_buckets["endpoint_correction"].record_elapsed(
-                    correction_elapsed_per_job_s,
-                    failed=True,
-                )
             route_start = route_baseline[0] if route_baseline else None
             route_end = route_baseline[-1] if route_baseline else None
             existing_start = existing_baseline[0] if existing_baseline else None
@@ -542,13 +542,16 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
                 f"route_start={route_start}, route_end={route_end}, "
                 f"corrected_start={corrected_start}, corrected_end={corrected_end})"
             )
-            if print_warnings:
-                print("WARNING: " + message)
-            failed_net_ids.append(net_id)
-            state.search.bookkeeping.records_by_id[net_id] = replace(
+            _fail_endpoint_correction(
+                state,
+                net_id,
                 record,
-                endpoint_correction_error=message,
+                message,
+                elapsed_s=correction_elapsed_per_job_s,
+                print_warnings=print_warnings,
+                clear_centerline=False,
             )
+            failed_net_ids.append(net_id)
             continue
 
         if state.run.collect_timing:
