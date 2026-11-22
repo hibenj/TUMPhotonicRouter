@@ -99,11 +99,6 @@ class StaticObstacleMapData:
 
         return sorted(self.blocked_cells)
 
-    def rust_open_cells(self) -> list[GridCell]:
-        """Return deterministic port-opening cells for temporary free-space queries."""
-
-        return sorted(self.port_open_cells)
-
     def export_debug_svg(
         self,
         path: str | Path,

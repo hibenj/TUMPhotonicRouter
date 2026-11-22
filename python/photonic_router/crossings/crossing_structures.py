@@ -28,7 +28,6 @@ tiles. The cost model is a selection rule, not an optimality proof.
 from __future__ import annotations
 
 import itertools
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -277,8 +276,3 @@ def select_layer_structure(
         return LayerDecision(stage_key, ROUTER, tuple(candidates))
     best = min(feasible, key=lambda c: c.cost.key())  # type: ignore[union-attr]
     return LayerDecision(stage_key, best.name, tuple(candidates))
-
-
-def octile_extra_length_um(moves_um: list[float], band_um: float) -> float:
-    """Manhattan minus octile length for lanes with the given vertical travel."""
-    return sum(min(abs(d), band_um) * (2.0 - math.sqrt(2.0)) for d in moves_um)

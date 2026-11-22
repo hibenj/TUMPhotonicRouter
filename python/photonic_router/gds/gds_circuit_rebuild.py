@@ -447,18 +447,6 @@ def _mmi_settings(component: ExtractedComponent) -> dict[str, float]:
     }
 
 
-def _mmi_ports(settings: dict[str, float]) -> dict[str, tuple[float, float, float]]:
-    half = (settings["gap_mmi"] + settings["width_taper"]) / 2
-    x_out = settings["length_mmi"] + settings["length_taper"]
-    x_in = -settings["length_taper"]
-    return {
-        "o1": (x_in, -half, 180.0),
-        "o2": (x_in, half, 180.0),
-        "o3": (x_out, half, 0.0),
-        "o4": (x_out, -half, 0.0),
-    }
-
-
 def _heater_settings(component: ExtractedComponent) -> dict[str, Any]:
     """The heater's length from its port span, without the generic via stacks.
 
@@ -471,10 +459,6 @@ def _heater_settings(component: ExtractedComponent) -> dict[str, Any]:
 
     span, _ = _port_span_and_separation(component.ports)
     return {"length": round(span, 3), "via_stack": None}
-
-
-def _heater_ports(settings: dict[str, float]) -> dict[str, tuple[float, float, float]]:
-    return {"o1": (0.0, 0.0, 180.0), "o2": (settings["length"], 0.0, 0.0)}
 
 
 def _ring_settings(component: ExtractedComponent) -> dict[str, float]:

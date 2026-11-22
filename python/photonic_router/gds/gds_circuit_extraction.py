@@ -775,23 +775,6 @@ def _group_arm_pairs(
 GROUPED_COMPONENT_PATHS = frozenset({"<arm pair>", "<directional coupler>"})
 
 
-def _pair_rows(
-    net_region: Any, x: float, y_lo: float, y_hi: float, dbu: float
-) -> tuple[float, float] | None:
-    """The centre rows of the two outermost waveguides crossing a thin vertical probe at ``x``."""
-
-    probe = kdb.Region(kdb.DBox(x - 0.05, y_lo, x + 0.05, y_hi).to_itype(dbu))
-    centres = sorted(p.bbox().center().y * dbu for p in (net_region & probe).each())
-    if len(centres) < 2:
-        return None
-    return centres[0], centres[-1]
-
-
-def _pair_pitch(net_region: Any, x: float, y_lo: float, y_hi: float, dbu: float) -> float | None:
-    rows = _pair_rows(net_region, x, y_lo, y_hi, dbu)
-    return None if rows is None else rows[1] - rows[0]
-
-
 def _group_directional_couplers(
     components: list[_Component],
     config: ExtractionConfig,

@@ -615,14 +615,6 @@ def _terminal_open_cells(
     )
 
 
-def _terminal_access_anchor_cell(
-    obstacle_map: ElectricalObstacleMap,
-    terminal_id: str,
-) -> GridCell | None:
-    access = _terminal_access(obstacle_map, terminal_id)
-    return access.anchor_cell if access is not None else None
-
-
 def _terminal_access(
     obstacle_map: ElectricalObstacleMap,
     terminal_id: str,

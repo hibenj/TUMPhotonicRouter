@@ -633,26 +633,6 @@ def convex_polygons_overlap_with_area(
     return True
 
 
-def _same_undirected_segment(
-    segment_a: tuple[tuple[float, float], tuple[float, float]],
-    segment_b: tuple[tuple[float, float], tuple[float, float]],
-    *,
-    eps: float = 1e-9,
-) -> bool:
-    def same_point(
-        point_a: tuple[float, float],
-        point_b: tuple[float, float],
-    ) -> bool:
-        return (
-            abs(float(point_a[0]) - float(point_b[0])) <= eps
-            and abs(float(point_a[1]) - float(point_b[1])) <= eps
-        )
-
-    return (same_point(segment_a[0], segment_b[0]) and same_point(segment_a[1], segment_b[1])) or (
-        same_point(segment_a[0], segment_b[1]) and same_point(segment_a[1], segment_b[0])
-    )
-
-
 def segment_intersects_crossing_footprint_interior(
     segment: tuple[tuple[float, float], tuple[float, float]],
     *,
@@ -712,36 +692,3 @@ def segment_intersects_crossing_footprint_interior(
     mid_t = 0.5 * (max(0.0, t0) + min(1.0, t1))
     midpoint = (p0[0] + mid_t * dx, p0[1] + mid_t * dy)
     return strictly_inside(midpoint)
-
-
-def _crossing_footprint_blockers(
-    *,
-    center: tuple[float, float],
-    axis_u: tuple[float, float],
-    axis_v: tuple[float, float],
-    half_extent_um: float,
-    segments_by_net_id: Mapping[int, tuple[tuple[tuple[float, float], tuple[float, float]], ...]],
-    allowed_segments: Mapping[int, tuple[tuple[tuple[float, float], tuple[float, float]], ...]],
-    net_names: Mapping[int, str],
-) -> list[dict[str, object]]:
-    blockers: list[dict[str, object]] = []
-    for net_id, segments in segments_by_net_id.items():
-        allowed_for_net = allowed_segments.get(net_id, ())
-        for segment in segments:
-            if any(_same_undirected_segment(segment, allowed) for allowed in allowed_for_net):
-                continue
-            if segment_intersects_crossing_footprint_interior(
-                segment,
-                center=center,
-                axis_u=axis_u,
-                axis_v=axis_v,
-                half_extent_um=half_extent_um,
-            ):
-                blockers.append(
-                    {
-                        "net_id": int(net_id),
-                        "net_name": net_names.get(net_id, str(net_id)),
-                        "segment_um": rounded_segment(segment),
-                    }
-                )
-    return blockers

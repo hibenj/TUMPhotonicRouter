@@ -420,16 +420,6 @@ class RouteBookkeeping:
         self.lengths_by_id.pop(net_id, None)
         self.committed_dynamic_cells_by_id.pop(net_id, None)
 
-    def set_committed_cells(self, net_id: int, cells: set[tuple[int, int]]) -> None:
-        """Replace the committed cells of a net with a copy of ``cells``.
-
-        With diagnostics disabled the net's committed cells are dropped instead.
-        """
-        if self.diagnostics_enabled:
-            self.committed_dynamic_cells_by_id[net_id] = set(cells)
-        else:
-            self.committed_dynamic_cells_by_id.pop(net_id, None)
-
     def committed_dynamic_cells(
         self,
         *,

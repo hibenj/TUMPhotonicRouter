@@ -70,8 +70,6 @@ def layout_from_schematic(schematic: Schematic) -> Component:
         # Retrieve the actual gdsfactory component
         sub_component = gf.get_component(component_name, settings=component_settings)
 
-        # sub_component.pprint_ports()
-
         # Extract placement parameters
         x = placement.x if placement.x is not None else 0
         y = placement.y if placement.y is not None else 0

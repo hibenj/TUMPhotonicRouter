@@ -14,6 +14,11 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `tests/test_gds_circuit_extraction.py` checks that every extracted
+  port's local position and normal, moved by its component's rotation
+  and origin, give the port's position and normal: on the circuit with
+  grating couplers turned by 180 degrees and on the one with grouped
+  directional couplers.
 - `scripts/logic_check.py --plm` routes the 13 path-length-matching
   benchmarks with the standard router, the configuration they are made for
   (owner, 2026-11-22: the two crossing contributions are meant for the
@@ -1364,6 +1369,25 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- `gds/route_gds.route_nets_gds` and `print_instance_ports`: no caller
+  in the package, the scripts or the tests. `route_nets_gds` routed
+  with gdsfactory's `route_single`, and its `on_error="error"` mode did
+  not raise (the raise was commented out). The module keeps
+  `get_port_from_instance`. `ruff_T201` falls from 157 to 141 and
+  `ruff_BLE001` from 32 to 31.
+- Fourteen more functions no line of the repository names besides
+  their definition: `crossing_structures.octile_extra_length_um`,
+  `individual_topology._terminal_access_anchor_cell`,
+  `gds_circuit_extraction._pair_pitch` and `_pair_rows`,
+  `gds_circuit_rebuild._mmi_ports` and `_heater_ports`,
+  `route_rust_debug_artifacts._format_cells_preview`,
+  `route_rust_geometry._crossing_footprint_blockers` and
+  `_same_undirected_segment`, `RouteBookkeeping.set_committed_cells`,
+  `StaticObstacleMapData.rust_open_cells`, and in
+  `route_rust_endpoint_correction.py`
+  `_apply_endpoint_corrections_to_debug_artifacts`,
+  `_build_realization_router` and `_load_rust_backend`. A commented-out
+  call in `layout_from_schematic.py` went with them.
 - `electrical/pitch_grid.cells_bbox` and
   `PhotonicVerificationResult.raise_for_errors`: no caller.
 - `MeanderInsertionConfig.enabled`, `max_extra_length_per_region_um` and

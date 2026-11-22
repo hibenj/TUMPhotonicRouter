@@ -748,8 +748,8 @@ Sub-packages:
 | `plm/` | 5, 3,600 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,850) |
 | `verify/` | 3, 2,150 | `photonic_verification.py` (1,240, the geometry verifier), `route_rust_endpoint_correction.py` (900) |
 | `records/` | 8, 3,600 | `route_rust_types.py` (1,540, the shared records), `route_rust_records.py`, `route_rust_geometry.py`, `route_rust_realization.py`, `route_rust_obstacle_config.py`, `route_order.py` (`NET_ORDERS`), `layout_from_schematic.py` |
-| `gds/` | 8, 2,850 | GDS write options, the routes overview SVG, debug probe artifacts, gdsfactory's reference router (`route_gds.py`), and circuit extraction and rebuild from a foundry GDS (`gds_circuit_extraction.py`, `gds_circuit_rebuild.py`, `gds_circuit_components.py`) |
-| `electrical/` | 29, 10,300 | the heater-metal pipeline (2.15); `__init__.py` is its public surface |
+| `gds/` | 8, 2,850 | GDS write options, the routes overview SVG, debug probe artifacts, the port lookup of a placed instance (`route_gds.py`), and circuit extraction and rebuild from a foundry GDS (`gds_circuit_extraction.py`, `gds_circuit_rebuild.py`, `gds_circuit_components.py`) |
+| `electrical/` | 28, 10,500 | the heater-metal pipeline (2.15); `__init__.py` is its public surface |
 
 A stage module takes `(settings, state, <its input>)` and returns its
 product; it does not see the command line, the environment or a session

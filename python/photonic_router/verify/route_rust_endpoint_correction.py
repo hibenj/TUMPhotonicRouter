@@ -7,7 +7,6 @@ import math
 from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, replace
-from typing import Any
 
 from photonic_router.config import FlowDiagnostics
 from photonic_router.crossings.route_rust_crossing_components import (
@@ -23,76 +22,13 @@ from photonic_router.records.route_rust_geometry import (
 from photonic_router.records.route_rust_records import (
     EndpointCorrectionRouter,
     apply_port_endpoint_corrections,
-    build_port_alignment_diagnostics,
     centerline_tuple,
     format_port_endpoint_correction_error,
-    routed_edge_lengths_from_records,
 )
 from photonic_router.records.route_rust_types import (
     RoutedNetRecord,
-    RustRouteDebugArtifacts,
     int_or_none,
 )
-
-
-def _load_rust_backend() -> Any | None:
-    from photonic_router.routing.session import load_rust_backend as route_rust_load_backend
-
-    return route_rust_load_backend()
-
-
-def _build_realization_router(
-    *,
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool,
-    bend_radius_cells: int,
-) -> EndpointCorrectionRouter:
-    rust_backend = _load_rust_backend()
-    if rust_backend is None:
-        raise RuntimeError("Rust router backend unavailable for endpoint correction.")
-    width, height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
-    grid_spec = rust_backend.GridSpec(
-        int(width),
-        int(height),
-        float(grid_size_um),
-        float(origin_x_um),
-        float(origin_y_um),
-    )
-    primitive_cfg = rust_backend.PrimitiveLibraryConfig(
-        grid_size_um=float(grid_size_um),
-        bend_radius_cells=int(bend_radius_cells),
-        allow_45_degree_turns=allow_45_degree_turns,
-    )
-    astar_cfg = rust_backend.AStarConfig(max_iterations=1)
-    return rust_backend.PyPhotonicRouter(grid_spec, primitive_cfg, astar_cfg)
-
-
-def _apply_endpoint_corrections_to_debug_artifacts(
-    debug_artifacts: RustRouteDebugArtifacts,
-) -> RustRouteDebugArtifacts:
-    if debug_artifacts.realization_grid_spec is None:
-        raise RuntimeError("Missing realization grid spec from routing phase.")
-    router = _build_realization_router(
-        realization_grid_spec=debug_artifacts.realization_grid_spec,
-        allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
-        bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
-    )
-    records = apply_port_endpoint_corrections(
-        debug_artifacts.routed_net_records,
-        router=router,
-        realization_grid_spec=debug_artifacts.realization_grid_spec,
-        allow_unchecked_bumps=True,
-        log_failures=not debug_artifacts.realization_allow_45_degree_turns,
-    )
-    return replace(
-        debug_artifacts,
-        routed_net_records=records,
-        routed_edge_lengths_um=routed_edge_lengths_from_records(records),
-        port_alignment_diagnostics=build_port_alignment_diagnostics(
-            records,
-            realization_grid_spec=debug_artifacts.realization_grid_spec,
-        ),
-    )
 
 
 def polyline_length_um(points: tuple[tuple[float, float], ...]) -> float:

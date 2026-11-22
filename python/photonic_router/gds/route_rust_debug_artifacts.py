@@ -371,13 +371,3 @@ def route_cells_bbox(cells: Iterable[tuple[int, int]]) -> tuple[int, int, int, i
     xs = [cell[0] for cell in normalized]
     ys = [cell[1] for cell in normalized]
     return min(xs), max(xs), min(ys), max(ys)
-
-
-def _format_cells_preview(cells: set[tuple[int, int]], *, limit: int = 120) -> str:
-    if not cells:
-        return "[]"
-    ordered = sorted(cells)
-    if len(ordered) <= limit:
-        return str(ordered)
-    head = ordered[:limit]
-    return f"{head} ... (+{len(ordered) - limit} more)"
