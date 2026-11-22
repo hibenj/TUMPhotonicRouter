@@ -526,6 +526,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- No parameter that the function does not read: 73 functions, most of
+  them in `photonic_router/routing/`, lost a `settings` or `state`
+  parameter they only passed on or never touched (left over from the
+  time these functions were methods of the session), and every call
+  lost the argument. No behaviour change; `ruff_PLR0913` falls from 18
+  to 16. Three functions keep an unread parameter because their
+  signature is fixed from outside: `port_roles.no_port_roles` and
+  `gds_circuit_rebuild._stub_settings` are callbacks, and the tests
+  replace `route_jobs.port_access_rule_for` by a stub that reads `state`.
 - Shorter signatures in the electrical router (rule 4.4, at most 7
   parameters), no behaviour change; `ruff_PLR0913` falls from 30 to 18:
   - the terminal route helpers of `electrical/metal_realization.py` and

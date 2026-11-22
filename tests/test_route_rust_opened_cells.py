@@ -363,7 +363,6 @@ def test_corridor_clearance_reports_no_bare_centerline_path():
     blocked_cells = {(5, y) for y in range(6)}
 
     diagnostic = routing_diagnostics._corridor_clearance_diagnostic(
-        settings_for_test(),
         state,
         _state(2, 3),
         _state(9, 3),
@@ -383,7 +382,6 @@ def test_corridor_clearance_reports_narrow_gap_closed_by_one_cell_clearance():
     blocked_cells = {(8, y) for y in range(6) if y != 3}
 
     diagnostic = routing_diagnostics._corridor_clearance_diagnostic(
-        settings_for_test(),
         state,
         _state(2, 3),
         _state(10, 3),
@@ -403,7 +401,6 @@ def test_corridor_clearance_reports_open_grid_stays_connected():
     state = _corridor_state(width=12, height=6)
 
     diagnostic = routing_diagnostics._corridor_clearance_diagnostic(
-        settings_for_test(),
         state,
         _state(2, 3),
         _state(10, 3),
@@ -1374,9 +1371,7 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
         submitted.extend(jobs)
         return []
 
-    def _endpoint(
-        _settings: Any, _state: Any, job_arg: Any, *, source: bool
-    ) -> tuple[float, float]:
+    def _endpoint(_state: Any, job_arg: Any, *, source: bool) -> tuple[float, float]:
         endpoint_calls.append(source)
         assert job_arg is job
         return anchor
@@ -1401,17 +1396,17 @@ def test_apply_checked_fanout_stub_endpoint_corrections_corrects_target_of_both_
     # Milestone 5 Slice 2b: the pass calls its collaborators as module
     # functions, so the stubs are monkeypatched where `finalize` looks them up
     # instead of being attached to the fake session.
-    monkeypatch.setattr(routing_finalize, "timing_start", lambda _settings, _state: 0.0)
+    monkeypatch.setattr(routing_finalize, "timing_start", lambda _state: 0.0)
     monkeypatch.setattr(routing_finalize, "routing_endpoint_center_um", _endpoint)
     monkeypatch.setattr(
         routing_finalize,
         "state_openings_for_job",
-        lambda _settings, _state, _job: (None, None, set(), None, None),
+        lambda _state, _job: (None, None, set(), None, None),
     )
     monkeypatch.setattr(
         routing_finalize,
         "clearance_exempt_cells_for_job",
-        lambda _settings, _state, _job: [],
+        lambda _state, _job: [],
     )
     monkeypatch.setattr(
         routing_finalize,

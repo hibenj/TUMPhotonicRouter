@@ -23,7 +23,6 @@ from photonic_router.static_obstacle_builder import grid_cell_center
 
 
 def _snap_nearly_collinear_states(
-    settings: SessionSettings,
     state: SessionState,
     source_state: Any,
     target_state: Any,
@@ -98,22 +97,22 @@ def _snap_nearly_collinear_states(
     else:
         return source_state, target_state, original_cells
 
-    if _state_inside_dense_port_opening(settings, state, target_spec, snapped_target):
+    if _state_inside_dense_port_opening(state, target_spec, snapped_target):
         return source_state, snapped_target, original_cells
-    if _state_inside_dense_port_opening(settings, state, source_spec, snapped_source):
+    if _state_inside_dense_port_opening(state, source_spec, snapped_source):
         return snapped_source, target_state, original_cells
     return source_state, target_state, original_cells
 
 
 def _state_inside_dense_port_opening(
-    settings: SessionSettings, state: SessionState, port_spec: str | None, grid_state: Any
+    state: SessionState, port_spec: str | None, grid_state: Any
 ) -> bool:
     """Whether a state's cell belongs to the port's own dense-port opening (always, without one)."""
 
     if port_spec is None:
         return True
     cell = (int(grid_state.x), int(grid_state.y))
-    return bool(_filter_dense_port_opening(settings, state, port_spec, {cell}))
+    return bool(_filter_dense_port_opening(state, port_spec, {cell}))
 
 
 def _snap_same_heading_minimum_bend_offset(
@@ -161,7 +160,7 @@ def _snap_same_heading_minimum_bend_offset(
             sy + (snapped_offset_cells if dy > 0 else -snapped_offset_cells),
             target_angle,
         )
-        if not cell_in_grid(settings, state, int(snapped_target.x), int(snapped_target.y)):
+        if not cell_in_grid(state, int(snapped_target.x), int(snapped_target.y)):
             return source_state, target_state, extra_cells
         extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
         return source_state, snapped_target, extra_cells
@@ -180,7 +179,7 @@ def _snap_same_heading_minimum_bend_offset(
             ty,
             target_angle,
         )
-        if not cell_in_grid(settings, state, int(snapped_target.x), int(snapped_target.y)):
+        if not cell_in_grid(state, int(snapped_target.x), int(snapped_target.y)):
             return source_state, target_state, extra_cells
         extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
         return source_state, snapped_target, extra_cells
@@ -189,7 +188,6 @@ def _snap_same_heading_minimum_bend_offset(
 
 
 def _filter_dense_port_opening(
-    settings: SessionSettings,
     state: SessionState,
     port_spec: str,
     cells: set[tuple[int, int]],
@@ -228,13 +226,11 @@ def _filter_dense_port_opening(
 
 
 def _opened_cells_for_spec(
-    settings: SessionSettings,
     state: SessionState,
     cells_by_spec: Mapping[str, set[tuple[int, int]]],
     port_spec: str,
 ) -> set[tuple[int, int]]:
     return _filter_dense_port_opening(
-        settings,
         state,
         port_spec,
         set(cells_by_spec.get(port_spec, set())),
@@ -242,7 +238,7 @@ def _opened_cells_for_spec(
 
 
 def foreign_keepout_open_cells_for_spec(
-    settings: SessionSettings, state: SessionState, port_spec: str
+    state: SessionState, port_spec: str
 ) -> set[tuple[int, int]]:
     """Return the foreign keep-out cells opened for a port spec, without the normal runway cells.
 
@@ -257,9 +253,7 @@ def foreign_keepout_open_cells_for_spec(
             cells.update(state.ports.foreign_keepout_cells_by_spec.get(cluster_port_spec, set()))
         return cells - state.ports.normal_runway_cells
     return (
-        _opened_cells_for_spec(
-            settings, state, state.ports.foreign_keepout_cells_by_spec, port_spec
-        )
+        _opened_cells_for_spec(state, state.ports.foreign_keepout_cells_by_spec, port_spec)
         - state.ports.normal_runway_cells
     )
 
@@ -283,9 +277,7 @@ def _topological_net_route_order(
     )
     span_by_net_id: dict[int, int] | None = None
     if settings.net_order in ("topological-span", "span"):
-        span_by_net_id = {
-            int(job.net_id): _route_job_grid_span(settings, state, job) for job in jobs
-        }
+        span_by_net_id = {int(job.net_id): _route_job_grid_span(state, job) for job in jobs}
     stub_by_net_id: dict[int, int] | None = None
     if settings.net_order == "topological-stub":
         stub_by_net_id = {}
@@ -318,20 +310,16 @@ def _topological_net_route_order(
     )
     if settings.net_order != "topological":
         print(f"      - net order: {settings.net_order}")
-    return _debug_hoist_instance_first(settings, state, ordered)
+    return _debug_hoist_instance_first(settings, ordered)
 
 
-def _route_job_grid_span(
-    settings: SessionSettings, state: SessionState, route_job: RouteJob
-) -> int:
+def _route_job_grid_span(state: SessionState, route_job: RouteJob) -> int:
     source_state = port_to_grid_state(
-        settings,
         state,
         route_job.source_port,
         as_target=False,
     )
     target_state = port_to_grid_state(
-        settings,
         state,
         route_job.target_port,
         as_target=True,
@@ -342,7 +330,7 @@ def _route_job_grid_span(
 
 
 def _debug_hoist_instance_first(
-    settings: SessionSettings, state: SessionState, ordered: list[RouteJob]
+    settings: SessionSettings, ordered: list[RouteJob]
 ) -> list[RouteJob]:
     """Debug-only reordering: `PHOTONIC_ROUTER_DEBUG_ROUTE_FIRST_INSTANCE=<name>`
     hoists every net touching the named instance to the front of the
@@ -380,14 +368,13 @@ def _debug_hoist_instance_first(
 
 
 def _endpoint_bump_candidate_open_cells_for_state(
-    settings: SessionSettings,
     state: SessionState,
     grid_state: Any,
 ) -> set[tuple[int, int]]:
     """Cells a local endpoint bump may need opened against its own port pad."""
     base_x = int(grid_state.x)
     base_y = int(grid_state.y)
-    step_x, step_y = angle_to_step(settings, state, int(grid_state.angle) % 8)
+    step_x, step_y = angle_to_step(int(grid_state.angle) % 8)
     side_steps = ((-step_y, step_x), (step_y, -step_x))
     reach = max(1, int(state.kernel.radii.bend_radius_cells))
     axis_reach = 4 * reach
@@ -438,7 +425,6 @@ def states_and_openings(
     target_fanout_anchor = state.fanout.anchor_by_port_spec.get(port2_spec)
     if source_fanout_anchor is None:
         source_state = port_to_grid_state(
-            settings,
             state,
             job.source_port,
             as_target=False,
@@ -451,7 +437,6 @@ def states_and_openings(
         )
     if target_fanout_anchor is None:
         target_state = port_to_grid_state(
-            settings,
             state,
             job.target_port,
             as_target=True,
@@ -478,7 +463,6 @@ def states_and_openings(
         )
     if source_fanout_anchor is None and target_fanout_anchor is None:
         source_state, target_state, original_anchor_cells = _snap_nearly_collinear_states(
-            settings,
             state,
             source_state,
             target_state,
@@ -499,30 +483,26 @@ def states_and_openings(
     source_anchor_cell = (int(source_state.x), int(source_state.y))
     target_anchor_cell = (int(target_state.x), int(target_state.y))
     endpoint_foreign_keepout_open_cells = set(
-        foreign_keepout_open_cells_for_spec(settings, state, port1_spec)
+        foreign_keepout_open_cells_for_spec(state, port1_spec)
     )
     endpoint_foreign_keepout_open_cells.update(
-        foreign_keepout_open_cells_for_spec(settings, state, port2_spec)
+        foreign_keepout_open_cells_for_spec(state, port2_spec)
     )
     opened_candidate_cells = set(
-        _opened_cells_for_spec(
-            settings, state, state.ports.access_candidate_cells_by_spec, port1_spec
-        )
+        _opened_cells_for_spec(state, state.ports.access_candidate_cells_by_spec, port1_spec)
     )
     opened_candidate_cells.update(
-        _opened_cells_for_spec(
-            settings, state, state.ports.access_candidate_cells_by_spec, port2_spec
-        )
+        _opened_cells_for_spec(state, state.ports.access_candidate_cells_by_spec, port2_spec)
     )
     opened_candidate_cells.update(endpoint_foreign_keepout_open_cells)
     opened_candidate_cells.update(original_anchor_cells)
     opened_candidate_cells.update({source_anchor_cell, target_anchor_cell})
 
     opened_cells_set = set(
-        _opened_cells_for_spec(settings, state, state.ports.access_cells_by_spec, port1_spec)
+        _opened_cells_for_spec(state, state.ports.access_cells_by_spec, port1_spec)
     )
     opened_cells_set.update(
-        _opened_cells_for_spec(settings, state, state.ports.access_cells_by_spec, port2_spec)
+        _opened_cells_for_spec(state, state.ports.access_cells_by_spec, port2_spec)
     )
     opened_cells_set.update(endpoint_foreign_keepout_open_cells)
     opened_cells_set.update(original_anchor_cells)
@@ -546,10 +526,10 @@ def states_and_openings(
         opened_candidate_cells.difference_update(foreign_fanout_stub_static_cells)
         opened_cells_set.difference_update(foreign_fanout_stub_static_cells)
     source_endpoint_bump_open_cells = _endpoint_bump_candidate_open_cells_for_state(
-        settings, state, source_state
+        state, source_state
     )
     target_endpoint_bump_open_cells = _endpoint_bump_candidate_open_cells_for_state(
-        settings, state, target_state
+        state, target_state
     )
     opened_candidate_cells.update(source_endpoint_bump_open_cells)
     opened_candidate_cells.update(target_endpoint_bump_open_cells)
@@ -628,7 +608,7 @@ def _hand_static_cells_to_kernel(
     blocked_cells_before_port_reservations.update(foreign_keepout_cells)
     blocked_cells_before_port_reservations.update(state.fanout.stub_static_cells)
 
-    t_static_handoff_start = timing.pipeline_timer_start(settings, state)
+    t_static_handoff_start = timing.pipeline_timer_start(settings)
     blocked_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
     if hasattr(obstacle_map, "blocked_static_rects"):
         blocked_static_rects: list[tuple[int, int, int, int]] = []
@@ -752,7 +732,7 @@ def _precompute_openings(
             f"Loaded extension: {extension_path}"
         )
 
-    t_state_opening_precompute_start = timing.pipeline_timer_start(settings, state)
+    t_state_opening_precompute_start = timing.pipeline_timer_start(settings)
     state_openings_by_id = {
         int(job.net_id): states_and_openings(settings, state, job) for job in route_jobs
     }
@@ -766,7 +746,7 @@ def _precompute_openings(
         (int(net_id), state_openings[0], state_openings[1], state_openings[4])
         for net_id, state_openings in state_openings_by_id.items()
     ]
-    t_clearance_exempt_batch_start = timing.pipeline_timer_start(settings, state)
+    t_clearance_exempt_batch_start = timing.pipeline_timer_start(settings)
     clearance_exempt_cells_by_id = {
         int(net_id): [(int(cell[0]), int(cell[1])) for cell in cells]
         for net_id, cells in state.kernel.router.build_dynamic_clearance_exempt_cells_for_routes(

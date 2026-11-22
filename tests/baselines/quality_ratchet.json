@@ -3,7 +3,7 @@
   "python_exceptions": 0,
   "ruff_BLE001": 32,
   "ruff_C901": 68,
-  "ruff_PLR0913": 18,
+  "ruff_PLR0913": 16,
   "ruff_PLR0915": 39,
   "ruff_T201": 157,
   "rust_exceptions": 34,

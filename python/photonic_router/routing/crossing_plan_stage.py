@@ -35,9 +35,7 @@ from photonic_router.routing.state import SessionState
 from photonic_router.static_obstacle_builder import physical_to_grid
 
 
-def _cell_in_raw_static(
-    settings: SessionSettings, state: SessionState, cell: tuple[int, int]
-) -> bool:
+def _cell_in_raw_static(state: SessionState, cell: tuple[int, int]) -> bool:
     if cell in state.kernel.static.raw_static_cells:
         return True
     x, y = cell
@@ -48,7 +46,6 @@ def _cell_in_raw_static(
 
 
 def cells_in_raw_static_geometry(
-    settings: SessionSettings,
     state: SessionState,
     cells: set[tuple[int, int]],
 ) -> set[tuple[int, int]]:
@@ -57,7 +54,7 @@ def cells_in_raw_static_geometry(
     A cell counts if it is one of the raw static cells or lies inside one of the raw
     static rectangles.
     """
-    return {cell for cell in cells if _cell_in_raw_static(settings, state, cell)}
+    return {cell for cell in cells if _cell_in_raw_static(state, cell)}
 
 
 def _resolve_port_footprint_cells(
@@ -110,9 +107,7 @@ def _resolve_port_footprint_cells(
     )
 
 
-def _instance_ref_by_name(
-    settings: SessionSettings, state: SessionState, instance_name: str
-) -> Any | None:
+def _instance_ref_by_name(state: SessionState, instance_name: str) -> Any | None:
     try:
         instances = state.routed_layout.insts
     except (AttributeError, TypeError):
@@ -124,7 +119,6 @@ def _instance_ref_by_name(
 
 
 def _instance_static_geometry_open_cells(
-    settings: SessionSettings,
     state: SessionState,
     *,
     instance_name: str,
@@ -145,7 +139,7 @@ def _instance_static_geometry_open_cells(
     """
     if orientation is None:
         return set()
-    ref = _instance_ref_by_name(settings, state, instance_name)
+    ref = _instance_ref_by_name(state, instance_name)
     if ref is None:
         return set()
     bounds = bbox_bounds_um(ref)
@@ -227,7 +221,7 @@ def _instance_static_geometry_open_cells(
                 xs.update(range(start_x, end_x + 1))
         for cell_x in xs:
             inside_instance_bbox = min_x <= int(cell_x) <= max_x and min_y <= int(cell_y) <= max_y
-            cell_center = state_cell_center_um(settings, state, int(cell_x), int(cell_y))
+            cell_center = state_cell_center_um(state, int(cell_x), int(cell_y))
             if (
                 opening_left <= cell_center[0] <= opening_right
                 and opening_bottom <= cell_center[1] <= opening_top
@@ -257,11 +251,8 @@ class _PortAccess(NamedTuple):
     runway_cells_by_spec: dict[str, set[tuple[int, int]]]
 
 
-def _endpoint_state_for_lane_assignment(
-    settings: SessionSettings, state: SessionState, port: Port, *, as_target: bool
-) -> Any:
+def _endpoint_state_for_lane_assignment(state: SessionState, port: Port, *, as_target: bool) -> Any:
     return port_to_grid_state(
-        settings,
         state,
         port,
         as_target=as_target,
@@ -277,7 +268,7 @@ def _build_crossing_plan(
 
     Prints the crossing configuration when crossings are enabled.
     """
-    t_crossing_context_start = timing.pipeline_timer_start(settings, state)
+    t_crossing_context_start = timing.pipeline_timer_start(settings)
     plan = CrossingPlanInfo.from_dict(
         build_crossing_plan_info(
             rust_backend=state.rust_backend,
@@ -315,7 +306,7 @@ def _build_crossing_plan(
             f"{guidance_text}"
         )
     plan.bend_runout_cells_per_crossing = int(state.kernel.radii.bend_radius_cells)
-    plan.fanout_stub_bend_degrees = 45 * int(fanout_stub_bend_steps(settings, state))
+    plan.fanout_stub_bend_degrees = 45 * int(fanout_stub_bend_steps(settings))
     plan.required_straight_margin_cells_per_crossing = int(
         state.obstacles.resolved_crossing_half_size_cells
     ) + int(state.kernel.radii.bend_radius_cells)
@@ -373,7 +364,7 @@ def _build_port_access(
     access_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     access_candidate_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     runway_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
-    t_port_opening_prep_start = timing.pipeline_timer_start(settings, state)
+    t_port_opening_prep_start = timing.pipeline_timer_start(settings)
     port_opening_inputs: list[
         tuple[str, float, float, float | None, str | None, float | None, float | None]
     ] = []
@@ -397,7 +388,6 @@ def _build_port_access(
         access_rule_by_spec[port_spec] = None if rule is None else rule.component_name_pattern
         port_rule_extra_open_cells_by_spec[port_spec] = (
             _instance_static_geometry_open_cells(
-                settings,
                 state,
                 instance_name=instance_name,
                 center_um=(float(center[0]), float(center[1])),
@@ -419,7 +409,7 @@ def _build_port_access(
         )
     timing.record_pipeline_timing(settings, state, "port_opening_prep", t_port_opening_prep_start)
 
-    t_port_opening_batch_start = timing.pipeline_timer_start(settings, state)
+    t_port_opening_batch_start = timing.pipeline_timer_start(settings)
 
     # One raw footprint per port, from the single unified sizing computation
     # (Milestone 1's _resolve_port_footprint_cells plus the dense-runway
@@ -467,9 +457,7 @@ def _build_port_access(
         }
 
     for port_spec, raw_footprint_cells in raw_footprint_cells_by_spec.items():
-        open_cells = raw_footprint_cells - cells_in_raw_static_geometry(
-            settings, state, raw_footprint_cells
-        )
+        open_cells = raw_footprint_cells - cells_in_raw_static_geometry(state, raw_footprint_cells)
         access_cells_by_spec[port_spec] = set(open_cells)
         access_candidate_cells_by_spec[port_spec] = set(raw_footprint_cells)
         extra_open_cells = port_rule_extra_open_cells_by_spec.get(port_spec, set())
@@ -505,7 +493,7 @@ def _build_foreign_keepouts(
     keepout_cells_by_spec: dict[str, set[tuple[int, int]]] = {}
     keepout_cells_by_instance: dict[str, set[tuple[int, int]]] = {}
     if settings.foreign_port_keepout_cells > 0:
-        t_foreign_keepout_start = timing.pipeline_timer_start(settings, state)
+        t_foreign_keepout_start = timing.pipeline_timer_start(settings)
         for port_spec, raw_footprint_cells in raw_footprint_cells_by_spec.items():
             instance_name = port_spec.split(",", 1)[0]
             cells_for_spec = set(raw_footprint_cells)
@@ -519,7 +507,7 @@ def _build_foreign_keepouts(
 
 
 def _lateral_positions_by_angle(
-    settings: SessionSettings, state: SessionState, port_specs: set[str]
+    state: SessionState, port_specs: set[str]
 ) -> dict[int, list[tuple[str, float]]]:
     """Group an instance's ports by heading, each with its position across that heading.
 
@@ -532,11 +520,9 @@ def _lateral_positions_by_angle(
         angle = (
             int(fanout_anchor.physical_angle) % 8
             if fanout_anchor is not None
-            else orientation_to_angle(
-                settings, state, getattr(port, "orientation", None), flip=False
-            )
+            else orientation_to_angle(getattr(port, "orientation", None), flip=False)
         )
-        step_x, step_y = angle_to_step(settings, state, angle)
+        step_x, step_y = angle_to_step(angle)
         lateral_x, lateral_y = -step_y, step_x
         center = fanout_anchor.center_um if fanout_anchor is not None else center_of_port_um(port)
         if center is None or (lateral_x == 0 and lateral_y == 0):
@@ -583,13 +569,13 @@ def _build_dense_lateral_windows(
         tuple[float, float, tuple[tuple[str, float], ...]],
     ] = {}
     for _instance_name, port_specs in endpoint_port_specs_by_instance.items():
-        if len(port_specs) < dense_fanout_min_ports(settings, state):
+        if len(port_specs) < dense_fanout_min_ports(settings):
             continue
-        groups = _lateral_positions_by_angle(settings, state, port_specs)
+        groups = _lateral_positions_by_angle(state, port_specs)
         for angle, group in groups.items():
             if len(group) <= 1:
                 continue
-            step_x, step_y = angle_to_step(settings, state, angle)
+            step_x, step_y = angle_to_step(angle)
             lateral_x, lateral_y = -step_y, step_x
             ordered = sorted(group, key=lambda item: item[1])
             owner_group = tuple(ordered)
@@ -614,7 +600,7 @@ def _build_dense_lateral_windows(
 
 
 def _endpoints_by_grid_state(
-    settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
+    state: SessionState, route_jobs: list[RouteJob]
 ) -> dict[tuple[int, int, int], list[tuple[str, bool, Port]]]:
     """The endpoints of all jobs by the grid state (x, y, heading) they map to."""
     endpoint_ports_by_key: dict[tuple[int, int, int], list[tuple[str, bool, Port]]] = {}
@@ -623,19 +609,17 @@ def _endpoints_by_grid_state(
             (f"{job.inst1},{job.port1}", job.source_port, False),
             (f"{job.inst2},{job.port2}", job.target_port, True),
         ):
-            grid_state = _endpoint_state_for_lane_assignment(
-                settings, state, port, as_target=as_target
-            )
+            grid_state = _endpoint_state_for_lane_assignment(state, port, as_target=as_target)
             key = (int(grid_state.x), int(grid_state.y), int(grid_state.angle) % 8)
             endpoint_ports_by_key.setdefault(key, []).append((port_spec, as_target, port))
     return endpoint_ports_by_key
 
 
 def _assign_lane_offsets(
-    settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
+    state: SessionState, route_jobs: list[RouteJob]
 ) -> dict[tuple[str, bool], tuple[int, int]]:
     """Step 5: spread the endpoints that would share one grid cell and heading."""
-    endpoint_ports_by_key = _endpoints_by_grid_state(settings, state, route_jobs)
+    endpoint_ports_by_key = _endpoints_by_grid_state(state, route_jobs)
     lane_offsets: dict[tuple[str, bool], tuple[int, int]] = {}
     for (base_x, base_y, angle), endpoints in endpoint_ports_by_key.items():
         unique_endpoints = list(
@@ -643,7 +627,7 @@ def _assign_lane_offsets(
         )
         if len(unique_endpoints) <= 1:
             continue
-        step_x, step_y = angle_to_step(settings, state, angle)
+        step_x, step_y = angle_to_step(angle)
         lateral_x, lateral_y = -step_y, step_x
         if lateral_x == 0 and lateral_y == 0:
             continue
@@ -666,7 +650,7 @@ def _assign_lane_offsets(
             seen_endpoint_keys.add(endpoint_key)
             candidate_x = base_x + lateral_x * lane_index
             candidate_y = base_y + lateral_y * lane_index
-            if cell_in_grid(settings, state, candidate_x, candidate_y):
+            if cell_in_grid(state, candidate_x, candidate_y):
                 lane_offsets[endpoint_key] = (
                     lateral_x * lane_index,
                     lateral_y * lane_index,
@@ -711,6 +695,6 @@ def build_crossing_plan_and_port_footprints(
         foreign_keepout_cells_by_spec=keepout_cells_by_spec,
         dense_lateral_windows=windows,
         dense_lateral_owner_groups=owner_groups,
-        state_lane_offsets=_assign_lane_offsets(settings, state, route_jobs),
+        state_lane_offsets=_assign_lane_offsets(state, route_jobs),
     )
     return PlannedJobs(route_jobs, keepout_cells_by_instance)

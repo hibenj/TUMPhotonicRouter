@@ -410,7 +410,6 @@ def _route_local_trunks(
             tree_cells=frozenset(tree_cells),
             blocked=blocked,
             obstacle_map=obstacle_map,
-            config=config,
         )
         if pair_routes is None:
             continue
@@ -484,7 +483,6 @@ def _build_local_trunk_pair_routes(
     tree_cells: frozenset[GridCell],
     blocked: set[GridCell],
     obstacle_map: ElectricalObstacleMap,
-    config: ElectricalRoutingConfig,
 ) -> tuple[tuple[TerminalPairGroup, ElectricalTerminal, tuple[GridCell, ...]], ...] | None:
     terminal_routes: list[tuple[TerminalPairGroup, ElectricalTerminal, tuple[GridCell, ...]]] = []
     arm_endpoints: list[GridCell] = []

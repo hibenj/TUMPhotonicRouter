@@ -44,7 +44,7 @@ def test_target_snaps_onto_the_source_row_without_a_dense_window():
     state = _state()
     source, target = _rust.State(163, 450, 0), _rust.State(334, 449, 0)
     new_source, new_target, _ = _snap_nearly_collinear_states(
-        None, state, source, target, _port(163.5, 450.5), _port(334.5, 449.5), "gc,o1", "mmi,o1"
+        state, source, target, _port(163.5, 450.5), _port(334.5, 449.5), "gc,o1", "mmi,o1"
     )
     assert _cells(new_source, new_target) == [(163, 450, 0), (334, 450, 0)]
 
@@ -59,7 +59,7 @@ def test_source_snaps_instead_when_the_target_row_belongs_to_the_sibling_input()
     state = _state(windows)
     source, target = _rust.State(163, 450, 0), _rust.State(334, 449, 0)
     new_source, new_target, cells = _snap_nearly_collinear_states(
-        None, state, source, target, _port(163.5, 450.5), _port(334.5, 449.5), "gc,o1", "mmi,o1"
+        state, source, target, _port(163.5, 450.5), _port(334.5, 449.5), "gc,o1", "mmi,o1"
     )
     assert _cells(new_source, new_target) == [(163, 449, 0), (334, 449, 0)]
     assert cells == {(163, 450), (334, 449)}  # the original cells are still opened
@@ -73,7 +73,7 @@ def test_nothing_snaps_when_both_rows_are_owned_by_other_ports():
     state = _state(windows)
     source, target = _rust.State(163, 450, 0), _rust.State(334, 449, 0)
     new_source, new_target, _ = _snap_nearly_collinear_states(
-        None, state, source, target, _port(163.5, 450.5), _port(334.5, 449.5), "gc,o1", "mmi,o1"
+        state, source, target, _port(163.5, 450.5), _port(334.5, 449.5), "gc,o1", "mmi,o1"
     )
     assert _cells(new_source, new_target) == [(163, 450, 0), (334, 449, 0)]
 
@@ -83,6 +83,6 @@ def test_vertical_headings_snap_the_column_the_same_way():
     state = _state(windows)
     source, target = _rust.State(200, 10, 2), _rust.State(199, 300, 2)
     new_source, new_target, _ = _snap_nearly_collinear_states(
-        None, state, source, target, _port(200.5, 10.5), _port(199.5, 300.5), "gc,o1", "mmi,o1"
+        state, source, target, _port(200.5, 10.5), _port(199.5, 300.5), "gc,o1", "mmi,o1"
     )
     assert _cells(new_source, new_target) == [(199, 10, 2), (199, 300, 2)]

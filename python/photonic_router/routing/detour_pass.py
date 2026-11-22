@@ -117,8 +117,8 @@ def run_detour_pass(
         job = jobs_by_id.get(net_id)
         if job is None:
             continue
-        source_center = routing_endpoint_center_um(settings, state, job, source=True)
-        target_center = routing_endpoint_center_um(settings, state, job, source=False)
+        source_center = routing_endpoint_center_um(state, job, source=True)
+        target_center = routing_endpoint_center_um(state, job, source=False)
         if source_center is None or target_center is None:
             continue
         bounds[net_id] = free_lower_bound_um(source_center, target_center, bend_radius_um)
@@ -142,7 +142,7 @@ def run_detour_pass(
         for net_id in detoured:
             state.kernel.router.ripup_route(int(net_id))
             state.search.bookkeeping.clear_route(int(net_id))
-        batch_jobs = native_route_jobs(settings, state, (jobs_by_id[net_id] for net_id in detoured))
+        batch_jobs = native_route_jobs(state, (jobs_by_id[net_id] for net_id in detoured))
         opened_by_id = {int(job.net_id): job.opened_cells for job in batch_jobs}
         raw_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
             batch_jobs,

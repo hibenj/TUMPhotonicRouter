@@ -44,8 +44,6 @@ from photonic_router.routing.state import SessionState
 
 
 def _direction_reaches_target_ray(
-    settings: SessionSettings,
-    state: SessionState,
     *,
     source: tuple[int, int, int],
     target_cell: tuple[int, int],
@@ -58,7 +56,7 @@ def _direction_reaches_target_ray(
     dy = target_y - source_y
     if abs(dx) <= tolerance and abs(dy) <= tolerance:
         return True
-    dir_x, dir_y = angle_to_step(settings, state, source_angle)
+    dir_x, dir_y = angle_to_step(source_angle)
     if dir_x == 0 and dir_y == 0:
         return False
     if dir_x == 0:
@@ -94,8 +92,6 @@ def _source_lower_bounds(
             getattr(state.kernel.astar_cfg, "require_target_angle", True)
         ) or (source_angle % 8 == target_angle % 8)
         reaches_target_ray = _direction_reaches_target_ray(
-            settings,
-            state,
             source=source,
             target_cell=(target_x, target_y),
             tolerance=max(0, int(getattr(state.kernel.astar_cfg, "target_tolerance_cells", 0))),
@@ -108,13 +104,12 @@ def _source_lower_bounds(
 
 
 def _committed_dynamic_cells(
-    settings: SessionSettings, state: SessionState, *, exclude_net_id: int | None = None
+    state: SessionState, *, exclude_net_id: int | None = None
 ) -> set[tuple[int, int]]:
     return state.search.bookkeeping.committed_dynamic_cells(exclude_net_id=exclude_net_id)
 
 
 def _committed_dynamic_cells_for_attempt(
-    settings: SessionSettings,
     state: SessionState,
     *,
     exclude_net_id: int | None = None,
@@ -125,19 +120,16 @@ def _committed_dynamic_cells_for_attempt(
     for net_id in state.search.bookkeeping.records_by_id:
         if exclude_net_id is not None and int(net_id) == int(exclude_net_id):
             continue
-        merged.update(route_cells_from_router(settings, state, net_id))
+        merged.update(route_cells_from_router(state, net_id))
     return merged
 
 
-def route_cells_from_router(
-    settings: SessionSettings, state: SessionState, net_id: int
-) -> set[tuple[int, int]]:
+def route_cells_from_router(state: SessionState, net_id: int) -> set[tuple[int, int]]:
     """Return the cells the kernel router holds for a net as a set of (x, y) integer pairs."""
     return {(int(cell[0]), int(cell[1])) for cell in state.kernel.router.get_net_cells(int(net_id))}
 
 
 def state_openings_for_job(
-    settings: SessionSettings,
     state: SessionState,
     job: RouteJob,
 ) -> StateOpenings:
@@ -150,7 +142,7 @@ def state_openings_for_job(
 
 
 def _static_cells_in_rect(
-    settings: SessionSettings, state: SessionState, min_x: int, max_x: int, min_y: int, max_y: int
+    state: SessionState, min_x: int, max_x: int, min_y: int, max_y: int
 ) -> int:
     if min_x > max_x or min_y > max_y:
         return 0
@@ -173,8 +165,6 @@ def _static_cells_in_rect(
 
 
 def _cells_in_rect(
-    settings: SessionSettings,
-    state: SessionState,
     cells: set[tuple[int, int]],
     *,
     min_x: int,
@@ -208,10 +198,8 @@ def route_attempt_diagnostics(
     ``route_obj`` is None for an attempt without a route; window and route box are
     then empty and the cost is None.
     """
-    dynamic_cells_before = _committed_dynamic_cells_for_attempt(
-        settings, state, exclude_net_id=job.net_id
-    )
-    source_state, target_state, _, _, opened_cells = state_openings_for_job(settings, state, job)
+    dynamic_cells_before = _committed_dynamic_cells_for_attempt(state, exclude_net_id=job.net_id)
+    source_state, target_state, _, _, opened_cells = state_openings_for_job(state, job)
     source_x = int(source_state.x)
     source_y = int(source_state.y)
     source_angle = int(source_state.angle)
@@ -243,7 +231,6 @@ def route_attempt_diagnostics(
             max_y=window_max_y,
         )
     window_static_cells = _static_cells_in_rect(
-        settings,
         state,
         window_min_x,
         window_max_x,
@@ -251,8 +238,6 @@ def route_attempt_diagnostics(
         window_max_y,
     )
     window_dynamic_cells = _cells_in_rect(
-        settings,
-        state,
         dynamic_cells_before,
         min_x=window_min_x,
         max_x=window_max_x,
@@ -260,7 +245,6 @@ def route_attempt_diagnostics(
         max_y=window_max_y,
     )
     span_static_cells = _static_cells_in_rect(
-        settings,
         state,
         span_bbox_min_x,
         span_bbox_max_x,
@@ -268,8 +252,6 @@ def route_attempt_diagnostics(
         span_bbox_max_y,
     )
     span_dynamic_cells = _cells_in_rect(
-        settings,
-        state,
         dynamic_cells_before,
         min_x=span_bbox_min_x,
         max_x=span_bbox_max_x,
@@ -475,13 +457,13 @@ def write_route_diagnostics(
     port2_spec = f"{job.inst2},{job.port2}"
     source_anchor_cell = (int(source_state.x), int(source_state.y))
     target_anchor_cell = (int(target_state.x), int(target_state.y))
-    committed_dynamic_cells = _committed_dynamic_cells(settings, state, exclude_net_id=job.net_id)
+    committed_dynamic_cells = _committed_dynamic_cells(state, exclude_net_id=job.net_id)
     if state.obstacles.diagnostics_enabled:
         opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
         opened_candidate_static_overlap = cells_in_raw_static_geometry(
-            settings, state, opened_candidate_cells
+            state, opened_candidate_cells
         )
-        opened_static_overlap = cells_in_raw_static_geometry(settings, state, opened_cells_set)
+        opened_static_overlap = cells_in_raw_static_geometry(state, opened_cells_set)
         opened_dynamic_overlap = opened_cells_set & committed_dynamic_cells
         dynamic_exempt_dynamic_overlap = dynamic_clearance_exempt_cells & committed_dynamic_cells
     else:
@@ -491,7 +473,7 @@ def write_route_diagnostics(
         opened_dynamic_overlap = set()
         dynamic_exempt_dynamic_overlap = set()
 
-    route_static_overlap = cells_in_raw_static_geometry(settings, state, route_cells)
+    route_static_overlap = cells_in_raw_static_geometry(state, route_cells)
     route_overlap_with_candidate_opened_static = route_cells & opened_candidate_static_overlap
     route_overlap_with_effective_opened_static = route_cells & opened_static_overlap
     route_dynamic_overlap = route_cells & committed_dynamic_cells
@@ -499,10 +481,10 @@ def write_route_diagnostics(
     route_overlap_with_effective_opened_dynamic = route_cells & opened_dynamic_overlap
     route_overlap_with_dynamic_exempt = route_cells & dynamic_clearance_exempt_cells
     current_endpoint_foreign_keepout_cells = set(
-        foreign_keepout_open_cells_for_spec(settings, state, port1_spec)
+        foreign_keepout_open_cells_for_spec(state, port1_spec)
     )
     current_endpoint_foreign_keepout_cells.update(
-        foreign_keepout_open_cells_for_spec(settings, state, port2_spec)
+        foreign_keepout_open_cells_for_spec(state, port2_spec)
     )
     foreign_keepout_open_cells = current_endpoint_foreign_keepout_cells & opened_cells_set
     current_port_runway_cells = set(state.ports.runway_cells_by_spec.get(port1_spec, set()))
@@ -575,7 +557,7 @@ def write_route_diagnostics(
         cells: int = 0,
         delta: int = 0,
     ) -> tuple[tuple[int, int], int, list[tuple[int, int]]]:
-        start_dir = angle_to_step(settings, state, source_angle)
+        start_dir = angle_to_step(source_angle)
         if kind == "straight":
             relative = _relative_line_cells(
                 start=(0, 0),
@@ -586,7 +568,7 @@ def write_route_diagnostics(
             end_angle = int(source_angle) % 8
         else:
             end_angle = (int(source_angle) + int(delta)) % 8
-            end_dir = angle_to_step(settings, state, end_angle)
+            end_dir = angle_to_step(end_angle)
             radius = max(0, int(state.kernel.radii.bend_radius_cells))
             first_leg = _relative_line_cells(
                 start=(0, 0),
@@ -615,7 +597,7 @@ def write_route_diagnostics(
         for net_id in state.search.bookkeeping.records_by_id:
             if int(net_id) == int(job.net_id):
                 continue
-            overlap = cells & route_cells_from_router(settings, state, int(net_id))
+            overlap = cells & route_cells_from_router(state, int(net_id))
             if overlap:
                 owners[int(net_id)] = sorted(overlap)
         return owners
@@ -699,9 +681,9 @@ def write_route_diagnostics(
             start_angle: int,
             delta: int,
         ) -> set[tuple[int, int]]:
-            start_dir = angle_to_step(settings, state, start_angle)
+            start_dir = angle_to_step(start_angle)
             end_angle = (int(start_angle) + int(delta)) % 8
-            end_dir = angle_to_step(settings, state, end_angle)
+            end_dir = angle_to_step(end_angle)
             cells: set[tuple[int, int]] = set()
             for step in range(radius + 1):
                 cells.add(
@@ -797,7 +779,7 @@ def write_route_diagnostics(
                 delta=delta,
             )
             footprint_set = set(footprint)
-            static_overlap = cells_in_raw_static_geometry(settings, state, footprint_set)
+            static_overlap = cells_in_raw_static_geometry(state, footprint_set)
             routing_static_overlap = footprint_set & routing_static_cells
             effective_static_blockers = routing_static_overlap - opened_search_cells
             dynamic_overlap = footprint_set & committed_dynamic_cells
@@ -834,7 +816,7 @@ def write_route_diagnostics(
         f"target_access_rule={state.ports.access_rule_by_spec.get(port2_spec)}",
         f"foreign_port_keepout_cells={int(settings.foreign_port_keepout_cells)}",
         f"fanout_access_mode={settings.fanout_access_mode_normalized}",
-        f"fanout_stub_bend_degrees={45 * int(fanout_stub_bend_steps(settings, state))}",
+        f"fanout_stub_bend_degrees={45 * int(fanout_stub_bend_steps(settings))}",
         f"fanout_anchor_port_count={len(state.fanout.anchor_by_port_spec)}",
         f"fanout_stub_center_cell_count={len(state.fanout.stub_center_cells)}",
         f"fanout_stub_static_cell_count={len(state.fanout.stub_static_cells)}",
@@ -945,7 +927,7 @@ def export_route_svg(
         svg_text = state.kernel.router.export_debug_svg(route_obj)
     if opened_cells is None:
         try:
-            _, _, _, _, opened_cells = state_openings_for_job(settings, state, job)
+            _, _, _, _, opened_cells = state_openings_for_job(state, job)
         except Exception:
             opened_cells = []
     if settings.debug_stop_after_route_index is not None and int(job.route_index) == int(
@@ -991,7 +973,7 @@ def export_route_svg(
     state.search.route_svgs.append(route_svg)
 
 
-def route_engine_summary(settings: SessionSettings, state: SessionState, route_obj: Any) -> str:
+def route_engine_summary(route_obj: Any) -> str:
     """Summarize a route object in one line: kind, length in um, cost and expanded states.
 
     The kind is ``simple`` if the route was found without expanding a search state,
@@ -1005,7 +987,6 @@ def route_engine_summary(settings: SessionSettings, state: SessionState, route_o
 
 
 def _corridor_clearance_diagnostic(
-    settings: SessionSettings,
     state: SessionState,
     source_state: Any,
     target_state: Any,
@@ -1147,14 +1128,13 @@ def write_failed_log(
     port1_spec = f"{job.inst1},{job.port1}"
     port2_spec = f"{job.inst2},{job.port2}"
     fail_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_FAILED.txt"
-    committed_dynamic_cells = _committed_dynamic_cells(settings, state)
+    committed_dynamic_cells = _committed_dynamic_cells(state)
     opened_candidate_static_overlap = (
         opened_candidate_cells & state.static_cells.blocked_cells_before_port_reservations
     )
     opened_candidate_dynamic_overlap = opened_candidate_cells & committed_dynamic_cells
     opened_cells_set = set(opened_cells)
     corridor_diagnostic = _corridor_clearance_diagnostic(
-        settings,
         state,
         source_state,
         target_state,

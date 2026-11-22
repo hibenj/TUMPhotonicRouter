@@ -54,7 +54,7 @@ def realize_and_assemble_debug_artifacts(
     routed_net_records = verified.routed_net_records
     illegal_realized_crossings = verified.illegal_realized_crossings
     if not illegal_realized_crossings and not settings.defer_realization:
-        t_direct_realization_start = timing.pipeline_timer_start(settings, state)
+        t_direct_realization_start = timing.pipeline_timer_start(settings)
         realize_routed_net_records(
             state.routed_layout,
             routed_net_records,
@@ -103,7 +103,7 @@ def realize_and_assemble_debug_artifacts(
             f"{len(illegal_realized_crossings)} found. {preview}"
         )
 
-    t_debug_artifact_start = timing.pipeline_timer_start(settings, state)
+    t_debug_artifact_start = timing.pipeline_timer_start(settings)
     debug_artifacts = build_route_debug_artifacts(
         obstacle_svg=state.obstacles.obstacle_svg,
         route_svgs=state.search.route_svgs,

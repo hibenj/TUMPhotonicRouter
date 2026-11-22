@@ -22,7 +22,7 @@ if TYPE_CHECKING:  # annotation-only: the stage modules import this one
     from photonic_router.routing.state import SessionState
 
 
-def pipeline_timer_start(settings: SessionSettings, state: SessionState | None = None) -> float:
+def pipeline_timer_start(settings: SessionSettings) -> float:
     """Return the clock when pipeline timing is collected, 0.0 otherwise."""
     return time.perf_counter() if settings.collect_pipeline_timing else 0.0
 

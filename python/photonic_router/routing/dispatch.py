@@ -49,28 +49,26 @@ NEGOTIATED_MAX_ROUNDS = 10
 
 
 def _foreign_keepout_cleanup_cells_for_spec(
-    settings: SessionSettings, state: SessionState, port_spec: str
+    state: SessionState, port_spec: str
 ) -> set[tuple[int, int]]:
     cells = set(state.ports.foreign_keepout_cells_by_spec.get(port_spec, set()))
     if not cells:
         return set()
     cells.difference_update(state.ports.normal_runway_cells)
     cells.difference_update(state.fanout.stub_static_cells)
-    cells.difference_update(cells_in_raw_static_geometry(settings, state, cells))
+    cells.difference_update(cells_in_raw_static_geometry(state, cells))
     return cells
 
 
 def _foreign_keepout_cleanup_cells_for_job(
-    settings: SessionSettings, state: SessionState, job: RouteJob
+    state: SessionState, job: RouteJob
 ) -> list[tuple[int, int]]:
-    cells = _foreign_keepout_cleanup_cells_for_spec(settings, state, f"{job.inst1},{job.port1}")
-    cells.update(
-        _foreign_keepout_cleanup_cells_for_spec(settings, state, f"{job.inst2},{job.port2}")
-    )
+    cells = _foreign_keepout_cleanup_cells_for_spec(state, f"{job.inst1},{job.port1}")
+    cells.update(_foreign_keepout_cleanup_cells_for_spec(state, f"{job.inst2},{job.port2}"))
     return sorted(cells)
 
 
-def timing_start(settings: SessionSettings, state: SessionState) -> float:
+def timing_start(state: SessionState) -> float:
     """Return a ``time.perf_counter`` start time, or 0.0 if the run does not collect timing."""
     return time.perf_counter() if state.run.collect_timing else 0.0
 
@@ -141,8 +139,6 @@ def _report_long_straight_congestion(
 
 
 def append_centerline_points(
-    settings: SessionSettings,
-    state: SessionState,
     out: list[tuple[float, float]],
     points: Iterable[tuple[float, float]],
 ) -> None:
@@ -157,7 +153,6 @@ def append_centerline_points(
 
 
 def _fanout_stubbed_centerline(
-    settings: SessionSettings,
     state: SessionState,
     job: RouteJob,
     route_obj: Any,
@@ -193,14 +188,13 @@ def _fanout_stubbed_centerline(
     if len(route_centerline) < 2:
         return ()
     points: list[tuple[float, float]] = []
-    append_centerline_points(settings, state, points, source_anchor.stub_centerline_um)
-    append_centerline_points(settings, state, points, route_centerline)
+    append_centerline_points(points, source_anchor.stub_centerline_um)
+    append_centerline_points(points, route_centerline)
     centerline = compress_centerline(tuple(points))
     return centerline if len(centerline) >= 2 else ()
 
 
 def routing_endpoint_center_um(
-    settings: SessionSettings,
     state: SessionState,
     job: RouteJob,
     *,
@@ -220,16 +214,12 @@ def routing_endpoint_center_um(
     return anchor.center_um if anchor is not None else center_of_port_um(job.target_port)
 
 
-def clearance_exempt_cells_for_job(
-    settings: SessionSettings, state: SessionState, job: RouteJob
-) -> list[tuple[int, int]]:
+def clearance_exempt_cells_for_job(state: SessionState, job: RouteJob) -> list[tuple[int, int]]:
     """Return the clearance-exempt cells computed for the job's net, or an empty list."""
     return state.run.clearance_exempt_cells_by_id.get(int(job.net_id), [])
 
 
-def native_route_jobs(
-    settings: SessionSettings, state: SessionState, jobs: Iterable[RouteJob]
-) -> list[Any]:
+def native_route_jobs(state: SessionState, jobs: Iterable[RouteJob]) -> list[Any]:
     """The kernel's `RouteJob` objects for `route_many_with_negotiated_repair_and_commit`.
 
     One job per Python `RouteJob`, in the order given: the net id, the two grid
@@ -244,21 +234,17 @@ def native_route_jobs(
     rust_route_job = state.rust_backend.RouteJob
     native_jobs: list[Any] = []
     for job in jobs:
-        source_state, target_state, _, _, opened_cells = state_openings_for_job(
-            settings, state, job
-        )
+        source_state, target_state, _, _, opened_cells = state_openings_for_job(state, job)
         native_jobs.append(
             rust_route_job(
                 net_id=int(job.net_id),
                 source=source_state,
                 target=target_state,
                 opened_cells=opened_cells,
-                clearance_exempt_cells=clearance_exempt_cells_for_job(settings, state, job),
-                foreign_keepout_cleanup_cells=_foreign_keepout_cleanup_cells_for_job(
-                    settings, state, job
-                ),
-                source_port_um=routing_endpoint_center_um(settings, state, job, source=True),
-                target_port_um=routing_endpoint_center_um(settings, state, job, source=False),
+                clearance_exempt_cells=clearance_exempt_cells_for_job(state, job),
+                foreign_keepout_cleanup_cells=_foreign_keepout_cleanup_cells_for_job(state, job),
+                source_port_um=routing_endpoint_center_um(state, job, source=True),
+                target_port_um=routing_endpoint_center_um(state, job, source=False),
             )
         )
     return native_jobs
@@ -284,7 +270,7 @@ def record_route(
     dynamic cells.
     """
     if not corrected_centerline_um:
-        corrected_centerline_um = _fanout_stubbed_centerline(settings, state, job, route_obj)
+        corrected_centerline_um = _fanout_stubbed_centerline(state, job, route_obj)
     if (
         not corrected_centerline_um
         and not settings.enable_checked_endpoint_correction
@@ -309,7 +295,7 @@ def record_route(
         job,
         route_obj,
         opened_cells,
-        route_cells=route_cells_from_router(settings, state, job.net_id)
+        route_cells=route_cells_from_router(state, job.net_id)
         if state.run.track_dynamic_cells
         else None,
         corrected_centerline_um=corrected_centerline_um,
@@ -338,7 +324,7 @@ def _finalize_committed_route(
             settings,
             state,
             job=job,
-            openings=state_openings_for_job(settings, state, job),
+            openings=state_openings_for_job(state, job),
             diag_txt=diag_txt,
             route_obj=route_obj,
         )
@@ -352,7 +338,7 @@ def _finalize_committed_route(
     )
 
     if should_print_route:
-        print(f"ok {route_engine_summary(settings, state, route_obj)}")
+        print(f"ok {route_engine_summary(route_obj)}")
 
 
 def dispatch_native_routing(
@@ -385,8 +371,8 @@ def dispatch_native_routing(
         )
     batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
     batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-    t_batch_job_pack_start = timing.pipeline_timer_start(settings, state)
-    batch_jobs = native_route_jobs(settings, state, route_jobs)
+    t_batch_job_pack_start = timing.pipeline_timer_start(settings)
+    batch_jobs = native_route_jobs(state, route_jobs)
     for job, native_job in zip(route_jobs, batch_jobs, strict=True):
         route_selected_for_debug = (
             settings.debug_route_indices is None or job.route_index in settings.debug_route_indices
@@ -417,7 +403,7 @@ def dispatch_native_routing(
         batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
     timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
 
-    batch_start = timing_start(settings, state)
+    batch_start = timing_start(state)
     # The LiDAR-style negotiated rip-up loop of
     # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
     # (the only engine that routes the 64x64 mesh), the default since
@@ -437,7 +423,7 @@ def dispatch_native_routing(
     )
     batch_elapsed_s = time.perf_counter() - batch_start if state.run.collect_timing else 0.0
     timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
-    t_batch_result_processing_start = timing.pipeline_timer_start(settings, state)
+    t_batch_result_processing_start = timing.pipeline_timer_start(settings)
     batch_result = dict(raw_batch_result)
     state.search.native_repair_trace = [
         dict(record)
@@ -559,7 +545,7 @@ def dispatch_native_routing(
         error_text = str(batch_result.get("error", "No route found"))
         if failed_job is None:
             raise RuntimeError(error_text)
-        openings = state_openings_for_job(settings, state, failed_job)
+        openings = state_openings_for_job(state, failed_job)
         source_state = openings.source_state
         target_state = openings.target_state
         should_print_route, diag_txt = batch_debug_by_id.get(

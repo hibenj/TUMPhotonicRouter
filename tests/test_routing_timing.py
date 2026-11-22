@@ -25,8 +25,8 @@ def _pipeline_state() -> SimpleNamespace:
 
 def test_pipeline_timer_start_returns_a_perf_counter_reading_when_timing_is_on():
     settings = SimpleNamespace(collect_pipeline_timing=True)
-    first = pipeline_timer_start(settings, _pipeline_state())
-    second = pipeline_timer_start(settings, _pipeline_state())
+    first = pipeline_timer_start(settings)
+    second = pipeline_timer_start(settings)
     assert first > 0.0
     # `time.perf_counter` is monotonic, so a later call never reads earlier.
     assert second >= first
@@ -34,13 +34,13 @@ def test_pipeline_timer_start_returns_a_perf_counter_reading_when_timing_is_on()
 
 def test_pipeline_timer_start_returns_zero_when_timing_is_off():
     settings = SimpleNamespace(collect_pipeline_timing=False)
-    assert pipeline_timer_start(settings, _pipeline_state()) == 0.0
+    assert pipeline_timer_start(settings) == 0.0
 
 
 def test_record_pipeline_timing_adds_the_elapsed_time_under_the_phase_name():
     settings = SimpleNamespace(collect_pipeline_timing=True)
     state = _pipeline_state()
-    start = pipeline_timer_start(settings, state)
+    start = pipeline_timer_start(settings)
     record_pipeline_timing(settings, state, "obstacle_context", start)
     assert list(state.route_nets_timings_s) == ["obstacle_context"]
     assert state.route_nets_timings_s["obstacle_context"] >= 0.0
@@ -52,13 +52,11 @@ def test_record_pipeline_timing_accumulates_repeated_phases_instead_of_replacing
     # Two synthetic intervals of 1.0 and 0.5 seconds: the bucket must hold
     # their sum, not the last one. `start_s` is a `perf_counter` reading, so
     # `now - start_s` is the interval; passing `now - 1.0` makes it 1.0.
-    now = pipeline_timer_start(settings, state)
+    now = pipeline_timer_start(settings)
     record_pipeline_timing(settings, state, "router_setup", now - 1.0)
     after_first = state.route_nets_timings_s["router_setup"]
     assert after_first >= 1.0
-    record_pipeline_timing(
-        settings, state, "router_setup", pipeline_timer_start(settings, state) - 0.5
-    )
+    record_pipeline_timing(settings, state, "router_setup", pipeline_timer_start(settings) - 0.5)
     assert state.route_nets_timings_s["router_setup"] >= after_first + 0.5
 
 

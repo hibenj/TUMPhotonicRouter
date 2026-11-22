@@ -201,7 +201,7 @@ def _apply_checked_endpoint_corrections_for_net_ids(
     ] = []
     requested_net_ids = [int(net_id) for net_id in net_ids]
     crossing_net_ids = _endpoint_correction_crossing_net_ids(settings, state)
-    t_endpoint_correction_pack_start = timing.pipeline_timer_start(settings, state)
+    t_endpoint_correction_pack_start = timing.pipeline_timer_start(settings)
     for net_id in requested_net_ids:
         classification = _classify_net_for_endpoint_correction(
             settings, state, net_id, crossing_net_ids=crossing_net_ids
@@ -213,14 +213,14 @@ def _apply_checked_endpoint_corrections_for_net_ids(
             continue
         record = state.search.bookkeeping.records_by_id[net_id]
         job = state.run.route_jobs_by_id[net_id]
-        source_port = routing_endpoint_center_um(settings, state, job, source=True)
-        target_port = routing_endpoint_center_um(settings, state, job, source=False)
+        source_port = routing_endpoint_center_um(state, job, source=True)
+        target_port = routing_endpoint_center_um(state, job, source=False)
         if source_port is None and target_port is None:
             continue
         _source_state, _target_state, opened_candidate_cells, _, _ = state_openings_for_job(
-            settings, state, job
+            state, job
         )
-        clearance_exempt_cells = clearance_exempt_cells_for_job(settings, state, job)
+        clearance_exempt_cells = clearance_exempt_cells_for_job(state, job)
         correction_jobs.append(
             (
                 int(net_id),
@@ -241,7 +241,7 @@ def _apply_checked_endpoint_corrections_for_net_ids(
     if not correction_jobs:
         return []
 
-    correction_start = timing_start(settings, state)
+    correction_start = timing_start(state)
     raw_corrections = state.kernel.router.apply_checked_endpoint_corrections(
         correction_jobs,
         float(settings.route_width_um),
@@ -256,7 +256,7 @@ def _apply_checked_endpoint_corrections_for_net_ids(
         timing.record_pipeline_timing(
             settings, state, "endpoint_correction_native", correction_start
         )
-    t_endpoint_correction_processing_start = timing.pipeline_timer_start(settings, state)
+    t_endpoint_correction_processing_start = timing.pipeline_timer_start(settings)
     correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
     failed_net_ids: list[int] = []
     for raw_correction in cast(Iterable[Any], raw_corrections):
@@ -376,7 +376,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
     job_context_by_id: dict[int, tuple[RoutedNetRecord, bool, bool]] = {}
     requested_net_ids = [int(net_id) for net_id in net_ids]
     crossing_net_ids = _endpoint_correction_crossing_net_ids(settings, state)
-    t_endpoint_correction_pack_start = timing.pipeline_timer_start(settings, state)
+    t_endpoint_correction_pack_start = timing.pipeline_timer_start(settings)
     for net_id in requested_net_ids:
         # A fanout stub is already a corrected endpoint adapter. When the
         # routed net also contains a crossing, the unrestricted native
@@ -406,9 +406,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         target_has_fanout_stub = classification.target_has_fanout_stub
 
         source_port = (
-            None
-            if source_has_fanout_stub
-            else routing_endpoint_center_um(settings, state, job, source=True)
+            None if source_has_fanout_stub else routing_endpoint_center_um(state, job, source=True)
         )
         # A TARGET fanout stub is not eagerly stitched: the record's
         # target is the anchor's exact point and the search's grid state
@@ -417,10 +415,10 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         # slanted (realization rejects it as an unsupported terminal
         # stub). Same reasoning as the crossing-aware pass's
         # `correct_target=True`; only SOURCE stubs are pre-stitched.
-        target_port = routing_endpoint_center_um(settings, state, job, source=False)
+        target_port = routing_endpoint_center_um(state, job, source=False)
         if source_port is None and target_port is None:
             continue
-        _, _, opened_candidate_cells, _, _ = state_openings_for_job(settings, state, job)
+        _, _, opened_candidate_cells, _, _ = state_openings_for_job(state, job)
         if source_has_fanout_stub:
             opened_candidate_cells.update(
                 state.fanout.stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
@@ -429,7 +427,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
             opened_candidate_cells.update(
                 state.fanout.stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
             )
-        clearance_exempt_cells = clearance_exempt_cells_for_job(settings, state, job)
+        clearance_exempt_cells = clearance_exempt_cells_for_job(state, job)
         correction_jobs.append(
             (
                 int(net_id),
@@ -456,7 +454,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
     if not correction_jobs:
         return []
 
-    correction_start = timing_start(settings, state)
+    correction_start = timing_start(state)
     raw_corrections = state.kernel.router.apply_checked_endpoint_corrections(
         correction_jobs,
         float(settings.route_width_um),
@@ -474,7 +472,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
             "fanout_stub_endpoint_correction_native",
             correction_start,
         )
-    t_endpoint_correction_processing_start = timing.pipeline_timer_start(settings, state)
+    t_endpoint_correction_processing_start = timing.pipeline_timer_start(settings)
     correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
     failed_net_ids: list[int] = []
     for raw_correction in cast(Iterable[Any], raw_corrections):
@@ -612,7 +610,6 @@ def _current_crossing_points_by_net_id(
 
 
 def _route_target_grid_center_um(
-    settings: SessionSettings,
     state: SessionState,
     route_obj: object | None,
 ) -> tuple[float, float] | None:
@@ -626,14 +623,12 @@ def _route_target_grid_center_um(
         except (TypeError, IndexError):
             return None
     try:
-        return state_cell_center_um(settings, state, int(raw_state.x), int(raw_state.y))
+        return state_cell_center_um(state, int(raw_state.x), int(raw_state.y))
     except (AttributeError, TypeError, ValueError):
         return None
 
 
 def _route_target_angle(
-    settings: SessionSettings,
-    state: SessionState,
     route_obj: object | None,
 ) -> int | None:
     if route_obj is None:
@@ -686,13 +681,13 @@ def _record_terminal_bump_distance_check_candidates(
         job = state.run.route_jobs_by_id.get(net_id)
         if record is None or job is None or record.target_port_center_um is None:
             continue
-        target_grid_um = _route_target_grid_center_um(settings, state, record.route_obj)
+        target_grid_um = _route_target_grid_center_um(state, record.route_obj)
         if target_grid_um is None:
             continue
         target_port_um = record.target_port_center_um
         target_dx_um = float(target_port_um[0]) - float(target_grid_um[0])
         target_dy_um = float(target_port_um[1]) - float(target_grid_um[1])
-        target_angle = _route_target_angle(settings, state, record.route_obj)
+        target_angle = _route_target_angle(record.route_obj)
         target_axis = (
             "horizontal"
             if target_angle in (0, 4)
@@ -815,7 +810,7 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
         requested_net_ids,
     )
 
-    t_endpoint_correction_start = timing.pipeline_timer_start(settings, state)
+    t_endpoint_correction_start = timing.pipeline_timer_start(settings)
     failed_net_ids: list[int] = []
     for raw_net_id in requested_net_ids:
         net_id = int(raw_net_id)
@@ -850,7 +845,7 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
         source_has_fanout_stub = net_id in state.fanout.anchor_source_net_ids
         target_has_fanout_stub = net_id in state.fanout.anchor_target_net_ids
         record_has_fanout_stub = net_id in state.fanout.anchor_net_ids
-        _, _, opened_candidate_cells, _, _ = state_openings_for_job(settings, state, job)
+        _, _, opened_candidate_cells, _, _ = state_openings_for_job(state, job)
         if source_has_fanout_stub:
             opened_candidate_cells.update(
                 state.fanout.stub_static_cells_by_spec.get(f"{job.inst1},{job.port1}", set())
@@ -859,8 +854,8 @@ def _apply_crossing_aware_endpoint_corrections_for_net_ids(
             opened_candidate_cells.update(
                 state.fanout.stub_static_cells_by_spec.get(f"{job.inst2},{job.port2}", set())
             )
-        clearance_exempt_cells = clearance_exempt_cells_for_job(settings, state, job)
-        start_s = timing_start(settings, state)
+        clearance_exempt_cells = clearance_exempt_cells_for_job(state, job)
+        start_s = timing_start(state)
         updated = apply_crossing_aware_endpoint_correction_to_record(
             record,
             router=cast(EndpointCorrectionRouter, state.kernel.router),
@@ -1019,9 +1014,7 @@ def _apply_all_endpoint_corrections_for_net_ids(
     return failed_net_ids
 
 
-def _append_target_fanout_stubs_after_correction(
-    settings: SessionSettings, state: SessionState
-) -> None:
+def _append_target_fanout_stubs_after_correction(state: SessionState) -> None:
     """Splice each target-anchored net's fixed stub onto its corrected route.
 
     `record_route`/`RouteBookkeeping.record_route` pointed any
@@ -1053,7 +1046,7 @@ def _append_target_fanout_stubs_after_correction(
         if true_port_um is None:
             continue
         points = list(centerline)
-        append_centerline_points(settings, state, points, [true_port_um])
+        append_centerline_points(points, [true_port_um])
         new_centerline = compress_centerline(tuple(points))
         if len(new_centerline) < 2:
             continue
@@ -1102,9 +1095,9 @@ def finalize_routing_results(
                 or settings.verbose_route_diagnostics
             ),
         )
-    _append_target_fanout_stubs_after_correction(settings, state)
+    _append_target_fanout_stubs_after_correction(state)
 
-    t_record_assembly_start = timing.pipeline_timer_start(settings, state)
+    t_record_assembly_start = timing.pipeline_timer_start(settings)
     routed_net_records = state.search.bookkeeping.ordered_records()
     routed_record_keys = [
         (
