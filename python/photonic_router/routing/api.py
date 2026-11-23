@@ -15,12 +15,7 @@ from photonic_router.crossings.route_rust_crossing_components import (
     place_realized_crossing_components,
 )
 from photonic_router.crossings.route_rust_crossing_plan import (
-    augment_insertion_loss_report_from_realized_intersections,
-    index_records_by_net_id,
     write_crossing_debug_artifacts,
-)
-from photonic_router.crossings.route_rust_crossing_verification import (
-    verify_realized_route_intersections,
 )
 from photonic_router.plm import route_rust_meanders as _meander_impl
 from photonic_router.plm.path_length_diagnostics import (
@@ -378,40 +373,6 @@ def route_match_and_realize(
         if isinstance(crossing_plan_info, dict)
         else None
     )
-    if plan_info is not None and options.enable_internal_photonic_probe_verification:
-        final_records_by_net_id = index_records_by_net_id(records_for_realization)
-        if final_records_by_net_id:
-            illegal_realized_crossings = verify_realized_route_intersections(
-                crossing_plan_info=plan_info,
-                routed_records_by_net_id=final_records_by_net_id,
-                realization_grid_spec=debug_artifacts.realization_grid_spec,
-                native_crossing_verdicts=plan_info.native_crossing_verdicts,
-            )
-            augment_insertion_loss_report_from_realized_intersections(
-                crossing_plan_info=plan_info,
-                routed_records_by_net_id=final_records_by_net_id,
-            )
-            if illegal_realized_crossings:
-                write_crossing_debug_artifacts(
-                    debug_path=Path(debug.debug_dir)
-                    if debug.debug_dir is not None
-                    else Path("build"),
-                    debug_prefix=debug.debug_prefix,
-                    crossing_plan_info=plan_info,
-                )
-                preview = "; ".join(
-                    f"{item.get('net_name_a')} x {item.get('net_name_b')} "
-                    f"at {item.get('point_um')} ({item.get('reason')}, "
-                    f"margins={item.get('segment_a_margin_um')}/"
-                    f"{item.get('segment_b_margin_um')}, "
-                    f"required={item.get('required_margin_um')})"
-                    for item in illegal_realized_crossings[:5]
-                )
-                raise RuntimeError(
-                    "Illegal realized route crossing(s) after endpoint correction: "
-                    f"{len(illegal_realized_crossings)} found. {preview}"
-                )
-
     t_realization_start = time.perf_counter()
     realize_routed_net_records(
         routed_layout,

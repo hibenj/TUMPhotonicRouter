@@ -92,7 +92,6 @@ class SessionSettings:
     # ---- repair ---------------------------------------------------------------
     # Consumed by the static handoff (repair config) and the final repair passes.
     ripup_reroute_config: RipupRerouteConfig | None
-    enable_internal_photonic_probe_verification: bool
 
     # ---- realization ----------------------------------------------------------
     # Consumed by the router setup (cell sizes), the finalizer and the realizer.
@@ -241,9 +240,6 @@ class SessionSettings:
             foreign_port_keepout_cells=port_access.foreign_port_keepout_cells,
             fanout_access_mode_normalized=fanout_access_mode_normalized,
             ripup_reroute_config=options.ripup_reroute_config,
-            enable_internal_photonic_probe_verification=(
-                options.enable_internal_photonic_probe_verification
-            ),
             route_width_um=realization.route_width_um,
             route_layer=realization.route_layer,
             bend_radius_um=realization.bend_radius_um,

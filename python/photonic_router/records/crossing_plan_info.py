@@ -199,12 +199,6 @@ class CrossingPlanInfo:
     final_crossing_repair_attempts: list[dict[str, Any]] | None = None
     """One record per final illegal-crossing repair attempt. w:8"""
 
-    final_photonic_repair_attempts: list[dict[str, Any]] | None = None
-    """One record per final photonic-issue repair attempt. w:8"""
-
-    photonic_probe_failure_artifacts: dict[str, str] | None = None
-    """Paths of the artifacts dumped for a failed photonic probe. w:8"""
-
     # ---- the insertion-loss report (phase 8) -----------------------------
     insertion_loss_model: dict[str, Any] | None = None
     """The loss formula and its coefficients. w:8"""

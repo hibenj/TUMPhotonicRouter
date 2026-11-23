@@ -652,21 +652,11 @@ def _build_metrics(
     final_crossing_repair_attempts = tuple(
         _iter_mappings(plan_info.get("final_crossing_repair_attempts"))
     )
-    final_photonic_repair_attempts = tuple(
-        _iter_mappings(plan_info.get("final_photonic_repair_attempts"))
-    )
     metrics["final_crossing_repair_attempt_count"] = len(final_crossing_repair_attempts)
-    metrics["final_photonic_repair_attempt_count"] = len(final_photonic_repair_attempts)
     metrics["final_crossing_repair_success_count"] = sum(
         1
         for attempt in final_crossing_repair_attempts
         if str(attempt.get("status", "") or "") == "routed"
-    )
-    metrics["final_photonic_repair_success_count"] = sum(
-        1
-        for attempt in final_photonic_repair_attempts
-        if str(attempt.get("status", "") or "") == "routed"
-        and not attempt.get("endpoint_correction_failed_net_ids")
     )
     return metrics
 

@@ -39,7 +39,6 @@ from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 from photonic_router.records.route_rust_records import RouteBookkeeping
 from photonic_router.records.route_rust_types import (
     RouteAttemptRecord,
-    RoutedNetRecord,
     RouteTimingBucket,
 )
 from photonic_router.routing.products import (
@@ -97,17 +96,6 @@ class SearchLog:
 
 
 @dataclass
-class ProbeCache:
-    """The last internal photonic probe phase 8 built, for its failure artifacts."""
-
-    #: how many probe layouts this run has built
-    index: int = 0
-    layout: Component | None = None
-    #: the records that probe layout was built from
-    records: list[RoutedNetRecord] = field(default_factory=list)
-
-
-@dataclass
 class SessionState:
     """Everything one routing run computes, in the order the phases produce it."""
 
@@ -154,9 +142,6 @@ class SessionState:
     # ---- the two records the later phases mutate ------------------------------
     search: SearchLog = field(default_factory=SearchLog)
     """What the search recorded. w:5 m:6,7,7b,8 r:6,7,8,9  # shared writer"""
-
-    probe: ProbeCache = field(default_factory=ProbeCache)
-    """Phase 8's own working record. w:8 m:8 r:8"""
 
     @classmethod
     def after_setup(

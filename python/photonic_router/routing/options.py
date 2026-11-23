@@ -136,9 +136,6 @@ class SessionOptions:
     obstacle_config: ObstacleConfigInput = None
     include_heater_obstacles: bool = False
     ripup_reroute_config: RipupRerouteConfig | None = None
-    #: True runs the expensive probe of the realized layout inside the
-    #: session; the flow verifies the final layout itself and leaves it off
-    enable_internal_photonic_probe_verification: bool = False
     #: the typed configuration tree; None reads `RoutingConfig.from_environment()`
     config: RoutingConfig | None = None
 

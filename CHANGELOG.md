@@ -1506,6 +1506,25 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- The internal photonic probe verification (owner, 2026-11-23, after
+  the fallback review showed that nothing could turn it on).
+  `SessionOptions.enable_internal_photonic_probe_verification` had no
+  command-line flag, no environment variable and no benchmark that set
+  it, and 105 archived result runs report zero photonic repair
+  attempts. Gone with it: the photonic repair loop and the probe layout
+  of `routing/verify_repair.py`, `verify_realized_route_intersections`
+  (the Python search for intersections that looked up the kernel's
+  verdict for each), `dump_photonic_probe_failure_artifacts`,
+  `ProbeCache` (session state 14 to 13 fields), the plan fields
+  `final_photonic_repair_attempts` and
+  `photonic_probe_failure_artifacts`, the report metrics
+  `final_photonic_repair_attempt_count` and `..._success_count`, 29
+  helpers nothing else used, and the 30 tests of all of it (python 1003
+  to 973). About 2,600 lines. What still checks the geometry: the
+  kernel's crossing verdicts with the final crossing repair loop, which
+  stays; `verify_photonic_routing` in the flow before the GDS is
+  written; and the logic harness (`routing.nets_meet_without_crossing`,
+  `realized.illegal_crossing_left`, `realized.nets_overlap`).
 - Silent probes for what the kernel and the obstacle map always have
   (fallback review, 2026-11-23). The package runs with the kernel it is
   built with, so `hasattr(router, ...)` before `set_route_width_um`,

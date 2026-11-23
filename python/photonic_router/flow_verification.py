@@ -87,11 +87,8 @@ def verify_and_attach_photonic_reports(
         crossing_plan_info if isinstance(crossing_plan_info, Mapping) else {}
     )
 
-    # This Python geometry verifier is the normal final gate for the realized
-    # routed layout. Internal photonic probe verification in
-    # `photonic_router.routing.verify_repair` should be treated as diagnostic/mismatch
-    # debugging support; this pass is the authoritative check before the GDS is
-    # accepted.
+    # The check of the realized layout before the GDS is accepted. The router
+    # itself checks only the legality of its crossings (`routing.verify_repair`).
     photonic_verification = verify_photonic_routing(
         routed_layout,
         schematic,

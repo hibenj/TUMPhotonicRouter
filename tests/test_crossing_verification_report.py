@@ -326,11 +326,6 @@ def test_report_counts_final_repair_attempts():
         {"status": "routed"},
         {"status": "skipped"},
     ]
-    plan["final_photonic_repair_attempts"] = [
-        {"status": "routed"},
-        {"status": "routed"},
-        {"status": "routed", "endpoint_correction_failed_net_ids": [9]},
-    ]
 
     report = build_crossing_verification_report(
         crossing_plan_info=plan,
@@ -346,5 +341,3 @@ def test_report_counts_final_repair_attempts():
 
     assert report.metrics["final_crossing_repair_attempt_count"] == 2
     assert report.metrics["final_crossing_repair_success_count"] == 1
-    assert report.metrics["final_photonic_repair_attempt_count"] == 3
-    assert report.metrics["final_photonic_repair_success_count"] == 2
