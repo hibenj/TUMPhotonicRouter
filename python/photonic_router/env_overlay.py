@@ -448,16 +448,6 @@ ENV_OVERLAY: tuple[EnvVar, ...] = (
     ),
     # Crossing engine (src/py_router.rs)
     EnvVar(
-        _PREFIX + "ENABLE_GUIDED_COLLISION_CROSSING",
-        ("router", "crossing", "enable_guided_collision_crossing"),
-        presence,
-    ),
-    EnvVar(
-        _PREFIX + "DISABLE_GUIDED_COLLISION_CROSSING",
-        ("router", "crossing", "disable_guided_collision_crossing"),
-        presence,
-    ),
-    EnvVar(
         _PREFIX + "DISABLE_RUST_CROSSING_VALIDATION",
         ("router", "crossing", "disable_rust_crossing_validation"),
         presence,

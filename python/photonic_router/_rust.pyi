@@ -608,8 +608,6 @@ class RouterConfig:
         search_max_dense_states: Any = None,
         search_long_straight_congestion_weight: Any = None,
         search_engine: Any = ...,
-        crossing_enable_guided_collision_crossing: Any = False,
-        crossing_disable_guided_collision_crossing: Any = False,
         crossing_disable_rust_crossing_validation: Any = False,
         diag_native_progress: Any = False,
         diag_native_repair_diag: Any = False,
@@ -640,11 +638,7 @@ class RouterConfig:
         diag_analysis_crossing_partner_counters: Any = False,
     ) -> None: ...
     @property
-    def crossing_disable_guided_collision_crossing(self) -> Any: ...
-    @property
     def crossing_disable_rust_crossing_validation(self) -> Any: ...
-    @property
-    def crossing_enable_guided_collision_crossing(self) -> Any: ...
     @property
     def diag_analysis_crossing_partner_counters(self) -> Any: ...
     @property

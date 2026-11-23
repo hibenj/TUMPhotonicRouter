@@ -73,8 +73,6 @@ class SearchOverrides:
 class CrossingEngineConfig:
     """Mirrors Rust `CrossingEngineConfig`."""
 
-    enable_guided_collision_crossing: bool = False
-    disable_guided_collision_crossing: bool = False
     disable_rust_crossing_validation: bool = False
 
 
@@ -306,8 +304,6 @@ class RouterConfig:
             search_max_dense_states=s.max_dense_states,
             search_long_straight_congestion_weight=s.long_straight_congestion_weight,
             search_engine=s.engine,
-            crossing_enable_guided_collision_crossing=c.enable_guided_collision_crossing,
-            crossing_disable_guided_collision_crossing=c.disable_guided_collision_crossing,
             crossing_disable_rust_crossing_validation=c.disable_rust_crossing_validation,
             diag_native_progress=d.native_progress,
             diag_native_repair_diag=d.native_repair_diag,

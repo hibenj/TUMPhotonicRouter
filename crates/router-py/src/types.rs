@@ -663,10 +663,6 @@ pub struct PyRouterConfig {
     #[pyo3(get)]
     pub search_engine: String,
     #[pyo3(get)]
-    pub crossing_enable_guided_collision_crossing: bool,
-    #[pyo3(get)]
-    pub crossing_disable_guided_collision_crossing: bool,
-    #[pyo3(get)]
     pub crossing_disable_rust_crossing_validation: bool,
     #[pyo3(get)]
     pub diag_native_progress: bool,
@@ -742,8 +738,6 @@ impl PyRouterConfig {
         search_max_dense_states=None,
         search_long_straight_congestion_weight=None,
         search_engine=SEARCH_ENGINE_ASTAR.to_string(),
-        crossing_enable_guided_collision_crossing=false,
-        crossing_disable_guided_collision_crossing=false,
         crossing_disable_rust_crossing_validation=false,
         diag_native_progress=false,
         diag_native_repair_diag=false,
@@ -792,8 +786,6 @@ impl PyRouterConfig {
         search_max_dense_states: Option<usize>,
         search_long_straight_congestion_weight: Option<f64>,
         search_engine: String,
-        crossing_enable_guided_collision_crossing: bool,
-        crossing_disable_guided_collision_crossing: bool,
         crossing_disable_rust_crossing_validation: bool,
         diag_native_progress: bool,
         diag_native_repair_diag: bool,
@@ -843,8 +835,6 @@ impl PyRouterConfig {
             search_max_dense_states,
             search_long_straight_congestion_weight,
             search_engine,
-            crossing_enable_guided_collision_crossing,
-            crossing_disable_guided_collision_crossing,
             crossing_disable_rust_crossing_validation,
             diag_native_progress,
             diag_native_repair_diag,
@@ -906,8 +896,6 @@ impl From<&PyRouterConfig> for RouterConfig {
                 engine: cfg.search_engine.clone(),
             },
             crossing: CrossingEngineConfig {
-                enable_guided_collision_crossing: cfg.crossing_enable_guided_collision_crossing,
-                disable_guided_collision_crossing: cfg.crossing_disable_guided_collision_crossing,
                 disable_rust_crossing_validation: cfg.crossing_disable_rust_crossing_validation,
             },
             diagnostics: KernelDiagnostics {

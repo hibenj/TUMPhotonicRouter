@@ -9,7 +9,7 @@
   "ruff_PLR0915": 11,
   "ruff_T201": 138,
   "rust_exceptions": 32,
-  "rust_missing_docs": 796,
+  "rust_missing_docs": 794,
   "rust_too_many_lines": 23,
   "rust_workspace_debt_allows": 2,
   "session_state_fields": 13,

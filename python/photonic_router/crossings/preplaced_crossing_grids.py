@@ -51,7 +51,7 @@ import itertools
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Literal, NamedTuple, overload
 
 import gdsfactory as gf
 from gdsfactory.component import Component
@@ -474,6 +474,26 @@ def _snap_x_tile_center(
     return x, y
 
 
+class _CrossingTiles(NamedTuple):
+    """What `_derive_crossing_tiles` places and splits, for `derive_preplaced_crossing_layout`."""
+
+    grid_instance_names: list[str]
+    grid_builds: dict[str, CrossingGridBuildResult]
+    #: original net -> its two stub nets
+    stub_nets: dict[str, tuple[str, str]]
+    #: original net -> the length it runs inside its grids, in um
+    lengths: dict[str, float]
+    segment_nets: list[Net]
+    #: the original nets that were split into segments
+    interstage_net_names: set[str]
+    expected_crossings: int
+    placed_crossings: int
+    layer_decisions: list[object]
+    #: the nets of the layers that stay with the router
+    fallback_net_names: set[str]
+    dense_fanout_instances: frozenset[str] | None
+
+
 def _derive_crossing_tiles(
     schematic: Schematic,
     unrouted_layout: Component,
@@ -482,7 +502,7 @@ def _derive_crossing_tiles(
     derived: Schematic,
     router_probe_options: SessionOptions | None = None,
     config: CrossingGridConfig | None = None,
-) -> tuple:
+) -> _CrossingTiles:
     """Place one crossing tile per planned crossing and split every crossing
     lane into router nets between its tiles (see ``crossing_tile_component``).
 
@@ -684,18 +704,18 @@ def _derive_crossing_tiles(
             f"      - crossing structure: {len(fallback_layers)} layer(s) with "
             f"{len(fallback_nets)} net(s) left to the guided router"
         )
-    return (
-        tile_names,
-        builds,
-        stub_nets,
-        lengths,
-        nets,
-        split,
-        expected,
-        placed,
-        decisions,
-        fallback_nets,
-        dense_fanout_instances,
+    return _CrossingTiles(
+        grid_instance_names=tile_names,
+        grid_builds=builds,
+        stub_nets=stub_nets,
+        lengths=lengths,
+        segment_nets=nets,
+        interstage_net_names=split,
+        expected_crossings=expected,
+        placed_crossings=placed,
+        layer_decisions=decisions,
+        fallback_net_names=fallback_nets,
+        dense_fanout_instances=dense_fanout_instances,
     )
 
 
@@ -1387,10 +1407,10 @@ def derive_preplaced_crossing_layout(
         interstage_net_names,
         expected_crossings,
         placed_crossings,
-    ) = tiles_result[:8]
-    layer_decisions = list(tiles_result[8]) if len(tiles_result) > 8 else []
-    fallback_net_names = set(tiles_result[9]) if len(tiles_result) > 9 else set()
-    dense_fanout_instances = tiles_result[10] if len(tiles_result) > 10 else None
+        layer_decisions,
+        fallback_net_names,
+        dense_fanout_instances,
+    ) = tiles_result
     for net_name in schematic.netlist.routes:
         if net_name in interstage_net_names:
             continue

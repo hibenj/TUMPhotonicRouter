@@ -112,15 +112,9 @@ impl Default for SearchOverrides {
     }
 }
 
-/// Crossing-engine selection
-/// (`PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING`,
-/// `PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING`,
-/// `PHOTONIC_ROUTER_DISABLE_RUST_CROSSING_VALIDATION`), read in
-/// `src/py_router.rs`.
+/// Crossing-engine switches (`PHOTONIC_ROUTER_DISABLE_RUST_CROSSING_VALIDATION`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CrossingEngineConfig {
-    pub enable_guided_collision_crossing: bool,
-    pub disable_guided_collision_crossing: bool,
     pub disable_rust_crossing_validation: bool,
 }
 
@@ -312,8 +306,6 @@ mod tests {
     #[test]
     fn crossing_engine_config_defaults_to_all_off() {
         let cfg = CrossingEngineConfig::default();
-        assert!(!cfg.enable_guided_collision_crossing);
-        assert!(!cfg.disable_guided_collision_crossing);
         assert!(!cfg.disable_rust_crossing_validation);
     }
 

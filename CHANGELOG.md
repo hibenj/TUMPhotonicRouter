@@ -1557,6 +1557,19 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- Two switches nothing read (fallback review, 2026-11-23):
+  `PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING` and
+  `PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING`, with
+  `CrossingEngineConfig.enable_guided_collision_crossing` and
+  `.disable_guided_collision_crossing` on both sides of the binding. They
+  travelled from the environment into the kernel's configuration, and no
+  line of the kernel asked for them. `docs/CONFIGURATION.md` and the stub
+  are regenerated.
+- The length checks on the result of `_derive_crossing_tiles`
+  (`preplaced_crossing_grids.py`): the function has one `return` with
+  eleven values, so "fewer than nine, ten, eleven" never held. The result
+  is the named tuple `_CrossingTiles` now, with a type per field instead
+  of a bare `tuple`.
 - The internal photonic probe verification (owner, 2026-11-23, after
   the fallback review showed that nothing could turn it on).
   `SessionOptions.enable_internal_photonic_probe_verification` had no
