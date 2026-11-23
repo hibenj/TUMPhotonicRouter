@@ -4,7 +4,7 @@
   "ruff_BLE001": 31,
   "ruff_C901": 59,
   "ruff_PLR0913": 12,
-  "ruff_PLR0915": 13,
+  "ruff_PLR0915": 12,
   "ruff_T201": 138,
   "rust_exceptions": 34,
   "rust_missing_docs": 796,

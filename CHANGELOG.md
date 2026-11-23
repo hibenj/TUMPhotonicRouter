@@ -531,6 +531,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `path_length_requirements.build_requirement_delay_candidates` within
+  the limit of 50 statements, no behaviour change: its five nested
+  functions are module functions (`_edge_tuple_identity`,
+  `_dedupe_edge_tuple`, `_candidate_sort_key`,
+  `_complete_common_mode_source`) and the dataclass
+  `_CandidateCollector`, which keeps a requirement's candidates without
+  repeats.
 - `bundle_detail_router.route_detailed_bundles` (87 statements, two
   closures over seven accumulators) is an outline of five steps now:
   `_pad_wire_blockers`, `_collect_bundle_entries`,

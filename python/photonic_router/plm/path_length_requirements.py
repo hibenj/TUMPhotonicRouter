@@ -10,6 +10,8 @@ module behind the ``route_rust_analysis`` facade.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 
 from photonic_router.plm.path_length_graph import (
     DelayInsertionCandidate,
@@ -147,6 +149,122 @@ def analysis_edge_maps(
     return incoming_by_node, outgoing_by_node
 
 
+_EdgesByNode = Mapping[str, Sequence[RoutedEdgeKey]]
+
+#: Edges to insert on, requirement edges affected, and the length in units of the tolerance.
+_CandidateState = tuple[
+    tuple[tuple[str, str, str, str, str], ...],
+    tuple[tuple[str, str, str, str, str], ...],
+    int,
+]
+
+
+def _edge_tuple_identity(
+    edge_keys: tuple[RoutedEdgeKey, ...],
+) -> tuple[tuple[str, str, str, str, str], ...]:
+    """The identities of the edges, in order; a hashable stand-in for the tuple."""
+    return tuple(edge_identity(edge_key) for edge_key in edge_keys)
+
+
+def _dedupe_edge_tuple(
+    edge_keys: tuple[RoutedEdgeKey, ...],
+) -> tuple[RoutedEdgeKey, ...]:
+    """The edges without repeats, each at its first position."""
+    deduped: list[RoutedEdgeKey] = []
+    seen: set[RoutedEdgeKey] = set()
+    for edge_key in edge_keys:
+        if edge_key in seen:
+            continue
+        seen.add(edge_key)
+        deduped.append(edge_key)
+    return tuple(deduped)
+
+
+def _candidate_sort_key(candidate: DelayInsertionCandidate) -> tuple[int, int, int]:
+    """Order of a requirement's candidates: shared ones first, then recursive ones, then more edges."""
+    shared_rank = 0 if len(candidate.affected_requirement_edge_keys) > 1 else 1
+    edge_count_rank = -len(candidate.edge_keys)
+    recursive_rank = 0 if candidate.reason.startswith("recursive") else 1
+    return shared_rank, recursive_rank, edge_count_rank
+
+
+def _complete_common_mode_source(
+    edge_keys: tuple[RoutedEdgeKey, ...],
+    analysis: PathLengthAnalysisResult,
+    incoming_by_node: _EdgesByNode,
+    outgoing_by_node: _EdgesByNode,
+) -> str | None:
+    """The node whose whole output bundle ``edge_keys`` is, or None.
+
+    The edges must be at least two, leave one node, be all of that node's
+    outgoing edges, and the node must have an incoming edge.
+    """
+    if len(edge_keys) < 2:
+        return None
+    source_instances = {analysis.source_instance(edge_key) for edge_key in edge_keys}
+    if len(source_instances) != 1:
+        return None
+    source_instance = next(iter(source_instances))
+    outgoing = tuple(outgoing_by_node.get(source_instance, ()))
+    incoming = tuple(incoming_by_node.get(source_instance, ()))
+    if len(outgoing) < 2 or len(incoming) < 1:
+        return None
+    if set(edge_keys) != set(outgoing):
+        return None
+    return source_instance
+
+
+@dataclass
+class _CandidateCollector:
+    """The insertion candidates found for one requirement, without repeats.
+
+    Two candidates are the same when they insert on the same edges, affect
+    the same requirement edges and their lengths agree within the tolerance.
+    """
+
+    requirement_edge_key: RoutedEdgeKey
+    tolerance_um: float
+    candidates: list[DelayInsertionCandidate] = field(default_factory=list)
+    _seen: set[_CandidateState] = field(default_factory=set)
+
+    def add(
+        self,
+        *,
+        edge_keys: tuple[RoutedEdgeKey, ...],
+        extra_length_um: float,
+        reason: str,
+        affected_requirement_edge_keys: tuple[RoutedEdgeKey, ...],
+    ) -> None:
+        """Add the candidate unless it has no edge or is already there."""
+
+        edge_keys = _dedupe_edge_tuple(edge_keys)
+        if not edge_keys:
+            return
+        affected_requirement_edge_keys = tuple(
+            sorted(
+                _dedupe_edge_tuple(affected_requirement_edge_keys),
+                key=edge_identity,
+            )
+        )
+        key = (
+            _edge_tuple_identity(edge_keys),
+            _edge_tuple_identity(affected_requirement_edge_keys),
+            round(float(extra_length_um) / max(self.tolerance_um, 1.0e-12)),
+        )
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        self.candidates.append(
+            DelayInsertionCandidate(
+                requirement_edge_key=self.requirement_edge_key,
+                edge_keys=edge_keys,
+                extra_length_um=float(extra_length_um),
+                reason=reason,
+                affected_requirement_edge_keys=affected_requirement_edge_keys,
+            )
+        )
+
+
 def build_requirement_delay_candidates(
     analysis: PathLengthAnalysisResult,
     requirements: list[MissingLengthRequirement],
@@ -169,102 +287,12 @@ def build_requirement_delay_candidates(
     missing_by_edge = {req.edge_key: float(req.missing_length_um) for req in requirements}
     candidates: dict[RoutedEdgeKey, list[DelayInsertionCandidate]] = {}
 
-    def _edge_tuple_identity(
-        edge_keys: tuple[RoutedEdgeKey, ...],
-    ) -> tuple[tuple[str, str, str, str, str], ...]:
-        return tuple(edge_identity(edge_key) for edge_key in edge_keys)
-
-    def _dedupe_edge_tuple(
-        edge_keys: tuple[RoutedEdgeKey, ...],
-    ) -> tuple[RoutedEdgeKey, ...]:
-        deduped: list[RoutedEdgeKey] = []
-        seen: set[RoutedEdgeKey] = set()
-        for edge_key in edge_keys:
-            if edge_key in seen:
-                continue
-            seen.add(edge_key)
-            deduped.append(edge_key)
-        return tuple(deduped)
-
-    def _candidate_sort_key(candidate: DelayInsertionCandidate) -> tuple[int, int, int]:
-        shared_rank = 0 if len(candidate.affected_requirement_edge_keys) > 1 else 1
-        edge_count_rank = -len(candidate.edge_keys)
-        recursive_rank = 0 if candidate.reason.startswith("recursive") else 1
-        return shared_rank, recursive_rank, edge_count_rank
-
-    def _complete_common_mode_source(
-        edge_keys: tuple[RoutedEdgeKey, ...],
-    ) -> str | None:
-        if len(edge_keys) < 2:
-            return None
-        source_instances = {analysis.source_instance(edge_key) for edge_key in edge_keys}
-        if len(source_instances) != 1:
-            return None
-        source_instance = next(iter(source_instances))
-        outgoing = tuple(outgoing_by_node.get(source_instance, ()))
-        incoming = tuple(incoming_by_node.get(source_instance, ()))
-        if len(outgoing) < 2 or len(incoming) < 1:
-            return None
-        if set(edge_keys) != set(outgoing):
-            return None
-        return source_instance
-
-    def _append_candidate(
-        edge_candidates: list[DelayInsertionCandidate],
-        seen_candidates: set[
-            tuple[
-                tuple[tuple[str, str, str, str, str], ...],
-                tuple[tuple[str, str, str, str, str], ...],
-                int,
-            ]
-        ],
-        *,
-        requirement_edge_key: RoutedEdgeKey,
-        edge_keys: tuple[RoutedEdgeKey, ...],
-        extra_length_um: float,
-        reason: str,
-        affected_requirement_edge_keys: tuple[RoutedEdgeKey, ...],
-    ) -> None:
-        edge_keys = _dedupe_edge_tuple(edge_keys)
-        if not edge_keys:
-            return
-        affected_requirement_edge_keys = tuple(
-            sorted(
-                _dedupe_edge_tuple(affected_requirement_edge_keys),
-                key=edge_identity,
-            )
-        )
-        key = (
-            _edge_tuple_identity(edge_keys),
-            _edge_tuple_identity(affected_requirement_edge_keys),
-            round(float(extra_length_um) / max(tolerance_um, 1.0e-12)),
-        )
-        if key in seen_candidates:
-            return
-        seen_candidates.add(key)
-        edge_candidates.append(
-            DelayInsertionCandidate(
-                requirement_edge_key=requirement_edge_key,
-                edge_keys=edge_keys,
-                extra_length_um=float(extra_length_um),
-                reason=reason,
-                affected_requirement_edge_keys=affected_requirement_edge_keys,
-            )
-        )
-
     for req in requirements:
         if req.missing_length_um <= tolerance_um:
             continue
         edge_key = req.edge_key
         requested = float(req.missing_length_um)
-        edge_candidates: list[DelayInsertionCandidate] = []
-        seen_candidates: set[
-            tuple[
-                tuple[tuple[str, str, str, str, str], ...],
-                tuple[tuple[str, str, str, str, str], ...],
-                int,
-            ]
-        ] = set()
+        collector = _CandidateCollector(edge_key, tolerance_um)
         queue: list[
             tuple[
                 tuple[RoutedEdgeKey, ...],
@@ -299,13 +327,7 @@ def build_requirement_delay_candidates(
                         )
                     )
 
-        seen_states: set[
-            tuple[
-                tuple[tuple[str, str, str, str, str], ...],
-                tuple[tuple[str, str, str, str, str], ...],
-                int,
-            ]
-        ] = set()
+        seen_states: set[_CandidateState] = set()
         while queue:
             current_edges, affected_edges, extra_length_um, reason, depth = queue.pop(0)
             current_edges = _dedupe_edge_tuple(current_edges)
@@ -318,10 +340,7 @@ def build_requirement_delay_candidates(
             if state_key in seen_states:
                 continue
             seen_states.add(state_key)
-            _append_candidate(
-                edge_candidates,
-                seen_candidates,
-                requirement_edge_key=edge_key,
+            collector.add(
                 edge_keys=current_edges,
                 extra_length_um=extra_length_um,
                 reason=reason,
@@ -352,7 +371,9 @@ def build_requirement_delay_candidates(
                     )
                 )
 
-            common_source = _complete_common_mode_source(current_edges)
+            common_source = _complete_common_mode_source(
+                current_edges, analysis, incoming_by_node, outgoing_by_node
+            )
             if common_source is not None:
                 queue.append(
                     (
@@ -364,10 +385,7 @@ def build_requirement_delay_candidates(
                     )
                 )
 
-        candidates[edge_key] = sorted(
-            edge_candidates,
-            key=_candidate_sort_key,
-        )
+        candidates[edge_key] = sorted(collector.candidates, key=_candidate_sort_key)
 
     return candidates
 
