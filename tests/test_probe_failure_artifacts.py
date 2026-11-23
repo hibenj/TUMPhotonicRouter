@@ -18,14 +18,14 @@ class _Router:
 
     def route_primitive_centerline(self, route):
         if route != "ok":
-            raise RuntimeError("no primitives")
+            raise ValueError("no primitives")
         return [(0.0, 0.0), (10.0, 0.0)]
 
     def route_port_corrected_centerline(
         self, route, *, source_port_um=None, target_port_um=None, allow_unchecked_bumps=True
     ):
         if route != "ok":
-            raise RuntimeError("no correction")
+            raise ValueError("no correction")
         return [source_port_um, (10.0, 0.0), target_port_um]
 
 

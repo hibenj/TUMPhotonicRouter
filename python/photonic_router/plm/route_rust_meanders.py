@@ -534,7 +534,7 @@ class _MeanderPlannerContext:
                     ),
                 ),
             )
-        except Exception as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             return _RequirementPlanOutcome(
                 selected_work_index=None,
                 split_part_count=None,
@@ -688,7 +688,7 @@ class _MeanderPlannerContext:
                     ),
                 ),
             )
-        except Exception as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             return (
                 [],
                 str(exc),
@@ -804,7 +804,7 @@ def _record_centerline_for_registration(
         return [(float(x_um), float(y_um)) for x_um, y_um in record.corrected_centerline_um]
     try:
         raw_centerline = router.route_port_corrected_centerline(record.route_obj)
-    except Exception:
+    except (TypeError, ValueError):
         return None
     if not isinstance(raw_centerline, Iterable):
         return None

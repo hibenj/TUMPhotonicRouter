@@ -237,7 +237,7 @@ def _centerlines_of_nets(
         }
         try:
             primitive = _as_point_list(router.route_primitive_centerline(record.route_obj))
-        except Exception as exc:
+        except (TypeError, ValueError) as exc:
             primitive = []
             item["primitive_centerline_error"] = str(exc)
         corrected = _as_point_list(record.corrected_centerline_um)
@@ -251,7 +251,7 @@ def _centerlines_of_nets(
                         allow_unchecked_bumps=True,
                     )
                 )
-            except Exception as exc:
+            except (TypeError, ValueError) as exc:
                 corrected = []
                 item["corrected_centerline_error"] = str(exc)
         item["primitive_centerline_um"] = primitive

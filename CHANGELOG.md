@@ -539,6 +539,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Fourteen `except Exception` around kernel calls catch what the binding
+  raises (rule 4.9; fallback review, 2026-11-23): `(TypeError,
+  ValueError)` for the centerline calls, with `RuntimeError` for the
+  checked endpoint correction and the meander planner, which report a
+  rejection that way. Any other error is a defect and ends the run
+  instead of turning into "no centerline", "no candidate" or a length
+  measured along straight pieces. One `try` around `polyline_length_um`
+  on freshly built points is removed; nothing in it can raise. In the
+  measured runs none of the fifteen ever caught anything. Ratchet: blind
+  excepts 29 to 14.
 - One reading of the legal crossings for both verifications (owner,
   2026-11-23: one of the two near copies, the one that makes more sense).
   `legal_crossing_overlap_polygons` and

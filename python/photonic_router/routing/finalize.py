@@ -463,7 +463,7 @@ def _router_centerline_length_um(router: Any, centerline: _Centerline) -> float:
         return polyline_length_um(centerline)
     try:
         return float(centerline_length(list(centerline)))
-    except Exception:
+    except (TypeError, ValueError):
         return polyline_length_um(centerline)
 
 
@@ -1140,10 +1140,7 @@ def _append_target_fanout_stubs_after_correction(state: SessionState) -> None:
         new_centerline = compress_centerline(tuple(points))
         if len(new_centerline) < 2:
             continue
-        try:
-            new_total_length_um = float(polyline_length_um(new_centerline))
-        except Exception:
-            continue
+        new_total_length_um = float(polyline_length_um(new_centerline))
         state.search.bookkeeping.records_by_id[net_id] = replace(
             record,
             corrected_centerline_um=new_centerline,

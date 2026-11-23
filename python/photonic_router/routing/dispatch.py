@@ -183,7 +183,7 @@ def _fanout_stubbed_centerline(
             route_centerline = centerline_tuple(route_primitive_centerline(route_obj))
         else:
             route_centerline = ()
-    except Exception:
+    except (TypeError, ValueError):
         route_centerline = ()
     if len(route_centerline) < 2:
         return ()
@@ -276,14 +276,14 @@ def record_route(
             corrected_centerline_um = centerline_tuple(
                 state.kernel.router.route_primitive_centerline(route_obj)
             )
-        except Exception:
+        except (TypeError, ValueError):
             corrected_centerline_um = ()
         if corrected_centerline_um:
             try:
                 corrected_total_length_um = float(
                     state.kernel.router.centerline_length_um(list(corrected_centerline_um))
                 )
-            except Exception:
+            except (TypeError, ValueError):
                 corrected_total_length_um = None
     target_anchor = state.fanout.anchor_by_port_spec.get(f"{job.inst2},{job.port2}")
     target_port_center_um_override = target_anchor.center_um if target_anchor is not None else None

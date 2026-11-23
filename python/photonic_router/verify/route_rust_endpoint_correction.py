@@ -358,7 +358,7 @@ def primitive_centerline_for_record(
     if route_primitive_centerline is not None:
         try:
             centerline = centerline_tuple(route_primitive_centerline(record.route_obj))
-        except Exception:
+        except (TypeError, ValueError):
             centerline = ()
         if centerline:
             return dedupe_centerline(centerline)
@@ -558,7 +558,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                             allow_unchecked_bumps=allow_unchecked_bumps,
                         )
                     )
-                except Exception:
+                except (TypeError, ValueError):
                     corrected_route = ()
                 centerline = merge_terminal_corrected_route_centerline(
                     existing_baseline=baseline,
@@ -572,7 +572,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                     if centerline_length is not None:
                         try:
                             corrected_total_length_um = float(centerline_length(list(centerline)))
-                        except Exception:
+                        except (TypeError, ValueError):
                             corrected_total_length_um = polyline_length_um(centerline)
                     else:
                         corrected_total_length_um = polyline_length_um(centerline)
@@ -686,7 +686,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                 source_port_um=source_port_um,
                 target_port_um=target_port_um,
             )
-        except Exception as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             if trace_endpoint:
                 print(
                     "endpoint_trace "
@@ -792,7 +792,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                 if centerline_length is not None:
                     try:
                         corrected_total_length_um = float(centerline_length(list(candidate)))
-                    except Exception:
+                    except (TypeError, ValueError):
                         corrected_total_length_um = polyline_length_um(candidate)
                 else:
                     corrected_total_length_um = polyline_length_um(candidate)
