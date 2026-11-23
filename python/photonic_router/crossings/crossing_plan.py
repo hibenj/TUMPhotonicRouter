@@ -10,7 +10,7 @@ as soft guidance.
 
 Since phase 4 slice C of the 2026-10 do-over the lane orders come from the
 placed layout (`photonic_router.crossings.crossing_demand`: the terminal order on the
-two walls of a band); the depth/rank tables of `topology_analysis.py` feed
+two walls of a band); the depth/rank tables of `tests/fixtures/topology_analysis.py` feed
 the same function as the test oracle.
 """
 
@@ -84,7 +84,7 @@ class CrossingStagePlan:
     the 2026-10 do-over (placement-derived demand) they are the *column
     indices* of the band's left and right wall (`Band.index`,
     `Band.index + 1` in `photonic_router.crossings.crossing_demand`), not the graph
-    depths of `topology_analysis.py` they were named for. The names stay
+    depths of the older topology analysis they were named for. The names stay
     because contribution 2's tile names (`crossing_tile_stage<source_depth>_...`)
     and its info records are built from them byte for byte.
     """

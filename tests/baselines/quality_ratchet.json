@@ -1,9 +1,9 @@
 {
   "fallbacks_never_taken": 11,
-  "names_only_tests_use": 16,
+  "names_only_tests_use": 11,
   "private_imports": 0,
   "python_exceptions": 0,
-  "ruff_BLE001": 4,
+  "ruff_BLE001": 3,
   "ruff_C901": 51,
   "ruff_PLR0913": 12,
   "ruff_PLR0915": 10,

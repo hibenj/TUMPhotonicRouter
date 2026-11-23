@@ -213,7 +213,7 @@ the lateral windows of dense port groups, and the lane offsets of endpoints
 that share a grid state. The plan's typed record is `CrossingPlanInfo`
 (`records/crossing_plan_info.py`), which later phases extend with the
 realized crossings; everything about the ports is one frozen
-`PortFootprints` (`routing/products.py`, `state.ports`). `crossings/topology_analysis.py` (graph depth and port
+`PortFootprints` (`routing/products.py`, `state.ports`). `tests/fixtures/topology_analysis.py` (graph depth and port
 rank) is the older plan, kept as the test oracle
 (`tests/e2e/test_crossing_demand_equality.py` holds both equal on the 17
 paper benchmarks); the flow does not read it.
@@ -407,8 +407,7 @@ turns it off), the two 45-degree bends. Every `Primitive` carries its id
 `footprint` cells the search checks, its length, its bend cost and a
 `PrimitiveGeometry` (`Straight { length_um }` or `Bend { radius_um,
 angle_delta }`) that realization draws. All bends share the one bend radius
-in cells. `python/photonic_router/primitive_library.py` maps the ids to
-gdsfactory components.
+in cells.
 
 **The obstacle map** (`ObstacleMap`, `src/obstacle_map.rs`) is the routing
 database: one dense record per in-bounds cell, stored column-wise as planes
@@ -738,14 +737,14 @@ Top-level modules (25 files, 7,550 lines):
 | `static_obstacle_builder.py`, `benchmark_extractor.py`, `routing_layers.py` | 970, 180, 140 | obstacle extraction and the `ObstacleMapBuilder` Protocol; geometry and port extraction; layer and port access tables |
 | `schematic_protocols.py` | 30 | `SchematicLike` and `PlacedSchematicLike`, the two read-only views of a schematic the analysis modules take |
 | `placement_analysis.py` | 80 | the placement analysis stage: `analyze_placement` -> `PlacementAnalysis` (region graph, crossing demand), section 2.3 |
-| `primitive_library.py`, `port_roles.py`, `graph_analysis.py`, `benchmark_metadata.py` | 180, 150, 60, 230 | primitive ids to components; input-side ports; shared graph context; benchmark metadata (`NODE_TYPES`, `INTERNAL_DELAYS_UM`, `INPUT_PORTS_BY_COMPONENT`) |
+| `port_roles.py`, `graph_analysis.py`, `benchmark_metadata.py` | 150, 60, 230 | input-side ports; shared graph context; benchmark metadata (`NODE_TYPES`, `INTERNAL_DELAYS_UM`, `INPUT_PORTS_BY_COMPONENT`) |
 
 Sub-packages:
 
 | package | files, lines | responsibility |
 | --- | --- | --- |
 | `routing/` | 21, 10,250 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `products.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `timing.py`, `api.py` (`route_match_and_realize`) |
-| `crossings/` | 13, 6,600 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `region_paths.py` (the way of a net that passes columns through their passages; a report), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,400, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 1,300 for verification), `crossing_verification_report.py`, `topology_analysis.py` (test oracle) |
+| `crossings/` | 12, 5,600 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `region_paths.py` (the way of a net that passes columns through their passages; a report), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,400, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 1,300 for verification), `crossing_verification_report.py` |
 | `plm/` | 5, 3,900 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,960) |
 | `verify/` | 3, 2,150 | `photonic_verification.py` (1,310, the geometry verifier), `route_rust_endpoint_correction.py` (830) |
 | `records/` | 10, 4,200 | `route_rust_types.py` (1,620, the shared records), `route_keys.py` (`PortRef`, `RoutedEdgeKey`), `route_rust_records.py`, `route_rust_geometry.py`, `route_rust_realization.py`, `route_rust_obstacle_config.py`, `route_order.py` (`NET_ORDERS`), `layout_from_schematic.py` |

@@ -1566,6 +1566,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- Two modules of the package that only tests used (owner, 2026-11-23).
+  `primitive_library.py` mapped the kernel's primitive ids to gdsfactory
+  components and nothing asked it; it is removed with its test (python
+  986 to 979). `crossings/topology_analysis.py`, the older depth/rank
+  plan that the tests keep as the independent oracle of the crossing
+  demand, is `tests/fixtures/topology_analysis.py` now: it is test code
+  and lives with the tests. Ratchet: names only tests use 16 to 11,
+  blind excepts 4 to 3.
 - Two switches nothing read (fallback review, 2026-11-23):
   `PHOTONIC_ROUTER_ENABLE_GUIDED_COLLISION_CROSSING` and
   `PHOTONIC_ROUTER_DISABLE_GUIDED_COLLISION_CROSSING`, with
