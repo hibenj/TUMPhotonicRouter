@@ -6,7 +6,7 @@ import math
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, NoReturn, TypedDict, cast
 
 from photonic_router.gds.route_rust_debug_artifacts import (
     ensure_dir,
@@ -341,38 +341,23 @@ def _finalize_committed_route(
         print(f"ok {route_engine_summary(route_obj)}")
 
 
-def dispatch_native_routing(
-    settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
-) -> None:
-    """Route the jobs in one kernel batch with negotiated rip-up repair and record the results.
+def _batch_job_debug_tables(
+    settings: SessionSettings,
+    state: SessionState,
+    route_jobs: list[RouteJob],
+    batch_jobs: list[Any],
+) -> tuple[dict[int, list[tuple[int, int]]], dict[int, tuple[bool, Path | None]]]:
+    """Per net id: the cells opened for the job, and how its result is reported.
 
-    With repair disabled the batch runs one round without rip-up, which is plain
-    in-order routing. Every attempt and every committed route of the batch is recorded
-    in ``state.search``, with timing and the per-route debug files where enabled.
-
-    Raises:
-        RuntimeError: If the Rust extension lacks the batch entry point, or if a net
-            could not be routed; its diagnostics and failed log are written first.
+    The second table says whether the route is printed (verbose routes, or
+    a route selected for debugging) and where its diagnostics text goes
+    (None without a debug directory, or when the route is neither selected
+    nor attempt diagnostics are collected). Prints the "Routing [i/n]" line
+    start of every printed route and creates the routes directory.
     """
-    # Repair on (the default, every benchmark needs it): the negotiated
-    # rip-up loop over NEGOTIATED_MAX_ROUNDS rounds. Repair off (a
-    # diagnostic/test baseline): the same loop with one round and
-    # `no_ripup`, which is plain in-order routing with no local rip-up and no
-    # requeue; with one round every net has `failed_count == 0`, so the
-    # loop's history weight stays 0.0 and its searches are unbounded.
-    repair_enabled = bool(state.run.repair_config.enabled)
-    max_rounds = NEGOTIATED_MAX_ROUNDS if repair_enabled else 1
-    no_ripup = not repair_enabled
-    if not hasattr(state.kernel.router, "route_many_with_negotiated_repair_and_commit"):
-        raise RuntimeError(
-            "The loaded photonic_router._rust extension does not expose "
-            "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. Rebuild it "
-            "with `maturin develop --release`; the Python routing fallbacks have been removed."
-        )
+
     batch_opened_cells_by_id: dict[int, list[tuple[int, int]]] = {}
     batch_debug_by_id: dict[int, tuple[bool, Path | None]] = {}
-    t_batch_job_pack_start = timing.pipeline_timer_start(settings)
-    batch_jobs = native_route_jobs(state, route_jobs)
     for job, native_job in zip(route_jobs, batch_jobs, strict=True):
         route_selected_for_debug = (
             settings.debug_route_indices is None or job.route_index in settings.debug_route_indices
@@ -401,41 +386,24 @@ def dispatch_native_routing(
             diag_txt = route_dir / f"{settings.debug_prefix}_{job.net_name}_diagnostics.txt"
         batch_opened_cells_by_id[int(job.net_id)] = native_job.opened_cells
         batch_debug_by_id[int(job.net_id)] = (should_print_route, diag_txt)
-    timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
+    return batch_opened_cells_by_id, batch_debug_by_id
 
-    batch_start = timing_start(state)
-    # The LiDAR-style negotiated rip-up loop of
-    # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
-    # (the only engine that routes the 64x64 mesh), the default since
-    # 2026-09-16 (owner decision, baseline freeze) and the only repair
-    # engine since Milestone 8 of
-    # .agent/execplans/2026-09-22-modular-readable-router-restructure.md
-    # deleted the older 17-strategy chain and its engine switch.
-    raw_batch_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
-        batch_jobs,
-        state.kernel.radii.block_radius_cells,
-        state.kernel.radii.commit_radius_cells,
-        state.kernel.radii.core_commit_radius_cells,
-        max_rounds,
-        float(state.run.repair_config.history_weight),
-        int(state.run.repair_config.history_increment),
-        no_ripup=no_ripup,
-    )
-    batch_elapsed_s = time.perf_counter() - batch_start if state.run.collect_timing else 0.0
-    timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
-    t_batch_result_processing_start = timing.pipeline_timer_start(settings)
-    batch_result = dict(raw_batch_result)
-    state.search.native_repair_trace = [
-        dict(record)
-        for record in cast(
-            Iterable[Mapping[str, object]],
-            batch_result.get("repair_trace", []),
-        )
-    ]
-    _record_native_batch_timings(settings, state, batch_result)
-    _report_long_straight_congestion(settings, state, batch_result)
-    raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
-    per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
+
+def _record_batch_attempts(
+    settings: SessionSettings,
+    state: SessionState,
+    raw_attempts: list[Any],
+    per_attempt_elapsed_s: float,
+) -> None:
+    """Record every route attempt of a batch in ``state.search``.
+
+    With timing collected, each attempt is added to its timing bucket and
+    gets an attempt record (with diagnostics when those are collected);
+    ``per_attempt_elapsed_s`` is the batch time divided by the number of
+    attempts. A successful attempt outside the ``normal_route`` bucket is
+    also written as a debug SVG when its route is selected for debugging.
+    """
+
     for raw_attempt in raw_attempts:
         attempt = dict(raw_attempt)
         net_id = int(attempt["net_id"])
@@ -513,6 +481,128 @@ def dispatch_native_routing(
                 )
             )
 
+
+def _raise_for_unrouted_net(
+    settings: SessionSettings,
+    state: SessionState,
+    batch_result: Mapping[str, Any],
+    route_jobs: list[RouteJob],
+    batch_debug_by_id: Mapping[int, tuple[bool, Path | None]],
+) -> NoReturn:
+    """Write the diagnostics and the failed log of the batch's unrouted net and raise.
+
+    Raises ``RuntimeError`` with the net, its two grid states and the
+    kernel's error; with the kernel's error alone when the batch names no
+    net that has a job.
+    """
+
+    failed_net_id = int(batch_result.get("failed_net_id", -1))
+    failed_job = state.run.route_jobs_by_id.get(failed_net_id)
+    error_text = str(batch_result.get("error", "No route found"))
+    if failed_job is None:
+        raise RuntimeError(error_text)
+    openings = state_openings_for_job(state, failed_job)
+    source_state = openings.source_state
+    target_state = openings.target_state
+    should_print_route, diag_txt = batch_debug_by_id.get(
+        failed_net_id,
+        (False, None),
+    )
+    if not should_print_route:
+        print(
+            f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
+            f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
+            f"{failed_job.inst2},{failed_job.port2}... failed"
+        )
+    write_route_diagnostics(
+        settings,
+        state,
+        job=failed_job,
+        openings=openings,
+        diag_txt=diag_txt,
+        error_text=error_text,
+    )
+    write_failed_log(settings, state, failed_job, openings, error_text)
+    raise RuntimeError(
+        f"No route found for {failed_job.net_name}: "
+        f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
+        f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
+        f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
+        f"allow_45_degree_turns={settings.allow_45_degree_turns}. "
+        f"error={error_text}"
+    )
+
+
+def dispatch_native_routing(
+    settings: SessionSettings, state: SessionState, route_jobs: list[RouteJob]
+) -> None:
+    """Route the jobs in one kernel batch with negotiated rip-up repair and record the results.
+
+    With repair disabled the batch runs one round without rip-up, which is plain
+    in-order routing. Every attempt and every committed route of the batch is recorded
+    in ``state.search``, with timing and the per-route debug files where enabled.
+
+    Raises:
+        RuntimeError: If the Rust extension lacks the batch entry point, or if a net
+            could not be routed; its diagnostics and failed log are written first.
+    """
+    # Repair on (the default, every benchmark needs it): the negotiated
+    # rip-up loop over NEGOTIATED_MAX_ROUNDS rounds. Repair off (a
+    # diagnostic/test baseline): the same loop with one round and
+    # `no_ripup`, which is plain in-order routing with no local rip-up and no
+    # requeue; with one round every net has `failed_count == 0`, so the
+    # loop's history weight stays 0.0 and its searches are unbounded.
+    repair_enabled = bool(state.run.repair_config.enabled)
+    max_rounds = NEGOTIATED_MAX_ROUNDS if repair_enabled else 1
+    no_ripup = not repair_enabled
+    if not hasattr(state.kernel.router, "route_many_with_negotiated_repair_and_commit"):
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.route_many_with_negotiated_repair_and_commit. Rebuild it "
+            "with `maturin develop --release`; the Python routing fallbacks have been removed."
+        )
+    t_batch_job_pack_start = timing.pipeline_timer_start(settings)
+    batch_jobs = native_route_jobs(state, route_jobs)
+    batch_opened_cells_by_id, batch_debug_by_id = _batch_job_debug_tables(
+        settings, state, route_jobs, batch_jobs
+    )
+    timing.record_pipeline_timing(settings, state, "batch_job_pack", t_batch_job_pack_start)
+
+    batch_start = timing_start(state)
+    # The LiDAR-style negotiated rip-up loop of
+    # .agent/execplans/2026-09-14-lidar-style-negotiated-ripup-endgame.md
+    # (the only engine that routes the 64x64 mesh), the default since
+    # 2026-09-16 (owner decision, baseline freeze) and the only repair
+    # engine since Milestone 8 of
+    # .agent/execplans/2026-09-22-modular-readable-router-restructure.md
+    # deleted the older 17-strategy chain and its engine switch.
+    raw_batch_result = state.kernel.router.route_many_with_negotiated_repair_and_commit(
+        batch_jobs,
+        state.kernel.radii.block_radius_cells,
+        state.kernel.radii.commit_radius_cells,
+        state.kernel.radii.core_commit_radius_cells,
+        max_rounds,
+        float(state.run.repair_config.history_weight),
+        int(state.run.repair_config.history_increment),
+        no_ripup=no_ripup,
+    )
+    batch_elapsed_s = time.perf_counter() - batch_start if state.run.collect_timing else 0.0
+    timing.record_pipeline_timing(settings, state, "native_route_batch", batch_start)
+    t_batch_result_processing_start = timing.pipeline_timer_start(settings)
+    batch_result = dict(raw_batch_result)
+    state.search.native_repair_trace = [
+        dict(record)
+        for record in cast(
+            Iterable[Mapping[str, object]],
+            batch_result.get("repair_trace", []),
+        )
+    ]
+    _record_native_batch_timings(settings, state, batch_result)
+    _report_long_straight_congestion(settings, state, batch_result)
+    raw_attempts = list(cast(Iterable[Any], batch_result.get("attempts", [])))
+    per_attempt_elapsed_s = batch_elapsed_s / max(1, len(raw_attempts))
+    _record_batch_attempts(settings, state, raw_attempts, per_attempt_elapsed_s)
+
     state.search.repair_count += int(batch_result.get("repair_count", 0) or 0)
     raw_routes = list(cast(Iterable[Any], batch_result.get("routes", [])))
     for raw_entry in raw_routes:
@@ -540,38 +630,4 @@ def dispatch_native_routing(
     )
 
     if str(batch_result.get("status", "")) != "routed":
-        failed_net_id = int(batch_result.get("failed_net_id", -1))
-        failed_job = state.run.route_jobs_by_id.get(failed_net_id)
-        error_text = str(batch_result.get("error", "No route found"))
-        if failed_job is None:
-            raise RuntimeError(error_text)
-        openings = state_openings_for_job(state, failed_job)
-        source_state = openings.source_state
-        target_state = openings.target_state
-        should_print_route, diag_txt = batch_debug_by_id.get(
-            failed_net_id,
-            (False, None),
-        )
-        if not should_print_route:
-            print(
-                f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
-                f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
-                f"{failed_job.inst2},{failed_job.port2}... failed"
-            )
-        write_route_diagnostics(
-            settings,
-            state,
-            job=failed_job,
-            openings=openings,
-            diag_txt=diag_txt,
-            error_text=error_text,
-        )
-        write_failed_log(settings, state, failed_job, openings, error_text)
-        raise RuntimeError(
-            f"No route found for {failed_job.net_name}: "
-            f"{failed_job.inst1},{failed_job.port1} -> {failed_job.inst2},{failed_job.port2}. "
-            f"source=({source_state.x}, {source_state.y}, {source_state.angle}), "
-            f"target=({target_state.x}, {target_state.y}, {target_state.angle}), "
-            f"allow_45_degree_turns={settings.allow_45_degree_turns}. "
-            f"error={error_text}"
-        )
+        _raise_for_unrouted_net(settings, state, batch_result, route_jobs, batch_debug_by_id)

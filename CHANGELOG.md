@@ -531,6 +531,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Two more functions of the routing core within the limit of 50
+  statements, no behaviour change: `dispatch.dispatch_native_routing`
+  hands the per-job debug tables, the recording of the attempts and the
+  failure of an unrouted net to `_batch_job_debug_tables`,
+  `_record_batch_attempts` and `_raise_for_unrouted_net`; the fan-out
+  stub endpoint correction of `finalize.py` hands its job packing, the
+  merge failure text and the kernel's length with its fallback to
+  `_fanout_stub_correction_jobs`, `_stub_merge_failure_message` and
+  `_router_centerline_length_um`.
 - `route_jobs._build_static_fanout_anchors` within the limit of 50
   statements, no behaviour change: the lower and the upper half of a
   dense port row were two mirrored copies of the same staggering; both
