@@ -217,6 +217,12 @@ like the violation counts: a commit that adds one says why in its message.
 10. Imports are absolute: `from photonic_router.records import x`, not
     `from .records import x` (Google guide 2.2; ruff `TID252`). *Tool, in
     force.*
+11. A function reads every parameter it takes (ruff `ARG001`). A parameter
+    that a callback signature dictates and the function does not need
+    starts with an underscore. *Tool, in force.*
+12. A function or class of the package is used by the package, a script or
+    a benchmark. A name that only a test mentions is dead code with a test
+    (`names_only_tests_use`). *Tool, proposed.*
 
 ## 5. Rust
 
@@ -302,6 +308,7 @@ table when their counts reached zero and the lint sets took them over.
 | 3.5 | underscore names imported from another module (`private_imports`) | 247 | 27 |
 | 4.3 | `dict[str, object]` / `dict[str, Any]` annotations (`untyped_dict_annotations`) | 222 | 216 |
 | 4.4 | functions over 7 parameters (`ruff_PLR0913`) | 58; the largest 50 | 50 |
+| 4.12 | functions and classes only tests name (`names_only_tests_use`) | 16 (2026-11-23) | 16 |
 | 4.5 | functions over 50 statements (`ruff_PLR0915`) | 43 | 40 |
 | 4.5 | functions over complexity 10 (`ruff_C901`) | 70 | 68 |
 | 4.6 | print calls in the package (`ruff_T201`) | 157 | 157 |

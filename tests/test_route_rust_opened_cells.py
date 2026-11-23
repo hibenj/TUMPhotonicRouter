@@ -216,20 +216,24 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
 
 
 @pytest.fixture
-def footprint_resolver_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+def footprint_resolver_stubs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, ComponentPortAccessRule | None]:
     """Stub the two `route_jobs` helpers `_resolve_port_footprint_cells` reaches.
 
     Milestone 5 Slice 2b: the helper calls `port_access_rule_for` and
     `is_dense_source_fanout_instance` as module functions (imported into
     `crossing_plan_stage` from their home module) instead of through a session
-    forwarder, so the test stubs them where the helper looks them up. Each stub
-    answers from the fake session it is handed, so one monkeypatch serves
-    several fake sessions in the same test.
+    forwarder, so the test stubs them where the helper looks them up. The
+    access rule every port gets is the returned dict's `"rule"` (none unless
+    the test sets one); the dense fan-out stub answers from the fake session
+    it is handed.
     """
+    current: dict[str, ComponentPortAccessRule | None] = {"rule": None}
     monkeypatch.setattr(
         routing_crossing_plan_stage,
         "port_access_rule_for",
-        lambda _settings, state, **_kwargs: state.access_rule,
+        lambda _settings, **_kwargs: current["rule"],
     )
     monkeypatch.setattr(
         routing_crossing_plan_stage,
@@ -238,6 +242,7 @@ def footprint_resolver_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
             instance_name in state.dense_source_fanout_instances
         ),
     )
+    return current
 
 
 def _footprint_resolver_state(
@@ -245,7 +250,6 @@ def _footprint_resolver_state(
     bend_radius_cells: int,
     commit_radius_cells: int = 0,
     grid_size_um: float = 1.0,
-    access_rule: ComponentPortAccessRule | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         obstacles=SimpleNamespace(grid=SimpleNamespace(grid_size_um=grid_size_um)),
@@ -256,13 +260,12 @@ def _footprint_resolver_state(
             )
         ),
         fanout=SimpleNamespace(anchor_by_port_spec={}),
-        access_rule=access_rule,
         dense_source_fanout_instances=frozenset(),
     )
 
 
 def test_resolve_port_footprint_cells_uses_lane_sized_optical_default(
-    footprint_resolver_stubs: None,
+    footprint_resolver_stubs: dict[str, ComponentPortAccessRule | None],
 ):
     small_bend_state = _footprint_resolver_state(bend_radius_cells=1)
     large_bend_state = _footprint_resolver_state(bend_radius_cells=3)
@@ -293,15 +296,12 @@ def test_resolve_port_footprint_cells_uses_lane_sized_optical_default(
     )
     assert large_footprint[1] > small_footprint[1]
 
-    custom_state = _footprint_resolver_state(
-        bend_radius_cells=3,
-        grid_size_um=2.0,
-        access_rule=ComponentPortAccessRule(
-            component_name_pattern="gc",
-            port_names=("o1",),
-            access_length_um=6.1,
-            access_width_um=5.0,
-        ),
+    custom_state = _footprint_resolver_state(bend_radius_cells=3, grid_size_um=2.0)
+    footprint_resolver_stubs["rule"] = ComponentPortAccessRule(
+        component_name_pattern="gc",
+        port_names=("o1",),
+        access_length_um=6.1,
+        access_width_um=5.0,
     )
     assert routing_crossing_plan_stage._resolve_port_footprint_cells(
         settings_for_test(),
@@ -328,7 +328,6 @@ def test_resolve_port_footprint_cells_uses_stub_override_only_for_dense_fanout_i
             )
         ),
         fanout=SimpleNamespace(anchor_by_port_spec={"mmi1_multiport_0_0,o2": object()}),
-        access_rule=None,
         dense_source_fanout_instances=frozenset({"mmi0_multiport_0_0"}),
     )
 
@@ -1781,12 +1780,11 @@ def test_only_rules_flagged_for_instance_geometry_open_the_heater_pad(monkeypatc
     )
     monkeypatch.setattr(routing_layers, "REGISTERED_PORT_ACCESS_RULES", [grid_rule])
     settings = SimpleNamespace(schematic=object())
-    state = state_for_test()
     rule_for = routing_route_jobs.port_access_rule_for
     port = SimpleNamespace(port_type="optical")
 
-    grid = rule_for(settings, state, instance_name="grid", port_name="in_0", port=port)
+    grid = rule_for(settings, instance_name="grid", port_name="in_0", port=port)
     assert grid is grid_rule and not grid.opens_instance_static_geometry
-    heater = rule_for(settings, state, instance_name="heater", port_name="o1", port=port)
+    heater = rule_for(settings, instance_name="heater", port_name="o1", port=port)
     assert heater is not None and heater.opens_instance_static_geometry
-    assert rule_for(settings, state, instance_name="heater", port_name="e1", port=port) is None
+    assert rule_for(settings, instance_name="heater", port_name="e1", port=port) is None

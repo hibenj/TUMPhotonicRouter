@@ -518,7 +518,7 @@ def _arm_pair_settings(component: ExtractedComponent, bend_radius_um: float) -> 
     }
 
 
-def _stub_settings(component: ExtractedComponent) -> dict[str, float]:
+def _stub_settings(_component: ExtractedComponent) -> dict[str, float]:
     return {"length": STUB_LENGTH_UM}
 
 

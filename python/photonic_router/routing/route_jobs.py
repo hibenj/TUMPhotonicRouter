@@ -127,7 +127,6 @@ def port_to_grid_state(
 
 def port_access_rule_for(
     settings: SessionSettings,
-    state: SessionState,
     *,
     instance_name: str,
     port_name: str,
@@ -179,7 +178,7 @@ def _dense_fanout_group_size(
             continue
         instance_name, port_name, port = endpoint
         rule = port_access_rule_for(
-            settings, state, instance_name=instance_name, port_name=port_name, port=port
+            settings, instance_name=instance_name, port_name=port_name, port=port
         )
         if rule is None:
             count += 1

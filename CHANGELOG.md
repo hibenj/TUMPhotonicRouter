@@ -14,6 +14,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- Two rules of `docs/CODING_STANDARDS.md` (owner, 2026-11-23). 4.11: a
+  function reads every parameter it takes; ruff `ARG001` is in the lint
+  set. The last four cases are settled: `port_access_rule_for` loses
+  `state`, and two callbacks name the parameters they do not need with an
+  underscore. 4.12: a function or class of the package is used by the
+  package, a script or a benchmark; `scripts/quality_ratchet.py` counts
+  the names only tests mention (`names_only_tests_use`, 16) and the count
+  may only fall.
 - `tests/test_gds_circuit_extraction.py` checks that every extracted
   port's local position and normal, moved by its component's rotation
   and origin, give the port's position and normal: on the circuit with

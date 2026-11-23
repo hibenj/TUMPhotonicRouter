@@ -83,6 +83,27 @@ def test_private_imports_counts_underscore_names_but_not_the_extension(tmp_path:
     assert ratchet.private_imports([source]) == 2
 
 
+def test_names_only_tests_use_counts_what_no_code_names_twice(tmp_path: Path) -> None:
+    ratchet = _load_ratchet()
+    package = tmp_path / "python" / "package"
+    package.mkdir(parents=True)
+    (package / "module.py").write_text(
+        "def used():\n    return 1\n\n\n"
+        "def by_script():\n    return used()\n\n\n"
+        "def only_a_test_calls_this():\n    return 2\n\n\n"
+        "class Unused:\n    def __init__(self):\n        self.x = 1\n",
+        encoding="utf-8",
+    )
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "run.py").write_text("by_script()\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_module.py").write_text("only_a_test_calls_this()\n", encoding="utf-8")
+
+    assert ratchet.names_only_tests_use(package, [tmp_path / "python", scripts]) == 2
+
+
 def test_upward_imports_counts_only_imports_into_a_higher_layer(tmp_path: Path) -> None:
     ratchet = _load_ratchet()
     package = tmp_path / "photonic_router"

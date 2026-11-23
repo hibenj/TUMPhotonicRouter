@@ -124,7 +124,7 @@ def component_port_sides(
     return table_inputs, OPTICAL_PORTS_BY_COMPONENT.get(component, frozenset()) - table_inputs
 
 
-def no_port_roles(instance: str, port: str) -> str | None:
+def no_port_roles(_instance: str, _port: str) -> str | None:
     """The resolver that knows nothing: every net keeps its written direction."""
 
     return None

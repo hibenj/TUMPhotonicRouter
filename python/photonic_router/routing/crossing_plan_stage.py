@@ -68,7 +68,6 @@ def _resolve_port_footprint_cells(
     """Return (length_cells, half_width_cells) sizing this port's access/keepout region."""
     rule = port_access_rule_for(
         settings,
-        state,
         instance_name=instance_name,
         port_name=port_name,
         port=port,
@@ -386,7 +385,6 @@ def _build_port_access(
         port_type = port_type_name(port)
         rule = port_access_rule_for(
             settings,
-            state,
             instance_name=instance_name,
             port_name=port_name,
             port=port,

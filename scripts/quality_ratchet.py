@@ -178,6 +178,40 @@ def untyped_dict_annotations(sources: Iterable[Path]) -> int:
     return sum(len(_UNTYPED_DICT.findall(path.read_text(encoding="utf-8"))) for path in sources)
 
 
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+#: Where a name of the package counts as used: the package itself and the
+#: code that runs it. A name that only `tests/` mentions is not used.
+USER_ROOTS = ("python", "scripts", "benchmarks")
+_USER_SUFFIXES = {".py", ".pyi", ".sh", ".toml"}
+
+
+def names_only_tests_use(package: Path = PACKAGE, roots: Iterable[Path] | None = None) -> int:
+    """Count functions and classes of the package that nothing but a test names (rule 4.12).
+
+    A name counts as used when it occurs a second time, anywhere in the
+    files of `roots` (default: `USER_ROOTS` and `pyproject.toml`). The
+    count is by name, so a method that shares its name with a used one is
+    not found; what it finds is certain.
+    """
+    if roots is None:
+        roots = [*(REPO_ROOT / root for root in USER_ROOTS), REPO_ROOT / "pyproject.toml"]
+    occurrences: Counter[str] = Counter()
+    for root in roots:
+        files = [root] if root.is_file() else sorted(root.rglob("*"))
+        for path in files:
+            if path.is_file() and path.suffix in _USER_SUFFIXES:
+                occurrences.update(_NAME.findall(path.read_text(encoding="utf-8", errors="ignore")))
+    count = 0
+    for source in _python_sources(package):
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if not node.name.startswith("__") and occurrences[node.name] <= 1:
+                count += 1
+    return count
+
+
 def class_field_count(path: Path, class_name: str) -> int:
     """Count the annotated fields of one class (rule 3.2 for the session state)."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -256,6 +290,7 @@ def measure() -> dict[str, int]:
         PACKAGE / "routing" / "state.py", "SessionState"
     )
     counts["python_exceptions"] = python_exceptions(sources)
+    counts["names_only_tests_use"] = names_only_tests_use()
     counts.update(rust_lint_counts())
     counts["rust_exceptions"] = rust_exceptions()
     counts["rust_workspace_debt_allows"] = workspace_debt_allows()
