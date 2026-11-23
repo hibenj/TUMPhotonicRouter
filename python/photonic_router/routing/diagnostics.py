@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 import math
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
 from xml.sax.saxutils import escape as _xml_escape
@@ -177,6 +177,74 @@ def _cells_in_rect(
     return sum(1 for x, y in cells if min_x <= x <= max_x and min_y <= y <= max_y)
 
 
+def _raw_dynamic_consistency(
+    state: SessionState, span_bbox: tuple[int, int, int, int]
+) -> Mapping[str, object]:
+    """Counts that compare the kernel's raw dynamic cells with the cells of its nets.
+
+    How many raw dynamic, raw core and net route cells there are, how many
+    cells more than one route holds, how many raw dynamic cells belong to
+    no net (with bounding box and a sample of twelve), how many net cells
+    and core cells are not dynamic, and the same inside ``span_bbox``
+    (min x, max x, min y, max y). A set the kernel does not expose counts
+    as empty.
+    """
+
+    span_bbox_min_x, span_bbox_max_x, span_bbox_min_y, span_bbox_max_y = span_bbox
+    raw_dynamic_cells: set[tuple[int, int]] = set()
+    raw_dynamic_refcount_gt1_cells: set[tuple[int, int]] = set()
+    raw_core_cells: set[tuple[int, int]] = set()
+    raw_core_refcount_gt1_cells: set[tuple[int, int]] = set()
+    raw_net_route_cells: set[tuple[int, int]] = set()
+    if hasattr(state.kernel.router, "raw_dynamic_obstacle_cells"):
+        raw_dynamic_entries = [
+            (int(x), int(y), int(refs))
+            for x, y, refs in state.kernel.router.raw_dynamic_obstacle_cells()
+        ]
+        raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
+        raw_dynamic_refcount_gt1_cells = {(x, y) for x, y, refs in raw_dynamic_entries if refs > 1}
+    if hasattr(state.kernel.router, "raw_dynamic_core_cells"):
+        raw_core_entries = [
+            (int(x), int(y), int(refs))
+            for x, y, refs in state.kernel.router.raw_dynamic_core_cells()
+        ]
+        raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
+        raw_core_refcount_gt1_cells = {(x, y) for x, y, refs in raw_core_entries if refs > 1}
+    if hasattr(state.kernel.router, "all_net_route_cells"):
+        for _, cells in state.kernel.router.all_net_route_cells():
+            raw_net_route_cells.update((int(cell[0]), int(cell[1])) for cell in cells)
+    raw_dynamic_without_owner = raw_dynamic_cells - raw_net_route_cells
+    raw_net_route_without_dynamic = raw_net_route_cells - raw_dynamic_cells
+    raw_core_without_dynamic = raw_core_cells - raw_dynamic_cells
+    raw_dynamic_span_cells = {
+        (x, y)
+        for x, y in raw_dynamic_cells
+        if span_bbox_min_x <= x <= span_bbox_max_x and span_bbox_min_y <= y <= span_bbox_max_y
+    }
+    raw_dynamic_without_owner_span_cells = {
+        (x, y)
+        for x, y in raw_dynamic_without_owner
+        if span_bbox_min_x <= x <= span_bbox_max_x and span_bbox_min_y <= y <= span_bbox_max_y
+    }
+    return {
+        "raw_dynamic_obstacle_cells_before": len(raw_dynamic_cells),
+        "raw_dynamic_core_cells_before": len(raw_core_cells),
+        "raw_net_route_cells_before": len(raw_net_route_cells),
+        "raw_dynamic_refcount_gt1_count": len(raw_dynamic_refcount_gt1_cells),
+        "raw_dynamic_refcount_gt1_bbox": cells_bbox(raw_dynamic_refcount_gt1_cells),
+        "raw_core_refcount_gt1_count": len(raw_core_refcount_gt1_cells),
+        "raw_dynamic_without_owner_count": len(raw_dynamic_without_owner),
+        "raw_dynamic_without_owner_bbox": cells_bbox(raw_dynamic_without_owner),
+        "raw_dynamic_without_owner_sample": sorted(raw_dynamic_without_owner)[:12],
+        "raw_net_route_without_dynamic_count": len(raw_net_route_without_dynamic),
+        "raw_net_route_without_dynamic_bbox": cells_bbox(raw_net_route_without_dynamic),
+        "raw_core_without_dynamic_count": len(raw_core_without_dynamic),
+        "span_raw_dynamic_cells": len(raw_dynamic_span_cells),
+        "span_raw_dynamic_without_owner_count": len(raw_dynamic_without_owner_span_cells),
+        "span_raw_dynamic_without_owner_bbox": cells_bbox(raw_dynamic_without_owner_span_cells),
+    }
+
+
 def route_attempt_diagnostics(
     settings: SessionSettings,
     state: SessionState,
@@ -282,41 +350,6 @@ def route_attempt_diagnostics(
     )
     blocker_ids = list(candidate_blockers or [])
     victim_ids = list(ripup_ids or [])
-    raw_dynamic_cells: set[tuple[int, int]] = set()
-    raw_dynamic_refcount_gt1_cells: set[tuple[int, int]] = set()
-    raw_core_cells: set[tuple[int, int]] = set()
-    raw_core_refcount_gt1_cells: set[tuple[int, int]] = set()
-    raw_net_route_cells: set[tuple[int, int]] = set()
-    if hasattr(state.kernel.router, "raw_dynamic_obstacle_cells"):
-        raw_dynamic_entries = [
-            (int(x), int(y), int(refs))
-            for x, y, refs in state.kernel.router.raw_dynamic_obstacle_cells()
-        ]
-        raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
-        raw_dynamic_refcount_gt1_cells = {(x, y) for x, y, refs in raw_dynamic_entries if refs > 1}
-    if hasattr(state.kernel.router, "raw_dynamic_core_cells"):
-        raw_core_entries = [
-            (int(x), int(y), int(refs))
-            for x, y, refs in state.kernel.router.raw_dynamic_core_cells()
-        ]
-        raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
-        raw_core_refcount_gt1_cells = {(x, y) for x, y, refs in raw_core_entries if refs > 1}
-    if hasattr(state.kernel.router, "all_net_route_cells"):
-        for _, cells in state.kernel.router.all_net_route_cells():
-            raw_net_route_cells.update((int(cell[0]), int(cell[1])) for cell in cells)
-    raw_dynamic_without_owner = raw_dynamic_cells - raw_net_route_cells
-    raw_net_route_without_dynamic = raw_net_route_cells - raw_dynamic_cells
-    raw_core_without_dynamic = raw_core_cells - raw_dynamic_cells
-    raw_dynamic_span_cells = {
-        (x, y)
-        for x, y in raw_dynamic_cells
-        if span_bbox_min_x <= x <= span_bbox_max_x and span_bbox_min_y <= y <= span_bbox_max_y
-    }
-    raw_dynamic_without_owner_span_cells = {
-        (x, y)
-        for x, y in raw_dynamic_without_owner
-        if span_bbox_min_x <= x <= span_bbox_max_x and span_bbox_min_y <= y <= span_bbox_max_y
-    }
     return {
         "source_state": [source_x, source_y, source_angle],
         "target_state": [target_x, target_y, target_angle],
@@ -388,21 +421,9 @@ def route_attempt_diagnostics(
             total_cost - heading_lower_bound if total_cost is not None else None
         ),
         "committed_dynamic_cells_before": len(dynamic_cells_before),
-        "raw_dynamic_obstacle_cells_before": len(raw_dynamic_cells),
-        "raw_dynamic_core_cells_before": len(raw_core_cells),
-        "raw_net_route_cells_before": len(raw_net_route_cells),
-        "raw_dynamic_refcount_gt1_count": len(raw_dynamic_refcount_gt1_cells),
-        "raw_dynamic_refcount_gt1_bbox": cells_bbox(raw_dynamic_refcount_gt1_cells),
-        "raw_core_refcount_gt1_count": len(raw_core_refcount_gt1_cells),
-        "raw_dynamic_without_owner_count": len(raw_dynamic_without_owner),
-        "raw_dynamic_without_owner_bbox": cells_bbox(raw_dynamic_without_owner),
-        "raw_dynamic_without_owner_sample": sorted(raw_dynamic_without_owner)[:12],
-        "raw_net_route_without_dynamic_count": len(raw_net_route_without_dynamic),
-        "raw_net_route_without_dynamic_bbox": cells_bbox(raw_net_route_without_dynamic),
-        "raw_core_without_dynamic_count": len(raw_core_without_dynamic),
-        "span_raw_dynamic_cells": len(raw_dynamic_span_cells),
-        "span_raw_dynamic_without_owner_count": len(raw_dynamic_without_owner_span_cells),
-        "span_raw_dynamic_without_owner_bbox": cells_bbox(raw_dynamic_without_owner_span_cells),
+        **_raw_dynamic_consistency(
+            state, (span_bbox_min_x, span_bbox_max_x, span_bbox_min_y, span_bbox_max_y)
+        ),
         "candidate_blocker_count": len(blocker_ids),
         "candidate_blocker_net_ids": blocker_ids,
         "candidate_blocker_route_indices": [

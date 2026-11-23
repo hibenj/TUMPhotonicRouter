@@ -531,6 +531,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Two diagnostic functions within the limit of 50 statements, no
+  behaviour change: `electrical_debug_svg` draws the pad plan, the bus,
+  the pad wires and the topology in four functions (the 8 debug SVGs
+  of the electrical suite are byte-identical before and after, and
+  identical to those of the SVG code before the style dataclasses of
+  this release), and `route_attempt_diagnostics` hands the raw dynamic
+  cell counts to `_raw_dynamic_consistency`.
 - Two more functions within the limit of 50 statements, no behaviour
   change: `RouteTimingBucket.record_route` adds the 61 summed
   statistics, the 2 maxima and the 7 per-class counter dicts by name

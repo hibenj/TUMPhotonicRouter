@@ -10,9 +10,13 @@ from typing import Protocol
 
 from photonic_router.electrical.port_access import all_port_accesses
 from photonic_router.electrical.types import (
+    CommonBusRoutingResult,
+    DetailedBundleRoutingResult,
     ElectricalPortAccess,
     ElectricalRoutingResult,
     GridCell,
+    IndividualEscapeTopologyResult,
+    PadPlan,
 )
 
 
@@ -75,6 +79,163 @@ def export_electrical_debug_svg(
     )
 
 
+def _append_pad_plan(parts: list[str], grid: _DebugGrid, pad_plan: PadPlan) -> None:
+    """Draw every pad slot, labelled ``bus`` or with the pad's rank among the individual pads."""
+
+    assignment_order: dict[str, int] = {}
+    for index, assignment in enumerate(
+        sorted(
+            (
+                assignment
+                for assignment in pad_plan.assignments
+                if assignment.kind == "individual" and assignment.terminal is not None
+            ),
+            key=lambda assignment: assignment.slot.index,
+        )
+    ):
+        terminal = assignment.terminal
+        if terminal is not None:
+            assignment_order[terminal.id] = index
+    for assignment in pad_plan.assignments:
+        fill = "#d7a600" if assignment.kind == "common_bus" else "#ffd966"
+        _append_physical_rect(
+            parts,
+            grid,
+            assignment.slot.bbox,
+            fill=fill,
+            opacity=0.22,
+            stroke="#8a5a00",
+            stroke_width=0.12,
+        )
+        if assignment.kind == "common_bus":
+            label = "bus"
+        elif assignment.terminal is not None:
+            label = str(assignment_order.get(assignment.terminal.id, "?"))
+        else:
+            label = "?"
+        _append_physical_text(
+            parts,
+            grid,
+            assignment.slot.center,
+            label,
+            font_size=2.6,
+            fill="#3f2d00",
+        )
+
+
+def _append_common_bus(
+    parts: list[str], grid_height: int, common_bus: CommonBusRoutingResult
+) -> None:
+    """Draw the bus branches: their cells, the tree cells and one titled line per branch."""
+
+    route_cells: set[GridCell] = set()
+    for route in common_bus.routes:
+        route_cells.update(route.path)
+    _append_cells(parts, grid_height, route_cells, fill="#f28c28", opacity=0.95)
+    _append_cells(parts, grid_height, common_bus.tree_cells, fill="#33a853", opacity=0.35)
+    for route in common_bus.routes:
+        _append_route_polyline(
+            parts,
+            grid_height,
+            route.path,
+            style=_LineStyle(stroke="#9c4f00", stroke_width=0.16, opacity=0.85),
+            title=(
+                f"common bus terminal={route.terminal.id} "
+                f"start={route.route_start_cell} "
+                f"anchor={route.access_anchor_cell} "
+                f"used_anchor={route.used_access_anchor}"
+            ),
+        )
+
+
+def _append_detailed_routes(
+    parts: list[str], grid_height: int, detailed_bundle_routes: DetailedBundleRoutingResult
+) -> None:
+    """Draw the pad wires: target and path cells, then one titled line per wire.
+
+    A wire is drawn along its centerline, or along its cells when it has none,
+    in the colour of its bundle.
+    """
+
+    detail_cells: set[GridCell] = set()
+    detail_target_cells: set[GridCell] = set()
+    sorted_routes = sorted(
+        detailed_bundle_routes.routes,
+        key=lambda route: (
+            route.bundle_id,
+            route.rank,
+            route.pad_assignment.slot.index if route.pad_assignment is not None else -1,
+            route.terminal.id,
+        ),
+    )
+    for detail_route in sorted_routes:
+        detail_cells.update(detail_route.path)
+        detail_target_cells.update(detail_route.target_cells)
+    _append_cells(parts, grid_height, detail_target_cells, fill="#fdd663", opacity=0.75)
+    _append_cells(parts, grid_height, detail_cells, fill="#2a9d8f", opacity=0.12)
+    for detail_route in sorted_routes:
+        color = _INDIVIDUAL_ROUTE_PALETTE[detail_route.bundle_id % len(_INDIVIDUAL_ROUTE_PALETTE)]
+        title = (
+            f"detailed bundle={detail_route.bundle_id} rank={detail_route.rank} "
+            f"pad={detail_route.pad_assignment.slot.index if detail_route.pad_assignment is not None else 'none'} "
+            f"terminal={detail_route.terminal.id} start={detail_route.route_start_cell} "
+            f"anchor={detail_route.access_anchor_cell} used_anchor={detail_route.used_access_anchor}"
+        )
+        if detail_route.centerline:
+            _append_point_polyline(
+                parts,
+                grid_height,
+                detail_route.centerline,
+                stroke=color,
+                stroke_width=0.24,
+                opacity=0.95,
+                title=title,
+            )
+        else:
+            _append_route_polyline(
+                parts,
+                grid_height,
+                detail_route.path,
+                style=_LineStyle(stroke=color, stroke_width=0.24, opacity=0.95),
+                title=title,
+            )
+
+
+def _append_topology(
+    parts: list[str], grid_height: int, individual_topology: IndividualEscapeTopologyResult
+) -> None:
+    """Draw the escape topology: the shared cells and one dashed line per terminal.
+
+    The lines of one bundle share a colour and are shifted by rank so that
+    they do not hide each other.
+    """
+
+    _append_cells(
+        parts, grid_height, individual_topology.shared_cells, fill="#5f0f40", opacity=0.24
+    )
+    routes_by_terminal_id = {route.terminal.id: route for route in individual_topology.routes}
+    for bundle in individual_topology.bundles:
+        color = _INDIVIDUAL_ROUTE_PALETTE[bundle.bundle_id % len(_INDIVIDUAL_ROUTE_PALETTE)]
+        for rank, terminal in enumerate(bundle.ordered_terminals):
+            topology_route = routes_by_terminal_id.get(terminal.id)
+            if topology_route is None:
+                continue
+            offset = _DEBUG_ROUTE_OFFSETS[rank % len(_DEBUG_ROUTE_OFFSETS)]
+            _append_route_polyline(
+                parts,
+                grid_height,
+                topology_route.path,
+                style=_LineStyle(
+                    stroke=color, stroke_width=0.28, opacity=0.45, dasharray="1.2 0.8"
+                ),
+                offset=offset,
+                title=(
+                    f"topology bundle={bundle.bundle_id} rank={rank} "
+                    f"tracks={bundle.required_tracks} terminal={terminal.id}"
+                ),
+            )
+
+
 def electrical_debug_svg(
     result: ElectricalRoutingResult,
     *,
@@ -108,65 +269,10 @@ def electrical_debug_svg(
     _append_cells(parts, grid.height, obstacle_map.bus.cells, fill="#4f8fd9", opacity=0.9)
 
     if pad_plan is not None:
-        assignment_order: dict[str, int] = {}
-        for index, assignment in enumerate(
-            sorted(
-                (
-                    assignment
-                    for assignment in pad_plan.assignments
-                    if assignment.kind == "individual" and assignment.terminal is not None
-                ),
-                key=lambda assignment: assignment.slot.index,
-            )
-        ):
-            terminal = assignment.terminal
-            if terminal is not None:
-                assignment_order[terminal.id] = index
-        for assignment in pad_plan.assignments:
-            fill = "#d7a600" if assignment.kind == "common_bus" else "#ffd966"
-            _append_physical_rect(
-                parts,
-                grid,
-                assignment.slot.bbox,
-                fill=fill,
-                opacity=0.22,
-                stroke="#8a5a00",
-                stroke_width=0.12,
-            )
-            if assignment.kind == "common_bus":
-                label = "bus"
-            elif assignment.terminal is not None:
-                label = str(assignment_order.get(assignment.terminal.id, "?"))
-            else:
-                label = "?"
-            _append_physical_text(
-                parts,
-                grid,
-                assignment.slot.center,
-                label,
-                font_size=2.6,
-                fill="#3f2d00",
-            )
+        _append_pad_plan(parts, grid, pad_plan)
 
     if common_bus is not None:
-        route_cells: set[GridCell] = set()
-        for route in common_bus.routes:
-            route_cells.update(route.path)
-        _append_cells(parts, grid.height, route_cells, fill="#f28c28", opacity=0.95)
-        _append_cells(parts, grid.height, common_bus.tree_cells, fill="#33a853", opacity=0.35)
-        for route in common_bus.routes:
-            _append_route_polyline(
-                parts,
-                grid.height,
-                route.path,
-                style=_LineStyle(stroke="#9c4f00", stroke_width=0.16, opacity=0.85),
-                title=(
-                    f"common bus terminal={route.terminal.id} "
-                    f"start={route.route_start_cell} "
-                    f"anchor={route.access_anchor_cell} "
-                    f"used_anchor={route.used_access_anchor}"
-                ),
-            )
+        _append_common_bus(parts, grid.height, common_bus)
 
     if common_bus_escape is not None:
         _append_cells(
@@ -175,76 +281,9 @@ def electrical_debug_svg(
         _append_cells(parts, grid.height, common_bus_escape.path, fill="#a142f4", opacity=0.95)
 
     if detailed_bundle_routes is not None:
-        detail_cells: set[GridCell] = set()
-        detail_target_cells: set[GridCell] = set()
-        sorted_routes = sorted(
-            detailed_bundle_routes.routes,
-            key=lambda route: (
-                route.bundle_id,
-                route.rank,
-                route.pad_assignment.slot.index if route.pad_assignment is not None else -1,
-                route.terminal.id,
-            ),
-        )
-        for detail_route in sorted_routes:
-            detail_cells.update(detail_route.path)
-            detail_target_cells.update(detail_route.target_cells)
-        _append_cells(parts, grid.height, detail_target_cells, fill="#fdd663", opacity=0.75)
-        _append_cells(parts, grid.height, detail_cells, fill="#2a9d8f", opacity=0.12)
-        for detail_route in sorted_routes:
-            color = _INDIVIDUAL_ROUTE_PALETTE[
-                detail_route.bundle_id % len(_INDIVIDUAL_ROUTE_PALETTE)
-            ]
-            title = (
-                f"detailed bundle={detail_route.bundle_id} rank={detail_route.rank} "
-                f"pad={detail_route.pad_assignment.slot.index if detail_route.pad_assignment is not None else 'none'} "
-                f"terminal={detail_route.terminal.id} start={detail_route.route_start_cell} "
-                f"anchor={detail_route.access_anchor_cell} used_anchor={detail_route.used_access_anchor}"
-            )
-            if detail_route.centerline:
-                _append_point_polyline(
-                    parts,
-                    grid.height,
-                    detail_route.centerline,
-                    stroke=color,
-                    stroke_width=0.24,
-                    opacity=0.95,
-                    title=title,
-                )
-            else:
-                _append_route_polyline(
-                    parts,
-                    grid.height,
-                    detail_route.path,
-                    style=_LineStyle(stroke=color, stroke_width=0.24, opacity=0.95),
-                    title=title,
-                )
-
+        _append_detailed_routes(parts, grid.height, detailed_bundle_routes)
     elif individual_topology is not None:
-        _append_cells(
-            parts, grid.height, individual_topology.shared_cells, fill="#5f0f40", opacity=0.24
-        )
-        routes_by_terminal_id = {route.terminal.id: route for route in individual_topology.routes}
-        for bundle in individual_topology.bundles:
-            color = _INDIVIDUAL_ROUTE_PALETTE[bundle.bundle_id % len(_INDIVIDUAL_ROUTE_PALETTE)]
-            for rank, terminal in enumerate(bundle.ordered_terminals):
-                topology_route = routes_by_terminal_id.get(terminal.id)
-                if topology_route is None:
-                    continue
-                offset = _DEBUG_ROUTE_OFFSETS[rank % len(_DEBUG_ROUTE_OFFSETS)]
-                _append_route_polyline(
-                    parts,
-                    grid.height,
-                    topology_route.path,
-                    style=_LineStyle(
-                        stroke=color, stroke_width=0.28, opacity=0.45, dasharray="1.2 0.8"
-                    ),
-                    offset=offset,
-                    title=(
-                        f"topology bundle={bundle.bundle_id} rank={rank} "
-                        f"tracks={bundle.required_tracks} terminal={terminal.id}"
-                    ),
-                )
+        _append_topology(parts, grid.height, individual_topology)
 
     for terminal_id, cells in sorted(obstacle_map.terminal_open_cells.items()):
         fill = "#d93025"
