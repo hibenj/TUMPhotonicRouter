@@ -32,6 +32,10 @@ Stages reported so far, with their product:
   electrical routing and before anything is written; reported without
   session settings. A layout that fails the check does not get here: the
   flow raises.
+- `"electrical"`: the `ElectricalRoutingResult` of the flow's electrical
+  step, when the run routes the heaters; reported without session settings
+- `"done"`: the routed layout when every stage has run, before the debug
+  pictures and before the layout is written or shown
 """
 
 from __future__ import annotations

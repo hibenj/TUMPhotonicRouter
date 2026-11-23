@@ -892,6 +892,11 @@ docstring:
   length measured as polygon area over route width (to 0.5 um; a net
   follows its record to a few hundredths). The orientation of the nets
   along the light is taken from the analysis and not checked.
+* `electrical.py`, the result of the flow's electrical step: every heater has one terminal on the common bus and
+  the other wired to a pad of its own, by exactly one wire; no pad slot
+  holds two nets; a wire is a path of neighbouring grid cells that ends on
+  its pad, and two wires share no cell. An error of the electrical
+  router's own verification is a finding as well.
 
 The stages are read from a real run: `routing/stage_observer.py` is the
 seam (`observe_stages(observer)`; the flow and the session call `notify`
@@ -908,9 +913,10 @@ after a stage, and an observer can end the run with `StopAfterStage`).
   defaults once per router configuration (`--configuration baseline`, the
   standard router; `contribution1`, crossings planned ahead and the search
   guided; `contribution2`, pre-placed crossing structures) and collects
-  the findings: until the flow's own final check of the routed layout has
-  passed (stage `checked`; a layout it refuses is the error
-  `flow.run_failed`), or, from 16 x 16 on where
+  the findings: until every stage has run (stage `done`: the flow's own
+  final check of the routed layout has passed, a layout it refuses is the
+  error `flow.run_failed`, and the heaters are wired where the benchmark
+  asks for it), or, from 16 x 16 on where
   the search takes over a minute, up to the hand-off (`last_stage`;
   `--route-wide` routes those too, on request and outside the pin;
   `--paper` routes the 27 cells of the paper's results table, the designs

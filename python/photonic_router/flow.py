@@ -783,6 +783,8 @@ def _route_schematic(
             debug_timing=debug.debug_timing,
             debug_svgs_enabled=debug_svgs_enabled,
         )
+        stage_observer.notify("electrical", None, electrical_result)
+    stage_observer.notify("done", None, routed_layout)
 
     if debug_svgs_enabled:
         _write_routes_overview(benchmark_name, optical_result)

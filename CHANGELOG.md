@@ -14,6 +14,17 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- Logic harness, stage `electrical` (`logic_checks/electrical.py`; owner,
+  2026-11-23): the wiring of the heaters is checked on every benchmark
+  that asks for it (13 public ones). Every heater has one terminal on the
+  common bus and the other wired to a pad by exactly one wire; no pad
+  slot holds two nets; a wire is a path of neighbouring cells that ends
+  on its pad; two wires share no cell; an error of the electrical
+  router's own verification is a finding. The flow reports the stage
+  after its electrical step and a last stage `done`, where
+  `scripts/logic_check.py` now ends a run. No benchmark has a finding;
+  `tests/logic/test_electrical_checks.py` shows each statement failing
+  on a wiring built wrong (python 979 to 990).
 - `scripts/private_circuits_check.py`, run by `scripts/check.sh --full`
   (owner, 2026-11-23): every circuit of `benchmarks/private/` is routed
   with its own defaults and has to end with exit code 0 and no verifier

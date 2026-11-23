@@ -24,6 +24,7 @@ from photonic_router.logic_checks.crossing_plan import (
     check_crossing_demand,
     check_crossing_plan_info,
 )
+from photonic_router.logic_checks.electrical import check_electrical
 from photonic_router.logic_checks.findings import ERROR, Finding
 from photonic_router.logic_checks.matching import check_matched
 from photonic_router.logic_checks.obstacle_map import check_obstacle_map
@@ -60,11 +61,20 @@ class StageVerificationError(RuntimeError):
         super().__init__(f"stage {stage!r}: {len(errors)} error(s): {shown}{more}")
 
 
+#: the stages whose checks read the product alone
+_CHECKS_OF_A_PRODUCT: dict[str, Callable[[Any], list[Finding]]] = {
+    "matched": check_matched,
+    "realized": check_realized,
+    "electrical": check_electrical,
+}
+
+
 def stage_findings(stage: str, settings: Any, product: Any) -> list[Finding]:
     """The findings of the checks that read the product of `stage`.
 
     `settings` is the `SessionSettings` of the session that reports, None
-    for the stages the flow reports itself (`loaded`, `matched`, `realized`).
+    for the stages the flow reports itself (`loaded`, `matched`, `realized`,
+    `checked`, `electrical`, `done`).
     """
     if stage == "loaded":
         schematic, layout = product.schematic, product.unrouted_layout
@@ -74,10 +84,8 @@ def stage_findings(stage: str, settings: Any, product: Any) -> list[Finding]:
             *check_layout(schematic, layout),
             *check_crossing_demand(schematic, layout, demand),
         ]
-    if stage == "matched":
-        return check_matched(product)
-    if stage == "realized":
-        return check_realized(product)
+    if stage in _CHECKS_OF_A_PRODUCT:
+        return _CHECKS_OF_A_PRODUCT[stage](product)
     if settings is None:
         return []
     if stage == "obstacle_map":
