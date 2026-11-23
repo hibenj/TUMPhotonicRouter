@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any, cast
+from typing import Any
 
 from photonic_router.records.route_rust_obstacle_config import grid_origin_xy
 from photonic_router.records.route_rust_types import (
@@ -54,7 +53,7 @@ def _tune_search(settings: SessionSettings, astar_cfg: Any) -> None:
     if settings.allow_45_degree_turns and effective_heuristic_mode == "heading_aware":
         effective_heuristic_mode = "diagonal_aware"
     astar_cfg.heuristic_mode = effective_heuristic_mode
-    if settings.allow_45_degree_turns and hasattr(astar_cfg, "bend_weight"):
+    if settings.allow_45_degree_turns:
         # A bend costs bend_weight per angle-eighth of turn (see
         # src/primitives.rs's bend_cost field); boosting it keeps 45-degree
         # A* from spending work on short zig-zag variants. This applies
@@ -76,12 +75,8 @@ def _tune_search(settings: SessionSettings, astar_cfg: Any) -> None:
     if env_tie_breaker is not None:
         effective_heap_tie_breaker = env_tie_breaker
     astar_cfg.heap_tie_breaker = effective_heap_tie_breaker
-    if hasattr(astar_cfg, "proactive_congestion_weight"):
-        astar_cfg.proactive_congestion_weight = float(settings.proactive_congestion_weight)
-    if hasattr(astar_cfg, "proactive_congestion_radius_cells"):
-        astar_cfg.proactive_congestion_radius_cells = int(
-            settings.proactive_congestion_radius_cells
-        )
+    astar_cfg.proactive_congestion_weight = float(settings.proactive_congestion_weight)
+    astar_cfg.proactive_congestion_radius_cells = int(settings.proactive_congestion_radius_cells)
     if settings.routing_window_scale is not None:
         astar_cfg.routing_window_scale = float(settings.routing_window_scale)
     # Speed pass S4 (2026-11-05): the window ladder's length and its
@@ -187,10 +182,9 @@ def configure_router_and_grid(
         astar_cfg,
         settings.router_config.to_rust(rust_backend),
     )
-    if hasattr(router, "set_route_width_um"):
-        # The commit validation's parallel-overlap check needs the
-        # physical waveguide width (see py_router.rs `route_width_um`).
-        router.set_route_width_um(float(settings.route_width_um))
+    # The commit validation's parallel-overlap check needs the
+    # physical waveguide width (see py_router.rs `route_width_um`).
+    router.set_route_width_um(float(settings.route_width_um))
     timing.record_elapsed(settings, timings_s, "router_setup", t_router_setup_start)
 
     port_lane_length_cells = max(3, 2 * bend_radius_cells + 2)
@@ -226,33 +220,15 @@ def configure_router_and_grid(
         0,
     )
 
-    raw_blocked_obj: object
-    if hasattr(obstacle_map, "raw_blocked_cells"):
-        raw_blocked_obj = obstacle_map.raw_blocked_cells
-    else:
-        raw_blocked_obj = obstacle_map.blocked_cells
-    raw_blocked_cells = cast(Iterable[tuple[int, int]], raw_blocked_obj)
-    raw_static_cells = {(int(cell[0]), int(cell[1])) for cell in raw_blocked_cells}
-    raw_static_rects_for_openings: list[tuple[int, int, int, int]] = []
-    if hasattr(obstacle_map, "raw_static_rects"):
-        for rect in cast(
-            Iterable[tuple[int, int, int, int]],
-            obstacle_map.raw_static_rects,
-        ):
-            if len(rect) == 4:
-                raw_static_rects_for_openings.append(
-                    (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
-                )
-    blocked_static_rects_for_openings: list[tuple[int, int, int, int]] = []
-    if hasattr(obstacle_map, "blocked_static_rects"):
-        for rect in cast(
-            Iterable[tuple[int, int, int, int]],
-            obstacle_map.blocked_static_rects,
-        ):
-            if len(rect) == 4:
-                blocked_static_rects_for_openings.append(
-                    (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
-                )
+    raw_static_cells = {(int(cell[0]), int(cell[1])) for cell in obstacle_map.raw_blocked_cells}
+    raw_static_rects_for_openings = [
+        (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+        for rect in obstacle_map.raw_static_rects
+    ]
+    blocked_static_rects_for_openings = [
+        (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+        for rect in obstacle_map.blocked_static_rects
+    ]
     heater_opening_rects_for_openings = (
         raw_static_rects_for_openings + blocked_static_rects_for_openings
     )

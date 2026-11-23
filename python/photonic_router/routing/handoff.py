@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any
 
 from gdsfactory.typings import Port
 
@@ -605,28 +605,22 @@ def _hand_static_cells_to_kernel(
 
     t_static_handoff_start = timing.pipeline_timer_start(settings)
     blocked_rects_for_diagnostics: list[tuple[int, int, int, int]] = []
-    if hasattr(obstacle_map, "blocked_static_rects"):
-        blocked_static_rects: list[tuple[int, int, int, int]] = []
-        raw_blocked_rects = cast(
-            Iterable[tuple[int, int, int, int]], obstacle_map.blocked_static_rects
-        )
-        for rect in raw_blocked_rects:
-            blocked_static_rects.append((int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])))
-        blocked_rects_for_diagnostics = list(blocked_static_rects)
-        if blocked_static_rects:
-            if not hasattr(state.kernel.router, "set_static_rects"):
-                raise RuntimeError(
-                    "The loaded photonic_router._rust extension does not expose "
-                    "PyPhotonicRouter.set_static_rects. Rebuild it with "
-                    "`maturin develop --release`; otherwise bounding_boxes mode "
-                    "cannot use compact static rectangles."
-                )
-            state.kernel.router.set_static_rects(blocked_static_rects)
-        else:
-            state.kernel.router.set_static_cells(sorted(state.kernel.static.raw_static_cells))
+    blocked_static_rects = [
+        (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+        for rect in obstacle_map.blocked_static_rects
+    ]
+    blocked_rects_for_diagnostics = list(blocked_static_rects)
+    if blocked_static_rects:
+        if not hasattr(state.kernel.router, "set_static_rects"):
+            raise RuntimeError(
+                "The loaded photonic_router._rust extension does not expose "
+                "PyPhotonicRouter.set_static_rects. Rebuild it with "
+                "`maturin develop --release`; otherwise bounding_boxes mode "
+                "cannot use compact static rectangles."
+            )
+        state.kernel.router.set_static_rects(blocked_static_rects)
     else:
-        sorted_static_cells = sorted(state.kernel.static.raw_static_cells)
-        state.kernel.router.set_static_cells(sorted_static_cells)
+        state.kernel.router.set_static_cells(sorted(state.kernel.static.raw_static_cells))
     if port_runway_static_cells or foreign_keepout_cells or state.fanout.stub_static_cells:
         if not hasattr(state.kernel.router, "add_static_cells"):
             raise RuntimeError(
@@ -644,8 +638,7 @@ def _hand_static_cells_to_kernel(
     # leave the chip (e.g. east of the output couplers) and come back.
     chip_boundary_rects = [
         (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
-        for rect in getattr(obstacle_map, "chip_boundary_rects", ())
-        if len(rect) == 4
+        for rect in obstacle_map.chip_boundary_rects
     ]
     if chip_boundary_rects:
         if not hasattr(state.kernel.router, "add_static_rects"):

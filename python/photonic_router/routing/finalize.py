@@ -65,7 +65,7 @@ def _endpoint_correction_crossing_net_ids(
     two is out of this milestone's additive scope.
     """
     crossing_net_ids: set[int] = set()
-    if settings.enable_crossings and hasattr(state.kernel.router, "crossing_events"):
+    if settings.enable_crossings:
         # No broad `except Exception` here: Milestone 0 of the
         # restructuring ExecPlan confirmed via git history that this
         # used to swallow any error from `router.crossing_events()`
@@ -644,17 +644,14 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
 def _current_crossing_points_by_net_id(
     settings: SessionSettings, state: SessionState
 ) -> dict[int, list[tuple[float, float]]]:
-    if not settings.enable_crossings or not hasattr(state.kernel.router, "crossing_events"):
+    if not settings.enable_crossings:
         return {}
-    try:
-        raw_events = list(cast(Iterable[Any], state.kernel.router.crossing_events()))
-    except Exception:
-        return {}
+    # Not caught, as in `_endpoint_correction_crossing_net_ids` above: an
+    # error here must not read as "no net has crossing points".
+    raw_events = list(cast(Iterable[Any], state.kernel.router.crossing_events()))
     if not raw_events:
         return {}
-    raw_verdicts: list[Any] = []
-    if hasattr(state.kernel.router, "crossing_verdicts"):
-        raw_verdicts = list(cast(Iterable[Any], state.kernel.router.crossing_verdicts()))
+    raw_verdicts = list(cast(Iterable[Any], state.kernel.router.crossing_verdicts()))
     populate_realized_intersections_from_native_crossing_events(
         crossing_plan_info=state.crossing_plan_info,
         routed_records_by_net_id=state.search.bookkeeping.records_by_id,

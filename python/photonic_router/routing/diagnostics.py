@@ -191,28 +191,20 @@ def _raw_dynamic_consistency(
     """
 
     span_bbox_min_x, span_bbox_max_x, span_bbox_min_y, span_bbox_max_y = span_bbox
-    raw_dynamic_cells: set[tuple[int, int]] = set()
-    raw_dynamic_refcount_gt1_cells: set[tuple[int, int]] = set()
-    raw_core_cells: set[tuple[int, int]] = set()
-    raw_core_refcount_gt1_cells: set[tuple[int, int]] = set()
     raw_net_route_cells: set[tuple[int, int]] = set()
-    if hasattr(state.kernel.router, "raw_dynamic_obstacle_cells"):
-        raw_dynamic_entries = [
-            (int(x), int(y), int(refs))
-            for x, y, refs in state.kernel.router.raw_dynamic_obstacle_cells()
-        ]
-        raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
-        raw_dynamic_refcount_gt1_cells = {(x, y) for x, y, refs in raw_dynamic_entries if refs > 1}
-    if hasattr(state.kernel.router, "raw_dynamic_core_cells"):
-        raw_core_entries = [
-            (int(x), int(y), int(refs))
-            for x, y, refs in state.kernel.router.raw_dynamic_core_cells()
-        ]
-        raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
-        raw_core_refcount_gt1_cells = {(x, y) for x, y, refs in raw_core_entries if refs > 1}
-    if hasattr(state.kernel.router, "all_net_route_cells"):
-        for _, cells in state.kernel.router.all_net_route_cells():
-            raw_net_route_cells.update((int(cell[0]), int(cell[1])) for cell in cells)
+    raw_dynamic_entries = [
+        (int(x), int(y), int(refs))
+        for x, y, refs in state.kernel.router.raw_dynamic_obstacle_cells()
+    ]
+    raw_dynamic_cells = {(x, y) for x, y, _ in raw_dynamic_entries}
+    raw_dynamic_refcount_gt1_cells = {(x, y) for x, y, refs in raw_dynamic_entries if refs > 1}
+    raw_core_entries = [
+        (int(x), int(y), int(refs)) for x, y, refs in state.kernel.router.raw_dynamic_core_cells()
+    ]
+    raw_core_cells = {(x, y) for x, y, _ in raw_core_entries}
+    raw_core_refcount_gt1_cells = {(x, y) for x, y, refs in raw_core_entries if refs > 1}
+    for _, cells in state.kernel.router.all_net_route_cells():
+        raw_net_route_cells.update((int(cell[0]), int(cell[1])) for cell in cells)
     raw_dynamic_without_owner = raw_dynamic_cells - raw_net_route_cells
     raw_net_route_without_dynamic = raw_net_route_cells - raw_dynamic_cells
     raw_core_without_dynamic = raw_core_cells - raw_dynamic_cells
@@ -937,9 +929,7 @@ def export_route_svg(
     route_dir = debug_path / "routes"
     ensure_dir(route_dir)
     route_svg = route_dir / f"{settings.debug_prefix}_{job.net_name}{suffix}.svg"
-    if obstacle_cells is not None and hasattr(
-        state.kernel.router, "export_debug_svg_with_obstacle_cells"
-    ):
+    if obstacle_cells is not None:
         svg_text = state.kernel.router.export_debug_svg_with_obstacle_cells(
             route_obj,
             sorted(obstacle_cells),

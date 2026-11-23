@@ -60,8 +60,10 @@ class _DummyObstacleData:
             die_bbox=(0.0, 0.0, float(width), float(height)),
         )
         self.blocked_cells = blocked_cells
-        if raw_blocked_cells is not None:
-            self.raw_blocked_cells = raw_blocked_cells
+        self.raw_blocked_cells = blocked_cells if raw_blocked_cells is None else raw_blocked_cells
+        self.raw_static_rects: tuple[tuple[int, int, int, int], ...] = ()
+        self.blocked_static_rects: tuple[tuple[int, int, int, int], ...] = ()
+        self.chip_boundary_rects: tuple[tuple[int, int, int, int], ...] = ()
         if port_open_cells is not None:
             self.port_open_cells = port_open_cells
 
@@ -142,6 +144,9 @@ def test_port_lane_half_width_scales_with_bend_radius(monkeypatch):
             _astar_cfg: FakeAStarConfig,
             _router_config: FakeRouterConfig | None = None,
         ) -> None:
+            pass
+
+        def set_route_width_um(self, _width_um: float) -> None:
             pass
 
         def build_port_footprint_cells(

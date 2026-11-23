@@ -499,8 +499,6 @@ def _repair_final_illegal_crossings(
         not selected_illegal_crossings
         or not state.crossing_plan_info.enabled
         or not state.run.repair_config.enabled
-        or not hasattr(state.kernel.router, "add_static_cells")
-        or not hasattr(state.kernel.router, "ripup_route")
     ):
         return False
     repair_net_ids = _final_crossing_repair_net_ids(state, selected_illegal_crossings)
@@ -839,12 +837,7 @@ def _repair_final_photonic_issues(
     selected_issues = [issue for issue in issues if issue.code in selected_codes]
     if selected_group == "crossing_component_route_overlap":
         selected_issues = selected_issues[:1]
-    if (
-        not selected_issues
-        or not state.run.repair_config.enabled
-        or not hasattr(state.kernel.router, "add_static_cells")
-        or not hasattr(state.kernel.router, "ripup_route")
-    ):
+    if not selected_issues or not state.run.repair_config.enabled:
         return False
 
     repair_net_ids_set: set[int] = set()
@@ -946,44 +939,35 @@ def _refresh_realized_crossing_verification(
     settings: SessionSettings, state: SessionState
 ) -> list[dict[str, object]]:
     t_refresh_crossings_start = timing.pipeline_timer_start(settings)
-    native_crossing_events: list[Any] = []
-    native_crossing_verdicts: list[Any] = []
-    if hasattr(state.kernel.router, "crossing_events"):
-        t_native_events_start = timing.pipeline_timer_start(settings)
-        try:
-            native_crossing_events = list(
-                cast(Iterable[Any], state.kernel.router.crossing_events())
-            )
-        except Exception:
-            native_crossing_events = []
-        state.crossing_plan_info.native_crossing_events = native_crossing_events
-        state.crossing_plan_info.native_crossing_event_count = len(native_crossing_events)
-        if hasattr(state.kernel.router, "crossing_verdicts"):
-            # The Rust predicate's verdicts, which the classification below
-            # reports instead of re-deciding.
-            native_crossing_verdicts = list(
-                cast(Iterable[Any], state.kernel.router.crossing_verdicts())
-            )
-            state.crossing_plan_info.native_crossing_verdicts = native_crossing_verdicts
-            state.crossing_plan_info.native_crossing_verdict_count = len(native_crossing_verdicts)
-        timing.record_pipeline_timing(
-            settings,
-            state,
-            "realized_crossing_native_events",
-            t_native_events_start,
-        )
-        t_insertion_loss_start = timing.pipeline_timer_start(settings)
-        augment_insertion_loss_report(
-            crossing_plan_info=state.crossing_plan_info,
-            routed_records_by_net_id=state.search.bookkeeping.records_by_id,
-            native_crossing_events=native_crossing_events,
-        )
-        timing.record_pipeline_timing(
-            settings,
-            state,
-            "realized_crossing_insertion_loss",
-            t_insertion_loss_start,
-        )
+    t_native_events_start = timing.pipeline_timer_start(settings)
+    # Not caught: a failure here means crossing detection is broken, and
+    # "no crossings" would let illegal geometry pass the final check.
+    native_crossing_events = list(cast(Iterable[Any], state.kernel.router.crossing_events()))
+    state.crossing_plan_info.native_crossing_events = native_crossing_events
+    state.crossing_plan_info.native_crossing_event_count = len(native_crossing_events)
+    # The Rust predicate's verdicts, which the classification below
+    # reports instead of re-deciding.
+    native_crossing_verdicts = list(cast(Iterable[Any], state.kernel.router.crossing_verdicts()))
+    state.crossing_plan_info.native_crossing_verdicts = native_crossing_verdicts
+    state.crossing_plan_info.native_crossing_verdict_count = len(native_crossing_verdicts)
+    timing.record_pipeline_timing(
+        settings,
+        state,
+        "realized_crossing_native_events",
+        t_native_events_start,
+    )
+    t_insertion_loss_start = timing.pipeline_timer_start(settings)
+    augment_insertion_loss_report(
+        crossing_plan_info=state.crossing_plan_info,
+        routed_records_by_net_id=state.search.bookkeeping.records_by_id,
+        native_crossing_events=native_crossing_events,
+    )
+    timing.record_pipeline_timing(
+        settings,
+        state,
+        "realized_crossing_insertion_loss",
+        t_insertion_loss_start,
+    )
     t_illegal_crossing_verify_start = timing.pipeline_timer_start(settings)
     if settings.enable_internal_photonic_probe_verification:
         illegal = verify_realized_route_intersections(

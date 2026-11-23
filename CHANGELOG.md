@@ -1488,6 +1488,24 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- Silent probes for what the kernel and the obstacle map always have
+  (fallback review, 2026-11-23). The package runs with the kernel it is
+  built with, so `hasattr(router, ...)` before `set_route_width_um`,
+  `set_long_straight_exempt_net_ids`, `crossing_events`,
+  `crossing_verdicts`, `add_static_cells`, `ripup_route`, the three
+  `raw_dynamic_*` readers and `export_debug_svg_with_obstacle_cells`
+  only hid a stale build: the setting was skipped without a word. The
+  calls are direct now; a kernel without the method fails with its
+  name. The same for the fields of `StaticObstacleMapData`
+  (`raw_blocked_cells`, `raw_static_rects`, `blocked_static_rects`,
+  `chip_boundary_rects`), of `AStarConfig` and for `GridSpec.origin`.
+  The checks that raise "rebuild with maturin" stay. Two
+  `except Exception` around `router.crossing_events()` are gone
+  (`finalize.py`, `verify_repair.py`): an error there read as "no
+  crossings", which `finalize.py` already called wrong at a third
+  place. In no measured run (123 harness runs, 82 full flows, the
+  electrical suite) had either caught anything. Ratchet: blind excepts
+  31 to 29.
 - Branches of the kernel that no call can reach (fallback review,
   2026-11-23; each shown by reading every caller, and the routed results
   are unchanged). In `engine/search_calls.rs`: `ordinary_collision_fallback`

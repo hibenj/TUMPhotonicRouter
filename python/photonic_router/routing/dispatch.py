@@ -271,18 +271,14 @@ def record_route(
     """
     if not corrected_centerline_um:
         corrected_centerline_um = _fanout_stubbed_centerline(state, job, route_obj)
-    if (
-        not corrected_centerline_um
-        and not settings.enable_checked_endpoint_correction
-        and hasattr(state.kernel.router, "route_primitive_centerline")
-    ):
+    if not corrected_centerline_um and not settings.enable_checked_endpoint_correction:
         try:
             corrected_centerline_um = centerline_tuple(
                 state.kernel.router.route_primitive_centerline(route_obj)
             )
         except Exception:
             corrected_centerline_um = ()
-        if corrected_centerline_um and hasattr(state.kernel.router, "centerline_length_um"):
+        if corrected_centerline_um:
             try:
                 corrected_total_length_um = float(
                     state.kernel.router.centerline_length_um(list(corrected_centerline_um))

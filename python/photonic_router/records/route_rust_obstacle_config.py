@@ -11,18 +11,9 @@ from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapC
 
 
 def grid_origin_xy(grid: GridSpec) -> tuple[float, float]:
-    """Return the origin (x, y) of a grid spec in um.
-
-    Reads ``grid.origin`` if present, otherwise ``origin_x_um`` and ``origin_y_um``,
-    each 0.0 if missing.
-    """
-    if hasattr(grid, "origin"):
-        origin = grid.origin
-        return float(origin[0]), float(origin[1])
-    return (
-        float(getattr(grid, "origin_x_um", 0.0)),
-        float(getattr(grid, "origin_y_um", 0.0)),
-    )
+    """Return the origin (x, y) of a grid spec in um."""
+    origin = grid.origin
+    return float(origin[0]), float(origin[1])
 
 
 def default_obstacle_layers(

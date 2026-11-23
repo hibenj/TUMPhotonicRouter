@@ -108,6 +108,9 @@ class ObstacleMapStandIn:
         )
         self.blocked_cells: set[tuple[int, int]] = set()
         self.raw_blocked_cells: set[tuple[int, int]] = set()
+        self.raw_static_rects: tuple[tuple[int, int, int, int], ...] = ()
+        self.blocked_static_rects: tuple[tuple[int, int, int, int], ...] = ()
+        self.chip_boundary_rects: tuple[tuple[int, int, int, int], ...] = ()
         self.port_open_cells: set[tuple[int, int]] = set()
 
     def export_debug_svg(self, path: Any) -> None:  # pragma: no cover - debug only

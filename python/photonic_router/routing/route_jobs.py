@@ -1586,8 +1586,5 @@ def apply_long_straight_fanout_exemption(settings: SessionSettings, state: Sessi
         exempt_ids = sorted(
             set(state.fanout.anchor_source_net_ids) | set(state.fanout.anchor_target_net_ids)
         )
-        if hasattr(state.kernel.router, "set_long_straight_exempt_net_ids"):
-            state.kernel.router.set_long_straight_exempt_net_ids(exempt_ids)
-            print(
-                f"      - long-straight penalty exempt for {len(exempt_ids)} dense fan-out net(s)"
-            )
+        state.kernel.router.set_long_straight_exempt_net_ids(exempt_ids)
+        print(f"      - long-straight penalty exempt for {len(exempt_ids)} dense fan-out net(s)")
