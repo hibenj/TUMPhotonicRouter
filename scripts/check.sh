@@ -8,7 +8,8 @@
 #              tests of the harness itself. The commit hook
 #              (scripts/hooks/pre-commit) runs this stage.
 #   --full     The fast stage, then the kernel is rebuilt and the behaviour
-#              is checked: scripts/test_baseline.sh and the two gates.
+#              is checked: scripts/test_baseline.sh, the two gates and, where
+#              benchmarks/private/ exists, the private circuits.
 #              About fifteen minutes; run it before a slice is committed.
 #
 # The script stops at the first stage that fails and exits with its code.
@@ -37,6 +38,8 @@ if [[ "$FULL" == 1 ]]; then
     scripts/results/gate_short.sh
     echo "== gate: PLM cells =="
     scripts/results/plm_gate.sh
+    echo "== private circuits =="
+    .venv/bin/python scripts/private_circuits_check.py
 fi
 
 echo "check: all stages passed ($([[ "$FULL" == 1 ]] && echo full || echo fast))."

@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -345,12 +346,14 @@ def write_benchmark_module(
     *,
     title: str,
     flags: tuple[str, ...],
+    config: Mapping[str, str] | None = None,
     node_types: dict[str, str] | None = None,
     internal_delays_um: dict[str, float] | None = None,
 ) -> None:
     """Write a benchmark module (``build_schematic`` and the path-length metadata
     ``NODE_TYPES`` and ``INTERNAL_DELAYS_UM`` when given) and, next to it, its
-    default flags as ``<module>.toml`` (``benchmarks/<name>.toml`` format)."""
+    default flags and configuration overlay as ``<module>.toml``
+    (``benchmarks/<name>.toml`` format)."""
 
     lines = [
         f'"""{title}',
@@ -406,7 +409,9 @@ def write_benchmark_module(
         "",
     ]
     Path(path).write_text("\n".join(lines), encoding="utf-8")
-    Path(path).with_suffix(".toml").write_text(defaults_toml(title, flags), encoding="utf-8")
+    Path(path).with_suffix(".toml").write_text(
+        defaults_toml(title, flags, config), encoding="utf-8"
+    )
 
 
 def _toml_scalar(token: str) -> str:
@@ -423,9 +428,16 @@ def _toml_scalar(token: str) -> str:
     return json.dumps(token)
 
 
-def defaults_toml(title: str, flags: tuple[str, ...]) -> str:
-    """The ``[flags]`` table of a ``benchmarks/<name>.toml`` for the flag tokens
-    ``--name value ...``; a flag given twice keeps its last value (argparse's rule)."""
+def defaults_toml(
+    title: str, flags: tuple[str, ...], config: Mapping[str, str] | None = None
+) -> str:
+    """The text of a ``benchmarks/<name>.toml``.
+
+    ``[flags]`` holds the flag tokens ``--name value ...``; a flag given twice
+    keeps its last value (argparse's rule). ``[config]`` holds the
+    configuration overlay, name without the ``PHOTONIC_ROUTER_`` prefix to
+    value, when one is given.
+    """
     pairs: dict[str, str] = {}
     for index in range(0, len(flags), 2):
         pairs[flags[index].removeprefix("--")] = flags[index + 1]
@@ -433,6 +445,9 @@ def defaults_toml(title: str, flags: tuple[str, ...]) -> str:
     if pairs:
         lines.append("[flags]")
         lines += [f"{key} = {_toml_scalar(value)}" for key, value in pairs.items()]
+    if config:
+        lines += ["", "[config]"]
+        lines += [f"{key} = {json.dumps(value)}" for key, value in config.items()]
     return "\n".join(lines) + "\n"
 
 

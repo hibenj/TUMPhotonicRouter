@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+import tomllib
 from photonic_router.gds.gds_circuit_components import (
     directional_coupler,
     directional_coupler_path_length_um,
@@ -136,8 +137,17 @@ def test_extractor_recovers_components_nets_and_placements(tmp_path: Path):
 
     module_path = tmp_path / "synthetic_benchmark.py"
     write_benchmark_module(
-        schematic, module_path, title="synthetic", flags=("--crossings", "false")
+        schematic,
+        module_path,
+        title="synthetic",
+        flags=("--crossings", "false"),
+        config={"ROUTING_WINDOW_FALLBACK_FULL_GRID": "1"},
     )
+    defaults = tomllib.loads(module_path.with_suffix(".toml").read_text(encoding="utf-8"))
+    assert defaults == {
+        "flags": {"crossings": False},
+        "config": {"ROUTING_WINDOW_FALLBACK_FULL_GRID": "1"},
+    }
     namespace: dict = {}
     exec(module_path.read_text(encoding="utf-8"), namespace)
     rebuilt_again = namespace["build_schematic"]()

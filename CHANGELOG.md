@@ -14,6 +14,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `scripts/private_circuits_check.py`, run by `scripts/check.sh --full`
+  (owner, 2026-11-23): every circuit of `benchmarks/private/` is routed
+  with its own defaults and has to end with exit code 0 and no verifier
+  error. The directory is not in the repository, so no gate routed its
+  circuits; they had been unroutable since 2026-11-05 (the full-grid
+  search after the search window went off by default, and
+  `--path-length-allow-residual` was replaced) without a check
+  noticing. Without the directory the script passes and says so; nothing
+  about the circuits is pinned. `tests/test_private_circuits_check.py`.
 - A register of the router's fallbacks (owner, 2026-11-23; rule 3.8 of
   `docs/CODING_STANDARDS.md`). `records/fallbacks.py` names thirteen
   fallbacks and what each takes instead of what; the place that takes one
@@ -492,6 +501,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Fixed
 
+- `scripts/extract_private_benchmark.py` wrote
+  `--path-length-allow-residual true` into every private circuit's
+  defaults, a flag the command line has not had since 2026-11-05, so a
+  regenerated circuit could not be started. It writes the matching flag
+  alone now; a circuit names the groups it leaves unequal in its own
+  flags (`--path-length-declared-unmatched-groups`). The script also
+  writes a `[config]` table that turns the full-grid search back on for
+  these circuits (owner, 2026-11-23: the paper benchmarks stay as they
+  are); `write_benchmark_module` and `defaults_toml` take the overlay.
 - `gds/gds_circuit_extraction.py`: the outer ports of a grouped coupler get
   their local position in the frame every other port has (rotation and
   displacement, `_local_frame`); only the displacement was undone, which

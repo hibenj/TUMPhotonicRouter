@@ -72,14 +72,22 @@ PRIVATE_BASE_FLAGS: tuple[str, ...] = (
     "--detour-pass-factor",
     "3",
     # path-length matching as the designs have it: every node's inputs
-    # balanced (the MZI arms, the mesh paths), outputs not matched; a design
-    # that is unbalanced on purpose (the cut-out's 1.5 mm, the ring arms)
-    # leaves residuals the run reports instead of failing on (owner, 2026-10-07)
+    # balanced (the MZI arms, the mesh paths), outputs not matched. A design
+    # that is unbalanced on purpose names the groups it leaves unequal with
+    # --path-length-declared-unmatched-groups in its own flags (decision 11,
+    # 2026-11-05; FLAG_OVERRIDES of the private configuration)
     "--path-length-matching",
     "true",
-    "--path-length-allow-residual",
-    "true",
 )
+
+#: the configuration overlay every private circuit gets (the `[config]` table)
+PRIVATE_BASE_CONFIG = {
+    # a net between two grating couplers of one column finds no route in the
+    # search window; it needs the full-grid search after it, which the paper
+    # benchmarks run without since 2026-11-05 (owner, 2026-11-23: on for
+    # these circuits, the paper benchmarks stay as they are)
+    "ROUTING_WINDOW_FALLBACK_FULL_GRID": "1",
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -119,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         title=f"Private benchmark {args.name} (extracted from the owner's tape-out GDS)",
         # a circuit's own flags come last: argparse keeps the last value of a flag
         flags=flags,
+        config=PRIVATE_BASE_CONFIG,
         node_types=node_types,
         internal_delays_um=internal_delays_um,
     )

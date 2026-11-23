@@ -123,8 +123,10 @@ a rule.
 
 **One entry.** `scripts/check.sh` runs every Tool check locally: without a
 flag the fast stage (`scripts/lint.sh` and the tests of the harness, about
-ten seconds), with `--full` also the kernel build, `scripts/test_baseline.sh`
-and the two gates (about fifteen minutes). `scripts/hooks/pre-commit` runs
+ten seconds), with `--full` also the kernel build, `scripts/test_baseline.sh`,
+the two gates and `scripts/private_circuits_check.py` (about fifteen
+minutes; the last one routes the circuits of `benchmarks/private/`, which
+the repository does not hold, and passes where the directory is missing). `scripts/hooks/pre-commit` runs
 the fast stage before every commit once `git config core.hooksPath
 scripts/hooks` is set. `tests/test_coding_standards.py` holds this document
 to its word: a rule marked *Tool, in force* must quote a check the harness
