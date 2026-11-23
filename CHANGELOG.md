@@ -578,6 +578,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `flow._route_schematic` is the stage outline its docstring asks for
+  (79 statements to under 50). What the stages before the search settle
+  about crossings is `_crossing_setup`, which returns the record
+  `_CrossingSetup` (the design to route, the configuration, crossings
+  on or off and in which mode, the net order, the guidance nets, the
+  plan for the guided search); the check that pre-placed grids stand
+  alone is `_check_grids_stand_alone`; the routes overview is
+  `_write_routes_overview`. No statement changed. Ratchet: PLR0915 11
+  to 10, C901 52 to 51, untyped dict annotations 194 to 193.
 - Ten more blind `except Exception` (rule 4.9; fallback review,
   2026-11-23). Removed where nothing can raise on the real object:
   `flow._component_bbox_um` and `layout_overview_shapes` take a

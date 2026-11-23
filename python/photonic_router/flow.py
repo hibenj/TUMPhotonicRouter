@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from photonic_router.flow_config import (
 )
 from photonic_router.flow_electrical import run_electrical_routing_step
 from photonic_router.flow_optical import (
+    OpticalRoutingStageResult,
     OpticalStageInputs,
     build_optical_routing_stage_config,
     run_photonic_routing_stage,
@@ -78,6 +80,7 @@ from photonic_router.routing.options import (
     SessionOptions,
 )
 from photonic_router.routing.products import LoadedDesign
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 
 @dataclass(frozen=True)
@@ -405,6 +408,224 @@ def route_benchmark(config: RoutingConfig, options: FlowOptions) -> Component:
     return routed_layout
 
 
+def _check_grids_stand_alone(*, crossing_mode: str, enable_crossings: bool) -> None:
+    """Refuse pre-placed crossing grids together with another way of crossing.
+
+    Raises:
+        ValueError: the guided mode or the crossing-aware search is on as well.
+    """
+    if is_guided_mode(crossing_mode):
+        raise ValueError(
+            "preplaced_crossing_grids (contribution 2) and crossing_mode "
+            "'lidar-guided' (contribution 1) are alternative contributions; "
+            "run exactly one of lidar-pure / lidar-guided / preplaced grids."
+        )
+    if enable_crossings:
+        raise ValueError(
+            "preplaced_crossing_grids and enable_crossings are mutually exclusive: "
+            "pre-placed grids resolve every crossing before routing, so the router "
+            "must run with crossings disabled."
+        )
+
+
+@dataclass(frozen=True)
+class _CrossingSetup:
+    """What the stages before the search settle about crossings, and the design they leave."""
+
+    #: the design to route: the benchmark's, or the one with crossing tiles
+    schematic: Schematic
+    unrouted_layout: Component
+    #: the configuration with what the crossing-grid stage folds into it
+    config: RoutingConfig
+    enable_crossings: bool
+    crossing_mode: str
+    net_order: str
+    net_order_depth_by_node: dict[str, int] | None
+    #: metadata of the pre-placed grids for the reports, if grids were placed
+    report_metadata: Mapping[str, object] | None
+    #: the nets the guided search is restricted to in a mixed run
+    guidance_net_names: frozenset[str] | None
+    #: the crossing plan for the guided search; the baseline gets none
+    placement_analysis: PlacementAnalysis | None
+
+
+def _crossing_setup(
+    schematic: Schematic,
+    unrouted_layout: Component,
+    config: RoutingConfig,
+    options: FlowOptions,
+    *,
+    total_steps: int,
+    obstacle_config: StaticObstacleMapConfig,
+) -> _CrossingSetup:
+    """Settle the crossing configuration of a run and build the design it routes.
+
+    The three configurations of the paper are alternatives: the baseline
+    (no plan), the guided search (a plan from the placement analysis) and
+    pre-placed crossing grids, which replace the design by one with
+    crossing tiles and hand the layers no structure fits back to the
+    guided search. A design that is not band-layered is routed by the
+    standard router instead of with grids.
+
+    Raises:
+        ValueError: pre-placed grids were asked for together with the
+            guided mode or with crossings enabled.
+    """
+    optical = options.optical
+    obstacles = options.obstacles
+    stats = options.stats.stats
+    # The stages below negotiate the crossing configuration between them, so
+    # these four start as the option values and are then rebound.
+    enable_crossings = optical.enable_crossings
+    crossing_mode = optical.crossing_mode
+    preplaced_crossing_grids = options.preplaced_grids.preplaced_crossing_grids
+    original_analysis: PlacementAnalysis | None = None
+    original_analysis_seconds = 0.0
+    if preplaced_crossing_grids:
+        _check_grids_stand_alone(crossing_mode=crossing_mode, enable_crossings=enable_crossings)
+        original_analysis, original_analysis_seconds = _placement_analysis_stage(
+            schematic=schematic,
+            unrouted_layout=unrouted_layout,
+            total_steps=total_steps,
+            stats=stats,
+        )
+        if _standard_router_fallback(original_analysis):
+            preplaced_crossing_grids = False
+            enable_crossings = options.preplaced_grids.standard_router_crossings
+    net_order = optical.net_order
+    if net_order is None:
+        net_order = default_net_order(
+            preplaced_crossing_grids=preplaced_crossing_grids,
+            guided=bool(enable_crossings) and is_guided_mode(crossing_mode),
+        )
+    if preplaced_crossing_grids:  # noqa: SIM102 (the comment below is the inner condition's reason)
+        # Contribution 2 (2026-09-17, multiportmmi_128x128): the fan-in /
+        # fan-out nets of dense multi-port instances route without the
+        # long-straight congestion penalty so that their lanes can pack in
+        # parallel; every other net keeps the benchmark's weight. Part of the
+        # configuration since the ADEPT 128x128 run that only converged this
+        # way; `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT=0` in the
+        # shell keeps the old behaviour.
+        if config.search.long_straight_exempt_dense_fanout is None:
+            config = replace(
+                config,
+                search=replace(config.search, long_straight_exempt_dense_fanout=True),
+            )
+    # Contribution 2 splits nets into tile stubs; keep the net order's depth
+    # layers those of the original netlist (see `SearchOptions.net_order_depth_by_node`).
+    net_order_depth_by_node: dict[str, int] | None = (
+        _depth_by_node_from_schematic(schematic) if preplaced_crossing_grids else None
+    )
+    report_metadata: Mapping[str, object] | None = None
+    crossing_guidance_net_names: frozenset[str] | None = None
+    if preplaced_crossing_grids and original_analysis is not None:
+        (
+            schematic,
+            unrouted_layout,
+            report_metadata,
+            crossing_guidance_net_names,
+            dense_fanout_instances,
+        ) = _preplaced_crossing_grids_stage(
+            schematic=schematic,
+            unrouted_layout=unrouted_layout,
+            analysis=original_analysis,
+            analysis_seconds=original_analysis_seconds,
+            total_steps=total_steps,
+            stats=stats,
+            # The column grid puts its entry tiles on the router's static
+            # fan-out anchors, so the probe must see the routing run's
+            # configuration.
+            router_probe_options=SessionOptions(
+                port_access=PortAccessOptions(fanout_access_mode=optical.fanout_access_mode),
+                realization=RealizationOptions(bend_radius_um=options.layout.bend_radius_um),
+                obstacle_config=obstacle_config,
+                include_heater_obstacles=obstacles.include_heater_obstacles,
+                config=config,
+            ),
+            config=config,
+        )
+        # The stage's own static-fanout probe computed which source
+        # instances get the 2-port dense-fanout threshold (see
+        # `_derive_crossing_tiles`); the actual routing run must agree, so
+        # PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES's old self-set/self-clear
+        # environment mutation becomes this explicit config fold-in.
+        config = replace(
+            config, fanout=replace(config.fanout, dense_fanout_instances=dense_fanout_instances)
+        )
+        if crossing_guidance_net_names:
+            fallbacks.take("crossings.layer_to_router", len(crossing_guidance_net_names))
+            # Mixed run: tiled layers stay crossing-free, the fallback layers
+            # get contribution 1's guided search restricted to their nets.
+            enable_crossings = True
+            crossing_mode = "lidar-guided"
+            print(
+                "      - crossing structure: router fallback for "
+                f"{len(crossing_guidance_net_names)} net(s) -> crossings enabled "
+                "(lidar-guided, guidance restricted to those nets)"
+            )
+    if options.path_length.enable_path_length_matching and enable_crossings:
+        # Decision 10 (2026-11-05): not a target; every stable configuration
+        # runs crossings off, the combination is unverified.
+        print(
+            "      - WARNING: path-length matching with the crossing-aware search on is "
+            "not a supported combination; the stable configurations run --crossings false"
+        )
+    # The guided search (contribution 1, and contribution 2's router fallback
+    # on its derived design) is the only reader of the analysis below this
+    # point; the baseline must not see a plan and gets none.
+    placement_analysis: PlacementAnalysis | None = None
+    if enable_crossings and is_guided_mode(crossing_mode):
+        placement_analysis, _seconds = _placement_analysis_stage(
+            schematic=schematic,
+            unrouted_layout=unrouted_layout,
+            total_steps=total_steps,
+            stats=stats,
+            design="design with crossing tiles" if preplaced_crossing_grids else "placed design",
+        )
+    return _CrossingSetup(
+        schematic=schematic,
+        unrouted_layout=unrouted_layout,
+        config=config,
+        enable_crossings=enable_crossings,
+        crossing_mode=crossing_mode,
+        net_order=net_order,
+        net_order_depth_by_node=net_order_depth_by_node,
+        report_metadata=report_metadata,
+        guidance_net_names=crossing_guidance_net_names,
+        placement_analysis=placement_analysis,
+    )
+
+
+def _write_routes_overview(benchmark_name: str, optical_result: OpticalRoutingStageResult) -> None:
+    """Write `build/routes/<benchmark>_overview.svg` and say what it shows."""
+    route_result = optical_result.route_result
+    debug_artifacts = optical_result.debug_artifacts
+    # The routes overview (route-overview plan, 2026-10-05): every routed
+    # waveguide with its realized length (routed plus the meander drawn
+    # on it, the bookkeeping by physical edge) and a legend with the
+    # totals and the chip dimensions, next to the per-route SVGs.
+    overview_path = Path("build") / "routes" / f"{benchmark_name.lower()}_overview.svg"
+    instances, waveguide_polygons = layout_overview_shapes(optical_result.routed_layout)
+    overview = write_routes_overview_svg(
+        overview_path,
+        benchmark_name=benchmark_name,
+        records=list(getattr(debug_artifacts, "routed_net_records", []) or []),
+        realized_extra_um_by_net=realized_extra_um_by_net(
+            getattr(route_result, "meander_insertion_report_info", None)
+        ),
+        routable_bbox_um=getattr(debug_artifacts, "routable_bbox_um", None),
+        layout_bbox_um=_component_bbox_um(optical_result.routed_layout),
+        instances=instances,
+        waveguide_polygons=waveguide_polygons,
+    )
+    print(
+        f"      - Routes overview SVG: {overview_path} "
+        f"({overview.route_count} routes, routed {overview.routed_length_um:.1f} um, "
+        f"meander {overview.meander_length_um:.1f} um, "
+        f"total {overview.total_length_um:.1f} um)"
+    )
+
+
 def route_schematic(schematic: Schematic, config: RoutingConfig, options: FlowOptions) -> Component:
     """Route one already-loaded schematic: every stage after the load.
 
@@ -467,139 +688,29 @@ def _route_schematic(
         debug_timing=debug.debug_timing,
     )
     stage_observer.notify("loaded", None, LoadedDesign(schematic, unrouted_layout))
-    # The stages below negotiate the crossing configuration between them, so
-    # these four start as the option values and are then rebound.
-    enable_crossings = optical.enable_crossings
-    crossing_mode = optical.crossing_mode
-    preplaced_crossing_grids = options.preplaced_grids.preplaced_crossing_grids
-    original_analysis: PlacementAnalysis | None = None
-    original_analysis_seconds = 0.0
-    if preplaced_crossing_grids:
-        if is_guided_mode(crossing_mode):
-            raise ValueError(
-                "preplaced_crossing_grids (contribution 2) and crossing_mode "
-                "'lidar-guided' (contribution 1) are alternative contributions; "
-                "run exactly one of lidar-pure / lidar-guided / preplaced grids."
-            )
-        if enable_crossings:
-            raise ValueError(
-                "preplaced_crossing_grids and enable_crossings are mutually exclusive: "
-                "pre-placed grids resolve every crossing before routing, so the router "
-                "must run with crossings disabled."
-            )
-        original_analysis, original_analysis_seconds = _placement_analysis_stage(
-            schematic=schematic,
-            unrouted_layout=unrouted_layout,
-            total_steps=total_steps,
-            stats=stats,
-        )
-        if _standard_router_fallback(original_analysis):
-            preplaced_crossing_grids = False
-            enable_crossings = options.preplaced_grids.standard_router_crossings
-    net_order = optical.net_order
-    if net_order is None:
-        net_order = default_net_order(
-            preplaced_crossing_grids=preplaced_crossing_grids,
-            guided=bool(enable_crossings) and is_guided_mode(crossing_mode),
-        )
-    if preplaced_crossing_grids:  # noqa: SIM102 (the comment below is the inner condition's reason)
-        # Contribution 2 (2026-09-17, multiportmmi_128x128): the fan-in /
-        # fan-out nets of dense multi-port instances route without the
-        # long-straight congestion penalty so that their lanes can pack in
-        # parallel; every other net keeps the benchmark's weight. Part of the
-        # configuration since the ADEPT 128x128 run that only converged this
-        # way; `PHOTONIC_ROUTER_LONG_STRAIGHT_EXEMPT_DENSE_FANOUT=0` in the
-        # shell keeps the old behaviour.
-        if config.search.long_straight_exempt_dense_fanout is None:
-            config = replace(
-                config,
-                search=replace(config.search, long_straight_exempt_dense_fanout=True),
-            )
-    # Contribution 2 splits nets into tile stubs; keep the net order's depth
-    # layers those of the original netlist (see `SearchOptions.net_order_depth_by_node`).
-    net_order_depth_by_node: dict[str, int] | None = (
-        _depth_by_node_from_schematic(schematic) if preplaced_crossing_grids else None
+    setup = _crossing_setup(
+        schematic,
+        unrouted_layout,
+        config,
+        options,
+        total_steps=total_steps,
+        obstacle_config=route_static_obstacle_config,
     )
-    preplaced_report_metadata: dict[str, object] | None = None
-    crossing_guidance_net_names: frozenset[str] | None = None
-    if preplaced_crossing_grids and original_analysis is not None:
-        (
-            schematic,
-            unrouted_layout,
-            preplaced_report_metadata,
-            crossing_guidance_net_names,
-            dense_fanout_instances,
-        ) = _preplaced_crossing_grids_stage(
-            schematic=schematic,
-            unrouted_layout=unrouted_layout,
-            analysis=original_analysis,
-            analysis_seconds=original_analysis_seconds,
-            total_steps=total_steps,
-            stats=stats,
-            # The column grid puts its entry tiles on the router's static
-            # fan-out anchors, so the probe must see the routing run's
-            # configuration.
-            router_probe_options=SessionOptions(
-                port_access=PortAccessOptions(fanout_access_mode=optical.fanout_access_mode),
-                realization=RealizationOptions(bend_radius_um=options.layout.bend_radius_um),
-                obstacle_config=route_static_obstacle_config,
-                include_heater_obstacles=obstacles.include_heater_obstacles,
-                config=config,
-            ),
-            config=config,
-        )
-        # The stage's own static-fanout probe computed which source
-        # instances get the 2-port dense-fanout threshold (see
-        # `_derive_crossing_tiles`); the actual routing run must agree, so
-        # PHOTONIC_ROUTER_DENSE_FANOUT_INSTANCES's old self-set/self-clear
-        # environment mutation becomes this explicit config fold-in.
-        config = replace(
-            config, fanout=replace(config.fanout, dense_fanout_instances=dense_fanout_instances)
-        )
-        if crossing_guidance_net_names:
-            fallbacks.take("crossings.layer_to_router", len(crossing_guidance_net_names))
-            # Mixed run: tiled layers stay crossing-free, the fallback layers
-            # get contribution 1's guided search restricted to their nets.
-            enable_crossings = True
-            crossing_mode = "lidar-guided"
-            print(
-                "      - crossing structure: router fallback for "
-                f"{len(crossing_guidance_net_names)} net(s) -> crossings enabled "
-                "(lidar-guided, guidance restricted to those nets)"
-            )
-    if options.path_length.enable_path_length_matching and enable_crossings:
-        # Decision 10 (2026-11-05): not a target; every stable configuration
-        # runs crossings off, the combination is unverified.
-        print(
-            "      - WARNING: path-length matching with the crossing-aware search on is "
-            "not a supported combination; the stable configurations run --crossings false"
-        )
-    # The guided search (contribution 1, and contribution 2's router fallback
-    # on its derived design) is the only reader of the analysis below this
-    # point; the baseline must not see a plan and gets none.
-    placement_analysis: PlacementAnalysis | None = None
-    if enable_crossings and is_guided_mode(crossing_mode):
-        placement_analysis, _seconds = _placement_analysis_stage(
-            schematic=schematic,
-            unrouted_layout=unrouted_layout,
-            total_steps=total_steps,
-            stats=stats,
-            design="design with crossing tiles" if preplaced_crossing_grids else "placed design",
-        )
+    schematic, unrouted_layout, config = setup.schematic, setup.unrouted_layout, setup.config
     record_initial_route_stats(stats)
     optical_config = build_optical_routing_stage_config(
         options,
         config,
         OpticalStageInputs(
             crossings=CrossingOptions(
-                enable_crossings=enable_crossings,
-                crossing_mode=crossing_mode,
+                enable_crossings=setup.enable_crossings,
+                crossing_mode=setup.crossing_mode,
                 crossing_half_size_cells=int(optical.crossing_half_size_cells),
-                crossing_guidance_net_names=crossing_guidance_net_names,
-                placement_analysis=placement_analysis,
+                crossing_guidance_net_names=setup.guidance_net_names,
+                placement_analysis=setup.placement_analysis,
             ),
-            net_order=net_order,
-            net_order_depth_by_node=net_order_depth_by_node,
+            net_order=setup.net_order,
+            net_order_depth_by_node=setup.net_order_depth_by_node,
             obstacle_config=route_static_obstacle_config,
             debug_dir=debug_dir,
             debug_route_indices=route_debug_indices,
@@ -636,7 +747,7 @@ def _route_schematic(
         debug_artifacts=debug_artifacts,
         include_heater_obstacles=obstacles.include_heater_obstacles,
         debug_stop_after_route_index=debug.debug_stop_after_route_index,
-        extra_report_metadata=preplaced_report_metadata,
+        extra_report_metadata=setup.report_metadata,
         write_gds_on_photonic_verification_failure=(
             config.write_gds_on_photonic_verification_failure
         ),
@@ -673,30 +784,7 @@ def _route_schematic(
         )
 
     if debug_svgs_enabled:
-        # The routes overview (route-overview plan, 2026-10-05): every routed
-        # waveguide with its realized length (routed plus the meander drawn
-        # on it, the bookkeeping by physical edge) and a legend with the
-        # totals and the chip dimensions, next to the per-route SVGs.
-        overview_path = Path("build") / "routes" / f"{benchmark_name.lower()}_overview.svg"
-        instances, waveguide_polygons = layout_overview_shapes(optical_result.routed_layout)
-        overview = write_routes_overview_svg(
-            overview_path,
-            benchmark_name=benchmark_name,
-            records=list(getattr(debug_artifacts, "routed_net_records", []) or []),
-            realized_extra_um_by_net=realized_extra_um_by_net(
-                getattr(route_result, "meander_insertion_report_info", None)
-            ),
-            routable_bbox_um=getattr(debug_artifacts, "routable_bbox_um", None),
-            layout_bbox_um=_component_bbox_um(optical_result.routed_layout),
-            instances=instances,
-            waveguide_polygons=waveguide_polygons,
-        )
-        print(
-            f"      - Routes overview SVG: {overview_path} "
-            f"({overview.route_count} routes, routed {overview.routed_length_um:.1f} um, "
-            f"meander {overview.meander_length_um:.1f} um, "
-            f"total {overview.total_length_um:.1f} um)"
-        )
+        _write_routes_overview(benchmark_name, optical_result)
         report_and_open_debug_svgs(
             debug_artifacts=debug_artifacts,
             electrical_result=electrical_result,
