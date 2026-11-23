@@ -5,9 +5,10 @@ from __future__ import annotations
 import itertools
 import logging
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Iterable as IterableABC
 from dataclasses import dataclass, replace
+from typing import Any
 
 from photonic_router.config import FlowDiagnostics
 from photonic_router.crossings.route_rust_crossing_components import (
@@ -41,6 +42,17 @@ def polyline_length_um(points: tuple[tuple[float, float], ...]) -> float:
     for start, end in itertools.pairwise(points):
         total += math.hypot(float(end[0]) - float(start[0]), float(end[1]) - float(start[1]))
     return total
+
+
+def kernel_centerline_length_um(router: Any, centerline: Sequence[tuple[float, float]]) -> float:
+    """The length of a centerline as the kernel measures it (um).
+
+    The kernel sums the straight pieces like `polyline_length_um` and
+    refuses a centerline with fewer than two points, a point that is not
+    finite or a piece of length zero. That refusal is not caught: until
+    2026-11-24 it was, and such a centerline got the plain sum instead.
+    """
+    return float(router.centerline_length_um(list(centerline)))
 
 
 def dedupe_centerline(
@@ -572,15 +584,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                     freeze_target=not correct_target,
                 )
                 if len(centerline) >= 2:
-                    centerline_length = getattr(router, "centerline_length_um", None)
-                    if centerline_length is not None:
-                        try:
-                            corrected_total_length_um = float(centerline_length(list(centerline)))
-                        except (TypeError, ValueError):
-                            fallbacks.take("endpoint.length_along_straight_pieces")
-                            corrected_total_length_um = polyline_length_um(centerline)
-                    else:
-                        corrected_total_length_um = polyline_length_um(centerline)
+                    corrected_total_length_um = kernel_centerline_length_um(router, centerline)
                     return replace(
                         record,
                         total_length_um=corrected_total_length_um,
@@ -794,15 +798,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                     f"accepts={accepts}"
                 )
             if accepts:
-                centerline_length = getattr(router, "centerline_length_um", None)
-                if centerline_length is not None:
-                    try:
-                        corrected_total_length_um = float(centerline_length(list(candidate)))
-                    except (TypeError, ValueError):
-                        fallbacks.take("endpoint.length_along_straight_pieces")
-                        corrected_total_length_um = polyline_length_um(candidate)
-                else:
-                    corrected_total_length_um = polyline_length_um(candidate)
+                corrected_total_length_um = kernel_centerline_length_um(router, candidate)
                 return replace(
                     record,
                     total_length_um=corrected_total_length_um,

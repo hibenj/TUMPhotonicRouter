@@ -381,7 +381,6 @@ def route_match_and_realize(
         routed_layout,
         records_for_realization,
         crossing_plan_info=plan_info.to_dict() if plan_info is not None else None,
-        enable_endpoint_correction=realization.enable_checked_endpoint_correction,
         geometry=RealizationGeometry(
             route_width_um=realization.route_width_um,
             route_layer=realization.route_layer,

@@ -810,58 +810,21 @@ def _record_edge_key(record: RoutedNetRecord) -> RoutedEdgeKey:
     )
 
 
-def _record_route_cells(record: RoutedNetRecord) -> set[GridCell]:
-    cells = getattr(record.route_obj, "cells", None) or []
-    return {(int(x), int(y)) for x, y in cells}
+def _record_centerline_for_registration(record: RoutedNetRecord) -> list[tuple[float, float]]:
+    """The corrected centerline the meander planner registers for a record.
 
-
-def _record_centerline_for_registration(
-    record: RoutedNetRecord,
-    router: MeanderRouterLike,
-) -> list[tuple[float, float]] | None:
-    if record.corrected_centerline_um:
-        return [(float(x_um), float(y_um)) for x_um, y_um in record.corrected_centerline_um]
-    try:
-        raw_centerline = router.route_port_corrected_centerline(record.route_obj)
-    except (TypeError, ValueError):
-        fallbacks.take("plm.unregistered_route")
-        return None
-    if not isinstance(raw_centerline, Iterable):
-        return None
-    centerline: list[tuple[float, float]] = []
-    for point in raw_centerline:
-        if not isinstance(point, (tuple, list)) or len(point) != 2:
-            return None
-        try:
-            centerline.append((float(point[0]), float(point[1])))
-        except (TypeError, ValueError):
-            return None
-    return centerline if len(centerline) >= 2 else None
-
-
-def _inflate_grid_cells(
-    cells: Iterable[GridCell],
-    *,
-    radius_cells: int,
-    width_cells: int,
-    height_cells: int,
-) -> set[GridCell]:
-    radius = max(0, int(radius_cells))
-    width = max(0, int(width_cells))
-    height = max(0, int(height_cells))
-    inflated: set[GridCell] = set()
-    for x, y in cells:
-        ix = int(x)
-        iy = int(y)
-        for dx in range(-radius, radius + 1):
-            nx = ix + dx
-            if nx < 0 or nx >= width:
-                continue
-            for dy in range(-radius, radius + 1):
-                ny = iy + dy
-                if 0 <= ny < height:
-                    inflated.add((nx, ny))
-    return inflated
+    Raises:
+        RuntimeError: the record has none. Until 2026-11-24 the kernel was
+            asked for an unchecked correction here, and a record without
+            one stood as an obstacle with its requirement left to fail.
+    """
+    if not record.corrected_centerline_um:
+        reason = record.endpoint_correction_error or "no stage gave it one"
+        raise RuntimeError(
+            f"net {record.net_name!r} reached path-length matching without a "
+            f"corrected centerline: {reason}"
+        )
+    return [(float(x_um), float(y_um)) for x_um, y_um in record.corrected_centerline_um]
 
 
 def _grid_rect_area(parsed_grid_rect: tuple[int, int, int, int]) -> int:
@@ -1002,24 +965,16 @@ def _build_planner_context(
         )
     route_occupancy_radius_cells = max(0, int(route_occupancy_radius_cells))
     meander_box_clearance_radius_cells = max(0, int(meander_box_clearance_radius_cells))
-    centerline_lists_by_edge: dict[RoutedEdgeKey, list[tuple[float, float]]] = {}
-    for edge_key, record in by_edge.items():
-        centerline = _record_centerline_for_registration(record, router)
-        if centerline is not None:
-            centerline_lists_by_edge[edge_key] = centerline
+    centerline_lists_by_edge = {
+        edge_key: _record_centerline_for_registration(record)
+        for edge_key, record in by_edge.items()
+    }
     registerable_edge_keys = list(centerline_lists_by_edge)
-    unregistered_edge_keys = [
-        edge_key for edge_key in by_edge if edge_key not in centerline_lists_by_edge
-    ]
-    # One backend: the combined static-and-route registration runs whenever a
-    # record has a centerline to register; the handle form when the static
-    # cells arrive as a Rust handle and every record registers.
+    # One backend: the combined static-and-route registration runs whenever
+    # there is a record; the handle form when the static cells arrive as a
+    # Rust handle.
     can_use_registered_route_cells = bool(registerable_edge_keys)
-    use_static_handle = (
-        static_blocked_cell_handle is not None
-        and can_use_registered_route_cells
-        and not unregistered_edge_keys
-    )
+    use_static_handle = static_blocked_cell_handle is not None and can_use_registered_route_cells
     base_static_reused = False
     base_static_from_handle = False
     if static_blocked_cells is None:
@@ -1040,25 +995,8 @@ def _build_planner_context(
     else:
         base_static_cells = {(int(x), int(y)) for x, y in static_blocked_cells}
     bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
-    unregistered_route_static_cells: set[GridCell] = set()
-    if can_use_registered_route_cells:
-        for edge_key in unregistered_edge_keys:
-            route_cells = _record_route_cells(by_edge[edge_key])
-            if route_occupancy_radius_cells > 0:
-                route_cells = _inflate_grid_cells(
-                    route_cells,
-                    radius_cells=route_occupancy_radius_cells,
-                    width_cells=int(width),
-                    height_cells=int(height),
-                )
-            unregistered_route_static_cells.update(route_cells)
-    base_static_for_router = (
-        base_static_cells | unregistered_route_static_cells
-        if unregistered_route_static_cells
-        else base_static_cells
-    )
     if not can_use_registered_route_cells:
-        router.set_static_cells(list(base_static_for_router))
+        router.set_static_cells(list(base_static_cells))
     register_route_cells_s = 0.0
     register_route_geometry_s = 0.0
     rust_registration_profile: dict[str, float] = {}
@@ -1078,7 +1016,7 @@ def _build_planner_context(
         else:
             indices, open_counts, unique_count = planner.register(
                 route_objects,
-                base_static_cells=list(base_static_for_router),
+                base_static_cells=list(base_static_cells),
                 route_clearance_radius_cells=route_occupancy_radius_cells,
             )
         register_route_cells_s = time.perf_counter() - t_register_start
@@ -1122,13 +1060,10 @@ def _build_planner_context(
             "meander_box_clearance_radius_cells": float(meander_box_clearance_radius_cells),
             "registered_route_cell_acceleration_enabled": float(can_use_registered_route_cells),
             "registered_record_count": float(len(registerable_edge_keys)),
-            "unregistered_record_count": float(len(unregistered_edge_keys)),
-            "unregistered_route_static_cell_count": float(len(unregistered_route_static_cells)),
             "routed_record_count": float(len(by_edge)),
             "unique_route_cell_count": float(registered_unique_route_cell_count),
             "registered_open_cell_count": float(registered_open_cell_count),
             "base_static_cell_count": float(len(base_static_cells)),
-            "base_static_for_router_cell_count": float(len(base_static_for_router)),
         }
         for key, value in rust_registration_profile.items():
             setup_profile[f"rust_registration_{key}"] = float(value)

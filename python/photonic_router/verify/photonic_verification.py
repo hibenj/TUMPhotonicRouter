@@ -244,7 +244,6 @@ def verify_photonic_routing(
             dbu=dbu,
             router=realization_router,
             crossing_plan_info=crossing_clip_plan_info,
-            enable_endpoint_correction=checks.check_endpoint_connectivity,
         )
         route_regions_by_key[key] = route_region
         _verify_record_connectivity(
@@ -424,7 +423,6 @@ def _realized_record_region(
     dbu: float,
     router: RealizationRouter,
     crossing_plan_info: Mapping[str, object] | None = None,
-    enable_endpoint_correction: bool = True,
 ) -> kdb.Region:
     # 2026-09-25, Milestone 4 (verifier-speed-on-large-layouts): the region
     # straight from the router's polygon, no scratch `Component`/`add_polygon`/
@@ -439,7 +437,6 @@ def _realized_record_region(
         dbu=dbu,
         router=router,
         crossing_plan_info=crossing_plan_info,
-        enable_endpoint_correction=enable_endpoint_correction,
     )
     region = kdb.Region()
     for polygon in polygons:

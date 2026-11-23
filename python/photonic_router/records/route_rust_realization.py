@@ -12,13 +12,11 @@ from typing import Protocol
 import klayout.db as kdb
 from gdsfactory.component import Component
 
-from photonic_router.records import fallbacks
 from photonic_router.records.route_rust_records import format_port_endpoint_correction_error
 from photonic_router.records.route_rust_types import (
     RoutedNetRecord,
     as_float,
     as_int,
-    int_of,
     int_or_none,
 )
 
@@ -29,23 +27,8 @@ load_rust_backend = _sob.load_rust_backend
 _require_rust_backend = _sob._require_rust_backend
 
 
-class _EndpointCorrectionRouter(Protocol):
-    def route_port_corrected_centerline(
-        self,
-        route: object,
-        *,
-        source_port_um: tuple[float, float] | None = None,
-        target_port_um: tuple[float, float] | None = None,
-        allow_unchecked_bumps: bool = True,
-    ) -> Iterable[object]: ...
-
-
-class RealizationRouter(_EndpointCorrectionRouter, Protocol):
+class RealizationRouter(Protocol):
     """The router methods that turn a routed record into its polygon (points in um)."""
-
-    def realize_route_polygon(self, route: object, width_um: float) -> list[tuple[float, float]]:
-        """Return the polygon of ``route`` drawn ``width_um`` wide."""
-        ...
 
     def realize_centerline_polygon_with_terminal_tangents(
         self,
@@ -70,105 +53,6 @@ class RealizationRouter(_EndpointCorrectionRouter, Protocol):
     ) -> list[tuple[float, float]]:
         """Return the polygon of ``route`` with the planned meander in place of the selected run."""
         ...
-
-
-def _physical_port_centerline(
-    router: _EndpointCorrectionRouter,
-    record: RoutedNetRecord,
-    *,
-    realization_grid_spec: tuple[int, int, float, float, float] | None = None,
-    enable_endpoint_correction: bool = True,
-    allow_unchecked_bumps: bool = True,
-    route_has_crossing: bool = False,
-) -> list[tuple[float, float]]:
-    corrected_centerline = [(float(p[0]), float(p[1])) for p in record.corrected_centerline_um]
-    if corrected_centerline:
-        return corrected_centerline
-    if not enable_endpoint_correction:
-        return []
-
-    source_port_um = record.source_port_center_um
-    target_port_um = record.target_port_center_um
-    if source_port_um is None and target_port_um is None:
-        return []
-    if record.endpoint_correction_error is not None:
-        return []
-    if route_has_crossing:
-        return []
-
-    fallbacks.take("realization.unchecked_port_centerline")
-    try:
-        raw_centerline = router.route_port_corrected_centerline(
-            record.route_obj,
-            source_port_um=source_port_um,
-            target_port_um=target_port_um,
-            allow_unchecked_bumps=allow_unchecked_bumps,
-        )
-    except (TypeError, ValueError) as exc:
-        _LOGGER.info(
-            "ERROR: "
-            + format_port_endpoint_correction_error(
-                record,
-                exc,
-                realization_grid_spec=realization_grid_spec,
-            )
-        )
-        return []
-
-    centerline: list[tuple[float, float]] = []
-    for point in raw_centerline:
-        if not isinstance(point, (tuple, list)) or len(point) != 2:
-            _LOGGER.info(
-                "ERROR: "
-                + format_port_endpoint_correction_error(
-                    record,
-                    "router returned an invalid corrected centerline point",
-                    realization_grid_spec=realization_grid_spec,
-                )
-            )
-            return []
-        centerline.append((float(point[0]), float(point[1])))
-    if not centerline:
-        _LOGGER.info(
-            "ERROR: "
-            + format_port_endpoint_correction_error(
-                record,
-                "router returned an empty corrected centerline",
-                realization_grid_spec=realization_grid_spec,
-            )
-        )
-        return []
-    return centerline
-
-
-def _crossing_net_ids(
-    crossing_plan_info: Mapping[str, object] | None,
-) -> set[int]:
-    if not isinstance(crossing_plan_info, Mapping) or not crossing_plan_info.get(
-        "enabled",
-    ):
-        return set()
-    net_ids: set[int] = set()
-    for collection_name, key_pairs in (
-        ("realized_intersections", (("net_id_a", "net_id_b"),)),
-        ("native_crossing_events", (("net_id", "partner_net_id"),)),
-    ):
-        raw_collection = crossing_plan_info.get(collection_name, ())
-        if not isinstance(raw_collection, Iterable) or isinstance(
-            raw_collection,
-            (str, bytes, bytearray),
-        ):
-            continue
-        for raw_item in raw_collection:
-            if not isinstance(raw_item, Mapping):
-                continue
-            for key_pair in key_pairs:
-                for key in key_pair:
-                    try:
-                        net_ids.add(int_of(raw_item.get(key)))
-                    except (TypeError, ValueError):
-                        continue
-    return net_ids
 
 
 def build_realization_router(
@@ -227,7 +111,6 @@ def realize_routed_net_records(
     *,
     geometry: RealizationGeometry,
     crossing_plan_info: Mapping[str, object] | None = None,
-    enable_endpoint_correction: bool = True,
     router: RealizationRouter | None = None,
 ) -> None:
     """Phase B: realize routed records into polygons on the target layout."""
@@ -250,7 +133,6 @@ def realize_routed_net_records(
         crossing_plan_info,
         dbu=dbu,
     )
-    crossing_net_ids = _crossing_net_ids(crossing_plan_info)
 
     for record in routed_net_records:
         clip_region = (
@@ -263,10 +145,6 @@ def realize_routed_net_records(
             record,
             route_width_um=route_width_um,
             realization_grid_spec=realization_grid_spec,
-            enable_endpoint_correction=enable_endpoint_correction,
-            route_has_crossing=(
-                record.net_id is not None and int(record.net_id) in crossing_net_ids
-            ),
         )
         _add_route_polygon(
             routed_layout,
@@ -282,8 +160,6 @@ def _record_realized_polygon(
     *,
     route_width_um: float,
     realization_grid_spec: tuple[int, int, float, float, float],
-    enable_endpoint_correction: bool,
-    route_has_crossing: bool,
 ) -> list[tuple[float, float]]:
     """Compute one record's realized polygon (micron coordinates).
 
@@ -293,14 +169,15 @@ def _record_realized_polygon(
     database-unit ``kdb.Polygon`` objects without a ``Component``), so the
     polygon computation is written once.
     """
-    corrected_centerline = _physical_port_centerline(
-        router,
-        record,
-        realization_grid_spec=realization_grid_spec,
-        enable_endpoint_correction=enable_endpoint_correction,
-        allow_unchecked_bumps=True,
-        route_has_crossing=route_has_crossing,
-    )
+    corrected_centerline = [(float(p[0]), float(p[1])) for p in record.corrected_centerline_um]
+    if not corrected_centerline:
+        # Until 2026-11-24 such a record got an unchecked correction here, or
+        # was drawn as its grid route: geometry that does not end on the
+        # ports, without a word. No benchmark ever took either way.
+        reason = record.endpoint_correction_error or "no stage gave it one"
+        raise RuntimeError(
+            f"net {record.net_name!r} reached realization without a corrected centerline: {reason}"
+        )
     if record.meander_auto_plan is not None:
         plan = record.meander_auto_plan
         selected_run_start_index = plan.get("selected_run_start_index")
@@ -351,25 +228,22 @@ def _record_realized_polygon(
             "centerline; the planner always stores one (phase 6 slice A removed the "
             "box-replanning fallbacks for records without it)"
         )
-    if corrected_centerline:
-        try:
-            return router.realize_centerline_polygon_with_terminal_tangents(
-                corrected_centerline,
-                float(route_width_um),
-                record.route_obj,
-                source_enabled=record.source_port_center_um is not None,
-                target_enabled=record.target_port_center_um is not None,
+    try:
+        return router.realize_centerline_polygon_with_terminal_tangents(
+            corrected_centerline,
+            float(route_width_um),
+            record.route_obj,
+            source_enabled=record.source_port_center_um is not None,
+            target_enabled=record.target_port_center_um is not None,
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            format_port_endpoint_correction_error(
+                record,
+                exc,
+                realization_grid_spec=realization_grid_spec,
             )
-        except ValueError as exc:
-            raise RuntimeError(
-                format_port_endpoint_correction_error(
-                    record,
-                    exc,
-                    realization_grid_spec=realization_grid_spec,
-                )
-            ) from exc
-    fallbacks.take("realization.grid_route_polygon")
-    return router.realize_route_polygon(record.route_obj, float(route_width_um))
+        ) from exc
 
 
 def _add_route_polygon(
@@ -401,7 +275,6 @@ def realized_record_polygons(
     dbu: float,
     router: RealizationRouter,
     crossing_plan_info: Mapping[str, object] | None = None,
-    enable_endpoint_correction: bool = True,
 ) -> list[kdb.Polygon]:
     """Realize one record straight into database-unit ``kdb.Polygon`` objects.
 
@@ -416,7 +289,6 @@ def realized_record_polygons(
         crossing_plan_info,
         dbu=dbu,
     )
-    crossing_net_ids = _crossing_net_ids(crossing_plan_info)
     clip_region = (
         crossing_clip_regions_by_net_id.get(int(record.net_id))
         if record.net_id is not None
@@ -427,8 +299,6 @@ def realized_record_polygons(
         record,
         route_width_um=route_width_um,
         realization_grid_spec=realization_grid_spec,
-        enable_endpoint_correction=enable_endpoint_correction,
-        route_has_crossing=(record.net_id is not None and int(record.net_id) in crossing_net_ids),
     )
     polygon = _polygon_um_to_dbu(polygon_um, dbu)
     if clip_region is None or clip_region.is_empty():

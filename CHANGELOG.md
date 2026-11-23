@@ -1597,6 +1597,35 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- Four fallbacks no run ever took, replaced by an error that names the
+  net (owner, 2026-11-23). Counted with the fallback register over every
+  public benchmark below 16 x 16 in three configurations, the 13 PLM
+  cells, the five private circuits and all 27 cells of the paper (the
+  64 x 64 and 128 x 128 designs included): zero times each.
+  - A record without a corrected centerline was given an unchecked
+    endpoint correction at realization, or drawn as its grid route
+    (`realization.unchecked_port_centerline`,
+    `realization.grid_route_polygon`): geometry that does not end on the
+    ports, without a word; `finalize.py` names the first as a past source
+    of wrong layouts. `realize_routed_net_records` and
+    `realized_record_polygons` now raise "net ... reached realization
+    without a corrected centerline" with the endpoint correction's own
+    error when there is one, and lose `enable_endpoint_correction`.
+  - Such a record was left out of the meander planner's registration and
+    stood as an obstacle, its requirement left to fail later
+    (`plm.unregistered_route`). `_build_planner_context` raises the same
+    way; the bookkeeping for unregistered routes is gone.
+  - A centerline the kernel refused to measure (fewer than two points, a
+    point that is not finite, a piece of length zero) got the plain sum
+    of its pieces instead (`endpoint.length_along_straight_pieces`). The
+    sum is the same number; what the fallback hid is the broken
+    centerline. `kernel_centerline_length_um` asks the kernel and lets
+    its refusal through.
+  The register has nine names, seven of them not taken by any pinned
+  benchmark or test (`fallbacks_never_taken` 11 to 7). Twelve tests of
+  the meander planner built records without a centerline and let the
+  fake router supply one; their records carry it now, and one test
+  holds the refusal.
 - Two modules of the package that only tests used (owner, 2026-11-23).
   `primitive_library.py` mapped the kernel's primitive ids to gdsfactory
   components and nothing asked it; it is removed with its test (python

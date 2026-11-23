@@ -59,7 +59,6 @@ def realize_and_assemble_debug_artifacts(
             state.routed_layout,
             routed_net_records,
             crossing_plan_info=state.crossing_plan_info.to_dict(),
-            enable_endpoint_correction=settings.enable_checked_endpoint_correction,
             geometry=RealizationGeometry(
                 route_width_um=settings.route_width_um,
                 route_layer=settings.route_layer,

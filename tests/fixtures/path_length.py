@@ -102,8 +102,8 @@ def records_from_links(
 
 class FakeRouter:
     """The router the fake backend builds: it keeps the static cells it is
-    given and answers port-corrected centerlines from `centerline` (none,
-    so no record registers, when it is not given)."""
+    given. `centerline` is what a test takes its records' corrected
+    centerlines from."""
 
     def __init__(
         self,
@@ -344,6 +344,27 @@ def real_route_obj(
     source = rust_backend.State(x0, y0, 0)
     target = rust_backend.State(x1, y1, 0)
     return router.route_single_net(source, target)
+
+
+def real_centerline(
+    route_obj: Any,
+    *,
+    grid_size_um: float = 1.0,
+    bend_radius_cells: int = 4,
+    allow_45_degree_turns: bool = True,
+) -> tuple[tuple[float, float], ...]:
+    """The centerline of a route of `real_route_obj`, as a record carries it corrected."""
+    rust_backend = real_backend()
+    grid = rust_backend.GridSpec(256, 256, grid_size_um, 0.0, 0.0)
+    primitive = rust_backend.PrimitiveLibraryConfig(
+        grid_size_um=grid_size_um,
+        bend_radius_cells=bend_radius_cells,
+        allow_45_degree_turns=allow_45_degree_turns,
+    )
+    router = rust_backend.PyPhotonicRouter(
+        grid, primitive, rust_backend.AStarConfig(max_iterations=200_000)
+    )
+    return tuple((float(x), float(y)) for x, y in router.route_port_corrected_centerline(route_obj))
 
 
 # --- reports and configs ----------------------------------------------------

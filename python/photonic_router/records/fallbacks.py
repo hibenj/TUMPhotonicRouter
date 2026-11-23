@@ -35,17 +35,6 @@ FALLBACKS: dict[str, str] = {
         "the kernel rejected the checked correction of a terminal segment; "
         "that end keeps its baseline"
     ),
-    "endpoint.length_along_straight_pieces": (
-        "the kernel could not measure a corrected centerline; its length is the sum "
-        "of its straight pieces"
-    ),
-    "realization.unchecked_port_centerline": (
-        "a record reached realization without a corrected centerline and got "
-        "the unchecked correction"
-    ),
-    "realization.grid_route_polygon": (
-        "a record without a corrected centerline is drawn as its grid route"
-    ),
     "plm.meander_split": (
         "no single meander fitted and the extra length was split over several runs of the same edge"
     ),
@@ -54,10 +43,6 @@ FALLBACKS: dict[str, str] = {
     ),
     "plm.planner_error_as_no_candidate": (
         "the meander planner raised and the requirement counts as having no candidate"
-    ),
-    "plm.unregistered_route": (
-        "a route without a centerline is not registered with the meander planner "
-        "and stands as an obstacle"
     ),
     "electrical.pad_wire_full_grid": (
         "the channel router could not place a pad wire and the full-grid search "

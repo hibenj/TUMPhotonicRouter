@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import klayout.db as kdb
 import photonic_router.verify.photonic_verification as photonic_verification_module
+import pytest
 from gdsfactory.component import Component
 from gdsfactory.gpdk import get_generic_pdk
 from photonic_router.records.route_keys import PortRef
@@ -1274,7 +1275,6 @@ def _component_path_region(
     realization_grid_spec: tuple[int, int, float, float, float],
     router: object,
     crossing_plan_info: dict[str, object] | None = None,
-    enable_endpoint_correction: bool = True,
 ) -> kdb.Region:
     """Oracle for `test_realized_record_region_equals_component_path`.
 
@@ -1294,7 +1294,6 @@ def _component_path_region(
         temp,
         [record],
         crossing_plan_info=crossing_plan_info,
-        enable_endpoint_correction=enable_endpoint_correction,
         router=router,
         geometry=RealizationGeometry(
             route_width_um=route_width_um,
@@ -1346,22 +1345,28 @@ def test_realized_record_region_equals_component_path():
         target_port_center_um=(10.0, -10.0),
         route_obj=bend_route_obj,
     )
-    # The same route, forced through the plain `realize_route_polygon`
-    # branch (no corrected centerline, no ports).
-    record_plain = replace(
-        record_bend,
-        corrected_centerline_um=(),
-        source_port_center_um=None,
-        target_port_center_um=None,
-    )
-    # The same route, forced through `route_port_corrected_centerline` (only
-    # one port set, no corrected centerline yet).
-    record_port_corrected = replace(
-        record_bend,
-        corrected_centerline_um=(),
-        source_port_center_um=(0.0, 0.0),
-        target_port_center_um=None,
-    )
+    # The same route without ports: both ends follow the centerline.
+    record_plain = replace(record_bend, source_port_center_um=None, target_port_center_um=None)
+    # The same route with one port set.
+    record_port_corrected = replace(record_bend, target_port_center_um=None)
+    # A record without a corrected centerline is refused by both paths.
+    record_uncorrected = replace(record_bend, corrected_centerline_um=())
+    with pytest.raises(RuntimeError, match="without a corrected centerline"):
+        _component_path_region(
+            record_uncorrected,
+            route_layer=route_layer,
+            route_width_um=route_width_um,
+            realization_grid_spec=realization_grid_spec,
+            router=router,
+        )
+    with pytest.raises(RuntimeError, match="without a corrected centerline"):
+        _realized_record_region(
+            record_uncorrected,
+            route_width_um=route_width_um,
+            realization_grid_spec=realization_grid_spec,
+            dbu=0.001,
+            router=router,
+        )
 
     # A crossing clip region cut out of `record_bend`'s own realized
     # polygon, so the clip subtraction runs on real (not box) geometry.

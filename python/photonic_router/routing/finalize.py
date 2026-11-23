@@ -12,7 +12,6 @@ from typing import Any, TypedDict, cast
 from photonic_router.crossings.route_rust_crossing_verification import (
     populate_realized_intersections_from_native_crossing_events,
 )
-from photonic_router.records import fallbacks
 from photonic_router.records.route_rust_geometry import compress_centerline
 from photonic_router.records.route_rust_records import (
     EndpointCorrectionRouter,
@@ -43,6 +42,7 @@ from photonic_router.verify.route_rust_endpoint_correction import (
     EndpointCorrectionSetup,
     apply_crossing_aware_endpoint_correction_to_record,
     dedupe_centerline,
+    kernel_centerline_length_um,
     legal_crossing_points_by_net_id,
     merge_terminal_corrected_route_centerline,
     polyline_length_um,
@@ -455,23 +455,6 @@ def _fanout_stub_correction_jobs(
 _Centerline = tuple[tuple[float, float], ...]
 
 
-def _router_centerline_length_um(router: Any, centerline: _Centerline) -> float:
-    """The length of a centerline as the kernel measures it (um).
-
-    The sum of its straight pieces when the kernel has no
-    ``centerline_length_um`` or that call fails.
-    """
-
-    centerline_length = getattr(router, "centerline_length_um", None)
-    if centerline_length is None:
-        return polyline_length_um(centerline)
-    try:
-        return float(centerline_length(list(centerline)))
-    except (TypeError, ValueError):
-        fallbacks.take("endpoint.length_along_straight_pieces")
-        return polyline_length_um(centerline)
-
-
 def _stub_merge_failure_message(
     net_name: str,
     existing_baseline: _Centerline,
@@ -621,7 +604,7 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
             state.search.timing_buckets["endpoint_correction"].record_elapsed(
                 correction_elapsed_per_job_s,
             )
-        corrected_total_length_um = _router_centerline_length_um(
+        corrected_total_length_um = kernel_centerline_length_um(
             state.kernel.router, merged_centerline
         )
         state.search.bookkeeping.records_by_id[net_id] = replace(

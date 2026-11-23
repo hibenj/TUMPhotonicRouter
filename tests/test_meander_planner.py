@@ -30,35 +30,20 @@ from tests.fixtures.path_length import (
     fake_backend,
     planned_meander,
     planned_result,
+    real_centerline,
     real_route_obj,
     search_config,
 )
 
 
-def test_planner_context_uses_static_handle_when_registration_fast_path_is_unavailable():
-    class _RouteObj:
-        cells = [(4, 4)]
-
+def test_planner_context_without_records_takes_the_static_cells_of_the_handle():
     class _StaticHandle:
         def cells(self) -> list[tuple[int, int]]:
             return [(1, 2), (3, 4)]
 
-    edge = RoutedEdgeKey(
-        net_name="n0",
-        source=PortRef(instance="src", port="o1"),
-        target=PortRef(instance="dst", port="o1"),
-    )
-    record = RoutedNetRecord(
-        net_name=edge.net_name,
-        source=edge.source,
-        target=edge.target,
-        route_obj=_RouteObj(),
-        total_length_um=10.0,
-    )
-
     context = _build_planner_context(
         rust_backend=fake_backend(),
-        routed_net_records=[record],
+        routed_net_records=[],
         debug_meanders=True,
         space=MeanderPlanningSpace(
             realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
@@ -76,26 +61,10 @@ def test_planner_context_uses_static_handle_when_registration_fast_path_is_unava
     assert context.profile.setup_profile["base_static_cell_count"] == 2.0
 
 
-def test_planner_context_avoids_python_route_cell_bookkeeping_without_registration():
-    class _RouteObj:
-        cells = [(4, 4)]
-
-    edge = RoutedEdgeKey(
-        net_name="n0",
-        source=PortRef(instance="src", port="o1"),
-        target=PortRef(instance="dst", port="o1"),
-    )
-    record = RoutedNetRecord(
-        net_name=edge.net_name,
-        source=edge.source,
-        target=edge.target,
-        route_obj=_RouteObj(),
-        total_length_um=10.0,
-    )
-
+def test_planner_context_without_records_hands_the_static_cells_to_the_router():
     context = _build_planner_context(
         rust_backend=fake_backend(),
-        routed_net_records=[record],
+        routed_net_records=[],
         debug_meanders=True,
         space=MeanderPlanningSpace(
             realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
@@ -117,25 +86,9 @@ def test_planner_context_avoids_python_route_cell_bookkeeping_without_registrati
 
 
 def test_planner_context_builds_no_profile_without_debug_meanders():
-    class _RouteObj:
-        cells = [(4, 4)]
-
-    edge = RoutedEdgeKey(
-        net_name="n0",
-        source=PortRef(instance="src", port="o1"),
-        target=PortRef(instance="dst", port="o1"),
-    )
     context = _build_planner_context(
         rust_backend=fake_backend(),
-        routed_net_records=[
-            RoutedNetRecord(
-                net_name=edge.net_name,
-                source=edge.source,
-                target=edge.target,
-                route_obj=_RouteObj(),
-                total_length_um=10.0,
-            )
-        ],
+        routed_net_records=[],
         space=MeanderPlanningSpace(
             realization_grid_spec=(16, 16, 1.0, 0.0, 0.0),
             allow_45_degree_turns=False,
@@ -326,6 +279,7 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
             source=edge_a.source,
             target=edge_a.target,
             route_obj=_RouteObj("a"),
+            corrected_centerline_um=tuple(_centerline(_RouteObj("a"))),
             total_length_um=100.0,
         ),
         RoutedNetRecord(
@@ -333,6 +287,7 @@ def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
             source=edge_b.source,
             target=edge_b.target,
             route_obj=_RouteObj("b"),
+            corrected_centerline_um=tuple(_centerline(_RouteObj("b"))),
             total_length_um=100.0,
         ),
     ]
@@ -444,6 +399,7 @@ def test_meander_planner_combines_reused_physical_edge_requirements(monkeypatch)
             source=physical_edge.source,
             target=physical_edge.target,
             route_obj=_RouteObj(),
+            corrected_centerline_um=((0.0, 10.0), (200.0, 10.0)),
             total_length_um=100.0,
         )
     ]
@@ -553,6 +509,7 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
             source=edge_a.source,
             target=edge_a.target,
             route_obj=_RouteObj("a"),
+            corrected_centerline_um=tuple(_centerline(_RouteObj("a"))),
             total_length_um=100.0,
         ),
         RoutedNetRecord(
@@ -560,6 +517,7 @@ def test_meander_planner_rejects_partial_bundle_candidate(monkeypatch):
             source=edge_b.source,
             target=edge_b.target,
             route_obj=_RouteObj("b"),
+            corrected_centerline_um=tuple(_centerline(_RouteObj("b"))),
             total_length_um=100.0,
         ),
     ]
@@ -616,6 +574,7 @@ def test_main_meander_report_uses_auto_multi_bump_path():
         source=edge.source,
         target=edge.target,
         route_obj=route_obj,
+        corrected_centerline_um=real_centerline(route_obj),
         total_length_um=30.0,
     )
     req = MissingLengthRequirement(edge_key=edge, missing_length_um=32.0)
@@ -660,7 +619,8 @@ def test_meander_report_builds_no_profile_without_debug_meanders():
         net_name=edge.net_name,
         source=edge.source,
         target=edge.target,
-        route_obj=real_route_obj(10, 10, 60, 10),
+        route_obj=(route_obj := real_route_obj(10, 10, 60, 10)),
+        corrected_centerline_um=real_centerline(route_obj),
         total_length_um=30.0,
     )
     req = MissingLengthRequirement(edge_key=edge, missing_length_um=32.0)
@@ -714,6 +674,9 @@ def test_auto_meander_endpoint_inset_relaxes_when_radius_seven_needs_more_run():
         source=edge.source,
         target=edge.target,
         route_obj=route_obj,
+        corrected_centerline_um=real_centerline(
+            route_obj, bend_radius_cells=7, allow_45_degree_turns=False
+        ),
         total_length_um=73.0,
     )
     # 100 um at r = 7 needs three U-turns (one would need 56 um of height,
@@ -942,6 +905,9 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
         source=edge.source,
         target=edge.target,
         route_obj=route_obj,
+        corrected_centerline_um=tuple(
+            (float(x), float(y)) for x, y in router.route_port_corrected_centerline(route_obj)
+        ),
         total_length_um=float(route_obj.total_length_um),
     )
     req = MissingLengthRequirement(edge_key=edge, missing_length_um=1459.0)
@@ -979,7 +945,7 @@ def test_meander_insertion_adapts_bump_cap_for_large_matching_request():
     assert report.final_planning_mode == "rust_registered_sequence"
 
 
-def test_meander_planning_requires_registered_rust_planner(monkeypatch):
+def test_a_record_without_a_corrected_centerline_is_refused(monkeypatch):
     backend = fake_backend()
     monkeypatch.setattr(routing_api, "load_rust_backend", lambda: backend)
 
@@ -1001,27 +967,18 @@ def test_meander_planning_requires_registered_rust_planner(monkeypatch):
     )
     req = MissingLengthRequirement(edge_key=edge, missing_length_um=32.0)
 
-    updated, report = analyze_meander_insertion_for_requirements(
-        [record],
-        [req],
-        config=MeanderInsertionConfig(min_candidate_straight_length_um=5.0),
-        space=MeanderPlanningSpace(
-            realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
-            allow_45_degree_turns=True,
-            bend_radius_cells=4,
-            static_blocked_cells=[(1, 1)],
-        ),
-    )
-
-    static_cells = set(backend.routers[0].static_cells)
-    assert (1, 1) in static_cells
-    assert (7, 8) not in static_cells
-    assert (9, 10) not in static_cells
-    assert updated[0].opened_cells == record.opened_cells
-    results = report.results
-    assert results[0].status == "no_candidate"
-    assert "could not prepare candidate inputs" in results[0].reason
-    assert report.final_planning_mode == "none"
+    with pytest.raises(RuntimeError, match="'n0' reached path-length matching without"):
+        analyze_meander_insertion_for_requirements(
+            [record],
+            [req],
+            config=MeanderInsertionConfig(min_candidate_straight_length_um=5.0),
+            space=MeanderPlanningSpace(
+                realization_grid_spec=(200, 200, 1.0, 0.0, 0.0),
+                allow_45_degree_turns=True,
+                bend_radius_cells=4,
+                static_blocked_cells=[(1, 1)],
+            ),
+        )
 
 
 def test_meander_commit_uses_rust_reserved_rect_without_python_cells():
@@ -1099,6 +1056,7 @@ def test_too_short_route_reports_no_meander_candidate():
         source=edge.source,
         target=edge.target,
         route_obj=route_obj,
+        corrected_centerline_um=real_centerline(route_obj),
         total_length_um=2.0,
     )
     req = MissingLengthRequirement(edge_key=edge, missing_length_um=10.0)
