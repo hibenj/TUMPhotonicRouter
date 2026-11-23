@@ -531,6 +531,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `docs/ARCHITECTURE.md`, section 7.4: the module table states the
+  measured file and line counts again (the package has about 50,500
+  lines, not 45,700) and names `schematic_protocols.py` and
+  `records/route_keys.py`, which it did not list.
 - Two more functions of the routing core within the limit of 50
   statements, no behaviour change: `dispatch.dispatch_native_routing`
   hands the per-job debug tables, the recording of the attempts and the
