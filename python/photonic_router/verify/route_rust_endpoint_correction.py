@@ -13,6 +13,7 @@ from photonic_router.crossings.route_rust_crossing_components import (
     crossing_footprint_polygon_metadata,
     point_um_from_mapping,
 )
+from photonic_router.records import fallbacks
 from photonic_router.records.route_rust_geometry import (
     point_distance_um,
     segment_intersects_crossing_footprint_interior,
@@ -573,6 +574,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                         try:
                             corrected_total_length_um = float(centerline_length(list(centerline)))
                         except (TypeError, ValueError):
+                            fallbacks.take("endpoint.length_along_straight_pieces")
                             corrected_total_length_um = polyline_length_um(centerline)
                     else:
                         corrected_total_length_um = polyline_length_um(centerline)
@@ -687,6 +689,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                 target_port_um=target_port_um,
             )
         except (RuntimeError, TypeError, ValueError) as exc:
+            fallbacks.take("endpoint.checked_segment_rejected")
             if trace_endpoint:
                 print(
                     "endpoint_trace "
@@ -793,6 +796,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                     try:
                         corrected_total_length_um = float(centerline_length(list(candidate)))
                     except (TypeError, ValueError):
+                        fallbacks.take("endpoint.length_along_straight_pieces")
                         corrected_total_length_um = polyline_length_um(candidate)
                 else:
                     corrected_total_length_um = polyline_length_um(candidate)

@@ -14,6 +14,21 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- A register of the router's fallbacks (owner, 2026-11-23; rule 3.8 of
+  `docs/CODING_STANDARDS.md`). `records/fallbacks.py` names thirteen
+  fallbacks and what each takes instead of what; the place that takes one
+  calls `fallbacks.take(name)`, the flow resets the counts when a run
+  starts. `scripts/logic_check.py` reports them per benchmark as notes
+  `fallback.<name>`, once per time taken, and the pin holds the counts:
+  over the 123 pinned runs two are ever taken (`flow.standard_router` in
+  15 runs, `crossings.layer_to_router` for 8 nets of one run). The new
+  ratchet measure `fallbacks_never_taken` counts the ones no pinned
+  benchmark and no test takes (11). Whether a fallback is needed is
+  judged on every benchmark the router has to route: the full-grid
+  search was switched off on 2026-11-05 on the evidence of the 27 paper
+  cells, and the private circuits have not routed since (found today;
+  open with the owner). `tests/test_fallbacks.py` holds the register and
+  the code to each other.
 - Two rules of `docs/CODING_STANDARDS.md` (owner, 2026-11-23). 4.11: a
   function reads every parameter it takes; ruff `ARG001` is in the lint
   set. The last four cases are settled: `port_access_rule_for` loses

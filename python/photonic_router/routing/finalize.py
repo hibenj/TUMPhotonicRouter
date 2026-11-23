@@ -11,6 +11,7 @@ from typing import Any, TypedDict, cast
 from photonic_router.crossings.route_rust_crossing_verification import (
     populate_realized_intersections_from_native_crossing_events,
 )
+from photonic_router.records import fallbacks
 from photonic_router.records.route_rust_geometry import compress_centerline
 from photonic_router.records.route_rust_records import (
     EndpointCorrectionRouter,
@@ -464,6 +465,7 @@ def _router_centerline_length_um(router: Any, centerline: _Centerline) -> float:
     try:
         return float(centerline_length(list(centerline)))
     except (TypeError, ValueError):
+        fallbacks.take("endpoint.length_along_straight_pieces")
         return polyline_length_um(centerline)
 
 

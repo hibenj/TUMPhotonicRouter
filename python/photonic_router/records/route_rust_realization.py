@@ -11,6 +11,7 @@ from typing import Protocol
 import klayout.db as kdb
 from gdsfactory.component import Component
 
+from photonic_router.records import fallbacks
 from photonic_router.records.route_rust_records import format_port_endpoint_correction_error
 from photonic_router.records.route_rust_types import (
     RoutedNetRecord,
@@ -92,6 +93,7 @@ def _physical_port_centerline(
     if route_has_crossing:
         return []
 
+    fallbacks.take("realization.unchecked_port_centerline")
     try:
         raw_centerline = router.route_port_corrected_centerline(
             record.route_obj,
@@ -363,6 +365,7 @@ def _record_realized_polygon(
                     realization_grid_spec=realization_grid_spec,
                 )
             ) from exc
+    fallbacks.take("realization.grid_route_polygon")
     return router.realize_route_polygon(record.route_obj, float(route_width_um))
 
 

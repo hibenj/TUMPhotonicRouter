@@ -212,6 +212,30 @@ def names_only_tests_use(package: Path = PACKAGE, roots: Iterable[Path] | None =
     return count
 
 
+def fallbacks_never_taken(
+    registry: Path = PACKAGE / "records" / "fallbacks.py",
+    logic_pin: Path = REPO_ROOT / "tests" / "baselines" / "logic_findings.json",
+    tests: Path = REPO_ROOT / "tests",
+) -> int:
+    """Count the named fallbacks that no pinned benchmark and no test takes (rule 3.8).
+
+    A fallback counts as taken when the logic pin holds a note
+    `fallback.<name>` for some benchmark, or when a test names it.
+    """
+    names: list[str] = []
+    for node in ast.walk(ast.parse(registry.read_text(encoding="utf-8"))):
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "FALLBACKS"
+            and isinstance(node.value, ast.Dict)
+        ):
+            names = [key.value for key in node.value.keys if isinstance(key, ast.Constant)]
+    pinned = logic_pin.read_text(encoding="utf-8") if logic_pin.exists() else ""
+    tested = "\n".join(path.read_text(encoding="utf-8") for path in sorted(tests.rglob("*.py")))
+    return sum(f'"fallback.{name}"' not in pinned and f'"{name}"' not in tested for name in names)
+
+
 def class_field_count(path: Path, class_name: str) -> int:
     """Count the annotated fields of one class (rule 3.2 for the session state)."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -291,6 +315,7 @@ def measure() -> dict[str, int]:
     )
     counts["python_exceptions"] = python_exceptions(sources)
     counts["names_only_tests_use"] = names_only_tests_use()
+    counts["fallbacks_never_taken"] = fallbacks_never_taken()
     counts.update(rust_lint_counts())
     counts["rust_exceptions"] = rust_exceptions()
     counts["rust_workspace_debt_allows"] = workspace_debt_allows()

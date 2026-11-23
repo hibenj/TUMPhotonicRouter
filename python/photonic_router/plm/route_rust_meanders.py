@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 from photonic_router.plm.path_length_graph import DelayInsertionCandidate, MissingLengthRequirement
+from photonic_router.records import fallbacks
 from photonic_router.records.route_keys import RoutedEdgeKey
 from photonic_router.records.route_rust_types import (
     DEFAULT_MEANDER_MIN_STRAIGHT_UM,
@@ -389,6 +390,20 @@ def _first_failure_reason(result: Mapping[str, object], default: str) -> str:
     return str(result.get("reason", "")) or default
 
 
+#: the planner's `planning_mode` values that are fallbacks, by their name in the register
+_FALLBACK_OF_PLANNING_MODE = {
+    "rust_registered_split_route_runs": "plm.meander_split",
+    "rust_registered_per_edge_fallback": "plm.meander_per_edge",
+}
+
+
+def _count_planning_mode(planning_mode: str) -> None:
+    """Count the fallback, if the mode the planner reports is one."""
+    name = _FALLBACK_OF_PLANNING_MODE.get(planning_mode)
+    if name is not None:
+        fallbacks.take(name)
+
+
 def _candidate_edge_calls(result: Mapping[str, object]) -> int:
     """The plans Rust evaluated: every planned edge plus the failing edge per candidate."""
     raw_candidate_results = result.get("candidate_results", [])
@@ -535,6 +550,7 @@ class _MeanderPlannerContext:
                 ),
             )
         except (RuntimeError, TypeError, ValueError) as exc:
+            fallbacks.take("plm.planner_error_as_no_candidate")
             return _RequirementPlanOutcome(
                 selected_work_index=None,
                 split_part_count=None,
@@ -586,6 +602,7 @@ class _MeanderPlannerContext:
 
         raw_plans = cast(list[dict[str, object]], result.get("plans", []))
         planning_mode = str(result.get("planning_mode", ""))
+        _count_planning_mode(planning_mode)
         if planning_mode == "rust_registered_split_route_runs":
             record = self.by_edge[split_edge_key]
             max_bumps = self.max_bumps_for_edge(split_edge_key, record)
@@ -689,6 +706,7 @@ class _MeanderPlannerContext:
                 ),
             )
         except (RuntimeError, TypeError, ValueError) as exc:
+            fallbacks.take("plm.planner_error_as_no_candidate")
             return (
                 [],
                 str(exc),
@@ -700,6 +718,7 @@ class _MeanderPlannerContext:
         if self.profile is not None:
             self.profile.add_rust_profiles(result)
         planning_mode = str(result.get("planning_mode", "rust_registered_final_requests"))
+        _count_planning_mode(planning_mode)
         edge_calls = _candidate_edge_calls(result)
         if result.get("status") != "planned":
             return (
@@ -805,6 +824,7 @@ def _record_centerline_for_registration(
     try:
         raw_centerline = router.route_port_corrected_centerline(record.route_obj)
     except (TypeError, ValueError):
+        fallbacks.take("plm.unregistered_route")
         return None
     if not isinstance(raw_centerline, Iterable):
         return None

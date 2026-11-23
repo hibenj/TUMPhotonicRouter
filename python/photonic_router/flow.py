@@ -67,6 +67,7 @@ from photonic_router.gds.route_overview_svg import (
 )
 from photonic_router.logic_checks.stages import verify_stages
 from photonic_router.placement_analysis import PlacementAnalysis, analyze_placement
+from photonic_router.records import fallbacks
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.records.route_order import default_net_order
 from photonic_router.routing import stage_observer
@@ -262,6 +263,7 @@ def _standard_router_fallback(analysis: PlacementAnalysis) -> bool:
         len(demand.outside),
         reasons,
     )
+    fallbacks.take("flow.standard_router")
     return True
 
 
@@ -424,6 +426,7 @@ def _route_schematic(
     Keep the body below as the stage outline; detailed behavior belongs in the
     stage modules and the small helpers above.
     """
+    fallbacks.reset()
     benchmark_name = options.loading.benchmark_name
     stats = options.stats.stats
     debug = options.debug
@@ -554,6 +557,7 @@ def _route_schematic(
             config, fanout=replace(config.fanout, dense_fanout_instances=dense_fanout_instances)
         )
         if crossing_guidance_net_names:
+            fallbacks.take("crossings.layer_to_router", len(crossing_guidance_net_names))
             # Mixed run: tiled layers stay crossing-free, the fallback layers
             # get contribution 1's guided search restricted to their nets.
             enable_crossings = True

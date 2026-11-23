@@ -184,6 +184,15 @@ like the violation counts: a commit that adds one says why in its message.
 7. **The three paper configurations do not leak into each other.** The
    baseline never receives a crossing plan. *Test, in force
    (`tests/test_placement_analysis.py`).*
+8. **A fallback has a name and is counted.** A second way the router
+   takes when the first did not work is named in
+   `records/fallbacks.py`, and the place that takes it calls
+   `fallbacks.take` (*Test, in force: `tests/test_fallbacks.py`*).
+   `scripts/logic_check.py` reports per benchmark which fallbacks a run
+   took. A fallback that no pinned benchmark and no test takes is not
+   known to be needed (`fallbacks_never_taken`); whether one is needed is
+   judged on every benchmark the router has to route, the private
+   circuits included, not on the paper cells alone. *Tool, proposed.*
 
 ## 4. Python
 
@@ -304,6 +313,7 @@ table when their counts reached zero and the lint sets took them over.
 | Rule | Measure (name in the pin) | at the first measurement | after S1 and S2 slice 3 |
 | --- | --- | --- | --- |
 | 3.2 | fields of the shared session state (`session_state_fields`) | 82 | 14 |
+| 3.8 | named fallbacks no pinned benchmark and no test takes (`fallbacks_never_taken`) | see the pin (2026-11-23) | see the pin |
 | 3.4 | imports from a lower layer into a higher one (`upward_imports`) | 3 | 0 |
 | 3.5 | underscore names imported from another module (`private_imports`) | 247 | 27 |
 | 4.3 | `dict[str, object]` / `dict[str, Any]` annotations (`untyped_dict_annotations`) | 222 | 216 |

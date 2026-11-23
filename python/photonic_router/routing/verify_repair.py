@@ -24,6 +24,7 @@ from photonic_router.crossings.route_rust_crossing_plan import (
 from photonic_router.crossings.route_rust_crossing_verification import (
     populate_realized_intersections_from_native_crossing_events,
 )
+from photonic_router.records import fallbacks
 from photonic_router.records.route_rust_types import RoutedNetRecord, int_or_none
 from photonic_router.routing import timing
 from photonic_router.routing.dispatch import (
@@ -600,6 +601,7 @@ def repair_and_verify_final_geometry(
     for _final_repair_round in range(final_crossing_repair_round_limit):
         if not illegal_realized_crossings:
             break
+        fallbacks.take("routing.final_crossing_repair")
         if not _repair_final_illegal_crossings(settings, state, illegal_realized_crossings):
             break
         routed_net_records = state.search.bookkeeping.ordered_records()

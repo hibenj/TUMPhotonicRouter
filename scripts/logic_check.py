@@ -41,7 +41,6 @@ import contextlib
 import importlib
 import io
 import json
-import logging
 import pkgutil
 import re
 import sys
@@ -53,9 +52,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from photonic_router import cli, flow
+from photonic_router import cli
 from photonic_router.logic_checks import ERROR, NOTE, Finding, count_by_check
 from photonic_router.logic_checks.stages import stage_findings
+from photonic_router.records import fallbacks
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stage_observer import StopAfterStage, observe_stages
 
@@ -136,35 +136,20 @@ def findings_for_benchmark(
     The run is ended after `last_stage(benchmark)`: after the routes are
     polygons, or before the search. `session=False` ends it after the stage
     `loaded` (the reading checks and the crossing demand; the session
-    stages take over a minute on the largest benchmarks). A run the flow
+    stages take over a minute on the largest benchmarks). Every fallback of
+    `photonic_router.records.fallbacks` the run took is a note
+    `fallback.<name>` in front, once per time it was taken; a run the flow
     routes with the standard router although contribution 2 was asked for
-    starts with the note `flow.standard_router_fallback`.
+    has `fallback.flow.standard_router`.
     """
     last = last_stage(benchmark, route_wide=route_wide) if session else "loaded"
-    warnings = _FlowWarnings()
-    flow_logger = logging.getLogger(flow.__name__)
-    flow_logger.addHandler(warnings)
-    try:
-        findings = _findings_of_run(benchmark, configuration, last)
-    finally:
-        flow_logger.removeHandler(warnings)
-    fallback = [
-        Finding("flow.standard_router_fallback", NOTE, benchmark, message)
-        for message in warnings.messages
-        if message.startswith(flow.STANDARD_ROUTER_FALLBACK)
+    findings = _findings_of_run(benchmark, configuration, last)
+    taken = [
+        Finding(f"fallback.{name}", NOTE, benchmark, fallbacks.FALLBACKS[name])
+        for name, count in fallbacks.taken().items()
+        for _ in range(count)
     ]
-    return fallback + findings
-
-
-class _FlowWarnings(logging.Handler):
-    """Collects the warnings of the flow during one run."""
-
-    def __init__(self) -> None:
-        super().__init__(logging.WARNING)
-        self.messages: list[str] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.messages.append(record.getMessage())
+    return taken + findings
 
 
 def _findings_of_run(benchmark: str, configuration: str, last: str) -> list[Finding]:
@@ -203,7 +188,7 @@ def _ended_run(benchmark: str, seen: list[str], error: Exception) -> Finding:
 
     A run of contribution 2 on a design that is not band-layered does not
     end: the flow routes it with the standard router, and the run gets the
-    note `flow.standard_router_fallback` (`findings_for_benchmark`).
+    note `fallback.flow.standard_router` (`findings_for_benchmark`).
     """
     message = str(error).splitlines()[0][:300]
     if "handoff" in seen and "routed" not in seen and "No route found" in message:

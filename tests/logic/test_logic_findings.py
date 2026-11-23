@@ -126,7 +126,7 @@ def test_the_plm_cells_are_the_plm_benchmarks_on_the_standard_router() -> None:
 
 def test_no_required_cell_has_a_known_error_or_is_refused() -> None:
     """What the router has to route, it routes: the paper's cells and the PLM benchmarks."""
-    ended = {"routing.net_not_routed", "flow.standard_router_fallback", "flow.run_failed"}
+    ended = {"routing.net_not_routed", "fallback.flow.standard_router", "flow.run_failed"}
     assert len(logic_check.REQUIRED_CELLS) == len(set(logic_check.REQUIRED_CELLS)) == 40
     for benchmark, configuration in logic_check.REQUIRED_CELLS:
         assert not ended & set(PIN[benchmark][configuration]), (benchmark, configuration)
@@ -136,7 +136,7 @@ def test_no_required_cell_has_a_known_error_or_is_refused() -> None:
 
 def test_contribution_2_falls_back_to_the_standard_router_exactly_where_bands_are_missing() -> None:
     """The fallback run has the findings of the baseline run and the note, nothing else."""
-    note = "flow.standard_router_fallback"
+    note = "fallback.flow.standard_router"
     for benchmark, by_configuration in PIN.items():
         pinned = dict(by_configuration["contribution2"])
         outside = by_configuration["baseline"].get("crossing_plan.net_outside_band_model", 0)

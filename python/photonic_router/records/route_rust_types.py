@@ -13,6 +13,7 @@ from typing import SupportsIndex, SupportsInt
 from gdsfactory.component import Component
 from gdsfactory.typings import Port
 
+from photonic_router.records import fallbacks
 from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 
 PRIMITIVE_TRANSITION_CLASSES = (
@@ -648,6 +649,7 @@ class RouteTimingBucket:
             _add_counter_dict(getattr(self, name), _get_route_counter_dict(route_obj, name))
         if bool(getattr(route_obj, "used_full_grid_fallback", False)):
             self.full_grid_fallbacks += 1
+            fallbacks.take("routing.full_grid_search")
 
 
 @dataclass(frozen=True)

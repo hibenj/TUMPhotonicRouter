@@ -921,7 +921,7 @@ after a stage, and an observer can end the run with `StopAfterStage`).
   `routing.net_not_routed` when the kernel gives up on a net, the error
   `flow.run_failed` for anything else. A run of contribution 2 on a design
   that is not band-layered is routed with the standard router and gets the
-  note `flow.standard_router_fallback`.
+  note `fallback.flow.standard_router`.
 
 `scripts/logic_check.py <benchmark>|--all [--configuration NAME] [--list N]`
 prints the findings; `tests/baselines/logic_findings.json` pins their

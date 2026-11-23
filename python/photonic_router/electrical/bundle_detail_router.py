@@ -51,6 +51,7 @@ from photonic_router.electrical.wire_geometry import (
     wire_reservation_cells_from_point_path,
     wire_spacing_radius_cells,
 )
+from photonic_router.records import fallbacks
 
 RouteSide = Literal["left", "right"]
 
@@ -307,6 +308,7 @@ def _route_fallback_wires(
     obstacle_map = progress.obstacle_map
     fallback_reasons_by_bundle_id: dict[int, list[str]] = {}
     for member, reason in to_fall_back:
+        fallbacks.take("electrical.pad_wire_full_grid")
         rank, terminal, assignment, _topology_route, target_cells = member
         bundle_id = bundle_id_by_terminal_id[terminal.id]
         reasons = fallback_reasons_by_bundle_id.setdefault(bundle_id, [])
