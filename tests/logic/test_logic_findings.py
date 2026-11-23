@@ -152,10 +152,10 @@ def _is_wide(benchmark: str) -> bool:
     return logic_check.last_stage(benchmark) == "handoff"
 
 
-def test_the_wide_designs_stop_at_the_hand_off_and_the_others_run_to_the_polygons() -> None:
-    assert logic_check.last_stage("benes_8x8_flat") == "realized"
-    assert logic_check.last_stage("cascade_16_folded") == "realized"
-    assert logic_check.last_stage("heater_single") == "realized"
+def test_the_wide_designs_stop_at_the_hand_off_and_the_others_run_to_the_final_check() -> None:
+    assert logic_check.last_stage("benes_8x8_flat") == "checked"
+    assert logic_check.last_stage("cascade_16_folded") == "checked"
+    assert logic_check.last_stage("heater_single") == "checked"
     assert logic_check.last_stage("benes_16x16") == "handoff"
     assert logic_check.last_stage("multiportmmi_64x64_bands1to2") == "handoff"
-    assert logic_check.last_stage("benes_16x16", route_wide=True) == "realized"
+    assert logic_check.last_stage("benes_16x16", route_wide=True) == "checked"

@@ -109,15 +109,17 @@ def public_benchmarks() -> list[str]:
 
 
 def last_stage(benchmark: str, *, route_wide: bool = False) -> str:
-    """The last stage a benchmark is run to: `realized`, or `handoff` for the wide designs.
+    """The last stage a benchmark is run to: `checked`, or `handoff` for the wide designs.
 
-    From 16 x 16 on the search takes over a minute (Benes 32 x 32: eight),
-    so those designs are checked up to the hand-off and not routed unless
-    `route_wide` is set.
+    `checked` is the flow's own final check of the routed geometry, so a
+    layout the flow would refuse is a finding of the harness too
+    (`flow.run_failed`). From 16 x 16 on the search takes over a minute
+    (Benes 32 x 32: eight), so those designs are checked up to the
+    hand-off and not routed unless `route_wide` is set.
     """
     match = re.search(r"_(\d+)x\d+", benchmark)
     wide = match is not None and int(match.group(1)) >= 16
-    return "handoff" if wide and not route_wide else "realized"
+    return "handoff" if wide and not route_wide else "checked"
 
 
 def findings_for_benchmark(
@@ -133,8 +135,8 @@ def findings_for_benchmark(
     stable defaults under one of `CONFIGURATIONS`
     (`cli.main([benchmark, "--configuration", configuration])`), through
     `logic_checks.stages.stage_findings`, the checks `--verify-stages` runs.
-    The run is ended after `last_stage(benchmark)`: after the routes are
-    polygons, or before the search. `session=False` ends it after the stage
+    The run is ended after `last_stage(benchmark)`: after the flow's final
+    check of the routed layout, or before the search. `session=False` ends it after the stage
     `loaded` (the reading checks and the crossing demand; the session
     stages take over a minute on the largest benchmarks). Every fallback of
     `photonic_router.records.fallbacks` the run took is a note

@@ -27,6 +27,11 @@ Stages reported so far, with their product:
 - `"realized"`: the `RealizedNets` of `route_match_and_realize`, after the
   session, the path-length matching and the realization into polygons;
   reported without session settings (`None`)
+- `"checked"`: the routed layout after the flow's final check of the
+  geometry (`verify_photonic_routing` and the crossing report), before the
+  electrical routing and before anything is written; reported without
+  session settings. A layout that fails the check does not get here: the
+  flow raises.
 """
 
 from __future__ import annotations

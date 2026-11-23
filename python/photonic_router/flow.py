@@ -757,6 +757,7 @@ def _route_schematic(
         # Performance pass 2026-09-03 (P5): the non-routing phases were an
         # un-itemised 16 % of a multiportmmi_32x32 run.
         print(f"      - Verification time: {time.perf_counter() - t_verify_start:.4f} s")
+    stage_observer.notify("checked", None, routed_layout)
 
     t_plm_start = time.perf_counter()
     attach_and_report_path_length_matching(

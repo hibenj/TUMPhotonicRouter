@@ -908,7 +908,9 @@ after a stage, and an observer can end the run with `StopAfterStage`).
   defaults once per router configuration (`--configuration baseline`, the
   standard router; `contribution1`, crossings planned ahead and the search
   guided; `contribution2`, pre-placed crossing structures) and collects
-  the findings: until the routes are polygons, or, from 16 x 16 on where
+  the findings: until the flow's own final check of the routed layout has
+  passed (stage `checked`; a layout it refuses is the error
+  `flow.run_failed`), or, from 16 x 16 on where
   the search takes over a minute, up to the hand-off (`last_stage`;
   `--route-wide` routes those too, on request and outside the pin;
   `--paper` routes the 27 cells of the paper's results table, the designs

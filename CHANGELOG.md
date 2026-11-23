@@ -578,6 +578,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The logic harness runs a benchmark through the flow's own final check
+  (owner, 2026-11-23). The flow reports a new stage `checked` after
+  `verify_and_attach_photonic_reports`, and `scripts/logic_check.py` ends
+  a run there instead of after `realized` (the wide designs still at the
+  hand-off). Until now the final check of the geometry lay outside the
+  harness; a layout the flow refuses is the error `flow.run_failed` now.
 - `flow._route_schematic` is the stage outline its docstring asks for
   (79 statements to under 50). What the stages before the search settle
   about crossings is `_crossing_setup`, which returns the record
