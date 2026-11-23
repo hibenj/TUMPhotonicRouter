@@ -2,7 +2,7 @@
   "private_imports": 0,
   "python_exceptions": 0,
   "ruff_BLE001": 31,
-  "ruff_C901": 59,
+  "ruff_C901": 57,
   "ruff_PLR0913": 12,
   "ruff_PLR0915": 12,
   "ruff_T201": 138,
@@ -11,6 +11,6 @@
   "rust_too_many_lines": 23,
   "rust_workspace_debt_allows": 2,
   "session_state_fields": 14,
-  "untyped_dict_annotations": 208,
+  "untyped_dict_annotations": 206,
   "upward_imports": 0
 }

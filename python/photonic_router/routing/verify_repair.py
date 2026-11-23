@@ -23,8 +23,8 @@ from typing import Any, cast
 from gdsfactory.component import Component
 
 from photonic_router.crossings.route_rust_crossing_components import (
-    legal_crossing_component_footprints_for_verification,
-    legal_crossing_overlap_polygons_for_verification,
+    legal_crossing_component_footprints,
+    legal_crossing_overlap_polygons,
     place_realized_crossing_components,
 )
 from photonic_router.crossings.route_rust_crossing_plan import (
@@ -786,11 +786,12 @@ def _refresh_photonic_verification(
             bend_radius_cells=state.kernel.radii.bend_radius_cells,
         ),
         crossings=LegalCrossings(
-            overlap_polygons_by_net_id_pair_um=legal_crossing_overlap_polygons_for_verification(
-                state.crossing_plan_info
+            overlap_polygons_by_net_id_pair_um=legal_crossing_overlap_polygons(
+                state.crossing_plan_info.realized_intersections
             ),
-            component_footprints_um=legal_crossing_component_footprints_for_verification(
-                state.crossing_plan_info
+            component_footprints_um=legal_crossing_component_footprints(
+                state.crossing_plan_info.realized_crossing_components,
+                state.crossing_plan_info.realized_intersections,
             ),
         ),
         checks=VerificationChecks(

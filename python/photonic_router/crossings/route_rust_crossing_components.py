@@ -425,100 +425,88 @@ def place_realized_crossing_components(
     return placements
 
 
-def legal_crossing_overlap_polygons_for_verification(
-    crossing_plan_info: CrossingPlanInfo | None,
+def _plain_sequence(value: object) -> list[object]:
+    """The items of ``value`` when it is an iterable other than text, else nothing."""
+    if not isinstance(value, IterableABC) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return list(value)
+
+
+def _legal_intersections(realized_intersections: object) -> list[Mapping[str, object]]:
+    """The realized intersections whose classification starts with ``legal_``."""
+    return [
+        raw_crossing
+        for raw_crossing in _plain_sequence(realized_intersections)
+        if isinstance(raw_crossing, Mapping)
+        and str(raw_crossing.get("classification", "") or "").startswith("legal_")
+    ]
+
+
+def _finite_polygon(raw_polygon: object) -> tuple[tuple[float, float], ...]:
+    """The polygon as (x, y) pairs in um, or empty unless every point is a finite pair."""
+    points: list[tuple[float, float]] = []
+    for raw_point in _plain_sequence(raw_polygon):
+        if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
+            return ()
+        try:
+            point = (float(raw_point[0]), float(raw_point[1]))
+        except (TypeError, ValueError):
+            return ()
+        if not math.isfinite(point[0]) or not math.isfinite(point[1]):
+            return ()
+        points.append(point)
+    return tuple(points)
+
+
+def legal_crossing_overlap_polygons(
+    realized_intersections: object,
 ) -> dict[tuple[int, int], tuple[tuple[tuple[float, float], ...], ...]]:
     """Collect the footprint polygons of the legal realized crossings per pair of nets.
 
-    Reads ``realized_intersections`` of the crossing plan. The key is the pair of net
-    ids, smaller id first; each polygon is a tuple of (x, y) in um. An intersection is
-    skipped if its classification does not start with ``legal_``, if it has no integer
-    net ids, or if its polygon is not at least three finite points. Returns an empty
-    dict without plan info.
+    ``realized_intersections`` is that field of the crossing plan, as the plan object
+    or its dict form holds it. The key is the pair of net ids, smaller id first; each
+    polygon is a tuple of (x, y) in um. An intersection is skipped if its
+    classification does not start with ``legal_``, if it has no integer net ids, or
+    if its polygon is not at least three finite points. This is the one reading both
+    verifications use: the check inside the router and the final check of the flow.
     """
-    if crossing_plan_info is None:
-        return {}
-    raw_crossings: object = crossing_plan_info.realized_intersections or ()
-    if not isinstance(raw_crossings, IterableABC) or isinstance(
-        raw_crossings,
-        (str, bytes, bytearray),
-    ):
-        return {}
-
     polygons_by_pair: dict[tuple[int, int], list[tuple[tuple[float, float], ...]]] = {}
-    for raw_crossing in raw_crossings:
-        if not isinstance(raw_crossing, Mapping):
-            continue
-        classification = str(raw_crossing.get("classification", "") or "")
-        if not classification.startswith("legal_"):
-            continue
+    for raw_crossing in _legal_intersections(realized_intersections):
         net_id_a = int_or_none(raw_crossing.get("net_id_a"))
         net_id_b = int_or_none(raw_crossing.get("net_id_b"))
         if net_id_a is None or net_id_b is None:
             continue
-        raw_polygon = raw_crossing.get("crossing_footprint_polygon_um", ())
-        if not isinstance(raw_polygon, IterableABC) or isinstance(
-            raw_polygon,
-            (str, bytes, bytearray),
-        ):
-            continue
-        points: list[tuple[float, float]] = []
-        for raw_point in raw_polygon:
-            if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
-                points = []
-                break
-            try:
-                point = (float(raw_point[0]), float(raw_point[1]))
-            except (TypeError, ValueError):
-                points = []
-                break
-            if not math.isfinite(point[0]) or not math.isfinite(point[1]):
-                points = []
-                break
-            points.append(point)
+        points = _finite_polygon(raw_crossing.get("crossing_footprint_polygon_um", ()))
         if len(points) >= 3:
             pair = (net_id_a, net_id_b) if net_id_a <= net_id_b else (net_id_b, net_id_a)
-            polygons_by_pair.setdefault(pair, []).append(tuple(points))
+            polygons_by_pair.setdefault(pair, []).append(points)
     return {pair: tuple(polygons) for pair, polygons in polygons_by_pair.items()}
 
 
-def legal_crossing_component_footprints_for_verification(
-    crossing_plan_info: CrossingPlanInfo | None,
+def legal_crossing_component_footprints(
+    realized_crossing_components: object,
+    realized_intersections: object,
 ) -> tuple[dict[str, object], ...]:
     """Return the records of the realized crossing components as a tuple of dicts.
 
     Uses ``realized_crossing_components`` of the crossing plan when it holds at least
     one mapping. Otherwise falls back to the ``realized_intersections`` whose
     classification starts with ``legal_`` and whose ``crossing_footprint_polygon_um``
-    has at least three points. Returns an empty tuple without plan info.
+    has at least three points.
     """
-    if crossing_plan_info is None:
-        return ()
-    raw_components: object = crossing_plan_info.realized_crossing_components or ()
-    if isinstance(raw_components, IterableABC) and not isinstance(
-        raw_components,
-        (str, bytes, bytearray),
-    ):
-        components = [
-            dict(component) for component in raw_components if isinstance(component, Mapping)
-        ]
-        if components:
-            return tuple(components)
+    components = [
+        dict(component)
+        for component in _plain_sequence(realized_crossing_components)
+        if isinstance(component, Mapping)
+    ]
+    if components:
+        return tuple(components)
 
-    raw_crossings = crossing_plan_info.realized_intersections or ()
     footprints: list[dict[str, object]] = []
-    for raw_crossing in raw_crossings:
-        classification = str(raw_crossing.get("classification", "") or "")
-        if not classification.startswith("legal_"):
-            continue
-        raw_polygon = raw_crossing.get("crossing_footprint_polygon_um", ())
-        if isinstance(raw_polygon, IterableABC) and not isinstance(
-            raw_polygon,
-            (str, bytes, bytearray),
-        ):
-            raw_points = list(raw_polygon)
-            if len(raw_points) >= 3:
-                footprint = dict(raw_crossing)
-                footprint["crossing_footprint_polygon_um"] = raw_points
-                footprints.append(footprint)
+    for raw_crossing in _legal_intersections(realized_intersections):
+        raw_points = _plain_sequence(raw_crossing.get("crossing_footprint_polygon_um", ()))
+        if len(raw_points) >= 3:
+            footprint = dict(raw_crossing)
+            footprint["crossing_footprint_polygon_um"] = raw_points
+            footprints.append(footprint)
     return tuple(footprints)

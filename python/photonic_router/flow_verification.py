@@ -15,6 +15,10 @@ from photonic_router.crossings.crossing_verification_report import (
     build_crossing_verification_report,
     route_cost_terms_from_mapping,
 )
+from photonic_router.crossings.route_rust_crossing_components import (
+    legal_crossing_component_footprints,
+    legal_crossing_overlap_polygons,
+)
 from photonic_router.flow_component_info import component_info
 from photonic_router.flow_stats import RoutingFlowStats
 from photonic_router.routing_layers import get_routing_obstacle_layers
@@ -79,6 +83,9 @@ def verify_and_attach_photonic_reports(
     realization_grid_spec = getattr(debug_artifacts, "realization_grid_spec", None)
     if not routed_records or realization_grid_spec is None:
         return
+    crossing_plan: Mapping[str, object] = (
+        crossing_plan_info if isinstance(crossing_plan_info, Mapping) else {}
+    )
 
     # This Python geometry verifier is the normal final gate for the realized
     # routed layout. Internal photonic probe verification in
@@ -102,12 +109,13 @@ def verify_and_attach_photonic_reports(
             routable_bbox_um=getattr(debug_artifacts, "routable_bbox_um", None),
         ),
         crossings=LegalCrossings(
-            overlap_polygons_by_net_id_pair_um=_legal_crossing_overlap_polygons(crossing_plan_info)
-            if isinstance(crossing_plan_info, Mapping)
-            else {},
-            component_footprints_um=_legal_crossing_component_footprints(crossing_plan_info)
-            if isinstance(crossing_plan_info, Mapping)
-            else (),
+            overlap_polygons_by_net_id_pair_um=legal_crossing_overlap_polygons(
+                crossing_plan.get("realized_intersections")
+            ),
+            component_footprints_um=legal_crossing_component_footprints(
+                crossing_plan.get("realized_crossing_components"),
+                crossing_plan.get("realized_intersections"),
+            ),
         ),
         checks=VerificationChecks(
             check_route_coverage=route_coverage_check_enabled, check_endpoint_connectivity=True
@@ -245,76 +253,6 @@ def _crossing_verification_failure_preview(payload: Mapping[str, object]) -> str
     if len(issues) > 5:
         lines.append(f"... {len(issues) - 5} more")
     return "; ".join(lines)
-
-
-def _legal_crossing_overlap_polygons(
-    crossing_plan_info: Mapping[str, object] | None,
-) -> dict[tuple[int, int], tuple[tuple[tuple[float, float], ...], ...]]:
-    if crossing_plan_info is None:
-        return {}
-    raw_crossings = crossing_plan_info.get("realized_intersections", ())
-    if not isinstance(raw_crossings, (list, tuple)):
-        return {}
-
-    polygons_by_pair: dict[tuple[int, int], list[tuple[tuple[float, float], ...]]] = {}
-    for raw_crossing in raw_crossings:
-        if not isinstance(raw_crossing, Mapping):
-            continue
-        classification = str(raw_crossing.get("classification", "") or "")
-        if not classification.startswith("legal_"):
-            continue
-        try:
-            net_id_a = int(raw_crossing["net_id_a"])
-            net_id_b = int(raw_crossing["net_id_b"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        raw_polygon = raw_crossing.get("crossing_footprint_polygon_um", ())
-        if not isinstance(raw_polygon, (list, tuple)) or len(raw_polygon) < 3:
-            continue
-        points: list[tuple[float, float]] = []
-        for raw_point in raw_polygon:
-            if not isinstance(raw_point, (list, tuple)) or len(raw_point) != 2:
-                points = []
-                break
-            try:
-                points.append((float(raw_point[0]), float(raw_point[1])))
-            except (TypeError, ValueError):
-                points = []
-                break
-        if len(points) >= 3:
-            pair = (net_id_a, net_id_b) if net_id_a <= net_id_b else (net_id_b, net_id_a)
-            polygons_by_pair.setdefault(pair, []).append(tuple(points))
-    return {pair: tuple(polygons) for pair, polygons in polygons_by_pair.items()}
-
-
-def _legal_crossing_component_footprints(
-    crossing_plan_info: Mapping[str, object] | None,
-) -> tuple[dict[str, object], ...]:
-    if crossing_plan_info is None:
-        return ()
-    raw_components = crossing_plan_info.get("realized_crossing_components", ())
-    if isinstance(raw_components, (list, tuple)):
-        components = [
-            dict(component) for component in raw_components if isinstance(component, Mapping)
-        ]
-        if components:
-            return tuple(components)
-    raw_crossings = crossing_plan_info.get("realized_intersections", ())
-    if not isinstance(raw_crossings, (list, tuple)):
-        return ()
-
-    footprints: list[dict[str, object]] = []
-    for raw_crossing in raw_crossings:
-        if not isinstance(raw_crossing, Mapping):
-            continue
-        classification = str(raw_crossing.get("classification", "") or "")
-        if not classification.startswith("legal_"):
-            continue
-        raw_polygon = raw_crossing.get("crossing_footprint_polygon_um", ())
-        if not isinstance(raw_polygon, (list, tuple)) or len(raw_polygon) < 3:
-            continue
-        footprints.append(dict(raw_crossing))
-    return tuple(footprints)
 
 
 def _schematic_route_count(schematic: object) -> int:

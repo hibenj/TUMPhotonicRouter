@@ -531,6 +531,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- One reading of the legal crossings for both verifications (owner,
+  2026-11-23: one of the two near copies, the one that makes more sense).
+  `legal_crossing_overlap_polygons` and
+  `legal_crossing_component_footprints` in
+  `crossings/route_rust_crossing_components.py` take the fields of the
+  crossing plan; the check inside the router and the final check of the
+  flow call them. The copy in `flow_verification.py` is gone. The final
+  check now skips a footprint polygon with a point that is not finite,
+  as the check inside the router did. `tests/test_legal_crossing_polygons.py`
+  holds the reading.
 - `path_length_requirements.build_requirement_delay_candidates` within
   the limit of 50 statements, no behaviour change: its five nested
   functions are module functions (`_edge_tuple_identity`,
