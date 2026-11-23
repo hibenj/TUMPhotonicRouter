@@ -531,6 +531,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `bundle_detail_router.route_detailed_bundles` (87 statements, two
+  closures over seven accumulators) is an outline of five steps now:
+  `_pad_wire_blockers`, `_collect_bundle_entries`,
+  `_commit_placed_wires`, `_route_fallback_wires` and
+  `_fail_terminals_outside_every_bundle`, with what is placed and
+  refused held by the dataclass `_DetailProgress` (`commit`, `fail`).
+  No behaviour change: on the electrical suite the metal of every GDS
+  layer is identical before and after, as are the 8 debug SVGs, and the
+  suite's baseline comparison passes.
 - `docs/ARCHITECTURE.md`, section 7.4: the module table states the
   measured file and line counts again (the package has about 50,500
   lines, not 45,700) and names `schematic_protocols.py` and
