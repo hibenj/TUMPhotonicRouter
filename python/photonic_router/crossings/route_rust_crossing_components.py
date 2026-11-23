@@ -114,13 +114,14 @@ def _ports_optical_center_um(obj: Any) -> tuple[float, float] | None:
 def _active_crossing_component() -> Component | None:
     try:
         return gf.components.crossing()
-    except Exception:
+    except ValueError:
+        # gdsfactory raises ValueError without an active PDK
         try:
             from gdsfactory.gpdk import get_generic_pdk
 
             get_generic_pdk().activate()
             return gf.components.crossing()
-        except Exception:
+        except ValueError:
             return None
 
 

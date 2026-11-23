@@ -166,3 +166,23 @@ def test_realized_extra_by_net_reads_the_physical_table_or_falls_back_to_the_boo
     booked_only = {"results": [{"edge": edge, "inserted_extra_length_um": 99.0}]}
     assert realized_extra_um_by_net(booked_only) == {"n": 99.0}
     assert realized_extra_um_by_net(None) == {}
+
+
+def test_the_shapes_of_a_layout_are_its_instances_as_boxes_and_its_own_waveguides() -> None:
+    import gdsfactory as gf
+    from photonic_router.gds.route_overview_svg import layout_overview_shapes
+
+    gf.gpdk.PDK.activate()
+    layout = gf.Component()
+    straight = layout.add_ref(gf.components.straight(length=10))
+    straight.name = "s0"
+    straight.move((5, 5))
+    layout.add_polygon([(0, 0), (4, 0), (4, 1), (0, 1)], layer=(1, 0))
+
+    instances, polygons = layout_overview_shapes(layout)
+
+    assert [(box.name, box.bbox) for box in instances] == [("s0", (5.0, 4.75, 15.0, 5.25))]
+    assert [sorted(polygon) for polygon in polygons] == [
+        [(0.0, 0.0), (0.0, 1.0), (4.0, 0.0), (4.0, 1.0)]
+    ]
+    assert layout_overview_shapes(gf.Component()) == ([], [])

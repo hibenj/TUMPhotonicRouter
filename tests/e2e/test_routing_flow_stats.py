@@ -1619,6 +1619,9 @@ def test_the_flow_can_append_electrical_routing(monkeypatch):
     from photonic_router import flow_electrical, flow_optical
 
     monkeypatch.setattr(routing_flow, "load_benchmark", fake_load_benchmark)
+    # the stand-in layout has no shapes to draw in the routes overview
+    monkeypatch.setattr(routing_flow, "layout_overview_shapes", lambda _layout: ([], []))
+    monkeypatch.setattr(routing_flow, "_component_bbox_um", lambda _layout: (0.0, 0.0, 10.0, 10.0))
     monkeypatch.setattr(
         routing_flow,
         "layout_from_schematic",

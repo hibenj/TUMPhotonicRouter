@@ -501,6 +501,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Fixed
 
+- `flow.load_benchmark` reported every `ModuleNotFoundError` as
+  "Benchmark not found", also one raised by an import inside the
+  benchmark module, and every `AttributeError` inside
+  `build_schematic()` as "must have a build_schematic() function". It
+  rewrites only the two cases it names; any other error is the
+  benchmark's own (`tests/test_load_benchmark.py`).
 - `scripts/extract_private_benchmark.py` wrote
   `--path-length-allow-residual true` into every private circuit's
   defaults, a flag the command line has not had since 2026-11-05, so a
@@ -572,6 +578,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Ten more blind `except Exception` (rule 4.9; fallback review,
+  2026-11-23). Removed where nothing can raise on the real object:
+  `flow._component_bbox_um` and `layout_overview_shapes` take a
+  `Component` and read it directly (a test now holds the shapes of a
+  small layout). Narrowed to what the library raises: `ValueError` for
+  a gdsfactory component that is not in the PDK or a call without an
+  active PDK (`benchmark_metadata.py`, the crossing component),
+  `OSError` and `webbrowser.Error` for opening the SVGs, `OSError`,
+  `RuntimeError` and `ValueError` for showing the layout in KLayout.
+  Four are left: two around building a benchmark's schematic for its
+  metadata, one in the debug SVG of a route, one in the
+  test-only topology analysis. Ratchet: blind excepts 14 to 4.
 - Fourteen `except Exception` around kernel calls catch what the binding
   raises (rule 4.9; fallback review, 2026-11-23): `(TypeError,
   ValueError)` for the centerline calls, with `RuntimeError` for the

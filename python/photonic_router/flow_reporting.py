@@ -253,7 +253,7 @@ def report_partial_debug_artifacts(
             webbrowser.open_new_tab(svg_path.resolve().as_uri())
         for svg_path in electrical_svgs:
             webbrowser.open_new_tab(svg_path.resolve().as_uri())
-    except Exception as e:
+    except (OSError, webbrowser.Error) as e:
         print(f"      - Warning: failed to open partial SVGs automatically: {e}")
 
 
@@ -520,7 +520,7 @@ def report_and_open_debug_svgs(
                 svg_path = Path(electrical_svg)
                 if svg_path.exists():
                     webbrowser.open_new_tab(svg_path.resolve().as_uri())
-    except Exception as e:
+    except (OSError, webbrowser.Error) as e:
         print(f"      - Warning: failed to open SVGs automatically: {e}")
 
 
@@ -535,7 +535,7 @@ def write_or_show_routed_layout(
         try:
             print("      - Opening routed layout in KLayout...")
             routed_layout.show()
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError) as e:
             print(f"      - Warning: failed to open layout in KLayout: {e}")
         return
 

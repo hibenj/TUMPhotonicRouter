@@ -102,12 +102,9 @@ def _depth_by_node_from_schematic(schematic: Schematic) -> dict[str, int]:
     return depth_by_node_from_jobs(jobs)
 
 
-def _component_bbox_um(component: object) -> tuple[float, float, float, float] | None:
-    """A gdsfactory component's bounding box as (xmin, ymin, xmax, ymax) in um, or None."""
-    try:
-        box = component.bbox()  # type: ignore[attr-defined]
-    except Exception:
-        return None
+def _component_bbox_um(component: Component) -> tuple[float, float, float, float]:
+    """A gdsfactory component's bounding box as (xmin, ymin, xmax, ymax) in um."""
+    box = component.bbox()
     return (float(box.left), float(box.bottom), float(box.right), float(box.top))
 
 
@@ -125,25 +122,28 @@ def load_benchmark(benchmark_name: str) -> Schematic:
         ModuleNotFoundError: If the benchmark module is not found.
         AttributeError: If the benchmark doesn't have a `build_schematic()` function.
     """
+    module_name = f"benchmarks.{benchmark_name}"
     try:
-        benchmark_module = importlib.import_module(f"benchmarks.{benchmark_name}")
-        schematic = benchmark_module.build_schematic()
-
-        if not isinstance(schematic, Schematic):
-            raise TypeError(
-                f"Expected Schematic from {benchmark_name}.build_schematic(), got {type(schematic)}"
-            )
-
+        benchmark_module = importlib.import_module(module_name)
     except ModuleNotFoundError as e:
+        # Only the benchmark itself missing reads as "not found"; a module the
+        # benchmark imports and that is missing is that module's error.
+        if e.name is None or not module_name.startswith(e.name):
+            raise
         raise ModuleNotFoundError(
             f"Benchmark '{benchmark_name}' not found in benchmarks/ directory"
         ) from e
-    except AttributeError as e:
+    build_schematic = getattr(benchmark_module, "build_schematic", None)
+    if build_schematic is None:
         raise AttributeError(
             f"Benchmark '{benchmark_name}' must have a 'build_schematic()' function"
-        ) from e
-    else:
-        return schematic
+        )
+    schematic = build_schematic()
+    if not isinstance(schematic, Schematic):
+        raise TypeError(
+            f"Expected Schematic from {benchmark_name}.build_schematic(), got {type(schematic)}"
+        )
+    return schematic
 
 
 def _load_benchmark_stage(

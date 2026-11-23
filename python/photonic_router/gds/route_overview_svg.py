@@ -22,6 +22,9 @@ from pathlib import Path
 from typing import Protocol
 from xml.sax.saxutils import escape
 
+import klayout.db as kdb
+from gdsfactory.component import Component
+
 BBox = tuple[float, float, float, float]
 Point = tuple[float, float]
 
@@ -121,36 +124,26 @@ def realized_extra_um_by_net(meander_report: object) -> dict[str, float]:
     return realized
 
 
-def layout_overview_shapes(component: object) -> tuple[list[InstanceBox], list[list[Point]]]:
+def layout_overview_shapes(component: Component) -> tuple[list[InstanceBox], list[list[Point]]]:
     """Instances (name, bbox in um) and the routed waveguide polygons of a routed component.
 
     The routed waveguides are the component's own shapes on the waveguide
     layer (1, 0); the benchmark instances are references, read as boxes.
-    Anything the component cannot provide is returned empty.
     """
-
     instances: list[InstanceBox] = []
-    try:
-        for inst in component.insts:  # type: ignore[attr-defined]
-            box = inst.dbbox()
-            instances.append(
-                InstanceBox(
-                    name=str(getattr(inst, "name", "") or ""),
-                    bbox=(float(box.left), float(box.bottom), float(box.right), float(box.top)),
-                )
+    for inst in component.insts:
+        box = inst.dbbox()
+        instances.append(
+            InstanceBox(
+                name=str(inst.name or ""),
+                bbox=(float(box.left), float(box.bottom), float(box.right), float(box.top)),
             )
-    except Exception:
-        instances = []
-    polygons: list[list[Point]] = []
-    try:
-        import klayout.db as kdb
-
-        layer_index = component.kcl.layer(kdb.LayerInfo(1, 0))  # type: ignore[attr-defined]
-        for shape in component.shapes(layer_index).each():  # type: ignore[attr-defined]
-            polygon = shape.dpolygon
-            polygons.append([(float(p.x), float(p.y)) for p in polygon.each_point_hull()])
-    except Exception:
-        polygons = []
+        )
+    layer_index = component.kcl.layer(kdb.LayerInfo(1, 0))
+    polygons: list[list[Point]] = [
+        [(float(p.x), float(p.y)) for p in shape.dpolygon.each_point_hull()]
+        for shape in component.shapes(layer_index).each()
+    ]
     return instances, polygons
 
 

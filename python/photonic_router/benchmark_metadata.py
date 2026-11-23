@@ -77,7 +77,7 @@ def component_internal_delay_um(component_name: str) -> float | None:
         from gdsfactory import get_component
 
         component = get_component(component_name)
-    except Exception:
+    except ValueError:
         component = None
 
     if component is None:
@@ -88,7 +88,7 @@ def component_internal_delay_um(component_name: str) -> float | None:
             pdk.activate()
             pdk_cell = getattr(pdk, "cell", None)
             component = pdk_cell(component_name) if callable(pdk_cell) else None
-        except Exception:
+        except ValueError:
             component = None
 
     if component is None:
