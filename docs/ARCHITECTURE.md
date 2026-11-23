@@ -679,7 +679,7 @@ re-exports the public names; it contains no logic.
 | `config.rs` | 360 | `RouterConfig` and its four groups, `GridSpec`, the search-engine names |
 | `error.rs` | 30 | `RouterError` (`Config`, a Python `ValueError` at the binding) |
 | `obstacle_map.rs` | 2,100 | the routing database (section 3); `tests/obstacle_map_tests.rs` (180) is its integration test |
-| `static_obstacle_builder.rs` | 1,600 | grid spec, rasterization, clearance inflation, port openings, `StaticCellSet` |
+| `static_obstacle_builder.rs` | 1,740 | grid spec, rasterization, clearance inflation, port openings, `StaticCellSet` |
 | `primitives.rs` | 390 | headings, primitives, the primitive library |
 | `crossings.rs` | 200 | `CrossingConfig`, `CrossingContext`, `CrossingPair`: crossing settings and expected pairs, independent of the A* hot path |
 | `geometry_realization.rs` | 5,460 | route to centerline to polygon, waypoint compression, endpoint snapping |
@@ -691,12 +691,12 @@ re-exports the public names; it contains no logic.
 | `engine/api.rs` | 210 | the plain-data operations the binding forwards to (static cells and rectangles, port openings, net cells, raw views, rip-up) |
 | `engine/jobs.rs`, `cells.rs`, `commit.rs` | 320, 640, 470 | job and batch types; footprint and port cell arithmetic; committing a route |
 | `engine/search_call.rs`, `search_calls.rs` | 260, 1,870 | the `SearchCall` value and the one `route_and_commit` body |
-| `engine/crossing_reservation.rs` | 3,480 | crossing events, reservations, partner sets, realized-crossing validation, verdict records |
+| `engine/crossing_reservation.rs` | 3,130 | crossing events, reservations, partner sets, realized-crossing validation, verdict records |
 | `engine/crossing_geometry.rs` | 1,250 | segment geometry and the crossing-legality predicate |
 | `engine/endpoint_correction.rs` | 1,060 | the checked grid-to-port correction pass |
 | `engine/diagnostics.rs` | 250 | trace records and batch timers |
-| `engine/negotiation/` | 4,010 | the loop (`loop_.rs`, 1,200 with its tests) and its rules: `budget.rs`, `crossing_free.rs`, `ripup.rs`, `queue.rs`, `attempt.rs`, `probe.rs`, `braid.rs` (930), `trace.rs` |
-| `meander/` | 5,230 | `geometry.rs` (990, analytic comb), `search.rs` (1,640, obstacle-aware placement and occupancy prefix), `plan.rs` (2,570, the registered PLM planner and every plan decision); `mod.rs` re-exports |
+| `engine/negotiation/` | 4,120 | the loop (`loop_.rs`, 1,200 with its tests) and its rules: `budget.rs`, `crossing_free.rs`, `ripup.rs`, `queue.rs`, `attempt.rs`, `probe.rs`, `braid.rs` (930), `trace.rs` |
+| `meander/` | 4,880 | `geometry.rs` (990, analytic comb), `search.rs` (1,640, obstacle-aware placement and occupancy prefix), `plan.rs` (2,220, the registered PLM planner and every plan decision); `mod.rs` re-exports |
 
 Test fixtures live in `search/test_support.rs` and `engine/test_support.rs`
 (`#[cfg(test)]`); production code does not use them.

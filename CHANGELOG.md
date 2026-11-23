@@ -547,6 +547,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
   No behaviour change: on the electrical suite the metal of every GDS
   layer is identical before and after, as are the 8 debug SVGs, and the
   suite's baseline comparison passes.
+- `docs/ARCHITECTURE.md`, section 7.2: four line counts of the Rust
+  table measured again (`static_obstacle_builder.rs` 1,740,
+  `engine/crossing_reservation.rs` 3,130, `engine/negotiation/` 4,120,
+  `meander/` 4,880 with `plan.rs` 2,220).
 - `docs/ARCHITECTURE.md`, section 7.4: the module table states the
   measured file and line counts again (the package has about 50,500
   lines, not 45,700) and names `schematic_protocols.py` and
