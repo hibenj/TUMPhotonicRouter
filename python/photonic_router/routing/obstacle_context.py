@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ from photonic_router.routing import timing
 from photonic_router.routing.products import ObstacleContext
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.static_obstacle_builder import build_static_obstacle_map
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def build_static_obstacle_context(
@@ -46,7 +49,7 @@ def build_static_obstacle_context(
     )
     timing.record_elapsed(settings, timings_s, "obstacle_map", t_obstacle_start)
     if settings.debug_timing and settings.verbose_route_diagnostics:
-        print(f"      - Obstacle Map time: {timings_s.get('obstacle_map', 0.0):.4f} s")
+        _LOGGER.info(f"      - Obstacle Map time: {timings_s.get('obstacle_map', 0.0):.4f} s")
     grid = obstacle_map.grid
     resolved_crossing_half_size_cells, crossing_device_info = resolve_crossing_half_size_cells(
         requested_half_size_cells=int(settings.crossing_half_size_cells),
@@ -74,10 +77,10 @@ def build_static_obstacle_context(
 
     nets = settings.schematic.netlist.routes
     if settings.debug_route_indices is None:
-        print(f"\nRouting {len(nets)} nets using Rust router...")
+        _LOGGER.info(f"\nRouting {len(nets)} nets using Rust router...")
     else:
         selected = format_route_indices(settings.debug_route_indices)
-        print(
+        _LOGGER.info(
             f"\nRouting {len(nets)} nets using Rust router "
             f"(printing/exporting route SVGs for indices: {selected})..."
         )

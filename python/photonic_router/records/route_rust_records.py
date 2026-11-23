@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -16,6 +17,8 @@ from photonic_router.records.route_rust_types import (
     RustRouteDebugArtifacts,
 )
 from photonic_router.static_obstacle_builder import cell_center_coordinate
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def center_of_port_um(port: object) -> tuple[float, float] | None:
@@ -316,7 +319,7 @@ def apply_port_endpoint_corrections(
                 realization_grid_spec=realization_grid_spec,
             )
             if log_failures:
-                print("ERROR: " + message)
+                _LOGGER.info("ERROR: " + message)
             updated.append(replace(record, endpoint_correction_error=message))
             continue
         centerline = centerline_tuple(raw_centerline)
@@ -327,7 +330,7 @@ def apply_port_endpoint_corrections(
                 realization_grid_spec=realization_grid_spec,
             )
             if log_failures:
-                print("ERROR: " + message)
+                _LOGGER.info("ERROR: " + message)
             updated.append(replace(record, endpoint_correction_error=message))
             continue
         corrected_length_um = float(router.centerline_length_um(list(centerline)))

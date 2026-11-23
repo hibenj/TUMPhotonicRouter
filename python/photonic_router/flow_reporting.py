@@ -7,6 +7,7 @@ orchestrator. It should not change routing state.
 from __future__ import annotations
 
 import contextlib
+import logging
 import webbrowser
 from collections.abc import Mapping
 from pathlib import Path
@@ -20,6 +21,8 @@ from photonic_router.records.route_rust_types import (
     RouteSearchSummary,
     RustRouteDebugArtifacts,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def route_attempt_as_dict(record: object) -> dict[str, object]:
@@ -238,13 +241,13 @@ def report_partial_debug_artifacts(
     )
     failed_logs = sorted(routes_dir.glob(f"{prefix}_*_FAILED.txt")) if routes_dir.exists() else []
 
-    print("      - Partial debug artifacts:")
-    print(f"        static obstacle SVGs: {len(obstacle_svgs)}")
-    print(f"        route SVGs: {len(route_svgs)}")
-    print(f"        electrical SVGs: {len(electrical_svgs)}")
-    print(f"        failure logs: {len(failed_logs)}")
+    _LOGGER.info("      - Partial debug artifacts:")
+    _LOGGER.info(f"        static obstacle SVGs: {len(obstacle_svgs)}")
+    _LOGGER.info(f"        route SVGs: {len(route_svgs)}")
+    _LOGGER.info(f"        electrical SVGs: {len(electrical_svgs)}")
+    _LOGGER.info(f"        failure logs: {len(failed_logs)}")
     for failed_log in failed_logs:
-        print(f"        failure log: {failed_log}")
+        _LOGGER.info(f"        failure log: {failed_log}")
 
     try:
         for svg_path in obstacle_svgs:
@@ -254,7 +257,7 @@ def report_partial_debug_artifacts(
         for svg_path in electrical_svgs:
             webbrowser.open_new_tab(svg_path.resolve().as_uri())
     except (OSError, webbrowser.Error) as e:
-        print(f"      - Warning: failed to open partial SVGs automatically: {e}")
+        _LOGGER.info(f"      - Warning: failed to open partial SVGs automatically: {e}")
 
 
 def report_optical_timing(
@@ -277,13 +280,13 @@ def report_optical_timing(
         route_nets_time + route_endpoint_correction_time + plm_total + realization_time
     )
     overhead_time = max(0.0, route_time_s - known_substage_time)
-    print(
+    _LOGGER.info(
         "      - Optical routing stage time "
         f"(net routing + PLM + realization): {route_time_s:.4f} s"
     )
-    print(f"        - net routing phase (obstacles + A* + repairs): {route_nets_time:.4f} s")
+    _LOGGER.info(f"        - net routing phase (obstacles + A* + repairs): {route_nets_time:.4f} s")
     _report_route_nets_subtimings(timings, route_nets_time)
-    print(
+    _LOGGER.info(
         "          route search: "
         f"astar_loop={float(route_summary.astar_elapsed_s):.4f}s, "
         f"attempts={int(route_summary.route_attempts)}, "
@@ -294,13 +297,13 @@ def report_optical_timing(
     )
     endpoint_correction_time_s = float(route_summary.endpoint_correction_time_s)
     if endpoint_correction_time_s > 0.0:
-        print(
+        _LOGGER.info(
             "          endpoint correction: "
             f"time={endpoint_correction_time_s:.4f}s, "
             f"calls={int(route_summary.endpoint_correction_calls)}, "
             f"failures={int(route_summary.endpoint_correction_failures)}"
         )
-    print(
+    _LOGGER.info(
         "          A* counters: "
         f"expanded={int(route_summary.expanded_states)}, "
         f"generated={int(route_summary.generated_neighbors)}, "
@@ -310,7 +313,7 @@ def report_optical_timing(
         f"rect_checks={int(route_summary.footprint_rect_checks)}, "
         f"full_grid_fallbacks={int(route_summary.full_grid_fallbacks)}"
     )
-    print(
+    _LOGGER.info(
         "          Crossing hot path: "
         f"no_contact={int(route_summary.crossing_hotpath_no_contact)}, "
         f"contact_checks={int(route_summary.crossing_hotpath_contact_checks)}, "
@@ -323,7 +326,7 @@ def report_optical_timing(
         f"accepted_planned={int(route_summary.crossing_accepted_planned)}, "
         f"accepted_over_budget={int(route_summary.crossing_accepted_over_budget)}"
     )
-    print(
+    _LOGGER.info(
         "          Crossing hot path detail: "
         f"witness_cells={int(route_summary.crossing_hotpath_witness_cells_scanned)}, "
         f"partner_segments={int(route_summary.crossing_hotpath_partner_segment_checks)}, "
@@ -337,7 +340,7 @@ def report_optical_timing(
     _report_astar_timed_ops(route_summary)
     _report_slowest_routes(route_attempt_records)
     if plm_total > 0.0:
-        print(
+        _LOGGER.info(
             "        - path-length matching phase: "
             f"{plm_total:.4f} s "
             f"(analysis={plm_analysis_time:.4f}s, "
@@ -345,10 +348,12 @@ def report_optical_timing(
             f"meander_planning={plm_planning_time:.4f}s)"
         )
     if route_endpoint_correction_time > 0.0:
-        print(f"        - route endpoint correction phase: {route_endpoint_correction_time:.4f} s")
-    print(f"        - route realization phase: {realization_time:.4f} s")
+        _LOGGER.info(
+            f"        - route endpoint correction phase: {route_endpoint_correction_time:.4f} s"
+        )
+    _LOGGER.info(f"        - route realization phase: {realization_time:.4f} s")
     if overhead_time > 1.0e-3:
-        print(f"        - stage overhead/reporting: {overhead_time:.4f} s")
+        _LOGGER.info(f"        - stage overhead/reporting: {overhead_time:.4f} s")
 
 
 def _report_route_nets_subtimings(timings: Mapping[str, float], route_nets_time: float) -> None:
@@ -399,7 +404,7 @@ def _report_route_nets_subtimings(timings: Mapping[str, float], route_nets_time:
     route_nets_other_s = max(0.0, route_nets_time - known_route_nets_s)
     if route_nets_other_s > 1.0e-4:
         parts.append(f"other={route_nets_other_s:.4f}s")
-    print("          route_nets split: " + ", ".join(parts))
+    _LOGGER.info("          route_nets split: " + ", ".join(parts))
     _report_native_repair_timings(route_nets_subtimings)
 
 
@@ -420,7 +425,7 @@ def _report_native_repair_timings(route_nets_subtimings: dict[str, float]) -> No
         return
     native_search_s = float(route_nets_subtimings.get("native_batch_route_search_total", 0.0))
     native_dense_astar_s = float(route_nets_subtimings.get("native_batch_dense_astar", 0.0))
-    print(
+    _LOGGER.info(
         "          native repair profile: "
         f"ripup={native_repair_timings['ripup']:.4f}s, "
         f"current={native_repair_timings['repair_failed_net_wall']:.4f}s, "
@@ -434,7 +439,7 @@ def _report_native_repair_timings(route_nets_subtimings: dict[str, float]) -> No
 
 
 def _report_astar_timed_ops(route_summary: RouteSearchSummary) -> None:
-    print(
+    _LOGGER.info(
         "          A* timed ops: "
         f"dense_build={float(route_summary.dense_grid_build_time_us) / 1_000_000.0:.4f}s, "
         f"search_loop={float(route_summary.search_loop_time_us) / 1_000_000.0:.4f}s, "
@@ -460,7 +465,7 @@ def _report_astar_timed_ops(route_summary: RouteSearchSummary) -> None:
         + float(route_summary.commit_time_us)
     ) / 1_000_000.0
     if timed_search_s > 0.0:
-        print(
+        _LOGGER.info(
             "          A* loop attribution: "
             f"measured_inner={measured_inner_s:.4f}s, "
             f"other={max(0.0, timed_search_s - measured_inner_s):.4f}s, "
@@ -474,17 +479,17 @@ def _report_slowest_routes(route_attempt_records: list[dict[str, object]]) -> No
         limit=8,
     )
     if slowest_net_lines:
-        print("          slowest route nets:")
+        _LOGGER.info("          slowest route nets:")
         for line in slowest_net_lines:
-            print(line)
+            _LOGGER.info(line)
     slowest_attempt_lines = _format_slowest_route_attempt_lines(
         route_attempt_records,
         limit=8,
     )
     if slowest_attempt_lines:
-        print("          slowest route attempts:")
+        _LOGGER.info("          slowest route attempts:")
         for line in slowest_attempt_lines:
-            print(line)
+            _LOGGER.info(line)
 
 
 def report_and_open_debug_svgs(
@@ -495,13 +500,13 @@ def report_and_open_debug_svgs(
 ) -> None:
     """Report generated debug SVGs and open them in the default browser."""
     if debug_artifacts.obstacle_svg is not None:
-        print(f"      - Obstacle SVG: {debug_artifacts.obstacle_svg}")
+        _LOGGER.info(f"      - Obstacle SVG: {debug_artifacts.obstacle_svg}")
     if debug_route_indices is None:
         if debug_artifacts.route_svgs:
-            print(f"      - Route SVGs: {len(debug_artifacts.route_svgs)} files")
+            _LOGGER.info(f"      - Route SVGs: {len(debug_artifacts.route_svgs)} files")
     else:
         selected = _format_debug_route_indices(debug_route_indices)
-        print(
+        _LOGGER.info(
             f"      - Route SVGs: {len(debug_artifacts.route_svgs)} "
             f"selected file(s), route indices: {selected}"
         )
@@ -521,7 +526,7 @@ def report_and_open_debug_svgs(
                 if svg_path.exists():
                     webbrowser.open_new_tab(svg_path.resolve().as_uri())
     except (OSError, webbrowser.Error) as e:
-        print(f"      - Warning: failed to open SVGs automatically: {e}")
+        _LOGGER.info(f"      - Warning: failed to open SVGs automatically: {e}")
 
 
 def write_or_show_routed_layout(
@@ -533,13 +538,13 @@ def write_or_show_routed_layout(
     """Show the final layout in KLayout or write the benchmark GDS."""
     if show_klayout:
         try:
-            print("      - Opening routed layout in KLayout...")
+            _LOGGER.info("      - Opening routed layout in KLayout...")
             routed_layout.show()
         except (OSError, RuntimeError, ValueError) as e:
-            print(f"      - Warning: failed to open layout in KLayout: {e}")
+            _LOGGER.info(f"      - Warning: failed to open layout in KLayout: {e}")
         return
 
-    print("      - Write GDS...")
+    _LOGGER.info("      - Write GDS...")
     routed_layout.write_gds(f"build/routed_{benchmark_name}.gds", save_options=gds_save_options())
 
 

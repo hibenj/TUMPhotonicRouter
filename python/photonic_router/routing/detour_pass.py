@@ -17,6 +17,7 @@ more to a chosen set of nets; there is no geometry post-processing.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping
 
 from photonic_router.records.route_rust_types import RouteJob
@@ -32,6 +33,8 @@ from photonic_router.routing.finalize import (
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import RoutedRecords
 from photonic_router.routing.state import SessionState
+
+_LOGGER = logging.getLogger(__name__)
 
 #: a pass stops after this many rounds even if the detoured set still shrinks
 MAX_PASSES = 3
@@ -135,7 +138,7 @@ def run_detour_pass(
             f"{jobs_by_id[net_id].net_name} ({lengths[net_id]:.1f}/{bounds[net_id]:.1f} um)"
             for net_id in detoured
         )
-        print(
+        _LOGGER.info(
             f"      - detour pass {pass_index}: {len(detoured)} net(s) over "
             f"{factor:g}x their free lower bound: {names}; ripping up and re-routing"
         )
@@ -173,7 +176,7 @@ def run_detour_pass(
             )
         after_um = sum(_route_lengths_um(state, detoured).values())
         total_reroutes += len(rerouted_ids)
-        print(
+        _LOGGER.info(
             f"      - detour pass {pass_index}: re-routed {len(rerouted_ids)} net(s), "
             f"{before_um:.1f} -> {after_um:.1f} um"
         )

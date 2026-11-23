@@ -3,6 +3,7 @@ fan-out anchor query and the path-length-matching re-export wrappers."""
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -75,6 +76,8 @@ from photonic_router.static_obstacle_builder import (
     load_rust_backend,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 
 def analyze_meander_insertion_for_requirements(
     *args: Any, **kwargs: Any
@@ -142,7 +145,7 @@ def route_match_and_realize(
             except (TypeError, ValueError):
                 continue
     if debug.debug_timing and debug.verbose_route_diagnostics:
-        print(
+        _LOGGER.info(
             "      - Optical net routing phase "
             f"(obstacle map + A* + repairs): {pipeline_timings_s['route_nets']:.4f} s"
         )
@@ -352,7 +355,7 @@ def route_match_and_realize(
                 # Decision 11 (2026-11-05): the benchmark declares the groups it
                 # leaves unmatched on purpose; the run finishes and reports them
                 # (SUMMARY plm_over_tolerance).
-                print(f"      - WARNING: {failure} (declared unmatched groups)")
+                _LOGGER.info(f"      - WARNING: {failure} (declared unmatched groups)")
         matched = MatchedLengths(
             analysis=analysis,
             records=list(records_for_realization),
@@ -403,7 +406,7 @@ def route_match_and_realize(
     t_realization_end = time.perf_counter()
     pipeline_timings_s["route_realization"] = t_realization_end - t_realization_start
     if debug.debug_timing and debug.verbose_route_diagnostics:
-        print(
+        _LOGGER.info(
             "      - Optical route realization phase: "
             f"{pipeline_timings_s['route_realization']:.4f} s"
         )

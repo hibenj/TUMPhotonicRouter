@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Iterable, Mapping
@@ -33,6 +34,8 @@ from photonic_router.routing.diagnostics import (
 )
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SessionState
+
+_LOGGER = logging.getLogger(__name__)
 
 # `route_many_with_negotiated_repair_and_commit`'s own round budget --
 # LiDAR's `runNRR` default (`.agent/execplans/2026-09-14-lidar-style-
@@ -120,7 +123,7 @@ def _report_long_straight_congestion(
         except (TypeError, ValueError):
             continue
         grouped.setdefault(net_id, []).append(record)
-    print("      - Long-straight congestion contributors:")
+    _LOGGER.info("      - Long-straight congestion contributors:")
     for net_id in sorted(grouped):
         job = state.run.route_jobs_by_id.get(net_id)
         label = job.net_name if job is not None else f"net_id={net_id}"
@@ -130,7 +133,7 @@ def _report_long_straight_congestion(
         lengths = ", ".join(
             f"{float(segment.get('length_um', 0.0) or 0.0):.1f}um" for segment in segments
         )
-        print(
+        _LOGGER.info(
             "        "
             f"route[{route_index}] {label}: "
             f"{len(segments)} long straight(s), "
@@ -334,7 +337,7 @@ def _finalize_committed_route(
     )
 
     if should_print_route:
-        print(f"ok {route_engine_summary(route_obj)}")
+        _LOGGER.info(f"ok {route_engine_summary(route_obj)}")
 
 
 def _batch_job_debug_tables(
@@ -362,10 +365,9 @@ def _batch_job_debug_tables(
         if settings.debug_route_indices is not None and route_selected_for_debug:
             should_print_route = True
         if should_print_route:
-            print(
+            _LOGGER.info(
                 f"  Routing [{job.route_index}/{len(route_jobs)}] "
-                f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}...",
-                end=" ",
+                f"{job.net_name}: {job.inst1},{job.port1} -> {job.inst2},{job.port2}..."
             )
         route_dir = (
             state.obstacles.debug_path / "routes"
@@ -505,7 +507,7 @@ def _raise_for_unrouted_net(
         (False, None),
     )
     if not should_print_route:
-        print(
+        _LOGGER.info(
             f"  Routing [{failed_job.route_index}/{len(route_jobs)}] "
             f"{failed_job.net_name}: {failed_job.inst1},{failed_job.port1} -> "
             f"{failed_job.inst2},{failed_job.port2}... failed"

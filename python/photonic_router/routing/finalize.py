@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -47,6 +48,8 @@ from photonic_router.verify.route_rust_endpoint_correction import (
     polyline_length_um,
     primitive_centerline_for_record,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _endpoint_correction_crossing_net_ids(
@@ -195,7 +198,7 @@ def _fail_endpoint_correction(
     if state.run.collect_timing:
         state.search.timing_buckets["endpoint_correction"].record_elapsed(elapsed_s, failed=True)
     if print_warnings:
-        print("WARNING: " + message)
+        _LOGGER.info("WARNING: " + message)
     if clear_centerline:
         # Every net reaching this point was already excluded from
         # crossing handling above (crossing_net_ids), regardless of
@@ -736,11 +739,11 @@ def _print_terminal_bump_checks(
 ) -> None:
     """Print the trace lines of one net: its target, then one line per same-axis crossing."""
 
-    print(
+    _LOGGER.info(
         f"terminal_bump_distance_check {net_label} {target_text} same_axis_crossings={len(checks)}"
     )
     for item in checks:
-        print(
+        _LOGGER.info(
             "terminal_bump_distance_check "
             f"{net_label} "
             f"crossing={item['crossing_um']} "
@@ -1208,14 +1211,14 @@ def finalize_routing_results(
     timing.record_pipeline_timing(settings, state, "record_assembly", t_record_assembly_start)
 
     if settings.debug_timing and settings.verbose_route_diagnostics:
-        print(f"      - A* route-search loop time: {astar_elapsed_s:.4f} s")
-        print(
+        _LOGGER.info(f"      - A* route-search loop time: {astar_elapsed_s:.4f} s")
+        _LOGGER.info(
             "      - Route search stats: "
             f"simple={state.search.simple_route_count}/{len(route_jobs)}, "
             f"expanded_states={state.search.total_expanded_states}, "
             f"repairs={state.search.repair_count}"
         )
-        print("      - A* timing breakdown by operation:")
+        _LOGGER.info("      - A* timing breakdown by operation:")
         # The buckets the kernel produces today (`NativeRouteAttempt.bucket_name`
         # in src/engine/) plus the Python-side endpoint correction.
         for bucket_name in (
@@ -1268,6 +1271,6 @@ def finalize_routing_results(
                     f"reconstruction_time={bucket.reconstruction_time_us / 1_000_000.0:.4f}s, "
                     f"full_grid_fallbacks={bucket.full_grid_fallbacks}"
                 )
-            print(line)
+            _LOGGER.info(line)
 
     return RoutedRecords(routed_net_records, astar_elapsed_s)

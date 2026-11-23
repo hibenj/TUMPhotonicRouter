@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from photonic_router.reporting import show_reports
 
 from tests.fixtures.sessions import Pipeline, pipeline_for_test
 from tests.fixtures.sessions import (
@@ -101,6 +102,12 @@ _INTEGRATION_FILE_STEMS = {
     "test_routing_stages",
     "test_static_obstacle_builder",
 }
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _reports_on_the_console() -> None:
+    """Show the package's reports as the command line does, so `capsys` sees them."""
+    show_reports()
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:

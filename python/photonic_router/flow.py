@@ -158,21 +158,21 @@ def _load_benchmark_stage(
 ) -> Schematic:
     """Load the schematic and record the load-stage stats/output."""
     step_load_start = time.perf_counter()
-    print(f"\n[1/{total_steps}] Loading benchmark: {benchmark_name}...")
+    _LOGGER.info(f"\n[1/{total_steps}] Loading benchmark: {benchmark_name}...")
     schematic = load_benchmark(benchmark_name)
     step_load_end = time.perf_counter()
     if stats is not None:
         stats.instance_count = len(schematic.netlist.instances)
         stats.net_count = len(schematic.netlist.routes)
         stats.step_times_s["load_benchmark"] = step_load_end - step_load_start
-    print("      \u2713 Schematic loaded")
-    print(f"      - Load time: {step_load_end - step_load_start:.4f} s")
+    _LOGGER.info("      \u2713 Schematic loaded")
+    _LOGGER.info(f"      - Load time: {step_load_end - step_load_start:.4f} s")
     if debug_meanders:
-        print(f"      - Instances: {list(schematic.netlist.instances.keys())}")
-        print(f"      - Placements: {list(schematic.placements.keys())}")
+        _LOGGER.info(f"      - Instances: {list(schematic.netlist.instances.keys())}")
+        _LOGGER.info(f"      - Placements: {list(schematic.placements.keys())}")
     else:
-        print(f"      - Instances: {len(schematic.netlist.instances)}")
-        print(f"      - Placements: {len(schematic.placements)}")
+        _LOGGER.info(f"      - Instances: {len(schematic.netlist.instances)}")
+        _LOGGER.info(f"      - Placements: {len(schematic.placements)}")
     return schematic
 
 
@@ -185,16 +185,16 @@ def _layout_from_schematic_stage(
 ) -> Component:
     """Translate the schematic to an unrouted layout and report layout metadata."""
     step_layout_start = time.perf_counter()
-    print(f"\n[2/{total_steps}] Translating schematic to layout...")
+    _LOGGER.info(f"\n[2/{total_steps}] Translating schematic to layout...")
     unrouted_layout = layout_from_schematic(schematic)
     step_layout_end = time.perf_counter()
     if stats is not None:
         stats.step_times_s["layout_from_schematic"] = step_layout_end - step_layout_start
-    print(f"      \u2713 Layout generated: {unrouted_layout.name}")
+    _LOGGER.info(f"      \u2713 Layout generated: {unrouted_layout.name}")
     bbox = unrouted_layout.bbox
-    print(f"      - Bounding box: {bbox() if callable(bbox) else bbox}")
+    _LOGGER.info(f"      - Bounding box: {bbox() if callable(bbox) else bbox}")
     if debug_timing:
-        print(f"      - Translation time: {step_layout_end - step_layout_start:.4f} s")
+        _LOGGER.info(f"      - Translation time: {step_layout_end - step_layout_start:.4f} s")
     return unrouted_layout
 
 
@@ -210,7 +210,7 @@ def _placement_analysis_stage(
 
     Returns the analysis and the seconds it took.
     """
-    print(f"\n[2a/{total_steps}] Analysing the {design}...")
+    _LOGGER.info(f"\n[2a/{total_steps}] Analysing the {design}...")
     t_start = time.perf_counter()
     analysis = analyze_placement(schematic, unrouted_layout)
     elapsed = time.perf_counter() - t_start
@@ -219,19 +219,19 @@ def _placement_analysis_stage(
             stats.step_times_s.get("placement_analysis", 0.0) + elapsed
         )
     lines = [analysis.summary(), analysis.passage_summary()]
-    print("\n".join(f"      - {line}" for line in lines if line is not None))
+    _LOGGER.info("\n".join(f"      - {line}" for line in lines if line is not None))
     return analysis, elapsed
 
 
 def _print_flow_header(benchmark_name: str) -> None:
-    print(f"\n{'=' * 60}")
-    print(f"Routing Flow: {benchmark_name}")
-    print(f"{'=' * 60}")
+    _LOGGER.info(f"\n{'=' * 60}")
+    _LOGGER.info(f"Routing Flow: {benchmark_name}")
+    _LOGGER.info(f"{'=' * 60}")
 
 
 def _print_flow_footer(stats: RoutingFlowStats | None = None) -> None:
-    print(format_flow_summary_line(stats))
-    print(f"\n{'=' * 60}\n")
+    _LOGGER.info(format_flow_summary_line(stats))
+    _LOGGER.info(f"\n{'=' * 60}\n")
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -308,7 +308,7 @@ def _preplaced_crossing_grids_stage(
         preplaced_crossing_grid_metrics,
     )
 
-    print(f"\n[2b/{total_steps}] Placing placement-derived crossing grids...")
+    _LOGGER.info(f"\n[2b/{total_steps}] Placing placement-derived crossing grids...")
     t_start = time.perf_counter()
     demand = analysis.crossing_demand
     try:
@@ -337,7 +337,7 @@ def _preplaced_crossing_grids_stage(
     elapsed = time.perf_counter() - t_start + analysis_seconds
     if stats is not None:
         stats.step_times_s["preplaced_crossing_grids"] = elapsed
-    print(
+    _LOGGER.info(
         f"      - Grids: {metrics['grid_count']} placed, "
         f"{metrics['crossing_component_count']} crossing component(s) "
         f"(topology expects {metrics['expected_crossing_count']}), "
@@ -397,7 +397,7 @@ def route_benchmark(config: RoutingConfig, options: FlowOptions) -> Component:
         routed_layout = route_schematic(schematic, config, options)
         if options.debug.debug_timing:
             total = time.perf_counter() - t_flow_start
-            print(f"\nTiming summary for {benchmark_name}:\n  total: {total:.4f} s")
+            _LOGGER.info(f"\nTiming summary for {benchmark_name}:\n  total: {total:.4f} s")
     finally:
         # Every run ends with the SUMMARY line, a failed one too: the stages
         # that did not run print `-` (merge review 2026-10-05).
@@ -558,7 +558,7 @@ def _crossing_setup(
             # get contribution 1's guided search restricted to their nets.
             enable_crossings = True
             crossing_mode = "lidar-guided"
-            print(
+            _LOGGER.info(
                 "      - crossing structure: router fallback for "
                 f"{len(crossing_guidance_net_names)} net(s) -> crossings enabled "
                 "(lidar-guided, guidance restricted to those nets)"
@@ -566,7 +566,7 @@ def _crossing_setup(
     if options.path_length.enable_path_length_matching and enable_crossings:
         # Decision 10 (2026-11-05): not a target; every stable configuration
         # runs crossings off, the combination is unverified.
-        print(
+        _LOGGER.info(
             "      - WARNING: path-length matching with the crossing-aware search on is "
             "not a supported combination; the stable configurations run --crossings false"
         )
@@ -618,7 +618,7 @@ def _write_routes_overview(benchmark_name: str, optical_result: OpticalRoutingSt
         instances=instances,
         waveguide_polygons=waveguide_polygons,
     )
-    print(
+    _LOGGER.info(
         f"      - Routes overview SVG: {overview_path} "
         f"({overview.route_count} routes, routed {overview.routed_length_um:.1f} um, "
         f"meander {overview.meander_length_um:.1f} um, "
@@ -756,7 +756,7 @@ def _route_schematic(
     if debug.debug_timing:
         # Performance pass 2026-09-03 (P5): the non-routing phases were an
         # un-itemised 16 % of a multiportmmi_32x32 run.
-        print(f"      - Verification time: {time.perf_counter() - t_verify_start:.4f} s")
+        _LOGGER.info(f"      - Verification time: {time.perf_counter() - t_verify_start:.4f} s")
     stage_observer.notify("checked", None, routed_layout)
 
     t_plm_start = time.perf_counter()
@@ -767,7 +767,7 @@ def _route_schematic(
         stats=stats,
     )
     if debug.debug_timing:
-        print(
+        _LOGGER.info(
             f"      - Path-length-matching report time: {time.perf_counter() - t_plm_start:.4f} s"
         )
 
@@ -801,6 +801,6 @@ def _route_schematic(
         show_klayout=show_klayout,
     )
     if debug.debug_timing:
-        print(f"      - GDS write time: {time.perf_counter() - t_write_start:.4f} s")
+        _LOGGER.info(f"      - GDS write time: {time.perf_counter() - t_write_start:.4f} s")
 
     return routed_layout

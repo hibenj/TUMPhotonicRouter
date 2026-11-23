@@ -91,6 +91,7 @@ from photonic_router.flow_options import (
 )
 from photonic_router.records.route_order import NET_ORDERS
 from photonic_router.records.route_rust_types import RipupRerouteConfig
+from photonic_router.reporting import show_reports
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
 _CONFIGURATION_FLAGS: dict[str, tuple[str, ...]] = {
@@ -803,6 +804,7 @@ def main(argv: list[str] | None = None) -> Component:
     Raises `SystemExit` (argparse) on an invalid command line, and whatever
     `route_benchmark` raises.
     """
+    show_reports()
     user_argv = sys.argv[1:] if argv is None else list(argv)
     configuration_argv = configuration_flags(user_argv)
     stable_flags, stable_env = _benchmark_stable_defaults(argv)

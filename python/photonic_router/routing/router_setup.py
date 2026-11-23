@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from photonic_router.records.route_rust_obstacle_config import grid_origin_xy
@@ -20,6 +21,8 @@ from photonic_router.routing.products import (
     RawStaticGeometry,
 )
 from photonic_router.routing.settings import SessionSettings
+
+_LOGGER = logging.getLogger(__name__)
 
 DENSE_OBSTACLE_CELL_CAP_MARGIN = 2
 
@@ -118,11 +121,10 @@ def configure_router_and_grid(
         # Path-investigation harness: the grid<->um mapping must come from
         # the tool, never from a hand conversion (see
         # .agent/PATH_INVESTIGATION_HARNESS.md). um = origin + (cell + 0.5) * grid_size.
-        print(
+        _LOGGER.info(
             f"      - grid: origin=({origin_x_um:.3f}, {origin_y_um:.3f}) um "
             f"size={float(context.grid.grid_size_um):.3f} um "
             f"cells={int(context.grid.width)}x{int(context.grid.height)}",
-            flush=True,
         )
     grid_spec = rust_backend.GridSpec(
         int(context.grid.width),

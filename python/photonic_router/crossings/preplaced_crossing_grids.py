@@ -48,6 +48,7 @@ do-over; no paper cell used them.
 from __future__ import annotations
 
 import itertools
+import logging
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -72,6 +73,8 @@ from photonic_router.routing_layers import (
 if TYPE_CHECKING:
     # the routing package imports this one; only the annotation needs the name
     from photonic_router.routing.options import SessionOptions
+
+_LOGGER = logging.getLogger(__name__)
 
 TO_GRID_SUFFIX = "__to_grid"
 FROM_GRID_SUFFIX = "__from_grid"
@@ -552,7 +555,7 @@ def _derive_crossing_tiles(
         ),
     )
     anchors = static_fanout_anchors_um(unrouted_layout, schematic, probe_options)
-    print(
+    _LOGGER.info(
         f"      - crossing tiles: {len(anchors)} static fan-out anchor(s) from the router "
         f"(dense instances: {', '.join(sorted(dense)) or 'none'})"
     )
@@ -604,7 +607,7 @@ def _derive_crossing_tiles(
             config=config,
         )
         decisions.append(decision)
-        print(f"      - crossing structure {decision.describe()}")
+        _LOGGER.info(f"      - crossing structure {decision.describe()}")
         if decision.chosen == ROUTER:
             fallback_layers.append(decision)
             fallback_nets.update(edge.net_name for edge in stage_plan.initial_edge_order)
@@ -700,7 +703,7 @@ def _derive_crossing_tiles(
             + " | ".join(d.describe() for d in fallback_layers)  # type: ignore[attr-defined]
         )
     if fallback_layers:
-        print(
+        _LOGGER.info(
             f"      - crossing structure: {len(fallback_layers)} layer(s) with "
             f"{len(fallback_nets)} net(s) left to the guided router"
         )
@@ -1070,7 +1073,7 @@ def column_grid_stage(
             "planned": len(planned),
             "extra_length_um": extra,
         }
-    print(
+    _LOGGER.info(
         f"      - column grid stage {stage_plan.source_depth}: {len(lanes)} lanes, "
         f"{len(moving)} moving, {len(columns)} columns at {pitch:.0f} um "
         f"({needed:.0f} of {band_x1 - band_x0:.0f} um), {len(planned)} crossings"
@@ -1078,7 +1081,7 @@ def column_grid_stage(
     if config.trace_column_grid:
         for n in lanes:
             partners = sorted(m for m in lanes if frozenset((n, m)) in planned)
-            print(
+            _LOGGER.info(
                 f"        lane {n}: entry ({entry[n][0]:.1f}, {entry[n][1]:.3f}) -> target "
                 f"({target[n][0]:.1f}, {target[n][1]:.3f}) column x="
                 f"{column_x.get(n, float('nan')):.1f} crosses {partners}"
@@ -1248,7 +1251,7 @@ def column_grid_stage(
         }
         tiles_of_lane.setdefault(c["lane"], []).append(element)
     if corner_tiles or corner_elements:
-        print(
+        _LOGGER.info(
             f"      - column grid stage {depth}: {corner_tiles} tile(s) with a pre-wired corner, "
             f"{len(corner_elements)} bare corner(s)"
         )

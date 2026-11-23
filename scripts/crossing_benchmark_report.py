@@ -17,6 +17,7 @@ from photonic_router.config import RoutingConfig
 from photonic_router.flow import load_benchmark, route_benchmark
 from photonic_router.flow_options import FlowOptions
 from photonic_router.flow_stats import RoutingFlowStats
+from photonic_router.reporting import show_reports
 
 DEFAULT_BENCHMARKS = ("benes_4x4", "benes_8x8", "benes_16x16", "benes_32x32")
 
@@ -122,6 +123,7 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    show_reports()
     parser.add_argument("benchmarks", nargs="*", default=list(DEFAULT_BENCHMARKS))
     parser.add_argument("--max-iterations", type=int, default=500_000)
     parser.add_argument(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import math
 from collections.abc import Iterable, Mapping
 from collections.abc import Iterable as IterableABC
@@ -30,6 +31,8 @@ from photonic_router.records.route_rust_types import (
     RoutedNetRecord,
     int_or_none,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def polyline_length_um(points: tuple[tuple[float, float], ...]) -> float:
@@ -630,7 +633,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
             realization_grid_spec=realization_grid_spec,
         )
         if log_failures:
-            print("ERROR: " + message)
+            _LOGGER.info("ERROR: " + message)
         return replace(record, endpoint_correction_error=message)
 
     def _realization_accepts(centerline: tuple[tuple[float, float], ...]) -> bool:
@@ -691,7 +694,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
         except (RuntimeError, TypeError, ValueError) as exc:
             fallbacks.take("endpoint.checked_segment_rejected")
             if trace_endpoint:
-                print(
+                _LOGGER.info(
                     "endpoint_trace "
                     f"net={record.net_name} id={record.net_id} "
                     "mode=checked_terminal_segment "
@@ -706,7 +709,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
             correction = dict(raw)
         except (TypeError, ValueError):
             if trace_endpoint:
-                print(
+                _LOGGER.info(
                     "endpoint_trace "
                     f"net={record.net_name} id={record.net_id} "
                     "mode=checked_terminal_segment "
@@ -719,7 +722,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
             return ()
         centerline = dedupe_centerline(centerline_tuple(correction.get("centerline")))
         if trace_endpoint:
-            print(
+            _LOGGER.info(
                 "endpoint_trace "
                 f"net={record.net_name} id={record.net_id} "
                 "mode=checked_terminal_segment "
@@ -776,7 +779,7 @@ def apply_crossing_aware_endpoint_correction_to_record(
                 len(candidate) >= 2 and source_ok and target_ok and _realization_accepts(candidate)
             )
             if trace_endpoint:
-                print(
+                _LOGGER.info(
                     "endpoint_trace "
                     f"net={record.net_name} id={record.net_id} "
                     f"crossings={len(crossing_points)} "
@@ -827,5 +830,5 @@ def apply_crossing_aware_endpoint_correction_to_record(
         realization_grid_spec=realization_grid_spec,
     )
     if log_failures:
-        print("ERROR: " + message)
+        _LOGGER.info("ERROR: " + message)
     return replace(record, endpoint_correction_error=message)

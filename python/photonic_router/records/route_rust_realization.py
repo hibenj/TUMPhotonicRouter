@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from photonic_router.records.route_rust_types import (
     int_of,
     int_or_none,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 _sob = importlib.import_module("photonic_router.static_obstacle_builder")
 load_rust_backend = _sob.load_rust_backend
@@ -102,7 +105,7 @@ def _physical_port_centerline(
             allow_unchecked_bumps=allow_unchecked_bumps,
         )
     except (TypeError, ValueError) as exc:
-        print(
+        _LOGGER.info(
             "ERROR: "
             + format_port_endpoint_correction_error(
                 record,
@@ -115,7 +118,7 @@ def _physical_port_centerline(
     centerline: list[tuple[float, float]] = []
     for point in raw_centerline:
         if not isinstance(point, (tuple, list)) or len(point) != 2:
-            print(
+            _LOGGER.info(
                 "ERROR: "
                 + format_port_endpoint_correction_error(
                     record,
@@ -126,7 +129,7 @@ def _physical_port_centerline(
             return []
         centerline.append((float(point[0]), float(point[1])))
     if not centerline:
-        print(
+        _LOGGER.info(
             "ERROR: "
             + format_port_endpoint_correction_error(
                 record,

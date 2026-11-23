@@ -7,7 +7,6 @@
   "ruff_C901": 51,
   "ruff_PLR0913": 12,
   "ruff_PLR0915": 10,
-  "ruff_T201": 138,
   "rust_exceptions": 32,
   "rust_missing_docs": 794,
   "rust_too_many_lines": 23,

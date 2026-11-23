@@ -21,20 +21,24 @@ def _summary(output: str) -> str:
     return re.sub(r" total_s=\S+", "", line)
 
 
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The warnings of the run; its reports are log records too and are left out."""
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+
+
 @pytest.mark.e2e
 def test_contribution_2_routes_a_plm_benchmark_as_the_standard_router_does(
     capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
 ) -> None:
     cli.main(["cascade_8_compact", "--configuration", "baseline"])
     baseline = _summary(capsys.readouterr().out)
-    assert caplog.records == []
+    assert _warnings(caplog) == []
 
-    with caplog.at_level(logging.WARNING, logger=flow.__name__):
-        cli.main(["cascade_8_compact", "--configuration", "contribution2"])
+    cli.main(["cascade_8_compact", "--configuration", "contribution2"])
     output = capsys.readouterr().out
     assert _summary(output) == baseline
     assert "Placing placement-derived crossing grids" not in output
-    [warning] = [record.getMessage() for record in caplog.records]
+    [warning] = _warnings(caplog)
     assert warning.startswith(flow.STANDARD_ROUTER_FALLBACK)
     assert "25 net(s) outside the band model (non_adjacent_walls: 25)" in warning
 
@@ -43,7 +47,6 @@ def test_contribution_2_routes_a_plm_benchmark_as_the_standard_router_does(
 def test_contribution_2_on_a_band_layered_design_does_not_fall_back(
     capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
 ) -> None:
-    with caplog.at_level(logging.WARNING, logger=flow.__name__):
-        cli.main(["benes_4x4_flat", "--configuration", "contribution2"])
+    cli.main(["benes_4x4_flat", "--configuration", "contribution2"])
     assert "Placing placement-derived crossing grids" in capsys.readouterr().out
-    assert caplog.records == []
+    assert _warnings(caplog) == []

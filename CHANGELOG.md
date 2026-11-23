@@ -589,6 +589,20 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The package reports through `logging` (rule 4.6, now in force as ruff
+  `T201`; owner, 2026-11-23). The 135 `print` calls outside `cli.py` are
+  `_LOGGER.info` of the module's logger; the one that wrote to standard
+  error is a warning. `reporting.show_reports()`, which the command line
+  calls, shows the reports as before: one line each on standard output,
+  warnings on standard error, no prefix. A program that uses the package
+  as a library sees nothing unless it configures `logging` or calls
+  `show_reports()` itself; the tests call it once per session.
+  Compared on six runs with all numbers masked: four are identical line
+  for line. Two things differ and are meant to: with `--verbose-routes`
+  each `Routing [i/n] ...` line is a line of its own (they were written
+  without a line end and ran together), and a report is written when it
+  is made, so it no longer overtakes a message another library wrote
+  before it.
 - The logic harness runs a benchmark through the flow's own final check
   (owner, 2026-11-23). The flow reports a new stage `checked` after
   `verify_and_attach_photonic_reports`, and `scripts/logic_check.py` ends

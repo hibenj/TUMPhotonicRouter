@@ -216,8 +216,9 @@ like the violation counts: a commit that adds one says why in its message.
    complexity of at most 10 (ruff `C901`). *Tool, proposed.* The statement
    limit does not apply to `tests/`.
 6. Library code reports through `logging`; `print` is for `cli.py` and the
-   scripts (ruff `T201`). The `SUMMARY` line stays as it is. *Tool,
-   proposed.*
+   scripts (ruff `T201`). The command line shows the reports as lines on
+   standard output (`reporting.show_reports`); the `SUMMARY` line stays as
+   it is. *Tool, in force.*
 7. Every public module, class and function has a docstring that says what
    it is for and what it assumes (ruff `D100` to `D104`). *Tool, in force.*
 8. Comments explain why, not what. A comment that restates the code is
@@ -309,7 +310,8 @@ the first measurement and the counts after the first two work packages (both
 2026-11-19); the file is the current truth. Rules 4.2 (annotations, and mypy with 348
 errors at the first measurement), 4.7 (docstrings, ruff `D100` to `D104`;
 56 classes, 136 methods and 77 functions were without one at the first
-measurement), 4.10 (absolute imports) and 5.3 (no `unwrap()`) left the
+measurement), 4.10 (absolute imports), 4.6 (no `print` in the package, 157 at the first
+measurement) and 5.3 (no `unwrap()`) left the
 table when their counts reached zero and the lint sets took them over.
 
 | Rule | Measure (name in the pin) | at the first measurement | after S1 and S2 slice 3 |
@@ -323,7 +325,6 @@ table when their counts reached zero and the lint sets took them over.
 | 4.12 | functions and classes only tests name (`names_only_tests_use`) | 16 (2026-11-23) | 16 |
 | 4.5 | functions over 50 statements (`ruff_PLR0915`) | 43 | 40 |
 | 4.5 | functions over complexity 10 (`ruff_C901`) | 70 | 68 |
-| 4.6 | print calls in the package (`ruff_T201`) | 157 | 157 |
 | 4.9 | blind `except Exception` (`ruff_BLE001`) | 35 | 35 |
 | 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 | 2 |
 | 5.4 | public items of `router-core` without a doc comment (`rust_missing_docs`) | 796 | 796 |

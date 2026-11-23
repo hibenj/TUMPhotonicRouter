@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from gdsfactory.component import Component
 
 from photonic_router.flow_stats import RoutingFlowStats
@@ -10,6 +12,8 @@ from photonic_router.records.route_rust_types import (
     MeanderInsertionReport,
     MeanderPlanningProfile,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def attach_and_report_path_length_matching(
@@ -38,7 +42,7 @@ def attach_and_report_path_length_matching(
     )
     if meander_report_info is not None:
         routed_layout.info["meander_insertion_report"] = meander_report_info
-    print(
+    _LOGGER.info(
         "      - Path-length matching: "
         f"{len(routed_layout.info['meander_requirements'])} edge(s) require extra length"
     )
@@ -63,7 +67,7 @@ def attach_and_report_path_length_matching(
         if stats is not None:
             stats.path_length_groups = len(group_diagnostics)
             stats.path_length_groups_over_tolerance = int(groups_over_tolerance)
-        print(
+        _LOGGER.info(
             "      - Path-length groups: "
             f"{len(group_diagnostics)} group(s), "
             f"over_tolerance={groups_over_tolerance}, "
@@ -87,7 +91,7 @@ def _report_path_length_node_timings(path_length_analysis_info: dict[object, obj
         incoming = node_info.get("incoming_edges")
         if incoming is None:
             incoming = []
-        print(
+        _LOGGER.info(
             f"        • node={node_name}, "
             f"type={node_info.get('node_type')}, "
             f"internal={float(node_info.get('internal_delay_um', 0.0)):.3f}um, "
@@ -103,7 +107,7 @@ def _report_path_length_node_timings(path_length_analysis_info: dict[object, obj
                 f"{edge.get('target', {}).get('instance', '?')} "
                 f"({edge.get('net_name', '?')})"
             )
-            print(
+            _LOGGER.info(
                 "          - "
                 f"{edge_name}: edge_len={float(incoming_entry.get('routed_length_um', 0.0)):.3f}um, "
                 f"edge_arrival={float(incoming_entry.get('edge_arrival_um', 0.0)):.3f}um, "
@@ -116,7 +120,7 @@ def _report_meander_insertion(
     *,
     debug_meanders: bool,
 ) -> None:
-    print(
+    _LOGGER.info(
         "      - Meander insertion: "
         f"requested={report.total_requested_extra_length_um:.3f}um, "
         f"inserted={report.total_inserted_extra_length_um:.3f}um, "
@@ -127,7 +131,7 @@ def _report_meander_insertion(
     if report.profile is not None:
         _report_meander_profile(report.profile)
     for entry in report.results:
-        print("        • " + _meander_result_line(entry))
+        _LOGGER.info("        • " + _meander_result_line(entry))
 
 
 def _f(value: object) -> float:
@@ -140,7 +144,7 @@ def _i(value: object) -> int:
 
 def _report_meander_profile(profile: MeanderPlanningProfile) -> None:
     """The planner's timers and counters, one line per split."""
-    print(
+    _LOGGER.info(
         "        Meander overhead profile: "
         f"planner={profile.planner_elapsed_s:.4f}s "
         f"({profile.planner_calls} edge plans, "
@@ -153,12 +157,12 @@ def _report_meander_profile(profile: MeanderPlanningProfile) -> None:
     _print_split("Rust meander wrapper split", profile.rust_wrapper_profile)
     _print_split("Meander commit split", profile.commit_profile)
     if profile.candidate_profile:
-        print("        Candidate planner profile:")
+        _LOGGER.info("        Candidate planner profile:")
         for reason, raw_profile in sorted(
             profile.candidate_profile.items(),
             key=lambda item: -_f(item[1].get("elapsed_s", 0.0)),
         ):
-            print(
+            _LOGGER.info(
                 "          - "
                 f"{reason}: candidates={_i(raw_profile.get('candidate_attempts', 0))}, "
                 f"edge_calls={_i(raw_profile.get('edge_calls', 0))}, "
@@ -176,7 +180,7 @@ def _report_meander_profile(profile: MeanderPlanningProfile) -> None:
             for candidate in (candidates if isinstance(candidates, list) else [])
             if isinstance(candidate, dict)
         )
-        print(
+        _LOGGER.info(
             f"        Requirement {net_name}: "
             f"requested={_f(attempt.get('requested_extra_length_um', 0.0)):.3f}um, "
             f"selected={attempt.get('selected_candidate_reason')}, "
@@ -207,7 +211,7 @@ def _print_split(title: str, split: dict[str, float]) -> None:
         else f"{key}={int(float(value))}"
         for key, value in sorted(split.items(), key=lambda item: -float(item[1]))
     ]
-    print(f"        {title}: " + ", ".join(parts))
+    _LOGGER.info(f"        {title}: " + ", ".join(parts))
 
 
 def _meander_result_line(entry: MeanderEdgeReport) -> str:

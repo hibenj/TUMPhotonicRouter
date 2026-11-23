@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import math
-import sys
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -33,6 +33,8 @@ from photonic_router.routing_layers import (
     find_component_port_access_rule,
 )
 from photonic_router.static_obstacle_builder import grid_cell_center
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -491,7 +493,7 @@ def _two_bend_static_stub_centerline_um(
 
     def fail(reason: str, extra: str = "") -> None:
         if trace_fanout_stubs:
-            print(
+            _LOGGER.warning(
                 "fanout_stub_failed "
                 f"reason={reason} "
                 f"port={port_center_um} "
@@ -500,8 +502,7 @@ def _two_bend_static_stub_centerline_um(
                 f"min_forward_cells={min_forward_cells} "
                 f"initial_forward_cells={initial_forward_cells} "
                 f"extra_final_forward_cells={extra_final_forward_cells}"
-                f"{extra}",
-                file=sys.stderr,
+                f"{extra}"
             )
 
     if abs(final_step[0]) + abs(final_step[1]) != 1:
@@ -1429,7 +1430,7 @@ def _build_fanout_stubs(
     if traced_instance:
         for port_spec, anchor in sorted(anchor_by_port_spec.items()):
             if port_spec.startswith(f"{traced_instance},"):
-                print(
+                _LOGGER.info(
                     f"anchor_trace {port_spec} state=({anchor.state_x},{anchor.state_y}) "
                     f"angle={anchor.physical_angle} "
                     f"centerline={anchor.stub_centerline_um}"
@@ -1527,10 +1528,10 @@ def _build_dense_runways(
     if traced_instance:
         for port_spec, runway_length in sorted(target_length_by_spec.items()):
             if port_spec.startswith(f"{traced_instance},"):
-                print(f"runway_trace target {port_spec} length={runway_length}")
+                _LOGGER.info(f"runway_trace target {port_spec} length={runway_length}")
         for port_spec, runway_length in sorted(source_length_by_spec.items()):
             if port_spec.startswith(f"{traced_instance},"):
-                print(f"runway_trace source {port_spec} length={runway_length}")
+                _LOGGER.info(f"runway_trace source {port_spec} length={runway_length}")
     return DenseRunways(
         source_length_by_spec=source_length_by_spec,
         target_length_by_spec=target_length_by_spec,
@@ -1586,4 +1587,6 @@ def apply_long_straight_fanout_exemption(settings: SessionSettings, state: Sessi
             set(state.fanout.anchor_source_net_ids) | set(state.fanout.anchor_target_net_ids)
         )
         state.kernel.router.set_long_straight_exempt_net_ids(exempt_ids)
-        print(f"      - long-straight penalty exempt for {len(exempt_ids)} dense fan-out net(s)")
+        _LOGGER.info(
+            f"      - long-straight penalty exempt for {len(exempt_ids)} dense fan-out net(s)"
+        )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import Counter
 from pathlib import Path
@@ -20,6 +21,8 @@ from photonic_router.electrical import (
 from photonic_router.flow_component_info import component_info, copy_component_info
 from photonic_router.flow_stats import RoutingFlowStats
 
+_LOGGER = logging.getLogger(__name__)
+
 
 def run_electrical_routing_step(
     *,
@@ -34,7 +37,7 @@ def run_electrical_routing_step(
     debug_svgs_enabled: bool,
 ) -> tuple[Component, ElectricalRoutingResult]:
     """Run heater metal routing and return the electrically routed layout."""
-    print(f"\n[4/{total_steps}] Routing heater electrical metal...")
+    _LOGGER.info(f"\n[4/{total_steps}] Routing heater electrical metal...")
     t_electrical_start = time.perf_counter()
     current_electrical_result = route_electrical_heaters(
         routed_layout,
@@ -69,19 +72,23 @@ def run_electrical_routing_step(
         else 0
     )
     if current_electrical_result.terminal_groups:
-        print(f"      \u2713 Electrical layout generated: {electrical_layout.name}")
+        _LOGGER.info(f"      \u2713 Electrical layout generated: {electrical_layout.name}")
     else:
-        print("      \u2713 No heater electrical terminals found; electrical routing skipped")
-    print(
+        _LOGGER.info(
+            "      \u2713 No heater electrical terminals found; electrical routing skipped"
+        )
+    _LOGGER.info(
         "      - Electrical routes: "
         f"heaters={len(current_electrical_result.terminal_groups)}, "
         f"pads={electrical_pad_count}"
     )
     if debug_timing:
-        print(f"      - Electrical routing time: {t_electrical_end - t_electrical_start:.4f} s")
+        _LOGGER.info(
+            f"      - Electrical routing time: {t_electrical_end - t_electrical_start:.4f} s"
+        )
     if debug_svgs_enabled:
         for name, path in current_electrical_result.debug_artifacts.items():
-            print(f"      - Electrical {name}: {path}")
+            _LOGGER.info(f"      - Electrical {name}: {path}")
     return electrical_layout, current_electrical_result
 
 

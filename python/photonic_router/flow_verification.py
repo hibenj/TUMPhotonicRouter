@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -28,6 +29,8 @@ from photonic_router.verify.photonic_verification import (
     VerificationChecks,
     verify_photonic_routing,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def verify_and_attach_photonic_reports(
@@ -69,7 +72,7 @@ def verify_and_attach_photonic_reports(
                 status_metadata=verification_status,
             )
             routed_info["crossing_verification"] = crossing_report
-            print(f"      - Crossing verification JSON: {crossing_report['path']}")
+            _LOGGER.info(f"      - Crossing verification JSON: {crossing_report['path']}")
             if crossing_report.get("success") is False:
                 raise RuntimeError(
                     "Crossing verification failed before GDS write: "
@@ -127,11 +130,11 @@ def verify_and_attach_photonic_reports(
     if stats is not None:
         stats.verification_error_count = int(getattr(photonic_verification, "error_count", 0))
         stats.verification_warning_count = int(getattr(photonic_verification, "warning_count", 0))
-    print(f"      - Photonic verification JSON: {photonic_report['path']}")
+    _LOGGER.info(f"      - Photonic verification JSON: {photonic_report['path']}")
     if photonic_verification.success:
         return
     if write_gds_on_photonic_verification_failure:
-        print(
+        _LOGGER.info(
             "      - WARNING: Photonic geometry verification failed; "
             "writing GDS anyway because "
             "PHOTONIC_ROUTER_WRITE_GDS_ON_PHOTONIC_VERIFICATION_FAILURE is set."
@@ -215,7 +218,7 @@ def _check_mixed_run_crossing_budget(
     realized = int(metrics.get("crossing_count", 0)) if isinstance(metrics, Mapping) else 0
     tiles = int(grids.get("crossing_component_count", 0))
     plan = int(grids.get("plan_event_count", 0))
-    print(
+    _LOGGER.info(
         f"      - mixed run: {tiles} pre-placed tile(s) + {realized} router crossing(s) "
         f"= {tiles + realized} of {plan} planned"
     )

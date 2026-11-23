@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, NamedTuple
 
@@ -33,6 +34,8 @@ from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import PlannedJobs
 from photonic_router.routing.state import SessionState
 from photonic_router.static_obstacle_builder import physical_to_grid
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _cell_in_raw_static(state: SessionState, cell: tuple[int, int]) -> bool:
@@ -307,7 +310,7 @@ def _build_crossing_plan(
             if isinstance(guidance, dict)
             else ""
         )
-        print(
+        _LOGGER.info(
             f"      - crossing search: mode={settings.crossing_mode}"
             f" search_loss={float(plan.crossing_search_loss):.1f}"
             f"{guidance_text}"

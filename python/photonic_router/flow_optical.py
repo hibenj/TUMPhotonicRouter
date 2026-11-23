@@ -8,6 +8,7 @@ and `run_photonic_routing_stage` runs the session and collects its records.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,8 @@ from photonic_router.routing.options import (
     SessionOptions,
 )
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -161,7 +164,7 @@ def run_photonic_routing_stage(
     config: OpticalRoutingStageConfig,
 ) -> OpticalRoutingStageResult:
     """Route optical nets, collect route records, and emit optional timing."""
-    print(f"\n[3/{total_steps}] Routing nets with Rust backend...")
+    _LOGGER.info(f"\n[3/{total_steps}] Routing nets with Rust backend...")
     metadata = load_benchmark_metadata(benchmark_name, schematic=schematic)
     t_route_start = time.perf_counter()
     try:
@@ -177,7 +180,7 @@ def run_photonic_routing_stage(
             ),
         )
     except Exception:
-        print("      \u2717 Routing failed.")
+        _LOGGER.info("      \u2717 Routing failed.")
         report_partial_debug_artifacts(
             benchmark_name,
             debug_svgs_enabled=config.debug_svgs_enabled,
@@ -200,7 +203,7 @@ def run_photonic_routing_stage(
             route_attempt_records=route_attempt_records,
             route_time_s=route_time_s,
         )
-    print(f"      \u2713 Routed layout generated: {route_result.routed_layout.name}")
+    _LOGGER.info(f"      \u2713 Routed layout generated: {route_result.routed_layout.name}")
     return OpticalRoutingStageResult(
         route_result=route_result,
         routed_layout=route_result.routed_layout,

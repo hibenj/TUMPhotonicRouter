@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Mapping
@@ -20,6 +21,8 @@ from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.stages import FinalJobs
 from photonic_router.routing.state import SearchLog, SessionState
 from photonic_router.static_obstacle_builder import grid_cell_center
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _snap_nearly_collinear_states(
@@ -309,7 +312,7 @@ def _topological_net_route_order(
         stub_by_net_id=stub_by_net_id,
     )
     if settings.net_order != "topological":
-        print(f"      - net order: {settings.net_order}")
+        _LOGGER.info(f"      - net order: {settings.net_order}")
     return _debug_hoist_instance_first(settings, ordered)
 
 
@@ -350,7 +353,7 @@ def _debug_hoist_instance_first(
             key=lambda job: rank[int(job.net_id)],
         )
         rest = [job for job in ordered if int(job.net_id) not in wanted]
-        print(
+        _LOGGER.info(
             f"      - DEBUG route order: {len(hoisted)} nets from the explicit "
             f"net-id list hoisted to the front, in list order (diagnosis only)"
         )
@@ -360,7 +363,7 @@ def _debug_hoist_instance_first(
         return ordered
     hoisted = [job for job in ordered if instance in (job.inst1, job.inst2)]
     rest = [job for job in ordered if instance not in (job.inst1, job.inst2)]
-    print(
+    _LOGGER.info(
         f"      - DEBUG route order: {len(hoisted)} nets touching "
         f"{instance!r} hoisted to the front (diagnosis only)"
     )
@@ -532,7 +535,7 @@ def states_and_openings(
     if trace_endpoint_bumps is not None and (
         trace_endpoint_bumps == ALL_NETS or str(int(job.net_id)) in trace_endpoint_bumps
     ):
-        print(
+        _LOGGER.info(
             "endpoint_open_trace "
             f"net_id={int(job.net_id)} "
             f"source_state=({int(source_state.x)},{int(source_state.y)},{int(source_state.angle)}) "
@@ -650,7 +653,7 @@ def _hand_static_cells_to_kernel(
         state.kernel.router.add_static_rects(chip_boundary_rects)
         blocked_rects_for_diagnostics.extend(chip_boundary_rects)
         if settings.verbose_route_diagnostics:
-            print(
+            _LOGGER.info(
                 "  Chip-boundary keepout: "
                 f"routable_bbox={getattr(obstacle_map, 'routable_bbox', None)} "
                 f"rects={chip_boundary_rects}"
@@ -685,7 +688,7 @@ def _jobs_of_this_run(settings: SessionSettings, full_route_jobs: list[RouteJob]
         stop_index = int(settings.debug_stop_after_route_index)
         route_jobs = [job for job in full_route_jobs if int(job.route_index) <= stop_index]
         if settings.verbose_route_diagnostics or settings.debug_route_indices is not None:
-            print(
+            _LOGGER.info(
                 f"  Debug stop-after-route active: routing {len(route_jobs)} "
                 f"of {full_route_count} full-context routes"
             )
@@ -694,7 +697,7 @@ def _jobs_of_this_run(settings: SessionSettings, full_route_jobs: list[RouteJob]
         original_route_job_count = len(route_jobs)
         route_jobs = route_jobs[:debug_execution_limit]
         if settings.verbose_route_diagnostics or settings.debug_route_indices is not None:
-            print(
+            _LOGGER.info(
                 "  Debug execution limit active: routing "
                 f"{len(route_jobs)} of {original_route_job_count} selected "
                 "routes in actual execution order"
