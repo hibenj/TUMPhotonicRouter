@@ -531,6 +531,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `route_jobs._build_static_fanout_anchors` within the limit of 50
+  statements, no behaviour change: the lower and the upper half of a
+  dense port row were two mirrored copies of the same staggering; both
+  call `_stagger_fanout_half` now, with the side as a sign.
 - Two diagnostic functions within the limit of 50 statements, no
   behaviour change: `electrical_debug_svg` draws the pad plan, the bus,
   the pad wires and the topology in four functions (the 8 debug SVGs

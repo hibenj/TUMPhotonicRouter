@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 import math
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -754,6 +754,63 @@ def _straight_static_stub_centerline_um(
     return centerline, (anchor_x, anchor_y)
 
 
+def _stagger_fanout_half(
+    add_anchor: Callable[..., tuple[int, int] | None],
+    inner_first_items: list[tuple[str, int, Any]],
+    lateral_sign: int,
+    stagger_forward_cells: int,
+    lane_spacing_cells: int,
+) -> None:
+    """Give one half of a dense port row its two-bend stubs, the innermost port first.
+
+    ``inner_first_items`` are the ports of the half from the middle of the
+    row outward and ``lateral_sign`` the side the half bends to (-1 or +1).
+    The innermost port takes the anchor row its stub reaches by itself.
+    Every further port is first tried without a target row, then placed
+    ``lane_spacing_cells`` farther out per rank from the innermost anchor,
+    or at the row the free try reached when that is farther out still.
+    The forward runs are staggered by ``stagger_forward_cells`` per rank:
+    the first run shrinks and the last run grows going outward. Nothing is
+    placed for the outer ports when the innermost one gets no anchor.
+    """
+
+    count = len(inner_first_items)
+    inner_anchor = add_anchor(
+        inner_first_items[0],
+        lateral_sign,
+        target_anchor_y_cell=None,
+        initial_forward_cells=(count - 1) * stagger_forward_cells,
+        extra_final_forward_cells=0,
+    )
+    if inner_anchor is None:
+        return
+    base_y = int(inner_anchor[1])
+    for rank, item in enumerate(inner_first_items[1:], start=1):
+        initial_rank = count - 1 - int(rank)
+        final_rank = int(rank)
+        free_anchor = add_anchor(
+            item,
+            lateral_sign,
+            target_anchor_y_cell=None,
+            initial_forward_cells=initial_rank * stagger_forward_cells,
+            extra_final_forward_cells=final_rank * stagger_forward_cells,
+        )
+        desired_y = base_y + lateral_sign * int(rank) * lane_spacing_cells
+        if free_anchor is not None:
+            desired_y = (
+                min(desired_y, int(free_anchor[1]))
+                if lateral_sign < 0
+                else max(desired_y, int(free_anchor[1]))
+            )
+        add_anchor(
+            item,
+            lateral_sign,
+            target_anchor_y_cell=desired_y,
+            initial_forward_cells=initial_rank * stagger_forward_cells,
+            extra_final_forward_cells=final_rank * stagger_forward_cells,
+        )
+
+
 def _build_static_fanout_anchors(
     settings: SessionSettings, state: SessionState
 ) -> dict[str, FanoutAnchor]:
@@ -858,69 +915,20 @@ def _build_static_fanout_anchors(
             stub_bend_steps = fanout_stub_bend_steps(settings)
             stagger_forward_cells = int(stub_x_offset_cells) if int(stub_bend_steps) >= 2 else 0
 
-            lower_inner = lower_items[-1]
-            lower_count = len(lower_items)
-            lower_inner_anchor = add_two_bend_anchor(
-                lower_inner,
+            _stagger_fanout_half(
+                add_two_bend_anchor,
+                [lower_items[-1], *reversed(lower_items[:-1])],
                 -1,
-                target_anchor_y_cell=None,
-                initial_forward_cells=(lower_count - 1) * stagger_forward_cells,
-                extra_final_forward_cells=0,
+                stagger_forward_cells,
+                int(lane_spacing_cells),
             )
-            if lower_inner_anchor is not None:
-                lower_base_y = int(lower_inner_anchor[1])
-                for rank, item in enumerate(reversed(lower_items[:-1]), start=1):
-                    initial_rank = lower_count - 1 - int(rank)
-                    final_rank = int(rank)
-                    _min_anchor = add_two_bend_anchor(
-                        item,
-                        -1,
-                        target_anchor_y_cell=None,
-                        initial_forward_cells=initial_rank * stagger_forward_cells,
-                        extra_final_forward_cells=final_rank * stagger_forward_cells,
-                    )
-                    desired_y = lower_base_y - int(rank) * int(lane_spacing_cells)
-                    if _min_anchor is not None:
-                        desired_y = min(desired_y, int(_min_anchor[1]))
-                    add_two_bend_anchor(
-                        item,
-                        -1,
-                        target_anchor_y_cell=desired_y,
-                        initial_forward_cells=initial_rank * stagger_forward_cells,
-                        extra_final_forward_cells=final_rank * stagger_forward_cells,
-                    )
-
-            upper_inner = upper_items[0]
-            upper_count = len(upper_items)
-            upper_inner_anchor = add_two_bend_anchor(
-                upper_inner,
+            _stagger_fanout_half(
+                add_two_bend_anchor,
+                upper_items,
                 1,
-                target_anchor_y_cell=None,
-                initial_forward_cells=(upper_count - 1) * stagger_forward_cells,
-                extra_final_forward_cells=0,
+                stagger_forward_cells,
+                int(lane_spacing_cells),
             )
-            if upper_inner_anchor is not None:
-                upper_base_y = int(upper_inner_anchor[1])
-                for rank, item in enumerate(upper_items[1:], start=1):
-                    initial_rank = upper_count - 1 - int(rank)
-                    final_rank = int(rank)
-                    _min_anchor = add_two_bend_anchor(
-                        item,
-                        1,
-                        target_anchor_y_cell=None,
-                        initial_forward_cells=initial_rank * stagger_forward_cells,
-                        extra_final_forward_cells=final_rank * stagger_forward_cells,
-                    )
-                    desired_y = upper_base_y + int(rank) * int(lane_spacing_cells)
-                    if _min_anchor is not None:
-                        desired_y = max(desired_y, int(_min_anchor[1]))
-                    add_two_bend_anchor(
-                        item,
-                        1,
-                        target_anchor_y_cell=desired_y,
-                        initial_forward_cells=initial_rank * stagger_forward_cells,
-                        extra_final_forward_cells=final_rank * stagger_forward_cells,
-                    )
     return anchors
 
 
