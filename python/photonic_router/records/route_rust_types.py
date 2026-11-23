@@ -417,6 +417,93 @@ class RipupRerouteConfig:
     history_increment: int = 1
 
 
+#: `RouteTimingBucket.record_route`: (bucket field, statistic of the kernel's
+#: route) pairs that are summed over the routes of a bucket.
+_BUCKET_SUMMED_STATS: tuple[tuple[str, str], ...] = (
+    ("expanded_states", "expanded_states"),
+    ("generated_neighbors", "generated_neighbors"),
+    ("heap_pushes", "heap_pushes"),
+    ("heap_pops", "heap_pops"),
+    ("skipped_duplicate_heap_entries", "skipped_duplicate_heap_entries"),
+    ("stale_generation_heap_entries", "stale_generation_heap_entries"),
+    ("closed_heap_entries", "closed_heap_entries"),
+    ("dense_search_states", "dense_search_states"),
+    ("dense_search_storage_bytes", "dense_search_storage_bytes"),
+    ("best_cost_updates", "best_cost_updates"),
+    ("parent_updates", "parent_updates"),
+    ("obstacle_clearance_checks", "obstacle_clearance_checks"),
+    ("window_attempts", "window_attempts"),
+    ("window_rejects", "window_rejects"),
+    ("footprint_rejects", "footprint_rejects"),
+    ("footprint_checks", "primitive_footprint_checks"),
+    ("footprint_cells_tested", "primitive_footprint_cells_tested"),
+    ("footprint_rect_checks", "primitive_footprint_rect_checks"),
+    ("footprint_rect_rejects", "primitive_footprint_rect_rejects"),
+    ("crossing_hotpath_no_contact", "crossing_hotpath_no_contact"),
+    ("crossing_hotpath_contact_checks", "crossing_hotpath_contact_checks"),
+    ("crossing_hotpath_static_rejects", "crossing_hotpath_static_rejects"),
+    ("crossing_hotpath_no_owner_contacts", "crossing_hotpath_no_owner_contacts"),
+    ("crossing_hotpath_single_owner_contacts", "crossing_hotpath_single_owner_contacts"),
+    ("crossing_hotpath_multi_owner_contacts", "crossing_hotpath_multi_owner_contacts"),
+    ("crossing_hotpath_witness_cells_scanned", "crossing_hotpath_witness_cells_scanned"),
+    ("crossing_hotpath_partner_segment_checks", "crossing_hotpath_partner_segment_checks"),
+    (
+        "crossing_hotpath_partner_segment_bbox_rejects",
+        "crossing_hotpath_partner_segment_bbox_rejects",
+    ),
+    ("crossing_hotpath_intersection_hits", "crossing_hotpath_intersection_hits"),
+    ("crossing_hotpath_total_time_us", "crossing_hotpath_total_time_us"),
+    ("crossing_hotpath_owner_scan_time_us", "crossing_hotpath_owner_scan_time_us"),
+    ("crossing_hotpath_segment_time_us", "crossing_hotpath_segment_time_us"),
+    ("crossing_hotpath_reservation_time_us", "crossing_hotpath_reservation_time_us"),
+    ("crossing_candidate_checks", "crossing_candidate_checks"),
+    ("crossing_accepted", "crossing_accepted"),
+    ("crossing_accepted_planned", "crossing_accepted_planned"),
+    ("crossing_accepted_over_budget", "crossing_accepted_over_budget"),
+    ("crossing_reject_non_straight", "crossing_reject_non_straight"),
+    ("crossing_reject_not_perpendicular", "crossing_reject_not_perpendicular"),
+    ("crossing_reject_margin", "crossing_reject_margin"),
+    ("crossing_reject_wrong_order", "crossing_reject_wrong_order"),
+    ("crossing_reject_unexpected_owner", "crossing_reject_unexpected_owner"),
+    ("crossing_reject_unmatched_owner", "crossing_reject_unmatched_owner"),
+    ("crossing_reject_unmatched_centerline", "crossing_reject_unmatched_centerline"),
+    ("crossing_reject_unmatched_footprint", "crossing_reject_unmatched_footprint"),
+    ("crossing_reject_unmatched_route_centerline", "crossing_reject_unmatched_route_centerline"),
+    ("crossing_reject_unmatched_route_footprint", "crossing_reject_unmatched_route_footprint"),
+    ("crossing_reject_pending_straight", "crossing_reject_pending_straight"),
+    ("dense_grid_build_failures", "dense_grid_build_failures"),
+    ("dense_grid_cells", "dense_grid_cells"),
+    ("route_search_total_time_us", "route_search_total_time_us"),
+    ("dense_grid_build_time_us", "dense_grid_build_time_us"),
+    ("search_loop_time_us", "search_loop_time_us"),
+    ("obstacle_map_prepare_time_us", "obstacle_map_prepare_time_us"),
+    ("simple_route_time_us", "simple_route_time_us"),
+    ("commit_prepare_time_us", "commit_prepare_time_us"),
+    ("commit_time_us", "commit_time_us"),
+    ("neighbor_generation_time_us", "neighbor_generation_time_us"),
+    ("heap_operation_time_us", "heap_operation_time_us"),
+    ("legality_check_time_us", "legality_check_time_us"),
+    ("reconstruction_time_us", "reconstruction_time_us"),
+)
+
+#: Statistics of which a bucket keeps the maximum; field and statistic share the name.
+_BUCKET_MAX_STATS = (
+    "max_heap_size",
+    "max_window_area_cells",
+)
+
+#: Per-class counter dicts that are added key by key; field and statistic share the name.
+_BUCKET_COUNTER_DICTS = (
+    "primitive_generated_by_class",
+    "primitive_bounds_rejects_by_class",
+    "primitive_closed_rejects_by_class",
+    "primitive_cost_pruned_by_class",
+    "primitive_footprint_checks_by_class",
+    "primitive_footprint_rejects_by_class",
+    "primitive_accepted_by_class",
+)
+
+
 @dataclass
 class RouteTimingBucket:
     """The accumulated times and search statistics of the route attempts of one kind.
@@ -549,223 +636,16 @@ class RouteTimingBucket:
         self.record_elapsed(elapsed_s, failed=failed)
         if failed:
             return
-        self.expanded_states += _get_route_int_stat(route_obj, "expanded_states")
-        self.generated_neighbors += _get_route_int_stat(route_obj, "generated_neighbors")
-        self.heap_pushes += _get_route_int_stat(route_obj, "heap_pushes")
-        self.heap_pops += _get_route_int_stat(route_obj, "heap_pops")
-        self.skipped_duplicate_heap_entries += _get_route_int_stat(
-            route_obj,
-            "skipped_duplicate_heap_entries",
-        )
-        self.stale_generation_heap_entries += _get_route_int_stat(
-            route_obj,
-            "stale_generation_heap_entries",
-        )
-        self.closed_heap_entries += _get_route_int_stat(
-            route_obj,
-            "closed_heap_entries",
-        )
-        self.max_heap_size = max(
-            self.max_heap_size,
-            _get_route_int_stat(route_obj, "max_heap_size"),
-        )
-        self.dense_search_states += _get_route_int_stat(
-            route_obj,
-            "dense_search_states",
-        )
-        self.dense_search_storage_bytes += _get_route_int_stat(
-            route_obj,
-            "dense_search_storage_bytes",
-        )
-        self.best_cost_updates += _get_route_int_stat(
-            route_obj,
-            "best_cost_updates",
-        )
-        self.parent_updates += _get_route_int_stat(route_obj, "parent_updates")
-        self.obstacle_clearance_checks += _get_route_int_stat(
-            route_obj,
-            "obstacle_clearance_checks",
-        )
-        self.window_attempts += _get_route_int_stat(route_obj, "window_attempts")
-        self.window_rejects += _get_route_int_stat(route_obj, "window_rejects")
-        self.footprint_rejects += _get_route_int_stat(route_obj, "footprint_rejects")
-        _add_counter_dict(
-            self.primitive_generated_by_class,
-            _get_route_counter_dict(route_obj, "primitive_generated_by_class"),
-        )
-        _add_counter_dict(
-            self.primitive_bounds_rejects_by_class,
-            _get_route_counter_dict(route_obj, "primitive_bounds_rejects_by_class"),
-        )
-        _add_counter_dict(
-            self.primitive_closed_rejects_by_class,
-            _get_route_counter_dict(route_obj, "primitive_closed_rejects_by_class"),
-        )
-        _add_counter_dict(
-            self.primitive_cost_pruned_by_class,
-            _get_route_counter_dict(route_obj, "primitive_cost_pruned_by_class"),
-        )
-        _add_counter_dict(
-            self.primitive_footprint_checks_by_class,
-            _get_route_counter_dict(route_obj, "primitive_footprint_checks_by_class"),
-        )
-        _add_counter_dict(
-            self.primitive_footprint_rejects_by_class,
-            _get_route_counter_dict(route_obj, "primitive_footprint_rejects_by_class"),
-        )
-        _add_counter_dict(
-            self.primitive_accepted_by_class,
-            _get_route_counter_dict(route_obj, "primitive_accepted_by_class"),
-        )
-        self.footprint_checks += _get_route_int_stat(route_obj, "primitive_footprint_checks")
-        self.footprint_cells_tested += _get_route_int_stat(
-            route_obj,
-            "primitive_footprint_cells_tested",
-        )
-        self.footprint_rect_checks += _get_route_int_stat(
-            route_obj,
-            "primitive_footprint_rect_checks",
-        )
-        self.footprint_rect_rejects += _get_route_int_stat(
-            route_obj,
-            "primitive_footprint_rect_rejects",
-        )
-        self.crossing_hotpath_no_contact += _get_route_int_stat(
-            route_obj, "crossing_hotpath_no_contact"
-        )
-        self.crossing_hotpath_contact_checks += _get_route_int_stat(
-            route_obj, "crossing_hotpath_contact_checks"
-        )
-        self.crossing_hotpath_static_rejects += _get_route_int_stat(
-            route_obj, "crossing_hotpath_static_rejects"
-        )
-        self.crossing_hotpath_no_owner_contacts += _get_route_int_stat(
-            route_obj, "crossing_hotpath_no_owner_contacts"
-        )
-        self.crossing_hotpath_single_owner_contacts += _get_route_int_stat(
-            route_obj, "crossing_hotpath_single_owner_contacts"
-        )
-        self.crossing_hotpath_multi_owner_contacts += _get_route_int_stat(
-            route_obj, "crossing_hotpath_multi_owner_contacts"
-        )
-        self.crossing_hotpath_witness_cells_scanned += _get_route_int_stat(
-            route_obj, "crossing_hotpath_witness_cells_scanned"
-        )
-        self.crossing_hotpath_partner_segment_checks += _get_route_int_stat(
-            route_obj, "crossing_hotpath_partner_segment_checks"
-        )
-        self.crossing_hotpath_partner_segment_bbox_rejects += _get_route_int_stat(
-            route_obj, "crossing_hotpath_partner_segment_bbox_rejects"
-        )
-        self.crossing_hotpath_intersection_hits += _get_route_int_stat(
-            route_obj, "crossing_hotpath_intersection_hits"
-        )
-        self.crossing_hotpath_total_time_us += _get_route_int_stat(
-            route_obj, "crossing_hotpath_total_time_us"
-        )
-        self.crossing_hotpath_owner_scan_time_us += _get_route_int_stat(
-            route_obj, "crossing_hotpath_owner_scan_time_us"
-        )
-        self.crossing_hotpath_segment_time_us += _get_route_int_stat(
-            route_obj, "crossing_hotpath_segment_time_us"
-        )
-        self.crossing_hotpath_reservation_time_us += _get_route_int_stat(
-            route_obj, "crossing_hotpath_reservation_time_us"
-        )
-        self.crossing_candidate_checks += _get_route_int_stat(
-            route_obj, "crossing_candidate_checks"
-        )
-        self.crossing_accepted += _get_route_int_stat(route_obj, "crossing_accepted")
-        self.crossing_accepted_planned += _get_route_int_stat(
-            route_obj, "crossing_accepted_planned"
-        )
-        self.crossing_accepted_over_budget += _get_route_int_stat(
-            route_obj, "crossing_accepted_over_budget"
-        )
-        self.crossing_reject_non_straight += _get_route_int_stat(
-            route_obj, "crossing_reject_non_straight"
-        )
-        self.crossing_reject_not_perpendicular += _get_route_int_stat(
-            route_obj, "crossing_reject_not_perpendicular"
-        )
-        self.crossing_reject_margin += _get_route_int_stat(route_obj, "crossing_reject_margin")
-        self.crossing_reject_wrong_order += _get_route_int_stat(
-            route_obj, "crossing_reject_wrong_order"
-        )
-        self.crossing_reject_unexpected_owner += _get_route_int_stat(
-            route_obj, "crossing_reject_unexpected_owner"
-        )
-        self.crossing_reject_unmatched_owner += _get_route_int_stat(
-            route_obj, "crossing_reject_unmatched_owner"
-        )
-        self.crossing_reject_unmatched_centerline += _get_route_int_stat(
-            route_obj, "crossing_reject_unmatched_centerline"
-        )
-        self.crossing_reject_unmatched_footprint += _get_route_int_stat(
-            route_obj, "crossing_reject_unmatched_footprint"
-        )
-        self.crossing_reject_unmatched_route_centerline += _get_route_int_stat(
-            route_obj, "crossing_reject_unmatched_route_centerline"
-        )
-        self.crossing_reject_unmatched_route_footprint += _get_route_int_stat(
-            route_obj, "crossing_reject_unmatched_route_footprint"
-        )
-        self.crossing_reject_pending_straight += _get_route_int_stat(
-            route_obj, "crossing_reject_pending_straight"
-        )
-        self.dense_grid_build_failures += _get_route_int_stat(
-            route_obj,
-            "dense_grid_build_failures",
-        )
-        self.dense_grid_cells += _get_route_int_stat(route_obj, "dense_grid_cells")
-        self.route_search_total_time_us += _get_route_int_stat(
-            route_obj,
-            "route_search_total_time_us",
-        )
-        self.dense_grid_build_time_us += _get_route_int_stat(
-            route_obj,
-            "dense_grid_build_time_us",
-        )
-        self.search_loop_time_us += _get_route_int_stat(
-            route_obj,
-            "search_loop_time_us",
-        )
-        self.obstacle_map_prepare_time_us += _get_route_int_stat(
-            route_obj,
-            "obstacle_map_prepare_time_us",
-        )
-        self.simple_route_time_us += _get_route_int_stat(
-            route_obj,
-            "simple_route_time_us",
-        )
-        self.commit_prepare_time_us += _get_route_int_stat(
-            route_obj,
-            "commit_prepare_time_us",
-        )
-        self.commit_time_us += _get_route_int_stat(
-            route_obj,
-            "commit_time_us",
-        )
-        self.neighbor_generation_time_us += _get_route_int_stat(
-            route_obj,
-            "neighbor_generation_time_us",
-        )
-        self.heap_operation_time_us += _get_route_int_stat(
-            route_obj,
-            "heap_operation_time_us",
-        )
-        self.legality_check_time_us += _get_route_int_stat(
-            route_obj,
-            "legality_check_time_us",
-        )
-        self.reconstruction_time_us += _get_route_int_stat(
-            route_obj,
-            "reconstruction_time_us",
-        )
-        self.max_window_area_cells = max(
-            self.max_window_area_cells,
-            _get_route_int_stat(route_obj, "max_window_area_cells"),
-        )
+        for field_name, stat_name in _BUCKET_SUMMED_STATS:
+            setattr(
+                self,
+                field_name,
+                getattr(self, field_name) + _get_route_int_stat(route_obj, stat_name),
+            )
+        for name in _BUCKET_MAX_STATS:
+            setattr(self, name, max(getattr(self, name), _get_route_int_stat(route_obj, name)))
+        for name in _BUCKET_COUNTER_DICTS:
+            _add_counter_dict(getattr(self, name), _get_route_counter_dict(route_obj, name))
         if bool(getattr(route_obj, "used_full_grid_fallback", False)):
             self.full_grid_fallbacks += 1
 

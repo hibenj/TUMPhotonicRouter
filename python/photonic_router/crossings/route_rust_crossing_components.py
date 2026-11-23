@@ -271,6 +271,73 @@ def crossing_footprint_polygon_metadata(
     return polygon if len(polygon) >= 3 else None
 
 
+def _place_crossing_ref(
+    routed_layout: Component,
+    component: Component,
+    instance_name: str,
+    point_um: tuple[float, float],
+    rotation_deg: float,
+) -> Any:
+    """Add a reference of the crossing component, turned and with its optical centre at the point.
+
+    The centre is the one the reference's port positions imply, or the centre
+    of its bounding box without any; a reference with neither is moved by
+    ``point_um`` as it is.
+    """
+
+    try:
+        ref = routed_layout.add_ref(component, name=instance_name)
+    except TypeError:
+        ref = routed_layout.add_ref(component)
+    if abs(rotation_deg) > 1.0e-9:
+        ref.drotate(rotation_deg)
+    ref_center_um = _ports_optical_center_um(ref) or _bbox_center_um(ref)
+    if ref_center_um is None:
+        ref.dmove(point_um)
+    else:
+        ref.dmove(
+            (
+                point_um[0] - ref_center_um[0],
+                point_um[1] - ref_center_um[1],
+            )
+        )
+    return ref
+
+
+def _shared_crossing_owners(
+    raw_crossing_list: list[Mapping[str, object]], cluster_indices: IterableABC[int]
+) -> tuple[set[str], set[int]]:
+    """The net names and net ids of the crossings of one cluster that share a component."""
+
+    shared_owner_names: set[str] = set()
+    shared_owner_ids: set[int] = set()
+    for shared_index in cluster_indices:
+        if shared_index < 0 or shared_index >= len(raw_crossing_list):
+            continue
+        shared_crossing = raw_crossing_list[shared_index]
+        for key in ("net_name_a", "net_name_b"):
+            value = shared_crossing.get(key)
+            if isinstance(value, str) and value:
+                shared_owner_names.add(value)
+        for key in ("net_id_a", "net_id_b"):
+            shared_owner_id = int_or_none(shared_crossing.get(key))
+            if shared_owner_id is not None:
+                shared_owner_ids.add(shared_owner_id)
+    return shared_owner_names, shared_owner_ids
+
+
+def _realized_crossing_records(crossing_plan_info: CrossingPlanInfo) -> list[Mapping[str, object]]:
+    """The realized intersections of the plan that are mappings, in order; [] when the plan holds no sequence there."""
+
+    raw_crossings: object = crossing_plan_info.realized_intersections or ()
+    if not isinstance(raw_crossings, IterableABC) or isinstance(
+        raw_crossings,
+        (str, bytes, bytearray),
+    ):
+        return []
+    return [raw_crossing for raw_crossing in raw_crossings if isinstance(raw_crossing, Mapping)]
+
+
 def place_realized_crossing_components(
     routed_layout: Component,
     crossing_plan_info: CrossingPlanInfo,
@@ -295,15 +362,7 @@ def place_realized_crossing_components(
     )
     component_name = str(component.name)
     placements: list[dict[str, object]] = []
-    raw_crossings: object = crossing_plan_info.realized_intersections or ()
-    if not isinstance(raw_crossings, IterableABC) or isinstance(
-        raw_crossings,
-        (str, bytes, bytearray),
-    ):
-        raw_crossings = ()
-    raw_crossing_list = [
-        raw_crossing for raw_crossing in raw_crossings if isinstance(raw_crossing, Mapping)
-    ]
+    raw_crossing_list = _realized_crossing_records(crossing_plan_info)
     shared_clusters_by_index = _shared_crossing_component_clusters(raw_crossing_list)
 
     for index, raw_crossing in enumerate(raw_crossing_list):
@@ -324,22 +383,7 @@ def place_realized_crossing_components(
             f"{raw_crossing.get('net_id_a', 'na')}_"
             f"{raw_crossing.get('net_id_b', 'nb')}"
         )
-        try:
-            ref = routed_layout.add_ref(component, name=instance_name)
-        except TypeError:
-            ref = routed_layout.add_ref(component)
-        if abs(rotation_deg) > 1.0e-9:
-            ref.drotate(rotation_deg)
-        ref_center_um = _ports_optical_center_um(ref) or _bbox_center_um(ref)
-        if ref_center_um is None:
-            ref.dmove(point_um)
-        else:
-            ref.dmove(
-                (
-                    point_um[0] - ref_center_um[0],
-                    point_um[1] - ref_center_um[1],
-                )
-            )
+        ref = _place_crossing_ref(routed_layout, component, instance_name, point_um, rotation_deg)
 
         placement: dict[str, object] = {
             "component_name": component_name,
@@ -357,20 +401,9 @@ def place_realized_crossing_components(
         }
         if cluster_indices:
             placement["shared_crossing_indices"] = sorted(int(i) for i in cluster_indices)
-            shared_owner_names: set[str] = set()
-            shared_owner_ids: set[int] = set()
-            for shared_index in cluster_indices:
-                if shared_index < 0 or shared_index >= len(raw_crossing_list):
-                    continue
-                shared_crossing = raw_crossing_list[shared_index]
-                for key in ("net_name_a", "net_name_b"):
-                    value = shared_crossing.get(key)
-                    if isinstance(value, str) and value:
-                        shared_owner_names.add(value)
-                for key in ("net_id_a", "net_id_b"):
-                    shared_owner_id = int_or_none(shared_crossing.get(key))
-                    if shared_owner_id is not None:
-                        shared_owner_ids.add(shared_owner_id)
+            shared_owner_names, shared_owner_ids = _shared_crossing_owners(
+                raw_crossing_list, cluster_indices
+            )
             if shared_owner_names:
                 placement["shared_owner_net_names"] = sorted(shared_owner_names)
             if shared_owner_ids:

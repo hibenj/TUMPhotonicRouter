@@ -531,6 +531,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Two more functions within the limit of 50 statements, no behaviour
+  change: `RouteTimingBucket.record_route` adds the 61 summed
+  statistics, the 2 maxima and the 7 per-class counter dicts by name
+  from three tables instead of one statement each (compared field by
+  field with the previous implementation on the same routes; new
+  `tests/test_route_timing_bucket.py`), and
+  `place_realized_crossing_components` hands the placing of one
+  reference, the owners of a shared crossing and the reading of the
+  realized records to three functions.
 - Two more functions of the crossing code within the limit of 50
   statements, no behaviour change:
   `route_rust_crossing_plan.build_crossing_plan_info` reads the request
