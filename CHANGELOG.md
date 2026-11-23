@@ -1488,6 +1488,20 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- Branches of the kernel that no call can reach (fallback review,
+  2026-11-23; each shown by reading every caller, and the routed results
+  are unchanged). In `engine/search_calls.rs`: `ordinary_collision_fallback`
+  and the fall-through after a failed crossing validation (a crossing
+  attempt exists only where crossings are open to the call), the check
+  for unreserved crossings in a "fallback route" (an upfront crossing
+  attempt belongs to a repair call, the check to a plain one), and the
+  cloned obstacle map for clearance exemptions at block radius 0 (the
+  exemptions are set only at a positive radius). The static-only probe
+  takes the opened cell keys its one caller always passed, without the
+  two substitutes. In `geometry_realization.rs` the two 45-degree
+  endpoint corrections lose `allow_unchecked_bumps`, which both callers
+  passed as `false`, and with it two parameters and two
+  `too_many_arguments` exceptions (ratchet `rust_exceptions` 34 to 32).
 - `gds/route_gds.route_nets_gds` and `print_instance_ports`: no caller
   in the package, the scripts or the tests. `route_nets_gds` routed
   with gdsfactory's `route_single`, and its `on_error="error"` mode did

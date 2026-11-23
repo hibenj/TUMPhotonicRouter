@@ -105,8 +105,7 @@ impl Router {
         let probe_result = self.route_single_net_ignore_dynamic_native(
             job.source,
             job.target,
-            Some(&job.opened_cells),
-            Some(&job.opened_cell_keys),
+            &job.opened_cell_keys,
             long_straight_weight_override,
         );
         let probe_elapsed_us = native_batch_elapsed_us(probe_start);

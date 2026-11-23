@@ -594,8 +594,7 @@ impl Router {
         // `CollisionCrossingTryOrder`'s own doc comment.
         let collision_partner_ids =
             self.upfront_collision_crossing_partner_ids(net_id, call.try_order);
-        let used_collision_crossing_attempt = !collision_partner_ids.is_empty();
-        let crossing_attempt = if used_collision_crossing_attempt {
+        let crossing_attempt = if !collision_partner_ids.is_empty() {
             self.try_route_with_collision_crossings(
                 net_id,
                 source_state,
@@ -796,98 +795,95 @@ impl Router {
                 )?;
             }
         }
-        let mut ordinary_collision_fallback: Option<RouteResult> = None;
+        // A crossing attempt exists only where crossings are open to this
+        // call: the deferred search above asks for `lidar_pure_crossing`,
+        // and the upfront one runs for a repair call, which never carries
+        // `crossing_free`. So a failed validation ends the call, and a
+        // rejected commit ends a plain call.
         if let Some((mut crossing_result, crossing_events)) = deferred_crossing_attempt {
             let crossed_partner_ids = Self::crossing_partner_ids_from_events(&crossing_events);
-            if crossed_partner_ids.is_empty() && !lidar_pure_crossing {
-                ordinary_collision_fallback = Some(crossing_result);
+            let allowed_crossing_core_keys =
+                Self::crossing_reservation_keys_for_events(&crossing_events);
+            let commit_prepare_start = if collect_timing {
+                Some(Instant::now())
             } else {
-                let allowed_crossing_core_keys =
-                    Self::crossing_reservation_keys_for_events(&crossing_events);
-                let commit_prepare_start = if collect_timing {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
-                let (route_cells, core_cells) = self.route_commit_and_core_cells(
+                None
+            };
+            let (route_cells, core_cells) = self.route_commit_and_core_cells(
+                &crossing_result,
+                block_radius_cells,
+                commit_radius_cells,
+                Some(clearance_exempt_cells),
+                core_radius_cells,
+                source_port_um,
+                target_port_um,
+            );
+            if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
+                commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
+            }
+            let commit_start = if collect_timing {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            let committed = self
+                .obstacle_map
+                .commit_route_with_clearance_and_allowed_core_overlap_cells(
+                    net_id,
+                    &core_cells,
+                    &route_cells,
+                    clearance_exempt_cells,
+                    &crossed_partner_ids,
+                    Some(&allowed_crossing_core_keys),
+                );
+            if let Some(commit_start) = commit_start.as_ref() {
+                commit_time_us += commit_start.elapsed().as_micros();
+            }
+            if committed {
+                self.remove_crossing_events_for_net(net_id);
+                self.add_crossing_events(crossing_events);
+                if collect_timing {
+                    crossing_result.stats.obstacle_map_prepare_time_us +=
+                        obstacle_map_prepare_time_us;
+                    crossing_result.stats.simple_route_time_us += simple_route_time_us;
+                    crossing_result.stats.commit_prepare_time_us += commit_prepare_time_us;
+                    crossing_result.stats.commit_time_us += commit_time_us;
+                }
+                if let Err(error) = self.remember_committed_route_centerlines_with_ports(
+                    net_id,
                     &crossing_result,
-                    block_radius_cells,
-                    commit_radius_cells,
-                    Some(clearance_exempt_cells),
-                    core_radius_cells,
                     source_port_um,
                     target_port_um,
+                ) {
+                    self.rollback_committed_route(net_id);
+                    return Err(error);
+                }
+                self.remember_committed_route_opened_cells(
+                    net_id,
+                    Some(&validation_opened_cell_keys),
                 );
-                if let Some(commit_prepare_start) = commit_prepare_start.as_ref() {
-                    commit_prepare_time_us += commit_prepare_start.elapsed().as_micros();
-                }
-                let commit_start = if collect_timing {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
-                let committed = self
-                    .obstacle_map
-                    .commit_route_with_clearance_and_allowed_core_overlap_cells(
-                        net_id,
-                        &core_cells,
-                        &route_cells,
-                        clearance_exempt_cells,
-                        &crossed_partner_ids,
-                        Some(&allowed_crossing_core_keys),
-                    );
-                if let Some(commit_start) = commit_start.as_ref() {
-                    commit_time_us += commit_start.elapsed().as_micros();
-                }
-                if committed {
+                self.add_post_commit_guidance_for_route(net_id, &crossing_result);
+                self.invalidate_meander_base_prefix();
+                if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
+                    net_id,
+                    &crossing_result,
+                    source_port_um,
+                    target_port_um,
+                    Some(&validation_opened_cell_keys),
+                ) {
+                    self.rollback_committed_route(net_id);
                     self.remove_crossing_events_for_net(net_id);
-                    self.add_crossing_events(crossing_events);
-                    if collect_timing {
-                        crossing_result.stats.obstacle_map_prepare_time_us +=
-                            obstacle_map_prepare_time_us;
-                        crossing_result.stats.simple_route_time_us += simple_route_time_us;
-                        crossing_result.stats.commit_prepare_time_us += commit_prepare_time_us;
-                        crossing_result.stats.commit_time_us += commit_time_us;
-                    }
-                    if let Err(error) = self.remember_committed_route_centerlines_with_ports(
-                        net_id,
-                        &crossing_result,
-                        source_port_um,
-                        target_port_um,
-                    ) {
-                        self.rollback_committed_route(net_id);
-                        return Err(error);
-                    }
-                    self.remember_committed_route_opened_cells(
-                        net_id,
-                        Some(&validation_opened_cell_keys),
-                    );
-                    self.add_post_commit_guidance_for_route(net_id, &crossing_result);
-                    self.invalidate_meander_base_prefix();
-                    if let Err(error) = self.validate_committed_crossings_for_route_with_ports(
-                        net_id,
-                        &crossing_result,
-                        source_port_um,
-                        target_port_um,
-                        Some(&validation_opened_cell_keys),
-                    ) {
-                        self.rollback_committed_route(net_id);
-                        self.remove_crossing_events_for_net(net_id);
-                        if lidar_pure_crossing {
-                            return Err(error);
-                        }
-                    } else {
-                        return Ok(crossing_result);
-                    }
-                } else if lidar_pure_crossing && !call.is_repair() {
-                    // A repair call falls through to its ordinary search
-                    // instead.
-                    return Err(self.dynamic_commit_rejection_error(
-                        net_id,
-                        &core_cells,
-                        clearance_exempt_cells,
-                    ));
+                    return Err(error);
                 }
+                return Ok(crossing_result);
+            } else if !call.is_repair() {
+                // A repair call falls through to its ordinary search
+                // instead.
+                return Err(self.dynamic_commit_rejection_error(
+                    net_id,
+                    &core_cells,
+                    clearance_exempt_cells,
+                ));
             }
         }
         if lidar_pure_crossing_attempted && !probe_halo_only_conflict {
@@ -916,10 +912,9 @@ impl Router {
         } else {
             cfg
         };
-        let zero_radius_overlay =
-            block_radius_cells <= 0 && dynamic_clearance_exempt_keys.is_some();
-        let mut opened_dynamic_obstacle_map;
-        let outcome = if block_radius_cells > 0 || zero_radius_overlay {
+        // `dynamic_clearance_exempt_keys` is set only at a positive block
+        // radius, so at radius 0 the search reads the obstacle map as it is.
+        let outcome = if block_radius_cells > 0 {
             let env = SearchEnvironment {
                 obstacle_map: &self.obstacle_map,
                 primitives: &self.primitives,
@@ -929,7 +924,7 @@ impl Router {
                 target: target_state,
                 port_open_cells: Some(opened_search_ref),
                 dynamic_expansion: Some(DynamicExpansion {
-                    radius_cells: block_radius_cells.max(0),
+                    radius_cells: block_radius_cells,
                     clearance_exempt_cells: dynamic_clearance_exempt_keys,
                 }),
                 crossing: None,
@@ -937,16 +932,8 @@ impl Router {
             };
             self.search_engine.search(&env, &request)
         } else {
-            let search_obstacle_map = if dynamic_clearance_exempt_keys.is_some() {
-                opened_dynamic_obstacle_map = self.obstacle_map.clone();
-                opened_dynamic_obstacle_map
-                    .clear_dynamic_clearance_in_cells(clearance_exempt_cells);
-                &opened_dynamic_obstacle_map
-            } else {
-                &self.obstacle_map
-            };
             let env = SearchEnvironment {
-                obstacle_map: search_obstacle_map,
+                obstacle_map: &self.obstacle_map,
                 primitives: &self.primitives,
             };
             let request = SearchRequest {
@@ -981,11 +968,6 @@ impl Router {
                 )
             })?
         };
-        if let Some(fallback) = ordinary_collision_fallback {
-            if fallback.total_cost + 1.0e-9 < result.total_cost {
-                result = fallback;
-            }
-        }
 
         if collect_timing {
             result.stats.obstacle_map_prepare_time_us += obstacle_map_prepare_time_us;
@@ -993,16 +975,6 @@ impl Router {
         }
         if let Some(error) = self.invalid_grid_crossing_error_for_route(net_id, &result) {
             return Err(error);
-        }
-        if !call.is_repair()
-            && used_collision_crossing_attempt
-            && !self
-                .crossing_events_for_route(net_id, &result, &collision_partner_ids)
-                .is_empty()
-        {
-            return Err(format!(
-                "No crossing-compliant route found for net {net_id}: fallback route contains unreserved crossings"
-            ));
         }
         let commit_prepare_start = if collect_timing {
             Some(Instant::now())
@@ -1098,22 +1070,12 @@ impl Router {
         &self,
         source: State,
         target: State,
-        opened_cells: Option<&[(i32, i32)]>,
-        opened_cell_keys: Option<&FxHashSet<CellKey>>,
+        opened_ref: &FxHashSet<CellKey>,
         long_straight_weight_override: Option<f64>,
     ) -> Result<RouteResult, String> {
         if self.astar_cfg.target_tolerance_cells < 0 {
             return Err("target_tolerance_cells must be >= 0".to_string());
         }
-        let opened_owned;
-        let opened_ref: &FxHashSet<CellKey> = if let Some(keys) = opened_cell_keys {
-            keys
-        } else if let Some(cells) = opened_cells {
-            opened_owned = pack_cells(cells);
-            &opened_owned
-        } else {
-            &self.port_open_cells
-        };
         let mut cfg = self.astar_config(
             Some(true),
             Some(false),

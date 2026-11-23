@@ -682,12 +682,9 @@ pub fn route_to_port_corrected_centerline_with_options_and_collision_check(
             &mut centerline,
             &replay.straight_runs,
             &replay.directional_runs,
-            &replay.dogleg_absorbers,
-            primitives,
             route,
             source_port_um,
             target_port_um,
-            false,
             collision_check,
         )? {
             let mut existing_axis_candidate = centerline.clone();
@@ -789,11 +786,8 @@ pub fn centerline_to_port_corrected_centerline_with_options(
             &mut centerline,
             &straight_runs,
             &directional_runs,
-            &dogleg_absorbers,
-            primitives,
             source_port_um,
             target_port_um,
-            false,
             source_angle,
             target_angle,
         )? {
@@ -1935,20 +1929,13 @@ struct DiagonalEndpointAdjustment {
     delta: (f64, f64),
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
-)]
 fn try_apply_45_degree_endpoint_delta_correction(
     centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
     directional_runs: &[DirectionalStraightRun],
-    dogleg_absorbers: &[DoglegAbsorber],
-    primitives: &PrimitiveLibrary,
     route: &RouteResult,
     source_port_um: Option<(f64, f64)>,
     target_port_um: Option<(f64, f64)>,
-    allow_unchecked_bumps: bool,
     collision_check: Option<&dyn Fn(&[(f64, f64)]) -> bool>,
 ) -> Result<bool, GeometryError> {
     // `collision_check`, when given, is called on every candidate centerline
@@ -1978,23 +1965,12 @@ fn try_apply_45_degree_endpoint_delta_correction(
     }
 
     let mut axis_only = centerline.clone();
-    let axis_only_result = if allow_unchecked_bumps {
-        absorb_endpoint_delta_into_axis_runs(
-            &mut axis_only,
-            straight_runs,
-            dogleg_absorbers,
-            primitives,
-            source_port_um,
-            target_port_um,
-        )
-    } else {
-        absorb_endpoint_delta_into_existing_axis_runs(
-            &mut axis_only,
-            straight_runs,
-            source_port_um,
-            target_port_um,
-        )
-    };
+    let axis_only_result = absorb_endpoint_delta_into_existing_axis_runs(
+        &mut axis_only,
+        straight_runs,
+        source_port_um,
+        target_port_um,
+    );
     if axis_only_result.is_ok()
         && validate_corrected_endpoint_candidate(&axis_only, route, source_port_um, target_port_um)
             .is_ok()
@@ -2025,23 +2001,12 @@ fn try_apply_45_degree_endpoint_delta_correction(
                     continue;
                 }
             }
-            let residual_result = if allow_unchecked_bumps {
-                absorb_endpoint_delta_into_axis_runs(
-                    &mut candidate,
-                    straight_runs,
-                    dogleg_absorbers,
-                    primitives,
-                    source_port_um,
-                    target_port_um,
-                )
-            } else {
-                absorb_endpoint_delta_into_existing_axis_runs(
-                    &mut candidate,
-                    straight_runs,
-                    source_port_um,
-                    target_port_um,
-                )
-            };
+            let residual_result = absorb_endpoint_delta_into_existing_axis_runs(
+                &mut candidate,
+                straight_runs,
+                source_port_um,
+                target_port_um,
+            );
             if residual_result.is_err() {
                 continue;
             }
@@ -2066,19 +2031,12 @@ fn try_apply_45_degree_endpoint_delta_correction(
     Ok(false)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "predates the coding standard; the arguments are not yet grouped into a struct"
-)]
 fn try_apply_45_degree_centerline_endpoint_delta_correction(
     centerline: &mut Vec<(f64, f64)>,
     straight_runs: &[AxisAlignedRun],
     directional_runs: &[DirectionalStraightRun],
-    dogleg_absorbers: &[DoglegAbsorber],
-    primitives: &PrimitiveLibrary,
     source_port_um: Option<(f64, f64)>,
     target_port_um: Option<(f64, f64)>,
-    allow_unchecked_bumps: bool,
     source_angle: Option<u8>,
     target_angle: Option<u8>,
 ) -> Result<bool, GeometryError> {
@@ -2087,23 +2045,12 @@ fn try_apply_45_degree_centerline_endpoint_delta_correction(
     }
 
     let mut axis_only = centerline.clone();
-    let axis_only_result = if allow_unchecked_bumps {
-        absorb_endpoint_delta_into_axis_runs(
-            &mut axis_only,
-            straight_runs,
-            dogleg_absorbers,
-            primitives,
-            source_port_um,
-            target_port_um,
-        )
-    } else {
-        absorb_endpoint_delta_into_existing_axis_runs(
-            &mut axis_only,
-            straight_runs,
-            source_port_um,
-            target_port_um,
-        )
-    };
+    let axis_only_result = absorb_endpoint_delta_into_existing_axis_runs(
+        &mut axis_only,
+        straight_runs,
+        source_port_um,
+        target_port_um,
+    );
     if axis_only_result.is_ok()
         && validate_corrected_centerline_endpoint_candidate(
             &axis_only,
@@ -2139,23 +2086,12 @@ fn try_apply_45_degree_centerline_endpoint_delta_correction(
                     continue;
                 }
             }
-            let residual_result = if allow_unchecked_bumps {
-                absorb_endpoint_delta_into_axis_runs(
-                    &mut candidate,
-                    straight_runs,
-                    dogleg_absorbers,
-                    primitives,
-                    source_port_um,
-                    target_port_um,
-                )
-            } else {
-                absorb_endpoint_delta_into_existing_axis_runs(
-                    &mut candidate,
-                    straight_runs,
-                    source_port_um,
-                    target_port_um,
-                )
-            };
+            let residual_result = absorb_endpoint_delta_into_existing_axis_runs(
+                &mut candidate,
+                straight_runs,
+                source_port_um,
+                target_port_um,
+            );
             if residual_result.is_err() {
                 continue;
             }
