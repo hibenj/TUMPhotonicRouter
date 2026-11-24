@@ -1267,7 +1267,8 @@ def column_grid_stage(
         t["component"] = component
         t["placement"] = (round(t["x"], 3), round(t["y"], 3))
         tile_names.append(name)
-        for lane in t["pair"]:
+        # sorted: a set of names iterates in an order that differs from process to process
+        for lane in sorted(t["pair"]):
             tiles_of_lane.setdefault(lane, []).append(t)
     for index, c in enumerate(corner_elements):
         component = plain_corner_component(

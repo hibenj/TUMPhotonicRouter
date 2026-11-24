@@ -273,3 +273,59 @@ def test_the_flow_stage_refuses_a_non_layered_design_before_placing_anything() -
         "route with --crossing-mode lidar-pure or lidar-guided"
     )
     assert isinstance(info.value.__cause__, ValueError)
+
+
+_PLACEMENT_SCRIPT = """
+import importlib, json
+from photonic_router.crossings import preplaced_crossing_grids as pcg
+from photonic_router.crossings.crossing_demand import build_crossing_demand
+from photonic_router.records.layout_from_schematic import layout_from_schematic
+from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
+from tests.fixtures.sessions import session_options
+
+schematic = importlib.import_module("benchmarks.multiportmmi_8x8").build_schematic()
+layout = layout_from_schematic(schematic)
+derived = pcg.derive_preplaced_crossing_layout(
+    schematic,
+    layout,
+    build_crossing_demand(schematic, layout).stage_schedule(),
+    router_probe_options=session_options(
+        fanout_access_mode="static-stubs",
+        bend_radius_um=5.0,
+        obstacle_config=StaticObstacleMapConfig(grid_size_um=2.0),
+    ),
+)
+print("PLACED " + json.dumps(derived.schematic.model_dump(mode="json"), sort_keys=True))
+"""
+
+
+@pytest.mark.e2e
+def test_the_column_grid_is_placed_the_same_under_every_hash_seed() -> None:
+    """The derived schematic does not depend on the order a set of net names iterates in.
+
+    Python orders a set of strings by a hash that is seeded per process;
+    until 2026-11-24 the nets between a lane's tiles and the numbers of
+    the static links of the ADEPT designs followed that order.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[1]
+    placed = []
+    for seed in ("1", "2"):
+        environment = dict(os.environ, PYTHONHASHSEED=seed)
+        environment["PYTHONPATH"] = os.pathsep.join(
+            [str(repo_root), str(repo_root / "python"), environment.get("PYTHONPATH", "")]
+        )
+        output = subprocess.run(
+            [sys.executable, "-c", _PLACEMENT_SCRIPT],
+            capture_output=True,
+            text=True,
+            check=True,
+            cwd=repo_root,
+            env=environment,
+        ).stdout
+        placed.append(next(line for line in output.splitlines() if line.startswith("PLACED ")))
+    assert placed[0] == placed[1]

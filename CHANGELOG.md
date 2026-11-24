@@ -512,6 +512,17 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Fixed
 
+- The column grid of contribution 2 was placed differently from process
+  to process (found 2026-11-24 while comparing two runs). `column_grid_stage`
+  went through the two lanes of a crossing as a set of names, and Python
+  orders a set of strings by a hash it seeds per process; the order of
+  the nets between a lane's tiles and the numbers and places of the
+  static links followed it, and with them the order the router takes
+  the nets in. The lanes are sorted now. The X array (Benes) was not
+  affected. `tests/test_preplaced_crossing_grids.py` places ADEPT 8x8
+  under two hash seeds and wants the same schematic (it failed before);
+  under three seeds the eight designs tried (ADEPT 8x8 to 128x128,
+  Benes, `permutation_synthetic`) come out the same.
 - `flow.load_benchmark` reported every `ModuleNotFoundError` as
   "Benchmark not found", also one raised by an import inside the
   benchmark module, and every `AttributeError` inside
