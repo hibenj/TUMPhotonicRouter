@@ -589,6 +589,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `_build_planner_context` of the meander planner (78 statements) hands
+  two parts on: `_base_static_cells` (the static cells of the planning
+  space as a set) and `_register_routes`, which registers the routes'
+  cells and geometries and returns the record `_Registration`. The
+  statements are moved, none changed. Ratchet: PLR0915 9 to 8, C901 50
+  to 49.
 - `routing/api.route_match_and_realize` (106 statements) is its three
   steps: the session, `_match_path_lengths` and `_realize`. Path-length
   matching returns the record `_Matching` (the records with their

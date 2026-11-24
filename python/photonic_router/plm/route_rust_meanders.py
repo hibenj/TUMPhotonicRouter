@@ -920,6 +920,101 @@ def _planned_record(
     )
 
 
+def _base_static_cells(space: MeanderPlanningSpace) -> tuple[set[GridCell], bool, bool]:
+    """The static cells of the planning space as a set.
+
+    Returns the set, whether it is the caller's own set (not copied), and
+    whether it was read out of the Rust handle.
+    """
+    static_blocked_cells = space.static_blocked_cells
+    if static_blocked_cells is None:
+        if space.static_blocked_cell_handle is None:
+            return set(), False, False
+        cells = cast(Iterable[tuple[int, int]], cast(Any, space.static_blocked_cell_handle).cells())
+        return {(int(x), int(y)) for x, y in cells}, False, True
+    if isinstance(static_blocked_cells, set):
+        return cast(set[GridCell], static_blocked_cells), True, False
+    return {(int(x), int(y)) for x, y in static_blocked_cells}, False, False
+
+
+@dataclass
+class _Registration:
+    """What registering the routes with the planner gave; empty when there is no route."""
+
+    geometry_index_by_edge: dict[RoutedEdgeKey, int] = field(default_factory=dict)
+    max_bumps_by_edge: dict[RoutedEdgeKey, int] = field(default_factory=dict)
+    open_cell_count: int = 0
+    unique_route_cell_count: int = 0
+    #: seconds spent registering the cells and the geometries
+    cells_s: float = 0.0
+    geometry_s: float = 0.0
+    #: the planner's own profile of the registration, under ``debug_meanders``
+    rust_profile: dict[str, float] = field(default_factory=dict)
+
+
+def _register_routes(
+    planner: Any,
+    by_edge: Mapping[RoutedEdgeKey, RoutedNetRecord],
+    centerlines_by_edge: Mapping[RoutedEdgeKey, list[tuple[float, float]]],
+    *,
+    static: set[GridCell] | object,
+    route_occupancy_radius_cells: int,
+    lengths: tuple[float, float],
+    profiled: bool,
+) -> _Registration:
+    """Register every route with the planner: its cells with their keepout, then its geometry.
+
+    ``static`` is the set of static cells, or the Rust handle of them
+    when they arrive as one.
+    ``lengths`` is (grid size, bend radius) in um.
+    """
+    grid_size_um, bend_radius_um = lengths
+    edge_keys = list(centerlines_by_edge)
+    registration = _Registration()
+    t_register_start = time.perf_counter()
+    route_objects = [by_edge[edge_key].route_obj for edge_key in edge_keys]
+    if isinstance(static, set):
+        indices, open_counts, unique_count = planner.register(
+            route_objects,
+            base_static_cells=list(static),
+            route_clearance_radius_cells=route_occupancy_radius_cells,
+        )
+    else:
+        indices, open_counts, unique_count = planner.register(
+            route_objects,
+            base_static_cell_handle=static,
+            route_clearance_radius_cells=route_occupancy_radius_cells,
+        )
+    registration.cells_s = time.perf_counter() - t_register_start
+    registration.unique_route_cell_count = int(unique_count)
+    registration.open_cell_count = int(sum(int(raw_count) for raw_count in open_counts))
+    if profiled:
+        raw_profile = planner.profile()
+        if isinstance(raw_profile, Mapping):
+            for key, value in raw_profile.items():
+                if isinstance(key, str) and isinstance(value, (int, float)):
+                    registration.rust_profile[key] = float(value)
+    t_geometry_start = time.perf_counter()
+    geometry_max_bumps: list[int] = []
+    for edge_key in edge_keys:
+        max_bumps = _route_geometry_max_meander_bumps(
+            record=by_edge[edge_key],
+            grid_size_um=grid_size_um,
+            bend_radius_um=bend_radius_um,
+        )
+        registration.max_bumps_by_edge[edge_key] = max_bumps
+        geometry_max_bumps.append(max_bumps)
+    geometry_indices = planner.register_geometries(
+        [centerlines_by_edge[edge_key] for edge_key in edge_keys],
+        [int(raw_index) for raw_index in indices],
+        geometry_max_bumps,
+    )
+    registration.geometry_s = time.perf_counter() - t_geometry_start
+    for edge_key, raw_index in zip(edge_keys, geometry_indices, strict=False):
+        registration.geometry_index_by_edge[edge_key] = int(raw_index)
+    return registration
+
+
 def _build_planner_context(
     *,
     rust_backend: MeanderRustBackendLike,
@@ -929,12 +1024,11 @@ def _build_planner_context(
 ) -> _MeanderPlannerContext:
     """A fresh router and its `MeanderPlanner`: static cells, the routes as
     occupied cells (with their keepout radius) and the route geometries the
-    planner needs. Records without a centerline cannot be registered; their cells join
-    the static set. Timers only under ``debug_meanders``."""
+    planner needs. Every record is registered with its corrected centerline.
+    Timers only under ``debug_meanders``."""
     realization_grid_spec = space.realization_grid_spec
     allow_45_degree_turns = space.allow_45_degree_turns
     bend_radius_cells = space.bend_radius_cells
-    static_blocked_cells = space.static_blocked_cells
     static_blocked_cell_handle = space.static_blocked_cell_handle
     route_occupancy_radius_cells = space.route_occupancy_radius_cells
     meander_box_clearance_radius_cells = space.meander_box_clearance_radius_cells
@@ -975,84 +1069,28 @@ def _build_planner_context(
     # Rust handle.
     can_use_registered_route_cells = bool(registerable_edge_keys)
     use_static_handle = static_blocked_cell_handle is not None and can_use_registered_route_cells
-    base_static_reused = False
-    base_static_from_handle = False
-    if static_blocked_cells is None:
-        if static_blocked_cell_handle is not None:
-            base_static_cells: set[GridCell] = {
-                (int(x), int(y))
-                for x, y in cast(
-                    Iterable[tuple[int, int]],
-                    cast(Any, static_blocked_cell_handle).cells(),
-                )
-            }
-            base_static_from_handle = True
-        else:
-            base_static_cells = set()
-    elif isinstance(static_blocked_cells, set):
-        base_static_cells = cast(set[GridCell], static_blocked_cells)
-        base_static_reused = True
-    else:
-        base_static_cells = {(int(x), int(y)) for x, y in static_blocked_cells}
+    base_static_cells, base_static_reused, base_static_from_handle = _base_static_cells(space)
     bend_radius_um = float(grid_size_um_cfg) * float(bend_radius_cells)
     if not can_use_registered_route_cells:
         router.set_static_cells(list(base_static_cells))
-    register_route_cells_s = 0.0
-    register_route_geometry_s = 0.0
-    rust_registration_profile: dict[str, float] = {}
-    registered_geometry_index_by_edge: dict[RoutedEdgeKey, int] = {}
-    registered_max_bumps_by_edge: dict[RoutedEdgeKey, int] = {}
-    registered_open_cell_count = 0
-    registered_unique_route_cell_count = 0
+    registration = _Registration()
     if can_use_registered_route_cells:
-        t_register_start = time.perf_counter()
-        route_objects = [by_edge[edge_key].route_obj for edge_key in registerable_edge_keys]
-        if use_static_handle:
-            indices, open_counts, unique_count = planner.register(
-                route_objects,
-                base_static_cell_handle=static_blocked_cell_handle,
-                route_clearance_radius_cells=route_occupancy_radius_cells,
-            )
-        else:
-            indices, open_counts, unique_count = planner.register(
-                route_objects,
-                base_static_cells=list(base_static_cells),
-                route_clearance_radius_cells=route_occupancy_radius_cells,
-            )
-        register_route_cells_s = time.perf_counter() - t_register_start
-        registered_unique_route_cell_count = int(unique_count)
-        registered_open_cell_count = int(sum(int(raw_count) for raw_count in open_counts))
-        if debug_meanders:
-            raw_profile = planner.profile()
-            if isinstance(raw_profile, Mapping):
-                for key, value in raw_profile.items():
-                    if isinstance(key, str) and isinstance(value, (int, float)):
-                        rust_registration_profile[key] = float(value)
-        t_geometry_start = time.perf_counter()
-        geometry_max_bumps: list[int] = []
-        for edge_key in registerable_edge_keys:
-            max_bumps = _route_geometry_max_meander_bumps(
-                record=by_edge[edge_key],
-                grid_size_um=float(grid_size_um_cfg),
-                bend_radius_um=bend_radius_um,
-            )
-            registered_max_bumps_by_edge[edge_key] = max_bumps
-            geometry_max_bumps.append(max_bumps)
-        geometry_indices = planner.register_geometries(
-            [centerline_lists_by_edge[edge_key] for edge_key in registerable_edge_keys],
-            [int(raw_index) for raw_index in indices],
-            geometry_max_bumps,
+        registration = _register_routes(
+            planner,
+            by_edge,
+            centerline_lists_by_edge,
+            static=static_blocked_cell_handle if use_static_handle else base_static_cells,
+            route_occupancy_radius_cells=route_occupancy_radius_cells,
+            lengths=(float(grid_size_um_cfg), bend_radius_um),
+            profiled=debug_meanders,
         )
-        register_route_geometry_s = time.perf_counter() - t_geometry_start
-        for edge_key, raw_index in zip(registerable_edge_keys, geometry_indices, strict=False):
-            registered_geometry_index_by_edge[edge_key] = int(raw_index)
     profile: _ContextProfile | None = None
     if debug_meanders:
         setup_profile = {
             "total_s": time.perf_counter() - t_total_start,
             "router_init_s": router_init_s,
-            "register_route_cells_s": register_route_cells_s,
-            "register_route_geometry_s": register_route_geometry_s,
+            "register_route_cells_s": registration.cells_s,
+            "register_route_geometry_s": registration.geometry_s,
             "base_static_reused": float(base_static_reused),
             "base_static_from_handle": float(base_static_from_handle),
             "combined_static_route_registration_handle": float(use_static_handle),
@@ -1061,19 +1099,19 @@ def _build_planner_context(
             "registered_route_cell_acceleration_enabled": float(can_use_registered_route_cells),
             "registered_record_count": float(len(registerable_edge_keys)),
             "routed_record_count": float(len(by_edge)),
-            "unique_route_cell_count": float(registered_unique_route_cell_count),
-            "registered_open_cell_count": float(registered_open_cell_count),
+            "unique_route_cell_count": float(registration.unique_route_cell_count),
+            "registered_open_cell_count": float(registration.open_cell_count),
             "base_static_cell_count": float(len(base_static_cells)),
         }
-        for key, value in rust_registration_profile.items():
+        for key, value in registration.rust_profile.items():
             setup_profile[f"rust_registration_{key}"] = float(value)
         profile = _ContextProfile(setup_profile=setup_profile)
     return _MeanderPlannerContext(
         planner=planner,
         by_edge=by_edge,
         updated=dict(by_edge),
-        registered_geometry_index_by_edge=registered_geometry_index_by_edge,
-        max_bumps_by_edge=registered_max_bumps_by_edge,
+        registered_geometry_index_by_edge=registration.geometry_index_by_edge,
+        max_bumps_by_edge=registration.max_bumps_by_edge,
         base_static_cells=base_static_cells,
         grid_width_cells=int(width),
         grid_height_cells=int(height),
