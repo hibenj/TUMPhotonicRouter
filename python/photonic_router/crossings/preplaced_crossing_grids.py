@@ -497,6 +497,178 @@ class _CrossingTiles(NamedTuple):
     dense_fanout_instances: frozenset[str] | None
 
 
+@dataclass
+class _TileDerivation:
+    """The placement of the crossing tiles, band by band, and what it has placed so far."""
+
+    schematic: Schematic
+    unrouted_layout: Component
+    geometry: CrossingGridGeometry
+    #: the schematic the tiles are added to
+    derived: Schematic
+    router_probe_options: SessionOptions | None
+    config: CrossingGridConfig
+    tile_names: list[str] = field(default_factory=list)
+    builds: dict[str, CrossingGridBuildResult] = field(default_factory=dict)
+    #: original net -> its two stub nets
+    stub_nets: dict[str, tuple[str, str]] = field(default_factory=dict)
+    #: original net -> the length it runs inside its grids, in um
+    lengths: dict[str, float] = field(default_factory=dict)
+    nets: list[Net] = field(default_factory=list)
+    #: the original nets that were split into segments
+    split: set[str] = field(default_factory=set)
+    expected: int = 0
+    placed: int = 0
+
+    def add_column_grid(
+        self,
+        stage_plan: CrossingStagePlan,
+        plus_tile: Component,
+        anchors: Mapping[str, tuple[float, float]],
+    ) -> None:
+        """Place one band as a column grid (`column_grid_stage`)."""
+        tile_names, builds, stub_nets, lengths, nets, split, expected, placed = column_grid_stage(
+            self.schematic,
+            self.unrouted_layout,
+            stage_plan,
+            self.geometry,
+            self.derived,
+            plus_tile,
+            anchors,
+            config=self.config,
+        )
+        self.tile_names.extend(tile_names)
+        self.builds.update(builds)
+        self.stub_nets.update(stub_nets)
+        self.lengths.update(lengths)
+        self.nets.extend(nets)
+        self.split.update(split)
+        self.expected += expected
+        self.placed += placed
+
+    def add_x_array(self, band_key: object, stage_plan: CrossingStagePlan, tile: Component) -> None:
+        """Place one band as an X array and split its crossing lanes between the tiles.
+
+        The swap levels are columns spread evenly over the band's free
+        width minus ``band_margin_um`` on each side; the crossing of the
+        lanes in slots ``s`` and ``s + 1`` sits at the midpoint of those
+        lanes' source rows. Raises `ValueError` when the lanes are not
+        ordered top to bottom by their source rows or the band is too
+        narrow for its levels.
+        """
+        lanes = list(stage_plan.initial_edge_order)
+        rows: list[float] = []
+        source_xs: list[float] = []
+        target_xs: list[float] = []
+        for edge in lanes:
+            p1, p2 = net_endpoints(self.schematic, edge.net_name)
+            source = get_port_from_instance(self.unrouted_layout, *p1.split(","))
+            target = get_port_from_instance(self.unrouted_layout, *p2.split(","))
+            rows.append(float(source.dcenter[1]))
+            source_xs.append(float(source.dcenter[0]))
+            target_xs.append(float(target.dcenter[0]))
+        for upper_row, lower_row in itertools.pairwise(rows):
+            if upper_row <= lower_row:
+                raise ValueError(
+                    "crossing tiles need the stage's lanes ordered top to bottom by their "
+                    f"source rows; stage {band_key} rows {rows}"
+                )
+        movement, crossings = lane_movement(stage_plan)
+        level_count = max(level for level, *_ in crossings) + 1
+        band_x0 = max(source_xs)
+        usable = (min(target_xs) - band_x0) - 2.0 * float(self.geometry.band_margin_um)
+        pitch = usable / float(level_count)
+        if pitch < tile.info.get("min_pitch_um", 0.0):
+            raise ValueError("crossing tiles: band too narrow")
+        depth = stage_plan.source_depth
+        grid_origin = _router_grid_origin(self.unrouted_layout, self.router_probe_options)
+        #: (lane, level) -> the tile the lane passes at that level
+        tile_of_lane_at_level: dict[tuple[str, int], str] = {}
+        for level, upper_slot, upper, lower in crossings:
+            name = f"{CROSSING_TILE_PREFIX}stage{depth}_l{level}_s{upper_slot}"
+            x = band_x0 + float(self.geometry.band_margin_um) + (level + 0.5) * pitch
+            y = 0.5 * (rows[upper_slot] + rows[upper_slot + 1])
+            x, y = _snap_x_tile_center(x, y, grid_origin)
+            self.derived.add_instance(
+                name, Instance(component=tile.name), Placement(x=round(x, 3), y=round(y, 3))
+            )
+            tile_of_lane_at_level[(upper.net_name, level)] = name
+            tile_of_lane_at_level[(lower.net_name, level)] = name
+            self.tile_names.append(name)
+            self.placed += 1
+        self.expected += len(stage_plan.events)
+        self.builds[f"stage{depth}"] = CrossingGridBuildResult(
+            component=tile,
+            crossing_count=len(crossings),
+            lane_length_um_by_net_name={},
+            input_port_name_by_net_name={},
+            output_port_name_by_net_name={},
+            width_um=usable,
+            height_um=max(rows) - min(rows),
+        )
+        pass_length_um = 2.0 * _crossing_half_extent_um(_crossing_component())
+        for edge in lanes:
+            if edge.net_name in movement:  # a lane that crosses nothing stays an ordinary net
+                first, last, direction = movement[edge.net_name]
+                tiles = [
+                    tile_of_lane_at_level[(edge.net_name, level)]
+                    for level in range(first, last + 1)
+                ]
+                self._split_lane(edge.net_name, tiles, direction, pass_length_um)
+
+    def _split_lane(
+        self, net_name: str, tiles: list[str], direction: int, pass_length_um: float
+    ) -> None:
+        """Replace one lane by the nets between its port, its tiles in order, and its other port."""
+        enter, leave = ("ul", "lr") if direction > 0 else ("ll", "ur")
+        p1, p2 = net_endpoints(self.schematic, net_name)
+        previous = p1
+        names: list[str] = []
+        for index, tile_name in enumerate(tiles):
+            if index == 0:
+                segment = f"{net_name}{TO_GRID_SUFFIX}"
+            else:
+                segment = f"{net_name}{VIA_GRID_SUFFIX}{index}"
+            self.nets.append(Net(p1=previous, p2=f"{tile_name},{enter}", name=segment))
+            names.append(segment)
+            previous = f"{tile_name},{leave}"
+        final = f"{net_name}{FROM_GRID_SUFFIX}"
+        self.nets.append(Net(p1=previous, p2=p2, name=final))
+        names.append(final)
+        self.stub_nets[net_name] = (names[0], names[-1])
+        self.lengths[net_name] = pass_length_um * len(tiles)
+        self.split.add(net_name)
+
+
+def _dense_fanout_instances(
+    schematic: Schematic,
+    unrouted_layout: Component,
+    schedule: StageSchedule,
+    geometry: CrossingGridGeometry,
+) -> set[str]:
+    """The source instances that get static fan-out stubs for the column grid.
+
+    Every source instance with two or more crossing lanes in a column-grid
+    layer (the router's default threshold is three), so those lanes start
+    on spread rows; the router reads the same set in the routing run. A
+    layer the X array can take (Benes) keeps the router's default: its
+    tiles sit on the natural rows and a stub would move the lane away from
+    them.
+    """
+    from photonic_router.crossings.crossing_structures import evaluate_x_array
+
+    dense: set[str] = set()
+    for band in schedule:
+        stage_plan = band.stage
+        if evaluate_x_array(schematic, unrouted_layout, stage_plan, geometry).feasible:
+            continue
+        count: dict[str, int] = {}
+        for edge in stage_plan.initial_edge_order:
+            count[edge.source.instance] = count.get(edge.source.instance, 0) + 1
+        dense.update(name for name, n in count.items() if n >= 2)
+    return dense
+
+
 def _derive_crossing_tiles(
     schematic: Schematic,
     unrouted_layout: Component,
@@ -509,41 +681,24 @@ def _derive_crossing_tiles(
     """Place one crossing tile per planned crossing and split every crossing
     lane into router nets between its tiles (see ``crossing_tile_component``).
 
-    Tile positions follow the stretched-array rule: the swap levels of a
-    stage are columns spread evenly over the layer's free band minus
-    ``band_margin_um`` on each side, and a crossing between the lanes in
-    slots ``s`` and ``s + 1`` sits at the midpoint of those lanes' natural
-    source rows -- for a single swap exactly the average of the four ports
-    involved (owner rule, 2026-09-07).
+    Per band of the schedule (only bands with events, left to right) the
+    structure is chosen (`select_layer_structure`): the X array
+    (`_TileDerivation.add_x_array`), the column grid (`add_column_grid`),
+    or the band stays with the router. Raises `ValueError` when a band
+    fits no structure and ``geometry.router_fallback`` is off.
     """
-    config = config if config is not None else CrossingGridConfig()
-    tile = crossing_tile_component(geometry)
-    _register_grid_cell(tile.name, tile)
-    anchors: dict[str, tuple[float, float]] = {}
-    dense_fanout_instances: frozenset[str] | None = None
-    from photonic_router.crossings.crossing_structures import evaluate_x_array
+    from photonic_router.crossings.crossing_structures import (
+        COLUMN_GRID,
+        ROUTER,
+        select_layer_structure,
+    )
     from photonic_router.routing.api import static_fanout_anchors_um
     from photonic_router.routing.options import SessionOptions
 
-    # Every source instance with two or more crossing lanes in a
-    # column-grid layer gets static fan-out stubs (the router's default
-    # threshold is three), so those lanes start on spread rows; the
-    # router reads the same variable in the routing run. X-array layers
-    # (Benes) keep the router's default: their tiles sit on the natural
-    # rows and a stub would move the lane away from them.
-
-    dense: set[str] = set()
-    for band in schedule:
-        stage_plan = band.stage
-        # A layer the X array can take keeps the router's default stubs
-        # (its tiles sit on the natural rows); every other crossing layer
-        # is a column-grid candidate and needs its lanes on spread rows.
-        if evaluate_x_array(schematic, unrouted_layout, stage_plan, geometry).feasible:
-            continue
-        count: dict[str, int] = {}
-        for edge in stage_plan.initial_edge_order:
-            count[edge.source.instance] = count.get(edge.source.instance, 0) + 1
-        dense.update(name for name, n in count.items() if n >= 2)
+    config = config if config is not None else CrossingGridConfig()
+    tile = crossing_tile_component(geometry)
+    _register_grid_cell(tile.name, tile)
+    dense = _dense_fanout_instances(schematic, unrouted_layout, schedule, geometry)
     dense_fanout_instances = frozenset(dense) if dense else None
     probe_options = router_probe_options if router_probe_options is not None else SessionOptions()
     probe_config = probe_options.config or RoutingConfig()
@@ -561,49 +716,26 @@ def _derive_crossing_tiles(
     )
     plus_tile = crossing_tile_component(geometry, axis_aligned=True)
     _register_grid_cell(plus_tile.name, plus_tile, access_length_um=6.0)
-    crossing = _crossing_component()
-    pass_length_um = 2.0 * _crossing_half_extent_um(crossing)
-    tile_names: list[str] = []
-    builds: dict[str, CrossingGridBuildResult] = {}
-    stub_nets: dict[str, tuple[str, str]] = {}
-    lengths: dict[str, float] = {}
-    nets: list[Net] = []
-    split: set[str] = set()
-    expected = 0
-    placed = 0
+    derivation = _TileDerivation(
+        schematic=schematic,
+        unrouted_layout=unrouted_layout,
+        geometry=geometry,
+        derived=derived,
+        router_probe_options=router_probe_options,
+        config=config,
+    )
     decisions: list[object] = []
     fallback_layers: list[object] = []
     fallback_nets: set[str] = set()
     for band in schedule:
-        # the schedule holds only bands with events, left to right
         stage_plan = band.stage
-        stage_key = band.key
-        lanes = list(stage_plan.initial_edge_order)
-        rows: list[float] = []
-        source_xs: list[float] = []
-        target_xs: list[float] = []
-        target_rows: list[float] = []
-        for edge in lanes:
-            p1, p2 = net_endpoints(schematic, edge.net_name)
-            source = get_port_from_instance(unrouted_layout, *p1.split(","))
-            target = get_port_from_instance(unrouted_layout, *p2.split(","))
-            rows.append(float(source.dcenter[1]))
-            source_xs.append(float(source.dcenter[0]))
-            target_xs.append(float(target.dcenter[0]))
-            target_rows.append(float(target.dcenter[1]))
-        from photonic_router.crossings.crossing_structures import (
-            COLUMN_GRID,
-            ROUTER,
-            select_layer_structure,
-        )
-
         decision = select_layer_structure(
             schematic,
             unrouted_layout,
             stage_plan,
             geometry,
             anchors,
-            stage_key=stage_key,
+            stage_key=band.key,
             config=config,
         )
         decisions.append(decision)
@@ -611,92 +743,10 @@ def _derive_crossing_tiles(
         if decision.chosen == ROUTER:
             fallback_layers.append(decision)
             fallback_nets.update(edge.net_name for edge in stage_plan.initial_edge_order)
-            continue
-        if decision.chosen == COLUMN_GRID:
-            stage_result = column_grid_stage(
-                schematic,
-                unrouted_layout,
-                stage_plan,
-                geometry,
-                derived,
-                plus_tile,
-                anchors,
-                config=config,
-            )
-            tile_names.extend(stage_result[0])
-            builds.update(stage_result[1])
-            stub_nets.update(stage_result[2])
-            lengths.update(stage_result[3])
-            nets.extend(stage_result[4])
-            split.update(stage_result[5])
-            expected += stage_result[6]
-            placed += stage_result[7]
-            continue
-        for upper_row, lower_row in itertools.pairwise(rows):
-            if upper_row <= lower_row:
-                raise ValueError(
-                    "crossing tiles need the stage's lanes ordered top to bottom by their "
-                    f"source rows; stage {stage_key} rows {rows}"
-                )
-        movement, crossings = lane_movement(stage_plan)
-        level_count = max(level for level, *_ in crossings) + 1
-        band_x0 = max(source_xs)
-        band_x1 = min(target_xs)
-        usable = (band_x1 - band_x0) - 2.0 * float(geometry.band_margin_um)
-        pitch = usable / float(level_count)
-        if pitch < tile.info.get("min_pitch_um", 0.0):
-            raise ValueError("crossing tiles: band too narrow")
-        tile_by_key: dict[tuple[int, int], str] = {}
-        key_by_lane_level: dict[tuple[str, int], tuple[int, int]] = {}
-        depth = stage_plan.source_depth
-        grid_origin = _router_grid_origin(unrouted_layout, router_probe_options)
-        for level, upper_slot, upper, lower in crossings:
-            name = f"{CROSSING_TILE_PREFIX}stage{depth}_l{level}_s{upper_slot}"
-            x = band_x0 + float(geometry.band_margin_um) + (level + 0.5) * pitch
-            y = 0.5 * (rows[upper_slot] + rows[upper_slot + 1])
-            x, y = _snap_x_tile_center(x, y, grid_origin)
-            derived.add_instance(
-                name, Instance(component=tile.name), Placement(x=round(x, 3), y=round(y, 3))
-            )
-            tile_by_key[(level, upper_slot)] = name
-            key_by_lane_level[(upper.net_name, level)] = (level, upper_slot)
-            key_by_lane_level[(lower.net_name, level)] = (level, upper_slot)
-            tile_names.append(name)
-            placed += 1
-        expected += len(stage_plan.events)
-        builds[f"stage{depth}"] = CrossingGridBuildResult(
-            component=tile,
-            crossing_count=len(crossings),
-            lane_length_um_by_net_name={},
-            input_port_name_by_net_name={},
-            output_port_name_by_net_name={},
-            width_um=usable,
-            height_um=max(rows) - min(rows),
-        )
-        for edge in lanes:
-            net_name = edge.net_name
-            if net_name not in movement:
-                continue  # a lane that crosses nothing stays an ordinary net
-            first, last, direction = movement[net_name]
-            enter, leave = ("ul", "lr") if direction > 0 else ("ll", "ur")
-            p1, p2 = net_endpoints(schematic, net_name)
-            previous = p1
-            names: list[str] = []
-            for index, level in enumerate(range(first, last + 1)):
-                tile_name = tile_by_key[key_by_lane_level[(net_name, level)]]
-                if index == 0:
-                    segment = f"{net_name}{TO_GRID_SUFFIX}"
-                else:
-                    segment = f"{net_name}{VIA_GRID_SUFFIX}{index}"
-                nets.append(Net(p1=previous, p2=f"{tile_name},{enter}", name=segment))
-                names.append(segment)
-                previous = f"{tile_name},{leave}"
-            final = f"{net_name}{FROM_GRID_SUFFIX}"
-            nets.append(Net(p1=previous, p2=p2, name=final))
-            names.append(final)
-            stub_nets[net_name] = (names[0], names[-1])
-            lengths[net_name] = pass_length_um * (last - first + 1)
-            split.add(net_name)
+        elif decision.chosen == COLUMN_GRID:
+            derivation.add_column_grid(stage_plan, plus_tile, anchors)
+        else:
+            derivation.add_x_array(band.key, stage_plan, tile)
     if fallback_layers and not geometry.router_fallback:
         raise ValueError(
             "no pre-placed crossing structure fits: "
@@ -708,14 +758,14 @@ def _derive_crossing_tiles(
             f"{len(fallback_nets)} net(s) left to the guided router"
         )
     return _CrossingTiles(
-        grid_instance_names=tile_names,
-        grid_builds=builds,
-        stub_nets=stub_nets,
-        lengths=lengths,
-        segment_nets=nets,
-        interstage_net_names=split,
-        expected_crossings=expected,
-        placed_crossings=placed,
+        grid_instance_names=derivation.tile_names,
+        grid_builds=derivation.builds,
+        stub_nets=derivation.stub_nets,
+        lengths=derivation.lengths,
+        segment_nets=derivation.nets,
+        interstage_net_names=derivation.split,
+        expected_crossings=derivation.expected,
+        placed_crossings=derivation.placed,
         layer_decisions=decisions,
         fallback_net_names=fallback_nets,
         dense_fanout_instances=dense_fanout_instances,

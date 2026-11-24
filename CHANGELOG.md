@@ -589,6 +589,17 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `_derive_crossing_tiles` (122 statements) chooses the structure per
+  band and hands the placing on: `_TileDerivation.add_x_array` (the X
+  array of one band, with `_split_lane` for the nets between a lane's
+  tiles), `add_column_grid`, and `_dense_fanout_instances` for the
+  instances that get static stubs. What the function returns and adds
+  to the schematic is the same for the 17 designs with crossings (Benes
+  4x4 to 128x128, plain and flat, ADEPT 8x8 to 128x128,
+  `permutation_synthetic`), old against new with one hash seed
+  (`PYTHONHASHSEED=0`): without a fixed seed the old code already
+  placed the ADEPT designs differently from process to process (next
+  entry).
 - `analyze_meander_insertion_for_requirements` (92 statements): the
   selection pass is `_SelectionPass`, which decides one requirement per
   call of `select` (its request vector, the planner's choice as a
