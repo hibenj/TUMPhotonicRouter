@@ -589,6 +589,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `analyze_meander_insertion_for_requirements` (92 statements): the
+  selection pass is `_SelectionPass`, which decides one requirement per
+  call of `select` (its request vector, the planner's choice as a
+  `_Choice`, the credit of the edges the choice satisfies) and keeps
+  what the final pass reads. Compared with the old function in one
+  process on the 13 PLM cells and the private circuits (17 calls, 655
+  report entries): the reports, without the planner's own timers, and
+  the records are equal.
 - `apply_crossing_aware_endpoint_correction_to_record` (86 statements,
   three nested functions) says what it does in three calls: a net
   without crossings is corrected as a whole

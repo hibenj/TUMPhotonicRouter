@@ -22,7 +22,7 @@ import math
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast
+from typing import Any, NamedTuple, Protocol, cast
 
 from photonic_router.plm.path_length_graph import DelayInsertionCandidate, MissingLengthRequirement
 from photonic_router.records import fallbacks
@@ -1556,6 +1556,241 @@ def _mirror_entry(entry: MeanderEdgeReport, virtual_entry: MeanderEdgeReport) ->
     virtual_entry.plan = entry.plan
 
 
+class _Choice(NamedTuple):
+    """What the planner chose for one requirement."""
+
+    candidate: DelayInsertionCandidate
+    #: the extra length the requirement is credited (um)
+    credit: float
+    #: the requirement edges the choice satisfies
+    affected_edges: tuple[RoutedEdgeKey, ...]
+    #: the extra length the candidate's edges already carried (um)
+    existing_physical_extra: float
+
+
+@dataclass
+class _SelectionPass:
+    """The selection pass: per requirement, in order, the planner decides how it is met.
+
+    A requirement is credited with what earlier requirements already
+    inserted on its edge. The pass keeps what the final pass needs: the
+    chosen requirements and, per physical edge in planning order, the
+    total extra length to insert.
+    """
+
+    context: _MeanderPlannerContext
+    config: MeanderInsertionConfig
+    search_config: _MeanderSearchConfig
+    #: the least extra length a meander can add (um): four 90-degree bends
+    min_insertable_extra_um: float
+    #: per requirement edge, the length it misses (um)
+    requirement_missing_by_edge: Mapping[RoutedEdgeKey, float]
+    requirement_delay_candidates: Mapping[RoutedEdgeKey, Iterable[DelayInsertionCandidate]] | None
+    #: None without ``debug_meanders``
+    profile: MeanderPlanningProfile | None
+    results: list[MeanderEdgeReport] = field(default_factory=list)
+    #: the requests below the least insertable length, summed (um)
+    total_disregarded: float = 0.0
+    #: per requirement edge, what the requirements so far are credited (um)
+    credited_by_requirement_edge: dict[RoutedEdgeKey, float] = field(default_factory=dict)
+    physical_planned_extra_by_edge: dict[RoutedEdgeKey, float] = field(default_factory=dict)
+    physical_edge_order: list[RoutedEdgeKey] = field(default_factory=list)
+    selected_requirements: list[_SelectedMeanderRequirement] = field(default_factory=list)
+
+    def select(self, req: MissingLengthRequirement) -> None:
+        """Decide one requirement and report it in `results`."""
+        edge_key = req.edge_key
+        requested = _normalize_minimum_insertable_request(
+            max(
+                0.0,
+                float(req.missing_length_um) - self.credited_by_requirement_edge.get(edge_key, 0.0),
+            ),
+            minimum_insertable_extra_um=self.min_insertable_extra_um,
+        )
+        if requested <= EXACT_MEANDER_EPS_UM:
+            return
+        entry = MeanderEdgeReport(
+            edge=edge_key,
+            requested_extra_length_um=requested,
+            status="no_candidate",
+            reason="no_matching_routed_record",
+            unmatched_length_um=requested,
+        )
+        self.results.append(entry)
+        if requested < self.min_insertable_extra_um:
+            self.total_disregarded += requested
+            entry.status = "below_minimum_bump"
+            entry.reason = (
+                "requested extra length is below the four-90-degree-bend "
+                f"minimum ({self.min_insertable_extra_um:.6g} um)"
+            )
+            entry.unmatched_length_um = 0.0
+            return
+        work_items = self._work_items(req, requested)
+        outcome = self.context.plan_requirement_requests_registered(
+            work_items=work_items,
+            split_edge_key=edge_key,
+            split_requested=requested,
+            min_insertable_extra_um=self.min_insertable_extra_um,
+            search_config=self.search_config,
+            auto_endpoint_inset_um=self.config.auto_meander_endpoint_inset_um,
+        )
+        if self.profile is not None:
+            self.profile.planner_calls += outcome.edge_calls
+            self.profile.planner_elapsed_s += outcome.elapsed_s
+            _record_requirement_attempt(
+                self.profile,
+                edge_key=edge_key,
+                requested=requested,
+                work_items=work_items,
+                outcome=outcome,
+            )
+        choice = _choice_of(outcome, work_items, edge_key, requested)
+        if choice is None:
+            entry.status = "no_candidate"
+            entry.reason = outcome.reason
+            return
+        self._commit(entry, requested, choice, outcome)
+
+    def _work_items(
+        self, req: MissingLengthRequirement, requested: float
+    ) -> list[_CandidateWorkItem]:
+        """The request vector: one work item per candidate, each edge asked
+        for its new total (the credit plus what it already carries)."""
+        work_items: list[_CandidateWorkItem] = []
+        for candidate in _candidates_for_requirement(
+            req,
+            requirement_delay_candidates=self.requirement_delay_candidates,
+        ):
+            affected_edges = candidate.affected_requirement_edge_keys or (req.edge_key,)
+            remaining_for_affected = [
+                max(
+                    0.0,
+                    self.requirement_missing_by_edge.get(affected_edge, requested)
+                    - self.credited_by_requirement_edge.get(affected_edge, 0.0),
+                )
+                for affected_edge in affected_edges
+            ]
+            if not remaining_for_affected:
+                continue
+            candidate_requested = _normalize_minimum_insertable_request(
+                min(float(candidate.extra_length_um), min(remaining_for_affected)),
+                minimum_insertable_extra_um=self.min_insertable_extra_um,
+            )
+            existing_physical_extra = max(
+                (
+                    self.physical_planned_extra_by_edge.get(candidate_edge, 0.0)
+                    for candidate_edge in candidate.edge_keys
+                ),
+                default=0.0,
+            )
+            already_satisfied = candidate_requested <= EXACT_MEANDER_EPS_UM
+            work_items.append(
+                _CandidateWorkItem(
+                    candidate=candidate,
+                    affected_edges=tuple(affected_edges),
+                    requests_by_edge={
+                        candidate_edge: candidate_requested
+                        + self.physical_planned_extra_by_edge.get(candidate_edge, 0.0)
+                        for candidate_edge in candidate.edge_keys
+                    },
+                    credit_extra_length=0.0 if already_satisfied else candidate_requested,
+                    existing_physical_extra_length=existing_physical_extra,
+                    already_satisfied=already_satisfied,
+                )
+            )
+        return work_items
+
+    def _commit(
+        self,
+        entry: MeanderEdgeReport,
+        requested: float,
+        choice: _Choice,
+        outcome: _RequirementPlanOutcome,
+    ) -> None:
+        """Report the planned requirement and credit the edges its choice satisfies."""
+        edge_key = entry.edge
+        physical_total_by_edge: dict[RoutedEdgeKey, float] = {}
+        for planned_edge, _record, rr, _max_bumps in outcome.plans:
+            physical_total_by_edge[planned_edge] = physical_total_by_edge.get(
+                planned_edge, 0.0
+            ) + as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
+        entry.status = "planned"
+        entry.reason = ""
+        entry.inserted_extra_length_um = choice.credit
+        entry.physical_inserted_extra_length_um = sum(physical_total_by_edge.values())
+        entry.unmatched_length_um = 0.0
+        entry.candidate_reason = choice.candidate.reason
+        entry.planned_edges = tuple(planned_edge for planned_edge, *_ in outcome.plans)
+        entry.planner_requested_extra_length_um = max(
+            physical_total_by_edge.values(), default=choice.credit
+        )
+        entry.existing_physical_extra_length_um = choice.existing_physical_extra
+        entry.plan = outcome.plans[0][2]
+        for affected_edge in choice.affected_edges:
+            self.credited_by_requirement_edge[affected_edge] = (
+                self.credited_by_requirement_edge.get(affected_edge, 0.0) + choice.credit
+            )
+        for planned_edge, physical_total in physical_total_by_edge.items():
+            self.physical_planned_extra_by_edge[planned_edge] = physical_total
+            if planned_edge not in self.physical_edge_order:
+                self.physical_edge_order.append(planned_edge)
+        virtual_entries: list[MeanderEdgeReport] = []
+        for affected_edge in choice.affected_edges:
+            if affected_edge == edge_key:
+                continue
+            virtual_entry = MeanderEdgeReport(
+                edge=affected_edge,
+                requested_extra_length_um=requested,
+                status=entry.status,
+                satisfied_by_requirement_edge=edge_key,
+            )
+            _mirror_entry(entry, virtual_entry)
+            self.results.append(virtual_entry)
+            virtual_entries.append(virtual_entry)
+        self.selected_requirements.append(
+            _SelectedMeanderRequirement(
+                entry=entry,
+                virtual_entries=virtual_entries,
+                edge_key=edge_key,
+                affected_edges=choice.affected_edges,
+                physical_edges=tuple(physical_total_by_edge.keys()),
+                credit_extra_length=choice.credit,
+            )
+        )
+
+
+def _choice_of(
+    outcome: _RequirementPlanOutcome,
+    work_items: list[_CandidateWorkItem],
+    edge_key: RoutedEdgeKey,
+    requested: float,
+) -> _Choice | None:
+    """The planner's choice: the split of the edge's own route, a candidate, or None."""
+    if outcome.split_part_count is not None:
+        return _Choice(
+            candidate=DelayInsertionCandidate(
+                requirement_edge_key=edge_key,
+                edge_keys=(edge_key,),
+                extra_length_um=requested,
+                reason="split_route_runs",
+                affected_requirement_edge_keys=(edge_key,),
+            ),
+            credit=requested,
+            affected_edges=(edge_key,),
+            existing_physical_extra=0.0,
+        )
+    if outcome.selected_work_index is None:
+        return None
+    selected_item = work_items[outcome.selected_work_index]
+    return _Choice(
+        candidate=selected_item.candidate,
+        credit=selected_item.credit_extra_length,
+        affected_edges=selected_item.affected_edges,
+        existing_physical_extra=selected_item.existing_physical_extra_length,
+    )
+
+
 def analyze_meander_insertion_for_requirements(
     routed_net_records: list[RoutedNetRecord],
     requirements: list[MissingLengthRequirement],
@@ -1573,9 +1808,9 @@ def analyze_meander_insertion_for_requirements(
 
     Selection pass: for each requirement (in order, each credited with what
     earlier requirements already inserted on its edge) one Rust call decides
-    among its candidates and the same-edge split. Final pass: one Rust call
-    plans every physical edge's total and the plans are committed to the
-    records. With ``debug_meanders`` the report carries a
+    among its candidates and the same-edge split (`_SelectionPass`). Final
+    pass: one Rust call plans every physical edge's total and the plans are
+    committed to the records. With ``debug_meanders`` the report carries a
     ``MeanderPlanningProfile``; without it no timer, counter or attempt list
     is built.
     """
@@ -1583,8 +1818,6 @@ def analyze_meander_insertion_for_requirements(
     if rust_backend is None:
         raise RuntimeError("Rust router backend unavailable for meander analysis.")
     rust_backend = cast(MeanderRustBackendLike, rust_backend)
-    grid_size_um_cfg = float(space.realization_grid_spec[2])
-    bend_radius_cells = space.bend_radius_cells
     context = _build_planner_context(
         rust_backend=rust_backend,
         routed_net_records=routed_net_records,
@@ -1596,12 +1829,9 @@ def analyze_meander_insertion_for_requirements(
         bend_radius_um=context.bend_radius_um,
         rust_backend=rust_backend,
     )
-    profile = MeanderPlanningProfile() if debug_meanders else None
-    results: list[MeanderEdgeReport] = []
-    total_disregarded = 0.0
     min_insertable_extra_um = _minimum_four_bend_extra_length_um(
-        grid_size_um=float(grid_size_um_cfg),
-        bend_radius_cells=int(bend_radius_cells),
+        grid_size_um=float(space.realization_grid_spec[2]),
+        bend_radius_cells=int(space.bend_radius_cells),
         min_straight_um=search_config.min_straight_um,
     )
     normalized_requested_values = [
@@ -1616,178 +1846,17 @@ def analyze_meander_insertion_for_requirements(
         for requested in normalized_requested_values
         if requested >= min_insertable_extra_um
     )
-
-    requirement_missing_by_edge = _requirement_missing_by_edge(requirements)
-    effective_inserted_by_requirement_edge: dict[RoutedEdgeKey, float] = {}
-    physical_planned_extra_by_edge: dict[RoutedEdgeKey, float] = {}
-    physical_edge_order: list[RoutedEdgeKey] = []
-    selected_requirements: list[_SelectedMeanderRequirement] = []
-
+    selection = _SelectionPass(
+        context=context,
+        config=config,
+        search_config=search_config,
+        min_insertable_extra_um=min_insertable_extra_um,
+        requirement_missing_by_edge=_requirement_missing_by_edge(requirements),
+        requirement_delay_candidates=requirement_delay_candidates,
+        profile=MeanderPlanningProfile() if debug_meanders else None,
+    )
     for req in requirements:
-        edge_key = req.edge_key
-        already_inserted = effective_inserted_by_requirement_edge.get(edge_key, 0.0)
-        requested = _normalize_minimum_insertable_request(
-            max(0.0, float(req.missing_length_um) - already_inserted),
-            minimum_insertable_extra_um=min_insertable_extra_um,
-        )
-        if requested <= EXACT_MEANDER_EPS_UM:
-            continue
-        entry = MeanderEdgeReport(
-            edge=edge_key,
-            requested_extra_length_um=requested,
-            status="no_candidate",
-            reason="no_matching_routed_record",
-            unmatched_length_um=requested,
-        )
-        if requested < min_insertable_extra_um:
-            total_disregarded += requested
-            entry.status = "below_minimum_bump"
-            entry.reason = (
-                "requested extra length is below the four-90-degree-bend "
-                f"minimum ({min_insertable_extra_um:.6g} um)"
-            )
-            entry.unmatched_length_um = 0.0
-            results.append(entry)
-            continue
-
-        # The request vector: one work item per candidate, each edge asked
-        # for its new total (the credit plus what it already carries).
-        work_items: list[_CandidateWorkItem] = []
-        for candidate in _candidates_for_requirement(
-            req,
-            requirement_delay_candidates=requirement_delay_candidates,
-        ):
-            affected_edges = candidate.affected_requirement_edge_keys or (edge_key,)
-            remaining_for_affected = [
-                max(
-                    0.0,
-                    requirement_missing_by_edge.get(affected_edge, requested)
-                    - effective_inserted_by_requirement_edge.get(affected_edge, 0.0),
-                )
-                for affected_edge in affected_edges
-            ]
-            if not remaining_for_affected:
-                continue
-            candidate_requested = _normalize_minimum_insertable_request(
-                min(float(candidate.extra_length_um), min(remaining_for_affected)),
-                minimum_insertable_extra_um=min_insertable_extra_um,
-            )
-            existing_physical_extra = max(
-                (
-                    physical_planned_extra_by_edge.get(candidate_edge, 0.0)
-                    for candidate_edge in candidate.edge_keys
-                ),
-                default=0.0,
-            )
-            already_satisfied = candidate_requested <= EXACT_MEANDER_EPS_UM
-            work_items.append(
-                _CandidateWorkItem(
-                    candidate=candidate,
-                    affected_edges=tuple(affected_edges),
-                    requests_by_edge={
-                        candidate_edge: candidate_requested
-                        + physical_planned_extra_by_edge.get(candidate_edge, 0.0)
-                        for candidate_edge in candidate.edge_keys
-                    },
-                    credit_extra_length=0.0 if already_satisfied else candidate_requested,
-                    existing_physical_extra_length=existing_physical_extra,
-                    already_satisfied=already_satisfied,
-                )
-            )
-
-        outcome = context.plan_requirement_requests_registered(
-            work_items=work_items,
-            split_edge_key=edge_key,
-            split_requested=requested,
-            min_insertable_extra_um=min_insertable_extra_um,
-            search_config=search_config,
-            auto_endpoint_inset_um=config.auto_meander_endpoint_inset_um,
-        )
-        if profile is not None:
-            profile.planner_calls += outcome.edge_calls
-            profile.planner_elapsed_s += outcome.elapsed_s
-            _record_requirement_attempt(
-                profile,
-                edge_key=edge_key,
-                requested=requested,
-                work_items=work_items,
-                outcome=outcome,
-            )
-
-        if outcome.split_part_count is not None:
-            selected_candidate = DelayInsertionCandidate(
-                requirement_edge_key=edge_key,
-                edge_keys=(edge_key,),
-                extra_length_um=requested,
-                reason="split_route_runs",
-                affected_requirement_edge_keys=(edge_key,),
-            )
-            credit = requested
-            selected_affected_edges: tuple[RoutedEdgeKey, ...] = (edge_key,)
-            existing_physical_extra = 0.0
-        elif outcome.selected_work_index is not None:
-            selected_item = work_items[outcome.selected_work_index]
-            selected_candidate = selected_item.candidate
-            credit = selected_item.credit_extra_length
-            selected_affected_edges = selected_item.affected_edges
-            existing_physical_extra = selected_item.existing_physical_extra_length
-        else:
-            entry.status = "no_candidate"
-            entry.reason = outcome.reason
-            results.append(entry)
-            continue
-
-        selected_physical_total_by_edge: dict[RoutedEdgeKey, float] = {}
-        for selected_edge_key, _record, rr, _max_bumps in outcome.plans:
-            selected_physical_total_by_edge[selected_edge_key] = (
-                selected_physical_total_by_edge.get(selected_edge_key, 0.0)
-                + as_float(rr.get("inserted_extra_length_um", 0.0), 0.0)
-            )
-        representative_rr = outcome.plans[0][2]
-        entry.status = "planned"
-        entry.reason = ""
-        entry.inserted_extra_length_um = credit
-        entry.physical_inserted_extra_length_um = sum(selected_physical_total_by_edge.values())
-        entry.unmatched_length_um = 0.0
-        entry.candidate_reason = selected_candidate.reason
-        entry.planned_edges = tuple(planned_edge for planned_edge, *_ in outcome.plans)
-        entry.planner_requested_extra_length_um = max(
-            selected_physical_total_by_edge.values(), default=credit
-        )
-        entry.existing_physical_extra_length_um = existing_physical_extra
-        entry.plan = representative_rr
-        for affected_edge in selected_affected_edges:
-            effective_inserted_by_requirement_edge[affected_edge] = (
-                effective_inserted_by_requirement_edge.get(affected_edge, 0.0) + credit
-            )
-        for selected_edge_key, selected_physical_total in selected_physical_total_by_edge.items():
-            physical_planned_extra_by_edge[selected_edge_key] = selected_physical_total
-            if selected_edge_key not in physical_edge_order:
-                physical_edge_order.append(selected_edge_key)
-        results.append(entry)
-        virtual_entries: list[MeanderEdgeReport] = []
-        for affected_edge in selected_affected_edges:
-            if affected_edge == edge_key:
-                continue
-            virtual_entry = MeanderEdgeReport(
-                edge=affected_edge,
-                requested_extra_length_um=requested,
-                status=entry.status,
-                satisfied_by_requirement_edge=edge_key,
-            )
-            _mirror_entry(entry, virtual_entry)
-            results.append(virtual_entry)
-            virtual_entries.append(virtual_entry)
-        selected_requirements.append(
-            _SelectedMeanderRequirement(
-                entry=entry,
-                virtual_entries=virtual_entries,
-                edge_key=edge_key,
-                affected_edges=selected_affected_edges,
-                physical_edges=tuple(selected_physical_total_by_edge.keys()),
-                credit_extra_length=credit,
-            )
-        )
+        selection.select(req)
 
     final_result = _plan_and_commit_final_physical_meanders(
         rust_backend=rust_backend,
@@ -1796,12 +1865,13 @@ def analyze_meander_insertion_for_requirements(
         config=config,
         search_config=search_config,
         selection=_MeanderSelection(
-            requirements=selected_requirements,
-            physical_edge_order=physical_edge_order,
-            physical_planned_extra_by_edge=physical_planned_extra_by_edge,
+            requirements=selection.selected_requirements,
+            physical_edge_order=selection.physical_edge_order,
+            physical_planned_extra_by_edge=selection.physical_planned_extra_by_edge,
         ),
         debug_meanders=debug_meanders,
     )
+    profile = selection.profile
     if profile is not None:
         _fill_run_profile(
             profile,
@@ -1812,11 +1882,11 @@ def analyze_meander_insertion_for_requirements(
     return (
         final_result.updated_records,
         MeanderInsertionReport(
-            results=results,
+            results=selection.results,
             total_requested_extra_length_um=float(total_requested),
             total_inserted_extra_length_um=float(final_result.total_inserted),
             total_physical_inserted_extra_length_um=float(final_result.total_physical_inserted),
-            total_disregarded_extra_length_um=float(total_disregarded),
+            total_disregarded_extra_length_um=float(selection.total_disregarded),
             unmatched_length_um=float(max(0.0, total_requested - final_result.total_inserted)),
             realized_extra_by_edge=final_result.realized_extra_by_edge,
             minimum_insertable_extra_length_um=float(min_insertable_extra_um),
