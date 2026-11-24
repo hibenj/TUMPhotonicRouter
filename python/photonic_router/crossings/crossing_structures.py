@@ -216,23 +216,12 @@ def evaluate_column_grid(
 ) -> StructureCandidate:
     """Feasibility and cost of the column grid on one layer (needs the
     router's fan-out anchors for the entry rows)."""
-    from photonic_router.crossings.preplaced_crossing_grids import (
-        column_grid_stage,
-        crossing_tile_component,
-    )
+    from photonic_router.crossings.preplaced_crossing_grids import plan_column_grid
 
-    probe_tile = crossing_tile_component(geometry, axis_aligned=True)
     try:
-        probe = column_grid_stage(
-            schematic,
-            unrouted_layout,
-            stage_plan,
-            geometry,
-            Schematic(),
-            probe_tile,
-            anchors,
-            probe_only=True,
-        )
+        probe = plan_column_grid(
+            schematic, unrouted_layout, stage_plan, geometry, anchors
+        ).probe_summary()
     except ValueError as exc:
         return StructureCandidate(COLUMN_GRID, False, str(exc).replace("column grid: ", "", 1))
     return StructureCandidate(

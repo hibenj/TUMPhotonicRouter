@@ -135,7 +135,7 @@ class CrossingPlanConfig:
 @dataclass(frozen=True)
 class CrossingGridConfig:
     """Mirrors the env reads of `python/photonic_router/crossings/preplaced_crossing_grids.py`'s
-    `crossing_grid_geometry_from_config`/`column_grid_stage` and
+    `crossing_grid_geometry_from_config`/`place_column_grid` and
     `python/photonic_router/crossings/crossing_structures.py`'s `select_layer_structure`. Every
     float/string field is `None` when unset, in which case the site's own
     (`CrossingGridGeometry` or literal) default applies."""

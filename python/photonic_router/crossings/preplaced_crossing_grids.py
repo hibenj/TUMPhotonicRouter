@@ -52,7 +52,7 @@ import logging
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Literal, NamedTuple, overload
+from typing import TYPE_CHECKING, NamedTuple
 
 import gdsfactory as gf
 from gdsfactory.component import Component
@@ -526,25 +526,24 @@ class _TileDerivation:
         plus_tile: Component,
         anchors: Mapping[str, tuple[float, float]],
     ) -> None:
-        """Place one band as a column grid (`column_grid_stage`)."""
-        tile_names, builds, stub_nets, lengths, nets, split, expected, placed = column_grid_stage(
-            self.schematic,
-            self.unrouted_layout,
-            stage_plan,
-            self.geometry,
-            self.derived,
-            plus_tile,
-            anchors,
+        """Plan one band as a column grid and place it (`plan_column_grid`, `place_column_grid`)."""
+        placed = place_column_grid(
+            plan_column_grid(
+                self.schematic, self.unrouted_layout, stage_plan, self.geometry, anchors
+            ),
+            geometry=self.geometry,
+            derived=self.derived,
+            plus_tile=plus_tile,
             config=self.config,
         )
-        self.tile_names.extend(tile_names)
-        self.builds.update(builds)
-        self.stub_nets.update(stub_nets)
-        self.lengths.update(lengths)
-        self.nets.extend(nets)
-        self.split.update(split)
-        self.expected += expected
-        self.placed += placed
+        self.tile_names.extend(placed.tile_names)
+        self.builds.update(placed.builds)
+        self.stub_nets.update(placed.stub_nets)
+        self.lengths.update(placed.lengths)
+        self.nets.extend(placed.nets)
+        self.split.update(placed.split)
+        self.expected += placed.expected_crossings
+        self.placed += placed.placed_crossings
 
     def add_x_array(self, band_key: object, stage_plan: CrossingStagePlan, tile: Component) -> None:
         """Place one band as an X array and split its crossing lanes between the tiles.
@@ -897,142 +896,144 @@ def plain_corner_component(
     return component
 
 
-# What `column_grid_stage` returns when it places a stage: tile names, builds,
-# stub nets, lane lengths, nets, split net names, expected and placed crossings.
-ColumnGridStagePlacement = tuple[
-    list[str],
-    dict[str, CrossingGridBuildResult],
-    dict[str, tuple[str, str]],
-    dict[str, float],
-    list[Net],
-    set[str],
-    int,
-    int,
-]
+_COLUMN_GRID_EPS = 1e-6
 
 
-@overload
-def column_grid_stage(
-    schematic: Schematic,
-    unrouted_layout: Component,
-    stage_plan: CrossingStagePlan,
-    geometry: CrossingGridGeometry,
-    derived: Schematic,
-    plus_tile: Component,
-    anchors: Mapping[str, tuple[float, float]],
-    probe_only: Literal[False] = False,
-    config: CrossingGridConfig | None = None,
-) -> ColumnGridStagePlacement: ...
-@overload
-def column_grid_stage(
-    schematic: Schematic,
-    unrouted_layout: Component,
-    stage_plan: CrossingStagePlan,
-    geometry: CrossingGridGeometry,
-    derived: Schematic,
-    plus_tile: Component,
-    anchors: Mapping[str, tuple[float, float]],
-    probe_only: Literal[True],
-    config: CrossingGridConfig | None = None,
-) -> dict[str, float | int]: ...
-def column_grid_stage(
-    schematic: Schematic,
-    unrouted_layout: Component,
-    stage_plan: CrossingStagePlan,
-    geometry: CrossingGridGeometry,
-    derived: Schematic,
-    plus_tile: Component,
-    anchors: Mapping[str, tuple[float, float]],
-    probe_only: bool = False,
-    config: CrossingGridConfig | None = None,
-) -> ColumnGridStagePlacement | dict[str, float | int]:
-    """Column grid for one stage: axis-aligned "+" crossings only.
+def _strictly_inside(v: float, a: float, b: float) -> bool:
+    """Whether `v` lies between `a` and `b`, away from both by more than the tolerance."""
+    lo, hi = min(a, b), max(a, b)
+    return lo + _COLUMN_GRID_EPS < v < hi - _COLUMN_GRID_EPS
 
-    With ``probe_only`` nothing is placed; the return value is a summary
-    dict (smallest corner clearance, columns, needed and available band,
-    moving lanes, planned crossings, extra length over the octile minimum),
-    and infeasible geometry still raises ``ValueError``.
+
+@dataclass(frozen=True)
+class ColumnGridPlan:
+    """Where the lanes of one band run in a column grid, before anything is placed.
 
     Every lane is horizontal (on its entry row: the router's static fan-out
     anchor if the port has one, else the port row), then vertical in its own
     column, then horizontal on its target row. Two lanes cross where one's
-    vertical meets the other's horizontal. Which pairs cross depends only on
-    the left-to-right order of the columns: a pair whose order flips crosses
-    once either way; a pair that does not flip but whose vertical spans
-    interleave crosses in one order and not in the other, which fixes the
-    order. The order is built from those constraints (widest travel first as
-    the tiebreak); lanes with disjoint spans and no constraint between them
-    share a column. Tile of a planned pair with A left of B: at A's column on
-    B's entry row when that row lies inside A's span, otherwise at B's column
-    on A's target row. Lanes that do not move are pure horizontals (no
-    column). The router connects the pieces: straight runs between tiles and
-    two 90-degree corners per lane.
+    vertical meets the other's horizontal. Lanes that do not move are pure
+    horizontals (no column). Lengths and positions in um.
     """
-    config = config if config is not None else CrossingGridConfig()
-    crossing = _crossing_component()
-    pass_length_um = 2.0 * _crossing_half_extent_um(crossing)
-    eps = 1e-6
-    lanes = [edge.net_name for edge in stage_plan.initial_edge_order]
+
+    stage_depth: int
+    #: the band's nets, top to bottom as the stage plan orders them
+    lanes: list[str]
+    #: per lane its two ports as "instance,port"
+    endpoints: dict[str, tuple[str, str]]
+    #: per lane where it enters and where it ends, as (x, y)
+    entry: dict[str, tuple[float, float]]
+    target: dict[str, tuple[float, float]]
+    #: the pairs of lanes the crossing plan lets cross
+    planned: set[frozenset[str]]
+    #: per lane (entry row, target row)
+    span: dict[str, tuple[float, float]]
+    #: the lanes whose two rows differ
+    moving: list[str]
+    #: the smallest distance of a crossing to its vertical lane's own corner
+    #: among the pairs that fixed an order; inf when no pair did
+    min_clearance: float
+    column_count: int
+    #: per moving lane the x of its column
+    column_x: dict[str, float]
+    #: the free band between the entries and the targets, less the lead on both sides
+    band_x0: float
+    band_x1: float
+    pitch: float
+    #: the width the columns take
+    needed: float
+
+    def probe_summary(self) -> dict[str, float | int]:
+        """What the structure selection reads: sizes, clearance, extra length over the octile minimum."""
+        band = self.band_x1 - self.band_x0
+        extra = sum(
+            min(abs(self.span[n][0] - self.span[n][1]), band) * (2.0 - math.sqrt(2.0))
+            for n in self.moving
+        )
+        return {
+            "min_clearance": self.min_clearance,
+            "columns": self.column_count,
+            "needed_um": self.needed,
+            "band_um": band,
+            "moving": len(self.moving),
+            "lanes": len(self.lanes),
+            "planned": len(self.planned),
+            "extra_length_um": extra,
+        }
+
+
+def _lane_ends(
+    schematic: Schematic,
+    unrouted_layout: Component,
+    stage_plan: CrossingStagePlan,
+    anchors: Mapping[str, tuple[float, float]],
+) -> tuple[
+    dict[str, tuple[str, str]], dict[str, tuple[float, float]], dict[str, tuple[float, float]]
+]:
+    """Per lane its two ports and where it enters and ends: the anchor of the port, else the port."""
+
+    def position(port_spec: str) -> tuple[float, float]:
+        if port_spec in anchors:
+            return anchors[port_spec]
+        port = get_port_from_instance(unrouted_layout, *port_spec.split(","))
+        return (float(port.dcenter[0]), float(port.dcenter[1]))
+
     endpoints: dict[str, tuple[str, str]] = {}
     entry: dict[str, tuple[float, float]] = {}
     target: dict[str, tuple[float, float]] = {}
     for edge in stage_plan.initial_edge_order:
         p1, p2 = net_endpoints(schematic, edge.net_name)
         endpoints[edge.net_name] = (p1, p2)
-        if p1 in anchors:
-            entry[edge.net_name] = anchors[p1]
-        else:
-            port = get_port_from_instance(unrouted_layout, *p1.split(","))
-            entry[edge.net_name] = (float(port.dcenter[0]), float(port.dcenter[1]))
-        if p2 in anchors:
-            target[edge.net_name] = anchors[p2]
-        else:
-            port = get_port_from_instance(unrouted_layout, *p2.split(","))
-            target[edge.net_name] = (float(port.dcenter[0]), float(port.dcenter[1]))
-    planned = {frozenset((ev.edge_a.net_name, ev.edge_b.net_name)) for ev in stage_plan.events}
-    span = {n: (entry[n][1], target[n][1]) for n in lanes}
-    moving = [n for n in lanes if abs(span[n][0] - span[n][1]) > eps]
+        entry[edge.net_name] = position(p1)
+        target[edge.net_name] = position(p2)
+    return endpoints, entry, target
 
-    def inside(v: float, a: float, b: float) -> bool:
-        lo, hi = min(a, b), max(a, b)
-        return lo + eps < v < hi - eps
 
-    # A crossing on a lane's column must keep clear of that lane's own two
-    # corners (entry row and target row): the crossing's straight window
-    # plus a bend of radius 5 need about 12 um.
-    corner_margin = float(geometry.corner_margin_um)
+def _crossing_points_if_left(
+    span: Mapping[str, tuple[float, float]], a: str, b: str
+) -> tuple[list[tuple[float, str]], float]:
+    """Crossing rows with ``a`` left of ``b`` as ``(row, vertical lane)``,
+    plus the smallest distance of those crossings to the vertical lane's
+    own corners (inf when there is none)."""
+    points: list[tuple[float, str]] = []
+    clearance = float("inf")
+    if _strictly_inside(span[b][0], *span[a]):  # a's vertical x b's entry horizontal
+        row = span[b][0]
+        clearance = min(clearance, abs(row - span[a][0]), abs(row - span[a][1]))
+        points.append((row, a))
+    if _strictly_inside(span[a][1], *span[b]):  # b's vertical x a's target horizontal
+        row = span[a][1]
+        clearance = min(clearance, abs(row - span[b][0]), abs(row - span[b][1]))
+        points.append((row, b))
+    return points, clearance
 
-    def crossing_points_if_left(a: str, b: str) -> tuple[list[tuple[float, str]], float]:
-        """Crossing rows with ``a`` left of ``b`` as ``(row, vertical lane)``,
-        plus the smallest distance of those crossings to the vertical lane's
-        own corners (inf when there is none)."""
-        points: list[tuple[float, str]] = []
-        clearance = float("inf")
-        if inside(span[b][0], *span[a]):  # a's vertical x b's entry horizontal
-            row = span[b][0]
-            clearance = min(clearance, abs(row - span[a][0]), abs(row - span[a][1]))
-            points.append((row, a))
-        if inside(span[a][1], *span[b]):  # b's vertical x a's target horizontal
-            row = span[a][1]
-            clearance = min(clearance, abs(row - span[b][0]), abs(row - span[b][1]))
-            points.append((row, b))
-        return points, clearance
 
+def _column_order_constraints(
+    moving: list[str], planned: set[frozenset[str]], span: Mapping[str, tuple[float, float]]
+) -> tuple[dict[str, set[str]], set[frozenset[str]], float]:
+    """Which moving lane has to be left of which.
+
+    Which pairs cross depends only on the left-to-right order of the
+    columns: a pair whose order flips crosses once either way; a pair that
+    does not flip but whose vertical spans interleave crosses in one order
+    and not in the other, which fixes the order. Returns per lane the lanes
+    left of it, the pairs with a fixed order and the smallest corner
+    clearance among them. Raises `ValueError` for a pair that neither
+    order gives its planned number of crossings.
+    """
     before: dict[str, set[str]] = {n: set() for n in moving}
     tied: set[frozenset[str]] = set()
     min_clearance = float("inf")
     for a, b in itertools.combinations(moving, 2):
         need = 1 if frozenset((a, b)) in planned else 0
-        pts_a, clear_a = crossing_points_if_left(a, b)
-        pts_b, clear_b = crossing_points_if_left(b, a)
-        count_a = len(pts_a) == need
-        count_b = len(pts_b) == need
+        pts_a, clear_a = _crossing_points_if_left(span, a, b)
+        pts_b, clear_b = _crossing_points_if_left(span, b, a)
         # A corner tile (crossing with the bend attached) covers clearances
         # down to CORNER_TILE_MIN_UM, so ordering only needs that floor; the
         # router's larger corner_margin_um decides later which corners the
         # structure pre-wires.
-        ok_a = count_a and clear_a >= CORNER_TILE_MIN_UM
-        ok_b = count_b and clear_b >= CORNER_TILE_MIN_UM
+        ok_a = len(pts_a) == need and clear_a >= CORNER_TILE_MIN_UM
+        ok_b = len(pts_b) == need and clear_b >= CORNER_TILE_MIN_UM
         if ok_a and ok_b:
             continue
         if not ok_a and not ok_b:
@@ -1043,23 +1044,36 @@ def column_grid_stage(
                 f"from a corner (corner tiles need {CORNER_TILE_MIN_UM:.0f} um)"
             )
         min_clearance = min(min_clearance, clear_a if ok_a else clear_b)
-        if ok_a:
-            before[b].add(a)
-            tied.add(frozenset((a, b)))
-        else:
-            before[a].add(b)
-            tied.add(frozenset((a, b)))
+        left, right = (a, b) if ok_a else (b, a)
+        before[right].add(left)
+        tied.add(frozenset((a, b)))
+    return before, tied, min_clearance
+
+
+def _check_level_lanes(
+    lanes: list[str],
+    moving: list[str],
+    planned: set[frozenset[str]],
+    span: Mapping[str, tuple[float, float]],
+) -> None:
+    """Raise `ValueError` when a lane that does not move crosses a moving one it should not, or not one it should."""
     for n in lanes:
         if n in moving:
             continue
         for m in moving:
             need = 1 if frozenset((n, m)) in planned else 0
-            has = 1 if inside(span[n][0], *span[m]) else 0
+            has = 1 if _strictly_inside(span[n][0], *span[m]) else 0
             if has != need:
                 raise ValueError(
                     f"column grid: level lane {n} and {m} need {need} crossing(s), "
                     f"geometry gives {has}"
                 )
+
+
+def _column_order(
+    moving: list[str], before: Mapping[str, set[str]], span: Mapping[str, tuple[float, float]]
+) -> list[str]:
+    """The moving lanes left to right: the constraints first, then the widest travel, then the name."""
     order: list[str] = []
     remaining = set(moving)
     while remaining:
@@ -1069,8 +1083,28 @@ def column_grid_stage(
         ready.sort(key=lambda n: (-abs(span[n][0] - span[n][1]), n))
         order.append(ready[0])
         remaining.remove(ready[0])
+    return order
+
+
+def _columns(
+    order: list[str],
+    before: Mapping[str, set[str]],
+    tied: set[frozenset[str]],
+    span: Mapping[str, tuple[float, float]],
+    geometry: CrossingGridGeometry,
+) -> tuple[list[list[str]], dict[str, int]]:
+    """The lanes of each column and the column of each lane.
+
+    Lanes with disjoint spans and no constraint between them share a
+    column.
+    """
     columns: list[list[str]] = []
     column_of: dict[str, int] = {}
+    # Shared column: spans apart by more than a bare corner body plus
+    # clearance (a corner bend of radius 5 plus the router's 2 um ring
+    # on each side), so one lane's corner never sits on another
+    # lane's vertical run.
+    share_gap = float(geometry.bend_radius_um) * 2.0 + 6.0
     for n in order:
         lo, hi = min(span[n]), max(span[n])
         # A shared column must lie strictly right of every column a lane
@@ -1081,11 +1115,6 @@ def column_grid_stage(
         for index, column in enumerate(columns):
             if index < min_index:
                 continue
-            # Shared column: spans apart by more than a bare corner body plus
-            # clearance (a corner bend of radius 5 plus the router's 2 um ring
-            # on each side), so one lane's corner never sits on another
-            # lane's vertical run.
-            share_gap = float(geometry.bend_radius_um) * 2.0 + 6.0
             if all(
                 (max(span[m]) < lo - share_gap or min(span[m]) > hi + share_gap)
                 and frozenset((n, m)) not in tied
@@ -1097,224 +1126,464 @@ def column_grid_stage(
         else:
             columns.append([n])
             column_of[n] = len(columns) - 1
+    return columns, column_of
+
+
+def plan_column_grid(
+    schematic: Schematic,
+    unrouted_layout: Component,
+    stage_plan: CrossingStagePlan,
+    geometry: CrossingGridGeometry,
+    anchors: Mapping[str, tuple[float, float]],
+) -> ColumnGridPlan:
+    """Plan the column grid of one band: axis-aligned "+" crossings only.
+
+    The order of the columns is built from the constraints of
+    `_column_order_constraints` (widest travel first as the tiebreak).
+    Nothing is placed. Raises `ValueError` when the band cannot be a
+    column grid: a pair of lanes does not get its planned crossings, the
+    constraints are cyclic or the columns do not fit the band.
+    """
+    lanes = [edge.net_name for edge in stage_plan.initial_edge_order]
+    endpoints, entry, target = _lane_ends(schematic, unrouted_layout, stage_plan, anchors)
+    planned = {frozenset((ev.edge_a.net_name, ev.edge_b.net_name)) for ev in stage_plan.events}
+    span = {n: (entry[n][1], target[n][1]) for n in lanes}
+    moving = [n for n in lanes if abs(span[n][0] - span[n][1]) > _COLUMN_GRID_EPS]
+    before, tied, min_clearance = _column_order_constraints(moving, planned, span)
+    _check_level_lanes(lanes, moving, planned, span)
+    columns, column_of = _columns(_column_order(moving, before, span), before, tied, span, geometry)
     band_x0 = max(entry[n][0] for n in lanes) + float(geometry.column_lead_um)
     band_x1 = min(target[n][0] for n in lanes) - float(geometry.column_lead_um)
     pitch = float(geometry.column_pitch_um)
     needed = (len(columns) - 1) * pitch if columns else 0.0
-    if needed > band_x1 - band_x0 + eps:
+    if needed > band_x1 - band_x0 + _COLUMN_GRID_EPS:
         raise ValueError(
             f"column grid: stage {stage_plan.source_depth} needs {len(columns)} columns "
             f"({needed:.1f} um) but the band leaves {band_x1 - band_x0:.1f} um"
         )
     x_start = 0.5 * (band_x0 + band_x1 - needed)
-    column_x = {n: x_start + column_of[n] * pitch for n in moving}
-    if probe_only:
-        extra = sum(
-            min(abs(span[n][0] - span[n][1]), band_x1 - band_x0) * (2.0 - math.sqrt(2.0))
-            for n in moving
-        )
-        return {
-            "min_clearance": min_clearance,
-            "columns": len(columns),
-            "needed_um": needed,
-            "band_um": band_x1 - band_x0,
-            "moving": len(moving),
-            "lanes": len(lanes),
-            "planned": len(planned),
-            "extra_length_um": extra,
-        }
-    _LOGGER.info(
-        f"      - column grid stage {stage_plan.source_depth}: {len(lanes)} lanes, "
-        f"{len(moving)} moving, {len(columns)} columns at {pitch:.0f} um "
-        f"({needed:.0f} of {band_x1 - band_x0:.0f} um), {len(planned)} crossings"
+    return ColumnGridPlan(
+        stage_depth=stage_plan.source_depth,
+        lanes=lanes,
+        endpoints=endpoints,
+        entry=entry,
+        target=target,
+        planned=planned,
+        span=span,
+        moving=moving,
+        min_clearance=min_clearance,
+        column_count=len(columns),
+        column_x={n: x_start + column_of[n] * pitch for n in moving},
+        band_x0=band_x0,
+        band_x1=band_x1,
+        pitch=pitch,
+        needed=needed,
     )
-    if config.trace_column_grid:
-        for n in lanes:
-            partners = sorted(m for m in lanes if frozenset((n, m)) in planned)
-            _LOGGER.info(
-                f"        lane {n}: entry ({entry[n][0]:.1f}, {entry[n][1]:.3f}) -> target "
-                f"({target[n][0]:.1f}, {target[n][1]:.3f}) column x="
-                f"{column_x.get(n, float('nan')):.1f} crosses {partners}"
-            )
-    infinity = float("inf")
 
-    def x_of(n: str) -> float:
-        return column_x.get(n, infinity)
 
-    # tiles
-    tiles: list[dict] = []
-    for pair in sorted(planned, key=lambda p: sorted(p)):
-        a, b = sorted(pair, key=x_of)  # a left (or the moving one when b is level)
-        if x_of(a) == infinity:
-            raise ValueError(f"column grid: planned crossing between two level lanes {a} x {b}")
-        candidates = []
-        if inside(span[b][0], *span[a]):
-            candidates.append((x_of(a), span[b][0], a, b))  # a vertical, b on its entry row
-        if x_of(b) != infinity and inside(span[a][1], *span[b]):
-            candidates.append((x_of(b), span[a][1], b, a))  # b vertical, a on its target row
-        if len(candidates) != 1:
-            raise ValueError(
-                f"column grid: pair {a} x {b} has {len(candidates)} crossing points, expected 1"
-            )
-        x, y, vertical, flat = candidates[0]
-        direction = "vert_up" if span[vertical][1] > span[vertical][0] else "vert_down"
-        tiles.append(
-            {
-                "x": x,
-                "y": y,
-                "roles": {vertical: direction, flat: "flat"},
-                "pair": pair,
-                "entry_corner": None,
-                "target_corner": None,
-            }
-        )
-    # Corners. A lane turns from its entry row into its column and from the
-    # column onto its target row. The router makes a corner only when both
-    # legs (to the nearest tile port, anchor or target) leave it
-    # corner_margin_um of straight room; otherwise the structure pre-wires
-    # it: as a crossing-with-bend tile when the nearest vertical tile is the
-    # tight one, else as a bare bend.
-    half_tile = 0.5 * pass_length_um
-    corner_elements: list[dict] = []
+@dataclass
+class _GridElement:
+    """A crossing tile or a bare corner of a column grid, and what each of its lanes does there."""
 
-    # "always" (default): both corners of every moving lane are pre-wired
-    # (crossing-with-bend tile or bare bend), so the router only routes
-    # straight runs and no lane can stray across another lane's column
-    # (multiportmmi_32x32: a tile-less lane routed diagonally through a
-    # column). "auto": only corners whose legs are shorter than
-    # corner_margin_um. "router": none.
-    corners_mode = config.corners if config.corners is not None else "always"
-    for n in moving if corners_mode != "router" else []:
-        x_col = column_x[n]
-        ye, yt = span[n]
-        down = yt < ye
-        mine = [t for t in tiles if n in t["roles"]]
-        vertical_tiles = sorted(
-            (t for t in mine if t["roles"][n] != "flat"), key=lambda t: t["y"], reverse=down
-        )
-        entry_row_tiles = [t for t in mine if t["roles"][n] == "flat" and abs(t["y"] - ye) < eps]
-        target_row_tiles = [t for t in mine if t["roles"][n] == "flat" and abs(t["y"] - yt) < eps]
-        for is_entry in (True, False):
-            corner_y = ye if is_entry else yt
-            first_vertical = (
-                (vertical_tiles[0] if is_entry else vertical_tiles[-1]) if vertical_tiles else None
-            )
-            vertical_leg = (
-                abs(first_vertical["y"] - corner_y) - half_tile if first_vertical else abs(yt - ye)
-            )
-            if is_entry:
-                left = [t["x"] for t in entry_row_tiles if t["x"] < x_col]
-                horizontal_leg = (x_col - max(left) - half_tile) if left else (x_col - entry[n][0])
-            else:
-                right = [t["x"] for t in target_row_tiles if t["x"] > x_col]
-                horizontal_leg = (
-                    (min(right) - x_col - half_tile) if right else (target[n][0] - x_col)
-                )
-            if (
-                corners_mode != "always"
-                and vertical_leg >= corner_margin
-                and horizontal_leg >= corner_margin
-            ):
-                continue  # the router turns this one
-            if first_vertical is not None and abs(first_vertical["y"] - corner_y) < corner_margin:
-                d = abs(first_vertical["y"] - corner_y)
-                if d < CORNER_TILE_MIN_UM - eps:
-                    raise ValueError(
-                        f"column grid: lane {n} crosses {d:.1f} um from its own corner; "
-                        f"a corner tile needs {CORNER_TILE_MIN_UM:.0f} um"
-                    )
-                first_vertical["entry_corner" if is_entry else "target_corner"] = d
-            else:
-                corner_elements.append(
-                    {"lane": n, "entry": is_entry, "down": down, "x": x_col, "y": corner_y}
-                )
-    # spacing check on each column
-    by_x: dict[float, list[float]] = {}
-    for t in tiles:
-        by_x.setdefault(round(t["x"], 6), []).append(t["y"])
-    for x, ys in by_x.items():
-        ys.sort()
-        for lo, hi in itertools.pairwise(ys):
-            # two crossings on one straight need disjoint half-size windows:
-            # centers at least one crossing length apart
-            if hi - lo < pass_length_um + 0.5:
+    x: float
+    y: float
+    #: per lane: "flat", "vert_up", "vert_down", or "corner_<entry|target>_<down|up>"
+    roles: dict[str, str]
+    #: a tile whose vertical lane's corner is attached: the corner's distance (um)
+    entry_corner: float | None = None
+    target_corner: float | None = None
+    name: str = ""
+    component: Component | None = None
+    #: where the instance is placed
+    placement: tuple[float, float] = (0.0, 0.0)
+
+    def port_xy(self, port: str) -> tuple[float, float]:
+        assert self.component is not None
+        center = self.component.ports[port].dcenter
+        return (self.placement[0] + float(center[0]), self.placement[1] + float(center[1]))
+
+    def ports_of(self, lane: str) -> tuple[str, str]:
+        """The ports `lane` enters and leaves the element by."""
+        role = self.roles[lane]
+        enter, leave = {
+            "flat": ("l", "r"),
+            "vert_up": ("b", "t"),
+            "vert_down": ("t", "b"),
+            "corner_entry_down": ("w", "b"),
+            "corner_entry_up": ("w", "t"),
+            "corner_target_down": ("t", "e"),
+            "corner_target_up": ("b", "e"),
+        }[role]
+        if role in ("vert_up", "vert_down"):
+            if self.entry_corner is not None:
+                enter = "w"
+            if self.target_corner is not None:
+                leave = "e"
+        return enter, leave
+
+
+class _BareCorner(NamedTuple):
+    """A corner of a lane that is pre-wired as a bend of its own."""
+
+    lane: str
+    entry: bool
+    down: bool
+    x: float
+    y: float
+
+
+class ColumnGridPlacement(NamedTuple):
+    """What `place_column_grid` placed for one band."""
+
+    tile_names: list[str]
+    builds: dict[str, CrossingGridBuildResult]
+    #: original net -> its two stub nets
+    stub_nets: dict[str, tuple[str, str]]
+    #: original net -> the length it runs inside its tiles, in um
+    lengths: dict[str, float]
+    nets: list[Net]
+    #: the original nets that were split
+    split: set[str]
+    expected_crossings: int
+    placed_crossings: int
+
+
+@dataclass
+class _ColumnGridPlacer:
+    """Places the tiles, corners and links of one planned column grid and splits its lanes."""
+
+    plan: ColumnGridPlan
+    geometry: CrossingGridGeometry
+    #: the schematic the instances are added to
+    derived: Schematic
+    plus_tile: Component
+    config: CrossingGridConfig
+    #: the length of a lane inside one crossing (um)
+    pass_length_um: float
+    tile_names: list[str] = field(default_factory=list)
+    #: per lane the elements it passes, in the order they were placed
+    elements_of_lane: dict[str, list[_GridElement]] = field(default_factory=dict)
+    link_count: int = 0
+    nets: list[Net] = field(default_factory=list)
+    stub_nets: dict[str, tuple[str, str]] = field(default_factory=dict)
+    lengths: dict[str, float] = field(default_factory=dict)
+    split: set[str] = field(default_factory=set)
+
+    def planned_tiles(self) -> list[_GridElement]:
+        """One tile per planned pair.
+
+        With A left of B: at A's column on B's entry row when that row
+        lies inside A's span, otherwise at B's column on A's target row.
+        """
+        plan, span = self.plan, self.plan.span
+        infinity = float("inf")
+
+        def x_of(n: str) -> float:
+            return plan.column_x.get(n, infinity)
+
+        tiles: list[_GridElement] = []
+        for pair in sorted(plan.planned, key=lambda p: sorted(p)):
+            # a left (or the moving one when b is level)
+            a, b = sorted(sorted(pair), key=x_of)
+            if x_of(a) == infinity:
+                raise ValueError(f"column grid: planned crossing between two level lanes {a} x {b}")
+            candidates = []
+            if _strictly_inside(span[b][0], *span[a]):
+                candidates.append((x_of(a), span[b][0], a))  # a vertical, b on its entry row
+            if x_of(b) != infinity and _strictly_inside(span[a][1], *span[b]):
+                candidates.append((x_of(b), span[a][1], b))  # b vertical, a on its target row
+            if len(candidates) != 1:
                 raise ValueError(
-                    f"column grid: two crossings {hi - lo:.1f} um apart on the column at x={x:.1f}"
+                    f"column grid: pair {a} x {b} has {len(candidates)} crossing points, expected 1"
                 )
-    depth = stage_plan.source_depth
-    tile_names: list[str] = []
-    tiles_of_lane: dict[str, list[dict]] = {}
-    corner_tiles = 0
-    for index, t in enumerate(tiles):
-        name = f"{CROSSING_TILE_PREFIX}stage{depth}_{index}"
-        component = plus_tile
-        if t["entry_corner"] is not None or t["target_corner"] is not None:
-            vertical = next(n for n, role in t["roles"].items() if role != "flat")
-            component = crossing_corner_tile_component(
-                geometry,
-                direction="down" if t["roles"][vertical] == "vert_down" else "up",
-                entry_d_um=t["entry_corner"],
-                target_d_um=t["target_corner"],
+            x, y, vertical = candidates[0]
+            direction = "vert_up" if span[vertical][1] > span[vertical][0] else "vert_down"
+            # the pair's lanes by name: a set of names iterates in an order
+            # that differs from process to process
+            roles = {lane: (direction if lane == vertical else "flat") for lane in sorted(pair)}
+            tiles.append(_GridElement(x=x, y=y, roles=roles))
+        return tiles
+
+    def bare_corners(self, tiles: list[_GridElement]) -> list[_BareCorner]:
+        """Decide every corner of the moving lanes; returns the ones that get a bend of their own.
+
+        A lane turns from its entry row into its column and from the
+        column onto its target row. The router makes a corner only when
+        both legs (to the nearest tile port, anchor or target) leave it
+        corner_margin_um of straight room; otherwise the structure
+        pre-wires it: as a crossing-with-bend tile when the nearest
+        vertical tile is the tight one (marked on that tile), else as a
+        bare bend.
+
+        ``config.corners``: "always" (default): both corners of every
+        moving lane are pre-wired, so the router only routes straight runs
+        and no lane can stray across another lane's column
+        (multiportmmi_32x32: a tile-less lane routed diagonally through a
+        column). "auto": only corners whose legs are shorter than
+        corner_margin_um. "router": none.
+        """
+        corners_mode = self.config.corners if self.config.corners is not None else "always"
+        if corners_mode == "router":
+            return []
+        corners: list[_BareCorner] = []
+        for lane in self.plan.moving:
+            for is_entry in (True, False):
+                corner = self._corner(lane, is_entry, tiles, always=corners_mode == "always")
+                if corner is not None:
+                    corners.append(corner)
+        return corners
+
+    def _corner(
+        self, lane: str, is_entry: bool, tiles: list[_GridElement], *, always: bool
+    ) -> _BareCorner | None:
+        """One corner of one lane: None when the router turns it or a tile carries it."""
+        plan = self.plan
+        eps = _COLUMN_GRID_EPS
+        corner_margin = float(self.geometry.corner_margin_um)
+        half_tile = 0.5 * self.pass_length_um
+        x_col = plan.column_x[lane]
+        ye, yt = plan.span[lane]
+        down = yt < ye
+        corner_y = ye if is_entry else yt
+        mine = [t for t in tiles if lane in t.roles]
+        vertical_tiles = sorted(
+            (t for t in mine if t.roles[lane] != "flat"), key=lambda t: t.y, reverse=down
+        )
+        first_vertical = (
+            (vertical_tiles[0] if is_entry else vertical_tiles[-1]) if vertical_tiles else None
+        )
+        vertical_leg = (
+            abs(first_vertical.y - corner_y) - half_tile if first_vertical else abs(yt - ye)
+        )
+        row_xs = [t.x for t in mine if t.roles[lane] == "flat" and abs(t.y - corner_y) < eps]
+        if is_entry:
+            left = [x for x in row_xs if x < x_col]
+            horizontal_leg = (
+                (x_col - max(left) - half_tile) if left else (x_col - plan.entry[lane][0])
+            )
+        else:
+            right = [x for x in row_xs if x > x_col]
+            horizontal_leg = (
+                (min(right) - x_col - half_tile) if right else (plan.target[lane][0] - x_col)
+            )
+        if not always and vertical_leg >= corner_margin and horizontal_leg >= corner_margin:
+            return None  # the router turns this one
+        if first_vertical is None or abs(first_vertical.y - corner_y) >= corner_margin:
+            return _BareCorner(lane=lane, entry=is_entry, down=down, x=x_col, y=corner_y)
+        d = abs(first_vertical.y - corner_y)
+        if d < CORNER_TILE_MIN_UM - eps:
+            raise ValueError(
+                f"column grid: lane {lane} crosses {d:.1f} um from its own corner; "
+                f"a corner tile needs {CORNER_TILE_MIN_UM:.0f} um"
+            )
+        if is_entry:
+            first_vertical.entry_corner = d
+        else:
+            first_vertical.target_corner = d
+        return None
+
+    def check_column_spacing(self, tiles: list[_GridElement]) -> None:
+        """Raise `ValueError` when two crossings of one column are closer than a crossing is long.
+
+        Two crossings on one straight need disjoint half-size windows:
+        centers at least one crossing length apart.
+        """
+        by_x: dict[float, list[float]] = {}
+        for t in tiles:
+            by_x.setdefault(round(t.x, 6), []).append(t.y)
+        for x, ys in by_x.items():
+            ys.sort()
+            for lo, hi in itertools.pairwise(ys):
+                if hi - lo < self.pass_length_um + 0.5:
+                    raise ValueError(
+                        f"column grid: two crossings {hi - lo:.1f} um apart "
+                        f"on the column at x={x:.1f}"
+                    )
+
+    def place_tiles(self, tiles: list[_GridElement]) -> int:
+        """Add the tiles to the schematic; returns how many carry a pre-wired corner."""
+        corner_tiles = 0
+        for index, t in enumerate(tiles):
+            component = self.plus_tile
+            if t.entry_corner is not None or t.target_corner is not None:
+                vertical = next(n for n, role in t.roles.items() if role != "flat")
+                component = crossing_corner_tile_component(
+                    self.geometry,
+                    direction="down" if t.roles[vertical] == "vert_down" else "up",
+                    entry_d_um=t.entry_corner,
+                    target_d_um=t.target_corner,
+                )
+                _register_grid_cell(component.name, component, access_length_um=6.0)
+                corner_tiles += 1
+            t.name = f"{CROSSING_TILE_PREFIX}stage{self.plan.stage_depth}_{index}"
+            t.component = component
+            t.placement = (round(t.x, 3), round(t.y, 3))
+            self.derived.add_instance(
+                t.name,
+                Instance(component=component.name),
+                Placement(x=t.placement[0], y=t.placement[1]),
+            )
+            self.tile_names.append(t.name)
+            for lane in t.roles:
+                self.elements_of_lane.setdefault(lane, []).append(t)
+        return corner_tiles
+
+    def place_bare_corners(self, corners: list[_BareCorner]) -> None:
+        """Add the bends of the corners no tile carries to the schematic."""
+        radius = float(self.geometry.bend_radius_um)
+        for index, c in enumerate(corners):
+            component = plain_corner_component(
+                self.geometry, entry=c.entry, direction="down" if c.down else "up"
             )
             _register_grid_cell(component.name, component, access_length_um=6.0)
-            corner_tiles += 1
-        derived.add_instance(
-            name,
-            Instance(component=component.name),
-            Placement(x=round(t["x"], 3), y=round(t["y"], 3)),
+            name = f"{CROSSING_LINK_PREFIX}corner_stage{self.plan.stage_depth}_{index}"
+            if c.entry:
+                corner_x, corner_y = round(c.x - radius, 3), round(c.y, 3)
+            else:
+                corner_x = round(c.x, 3)
+                corner_y = round(c.y + (radius if c.down else -radius), 3)
+            self.derived.add_instance(
+                name, Instance(component=component.name), Placement(x=corner_x, y=corner_y)
+            )
+            self.tile_names.append(name)
+            role = ("corner_entry_" if c.entry else "corner_target_") + ("down" if c.down else "up")
+            self.elements_of_lane.setdefault(c.lane, []).append(
+                _GridElement(
+                    x=c.x,
+                    y=c.y,
+                    roles={c.lane: role},
+                    name=name,
+                    component=component,
+                    placement=(float(corner_x), float(corner_y)),
+                )
+            )
+
+    def _path_position(self, lane: str, element: _GridElement) -> tuple[float, float]:
+        """Where `element` comes on the lane's way: entry row, entry corner, column, target corner, target row."""
+        span = self.plan.span[lane]
+        role = element.roles[lane]
+        if role == "flat":
+            on_entry = abs(element.y - span[0]) < _COLUMN_GRID_EPS
+            return (0 if on_entry else 2, element.x)
+        if role.startswith("corner_entry"):
+            return (0.5, 0.0)
+        if role.startswith("corner_target"):
+            return (1.5, 0.0)
+        return (1, element.y if span[1] > span[0] else -element.y)
+
+    def _link(self, start: tuple[float, float], end: tuple[float, float]) -> None:
+        """Pre-wire the straight from `start` to `end`: a run too short for a router net."""
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        eps = _COLUMN_GRID_EPS
+        straight = _straight(self.geometry, math.hypot(dx, dy))
+        _register_plain_cell(straight.name, straight)
+        rotation = (
+            0 if abs(dy) < eps and dx > 0 else (180 if abs(dy) < eps else (90 if dy > 0 else 270))
         )
-        t["name"] = name
-        t["component"] = component
-        t["placement"] = (round(t["x"], 3), round(t["y"], 3))
-        tile_names.append(name)
-        # sorted: a set of names iterates in an order that differs from process to process
-        for lane in sorted(t["pair"]):
-            tiles_of_lane.setdefault(lane, []).append(t)
-    for index, c in enumerate(corner_elements):
-        component = plain_corner_component(
-            geometry, entry=c["entry"], direction="down" if c["down"] else "up"
+        link_name = f"{CROSSING_LINK_PREFIX}stage{self.plan.stage_depth}_{self.link_count}"
+        self.link_count += 1
+        self.derived.add_instance(
+            link_name,
+            Instance(component=straight.name),
+            Placement(x=round(start[0], 3), y=round(start[1], 3), rotation=rotation),
         )
-        _register_grid_cell(component.name, component, access_length_um=6.0)
-        name = f"{CROSSING_LINK_PREFIX}corner_stage{depth}_{index}"
-        radius = float(geometry.bend_radius_um)
-        if c["entry"]:
-            corner_x, corner_y = round(c["x"] - radius, 3), round(c["y"], 3)
-        else:
-            corner_x = round(c["x"], 3)
-            corner_y = round(c["y"] + (radius if c["down"] else -radius), 3)
-        placement = Placement(x=corner_x, y=corner_y)
-        derived.add_instance(name, Instance(component=component.name), placement)
-        tile_names.append(name)
-        role = ("corner_entry_" if c["entry"] else "corner_target_") + (
-            "down" if c["down"] else "up"
-        )
-        element = {
-            "x": c["x"],
-            "y": c["y"],
-            "roles": {c["lane"]: role},
-            "pair": (c["lane"],),
-            "name": name,
-            "entry_corner": None,
-            "target_corner": None,
-            "corner": True,
-            "component": component,
-            "placement": (float(corner_x), float(corner_y)),
-        }
-        tiles_of_lane.setdefault(c["lane"], []).append(element)
-    if corner_tiles or corner_elements:
+        self.tile_names.append(link_name)
+
+    def split_lane(self, lane: str) -> None:
+        """Replace one lane by the nets between its port, its elements in order, and its other port.
+
+        Two elements closer than the router can route a net between
+        (`MIN_ROUTER_GAP_UM`) on one line are joined by a pre-wired
+        straight, or abut, and no net is made between them.
+        """
+        eps = _COLUMN_GRID_EPS
+        elements = self.elements_of_lane[lane]
+        elements.sort(key=lambda element: self._path_position(lane, element))
+        p1, p2 = self.plan.endpoints[lane]
+        previous = p1
+        previous_xy: tuple[float, float] | None = None
+        names: list[str] = []
+        for element in elements:
+            enter, leave = element.ports_of(lane)
+            enter_xy = element.port_xy(enter)
+            joined = False
+            if previous_xy is not None:
+                dx = enter_xy[0] - previous_xy[0]
+                dy = enter_xy[1] - previous_xy[1]
+                gap = math.hypot(dx, dy)
+                joined = (abs(dx) < eps or abs(dy) < eps) and gap < MIN_ROUTER_GAP_UM - eps
+                if joined and gap > eps:
+                    self._link(previous_xy, enter_xy)
+            if not joined:
+                segment = (
+                    f"{lane}{TO_GRID_SUFFIX}"
+                    if not names
+                    else f"{lane}{VIA_GRID_SUFFIX}{len(names)}"
+                )
+                self.nets.append(Net(p1=previous, p2=f"{element.name},{enter}", name=segment))
+                names.append(segment)
+            previous = f"{element.name},{leave}"
+            previous_xy = element.port_xy(leave)
+        final = f"{lane}{FROM_GRID_SUFFIX}"
+        self.nets.append(Net(p1=previous, p2=p2, name=final))
+        names.append(final)
+        self.stub_nets[lane] = (names[0], names[-1])
+        self.lengths[lane] = self.pass_length_um * len(elements)
+        self.split.add(lane)
+
+
+def place_column_grid(
+    plan: ColumnGridPlan,
+    *,
+    geometry: CrossingGridGeometry,
+    derived: Schematic,
+    plus_tile: Component,
+    config: CrossingGridConfig | None = None,
+) -> ColumnGridPlacement:
+    """Place a planned column grid in ``derived`` and split its lanes.
+
+    The router connects the pieces: straight runs between tiles and, where
+    ``config.corners`` leaves them to it, the corners of a lane. Raises
+    `ValueError` when a planned pair has no single crossing point, a lane
+    crosses too close to its own corner, or two crossings of one column
+    are too close.
+    """
+    config = config if config is not None else CrossingGridConfig()
+    depth = plan.stage_depth
+    _LOGGER.info(
+        f"      - column grid stage {depth}: {len(plan.lanes)} lanes, "
+        f"{len(plan.moving)} moving, {plan.column_count} columns at {plan.pitch:.0f} um "
+        f"({plan.needed:.0f} of {plan.band_x1 - plan.band_x0:.0f} um), "
+        f"{len(plan.planned)} crossings"
+    )
+    if config.trace_column_grid:
+        for n in plan.lanes:
+            partners = sorted(m for m in plan.lanes if frozenset((n, m)) in plan.planned)
+            _LOGGER.info(
+                f"        lane {n}: entry ({plan.entry[n][0]:.1f}, {plan.entry[n][1]:.3f}) -> target "
+                f"({plan.target[n][0]:.1f}, {plan.target[n][1]:.3f}) column x="
+                f"{plan.column_x.get(n, float('nan')):.1f} crosses {partners}"
+            )
+    placer = _ColumnGridPlacer(
+        plan=plan,
+        geometry=geometry,
+        derived=derived,
+        plus_tile=plus_tile,
+        config=config,
+        pass_length_um=2.0 * _crossing_half_extent_um(_crossing_component()),
+    )
+    tiles = placer.planned_tiles()
+    corners = placer.bare_corners(tiles)
+    placer.check_column_spacing(tiles)
+    corner_tiles = placer.place_tiles(tiles)
+    placer.place_bare_corners(corners)
+    if corner_tiles or corners:
         _LOGGER.info(
             f"      - column grid stage {depth}: {corner_tiles} tile(s) with a pre-wired corner, "
-            f"{len(corner_elements)} bare corner(s)"
+            f"{len(corners)} bare corner(s)"
         )
-    link_index = 0
-
-    def port_xy(element: dict, port: str) -> tuple[float, float]:
-        center = element["component"].ports[port].dcenter
-        return (
-            element["placement"][0] + float(center[0]),
-            element["placement"][1] + float(center[1]),
-        )
-
+    for lane in list(placer.elements_of_lane):
+        placer.split_lane(lane)
     builds = {
         f"stage{depth}": CrossingGridBuildResult(
             component=plus_tile,
@@ -1322,95 +1591,21 @@ def column_grid_stage(
             lane_length_um_by_net_name={},
             input_port_name_by_net_name={},
             output_port_name_by_net_name={},
-            width_um=needed,
-            height_um=max(max(span[n]) for n in lanes) - min(min(span[n]) for n in lanes),
+            width_um=plan.needed,
+            height_um=max(max(plan.span[n]) for n in plan.lanes)
+            - min(min(plan.span[n]) for n in plan.lanes),
         )
     }
-    nets: list[Net] = []
-    stub_nets: dict[str, tuple[str, str]] = {}
-    lengths: dict[str, float] = {}
-    split: set[str] = set()
-    for lane, lane_tiles in tiles_of_lane.items():
-        up = span[lane][1] > span[lane][0]
-
-        def path_key(t: dict, lane: str = lane, up: bool = up) -> tuple[float, float]:
-            role = t["roles"][lane]
-            if role == "flat":
-                on_entry = abs(t["y"] - span[lane][0]) < eps
-                return (0 if on_entry else 2, t["x"])
-            if role.startswith("corner_entry"):
-                return (0.5, 0.0)
-            if role.startswith("corner_target"):
-                return (1.5, 0.0)
-            return (1, t["y"] if up else -t["y"])
-
-        lane_tiles.sort(key=path_key)
-        p1, p2 = endpoints[lane]
-        previous = p1
-        previous_xy: tuple[float, float] | None = None
-        names: list[str] = []
-        for t in lane_tiles:
-            role = t["roles"][lane]
-            enter, leave = {
-                "flat": ("l", "r"),
-                "vert_up": ("b", "t"),
-                "vert_down": ("t", "b"),
-                "corner_entry_down": ("w", "b"),
-                "corner_entry_up": ("w", "t"),
-                "corner_target_down": ("t", "e"),
-                "corner_target_up": ("b", "e"),
-            }[role]
-            if role in ("vert_up", "vert_down"):
-                if t["entry_corner"] is not None:
-                    enter = "w"
-                if t["target_corner"] is not None:
-                    leave = "e"
-            enter_xy = port_xy(t, enter)
-            if previous_xy is not None:
-                dx = enter_xy[0] - previous_xy[0]
-                dy = enter_xy[1] - previous_xy[1]
-                aligned = abs(dx) < eps or abs(dy) < eps
-                gap = math.hypot(dx, dy)
-                if aligned and gap < MIN_ROUTER_GAP_UM - eps:
-                    # too short for a router net: pre-wire the straight
-                    if gap > eps:
-                        straight = _straight(geometry, gap)
-                        _register_plain_cell(straight.name, straight)
-                        rotation = (
-                            0
-                            if abs(dy) < eps and dx > 0
-                            else (180 if abs(dy) < eps else (90 if dy > 0 else 270))
-                        )
-                        link_name = f"{CROSSING_LINK_PREFIX}stage{depth}_{link_index}"
-                        link_index += 1
-                        derived.add_instance(
-                            link_name,
-                            Instance(component=straight.name),
-                            Placement(
-                                x=round(previous_xy[0], 3),
-                                y=round(previous_xy[1], 3),
-                                rotation=rotation,
-                            ),
-                        )
-                        tile_names.append(link_name)
-                    previous = f"{t['name']},{leave}"
-                    previous_xy = port_xy(t, leave)
-                    continue
-            if not names:
-                segment = f"{lane}{TO_GRID_SUFFIX}"
-            else:
-                segment = f"{lane}{VIA_GRID_SUFFIX}{len(names)}"
-            nets.append(Net(p1=previous, p2=f"{t['name']},{enter}", name=segment))
-            names.append(segment)
-            previous = f"{t['name']},{leave}"
-            previous_xy = port_xy(t, leave)
-        final = f"{lane}{FROM_GRID_SUFFIX}"
-        nets.append(Net(p1=previous, p2=p2, name=final))
-        names.append(final)
-        stub_nets[lane] = (names[0], names[-1])
-        lengths[lane] = pass_length_um * len(lane_tiles)
-        split.add(lane)
-    return tile_names, builds, stub_nets, lengths, nets, split, len(planned), len(tiles)
+    return ColumnGridPlacement(
+        tile_names=placer.tile_names,
+        builds=builds,
+        stub_nets=placer.stub_nets,
+        lengths=placer.lengths,
+        nets=placer.nets,
+        split=placer.split,
+        expected_crossings=len(plan.planned),
+        placed_crossings=len(tiles),
+    )
 
 
 def derive_preplaced_crossing_layout(

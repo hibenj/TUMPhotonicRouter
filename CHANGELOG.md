@@ -600,6 +600,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `column_grid_stage` (244 statements, one flag that made it return
+  either a placement or a summary) is two functions.
+  `plan_column_grid` returns a `ColumnGridPlan`: the lanes' rows, the
+  order constraints, the columns, the band; nothing is placed, and
+  `probe_summary()` is what the structure selection reads (it passed a
+  throw-away schematic and tile before). `place_column_grid` places a
+  plan: the tiles, the corners, the short links and the nets of each
+  lane, step by step in a `_ColumnGridPlacer`; a tile or corner is a
+  `_GridElement` (was a dict with eleven keys). What the tile
+  derivation returns and adds to the schematic is byte for byte the
+  same for the 17 designs with crossings, up to 128x128. No function of
+  the package has more than 50 statements now.
 - `_derive_crossing_tiles` (122 statements) chooses the structure per
   band and hands the placing on: `_TileDerivation.add_x_array` (the X
   array of one band, with `_split_lane` for the nets between a lane's
