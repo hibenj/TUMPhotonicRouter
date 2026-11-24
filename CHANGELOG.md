@@ -607,6 +607,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Four signatures over seven parameters take records (rule 4.4,
+  `ruff_PLR0913` 6 to 2): `route_attempt_record_from_route` (13) takes
+  the job and an `AttemptOutcome`; `build_route_debug_artifacts` (10)
+  takes `RealizationRules` and `RouteRunStatistics`;
+  `_find_legal_column_trunk` (9) takes `_TrunkCells` and reads the
+  terminals' cells from the obstacle map itself; `_coupler_profile` (8)
+  takes its two rows as one pair. Left: the `directional_coupler` cell
+  (eight dimensions) and `_verify_route_obstacle_overlaps`, which a
+  test compares with a verbatim older copy of itself.
 - Rule 4.5, the statement limit, is in force: ruff `PLR0915` is in the
   lint set for the package (50 statements; not for the tests, the
   scripts and the benchmark modules). The package had 43 such functions

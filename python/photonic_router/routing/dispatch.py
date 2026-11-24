@@ -17,6 +17,7 @@ from photonic_router.records.route_rust_geometry import (
 )
 from photonic_router.records.route_rust_records import center_of_port_um, centerline_tuple
 from photonic_router.records.route_rust_types import (
+    AttemptOutcome,
     RouteJob,
     RouteTimingBucket,
     route_attempt_record_from_route,
@@ -454,18 +455,16 @@ def _record_batch_attempts(
                 )
             state.search.attempt_records.append(
                 route_attempt_record_from_route(
+                    job,
                     attempt_index=attempt_index,
                     bucket_name=bucket_name,
-                    net_id=job.net_id,
-                    route_index=job.route_index,
-                    net_name=job.net_name,
-                    source=f"{job.inst1},{job.port1}",
-                    target=f"{job.inst2},{job.port2}",
-                    elapsed_s=per_attempt_elapsed_s,
-                    route_obj=route_obj if route_obj is not None and not failed else None,
-                    failed=failed,
                     repair_round=repair_round,
-                    error=error_text,
+                    elapsed_s=per_attempt_elapsed_s,
+                    outcome=AttemptOutcome(
+                        route_obj=route_obj if route_obj is not None and not failed else None,
+                        failed=failed,
+                        error=error_text,
+                    ),
                     diagnostics=route_attempt_diagnostics(
                         settings,
                         state,

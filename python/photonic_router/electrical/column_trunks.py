@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from photonic_router.electrical.bus_search import (
     all_terminal_cells,
@@ -90,7 +91,6 @@ def route_column_trunks(
     if not terminal_cluster:
         return
 
-    all_terminal_cells_set = all_terminal_cells(obstacle_map)
     bus_side = obstacle_map.bus.side
 
     picks: dict[str, tuple[ElectricalTerminal, int]] = {}
@@ -144,10 +144,7 @@ def route_column_trunks(
                 members[start_index:],
                 anchor_column,
                 exit_dx,
-                allowed_cells=allowed_cells,
-                blocked=blocked,
-                tree_cells=tree_cells,
-                all_terminal_cells=all_terminal_cells_set,
+                cells=_TrunkCells(allowed=allowed_cells, blocked=blocked, tree=tree_cells),
                 obstacle_map=obstacle_map,
                 config=config,
             )
@@ -222,15 +219,22 @@ def _commit_trunk_members(
         remaining.pop(heater_id, None)
 
 
+class _TrunkCells(NamedTuple):
+    """The cells a column trunk is checked against."""
+
+    #: the open cells and anchors of the group's terminals: a trunk may use them
+    allowed: set[GridCell]
+    blocked: set[GridCell]
+    #: the cells of the bus tree so far: the trunk's vertical run may use them
+    tree: set[GridCell]
+
+
 def _find_legal_column_trunk(
     members: list[tuple[str, ElectricalTerminal, GridCell]],
     anchor_column: int,
     exit_dx: int,
     *,
-    allowed_cells: set[GridCell],
-    blocked: set[GridCell],
-    tree_cells: set[GridCell],
-    all_terminal_cells: frozenset[GridCell],
+    cells: _TrunkCells,
     obstacle_map: ElectricalObstacleMap,
     config: ElectricalRoutingConfig,
 ) -> tuple[int, GridCell, dict[str, tuple[GridCell, ...]], dict[str, GridCell]] | None:
@@ -242,16 +246,16 @@ def _find_legal_column_trunk(
     has a bus stripe cell; when the trunk's wire band (half the wire width
     plus the obstacle clearance, from the topmost junction to the stripe
     edge) overlaps no raw obstacle box; and when the trunk's cells hit
-    neither ``blocked`` nor a terminal cell outside ``allowed_cells``.
-    ``all_terminal_cells`` is ``bus_search.all_terminal_cells`` of the map.
+    neither ``blocked`` nor a terminal cell outside ``cells.allowed``.
     """
+    terminal_cells = all_terminal_cells(obstacle_map)
 
     grid = obstacle_map.grid
     bus = obstacle_map.bus
     bus_side = bus.side
     half_band = config.wire_width_um / 2.0 + config.obstacle_clearance_um
-    vertical_allowed = allowed_cells | tree_cells
-    forbidden_cells = all_terminal_cells.difference(allowed_cells)
+    vertical_allowed = cells.allowed | cells.tree
+    forbidden_cells = terminal_cells.difference(cells.allowed)
     raw_obstacle_bboxes = obstacle_map.raw_obstacle_bboxes
 
     member_stub_allowed: dict[str, frozenset[GridCell]] = {}
@@ -262,7 +266,7 @@ def _find_legal_column_trunk(
         if own_anchor is not None:
             own_open.add(own_anchor)
         member_stub_allowed[heater_id] = frozenset(own_open)
-        member_stub_forbidden[heater_id] = all_terminal_cells.difference(own_open)
+        member_stub_forbidden[heater_id] = terminal_cells.difference(own_open)
 
     for k in range(9):
         column = anchor_column + exit_dx * k
@@ -278,7 +282,7 @@ def _find_legal_column_trunk(
             stub = axis_path(start, (column, start[1]))
             if path_hits_blockers(
                 stub,
-                blocked,
+                cells.blocked,
                 allowed=member_stub_allowed[heater_id],
                 forbidden=member_stub_forbidden[heater_id],
             ):
@@ -312,7 +316,7 @@ def _find_legal_column_trunk(
         vertical_run = axis_path(top_junction, stripe_entry)
         if path_hits_blockers(
             vertical_run,
-            blocked,
+            cells.blocked,
             allowed=vertical_allowed,
             forbidden=forbidden_cells,
         ):
@@ -348,17 +352,13 @@ def straight_drop_to_bus(
     exit_dx = terminal_exit_dx(terminal.side_key)
     if exit_dx == 0:
         return None
-    all_terminal_cells_set = all_terminal_cells(obstacle_map)
     allowed_cells = set(common_bus_terminal_open_cells(obstacle_map, terminal.id))
     allowed_cells.add(access.anchor_cell)
     resolution = _find_legal_column_trunk(
         [(terminal.heater_id, terminal, access.anchor_cell)],
         access.anchor_cell[0],
         exit_dx,
-        allowed_cells=allowed_cells,
-        blocked=blocked,
-        tree_cells=set(tree_cells),
-        all_terminal_cells=all_terminal_cells_set,
+        cells=_TrunkCells(allowed=allowed_cells, blocked=blocked, tree=set(tree_cells)),
         obstacle_map=obstacle_map,
         config=config,
     )

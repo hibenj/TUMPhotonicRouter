@@ -8,7 +8,7 @@ from collections.abc import Iterable as IterableABC
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import SupportsIndex, SupportsInt
+from typing import NamedTuple, SupportsIndex, SupportsInt
 
 from gdsfactory.component import Component
 from gdsfactory.typings import Port
@@ -876,32 +876,36 @@ class RouteAttemptRecord:
         }
 
 
+class AttemptOutcome(NamedTuple):
+    """What one route attempt gave."""
+
+    #: the kernel's route object; None for an attempt without a route
+    route_obj: object | None = None
+    failed: bool = False
+    error: str | None = None
+
+
 def route_attempt_record_from_route(
+    job: RouteJob,
     *,
     attempt_index: int,
     bucket_name: str,
-    net_id: int,
-    route_index: int,
-    net_name: str,
-    source: str,
-    target: str,
+    repair_round: int | None,
     elapsed_s: float,
-    route_obj: object | None = None,
-    failed: bool = False,
-    repair_round: int | None = None,
-    error: str | None = None,
+    outcome: AttemptOutcome,
     diagnostics: Mapping[str, object] | None = None,
 ) -> RouteAttemptRecord:
-    """Build the record of one route attempt from the kernel's route object.
+    """Build the record of one route attempt of ``job`` from the kernel's route object.
 
-    The identifying arguments are stored as given (``source`` and ``target``
-    are ``"instance,port"`` strings, ``elapsed_s`` is in seconds). Every
-    search statistic is read from the attribute of the same name on
-    ``route_obj``; a missing attribute, and ``route_obj=None`` (an attempt
+    The net, its index and its two ports (as ``"instance,port"``) are the
+    job's; ``elapsed_s`` is in seconds. Every search statistic is read
+    from the attribute of the same name on ``outcome.route_obj``; a
+    missing attribute, and no route object (an attempt
     without a route), give 0. ``total_length_um`` is None when the route
     object has no such attribute, and ``route_cells`` is the length of its
     ``cells``. ``diagnostics`` is copied.
     """
+    route_obj, failed, error = outcome
     route_cells = getattr(route_obj, "cells", None) if route_obj is not None else None
     total_length_um = (
         as_float(route_obj.total_length_um, 0.0)
@@ -911,11 +915,11 @@ def route_attempt_record_from_route(
     return RouteAttemptRecord(
         attempt_index=int(attempt_index),
         bucket_name=bucket_name,
-        net_id=int(net_id),
-        route_index=int(route_index),
-        net_name=net_name,
-        source=source,
-        target=target,
+        net_id=int(job.net_id),
+        route_index=int(job.route_index),
+        net_name=job.net_name,
+        source=f"{job.inst1},{job.port1}",
+        target=f"{job.inst2},{job.port2}",
         elapsed_s=float(elapsed_s),
         failed=bool(failed),
         repair_round=repair_round,

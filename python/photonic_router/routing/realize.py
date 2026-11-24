@@ -13,7 +13,11 @@ from photonic_router.records.route_rust_realization import (
     RealizationGeometry,
     realize_routed_net_records,
 )
-from photonic_router.records.route_rust_records import build_route_debug_artifacts
+from photonic_router.records.route_rust_records import (
+    RealizationRules,
+    RouteRunStatistics,
+    build_route_debug_artifacts,
+)
 from photonic_router.records.route_rust_types import (
     RouteJob,
     RustRouteDebugArtifacts,
@@ -108,18 +112,22 @@ def realize_and_assemble_debug_artifacts(
         route_svgs=state.search.route_svgs,
         obstacle_map=state.obstacles.obstacle_map,
         routed_net_records=routed_net_records,
-        realization_grid_spec=state.run.realization_grid_spec,
-        allow_45_degree_turns=settings.allow_45_degree_turns,
-        bend_radius_cells=state.kernel.radii.bend_radius_cells,
-        route_search_summary=summarize_route_search(
-            state.search.timing_buckets,
-            route_count=len(route_jobs),
-            simple_route_count=state.search.simple_route_count,
-            repair_count=state.search.repair_count,
-            astar_elapsed_s=routed.astar_elapsed_s,
+        realization=RealizationRules(
+            grid_spec=state.run.realization_grid_spec,
+            allow_45_degree_turns=settings.allow_45_degree_turns,
+            bend_radius_cells=state.kernel.radii.bend_radius_cells,
         ),
-        route_attempt_records=state.search.attempt_records,
-        route_nets_timings_s=state.route_nets_timings_s,
+        statistics=RouteRunStatistics(
+            search_summary=summarize_route_search(
+                state.search.timing_buckets,
+                route_count=len(route_jobs),
+                simple_route_count=state.search.simple_route_count,
+                repair_count=state.search.repair_count,
+                astar_elapsed_s=routed.astar_elapsed_s,
+            ),
+            attempt_records=state.search.attempt_records,
+            timings_s=state.route_nets_timings_s,
+        ),
     )
     debug_artifacts = replace(
         debug_artifacts,

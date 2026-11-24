@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, NamedTuple, Protocol, cast
 
 from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import (
@@ -482,28 +482,43 @@ def static_port_open_count_from_map(obstacle_map: object) -> int:
     return int(port_open_count)
 
 
+class RealizationRules(NamedTuple):
+    """The grid and the turn rules the routes were found with and are realized with."""
+
+    #: (width, height, cell size in um, origin x, origin y)
+    grid_spec: tuple[int, int, float, float, float]
+    allow_45_degree_turns: bool
+    bend_radius_cells: int
+
+
+class RouteRunStatistics(NamedTuple):
+    """What a routing run measured about itself; every part may be missing."""
+
+    search_summary: RouteSearchSummary | None = None
+    attempt_records: list[RouteAttemptRecord] | None = None
+    #: seconds per part of the run
+    timings_s: Mapping[str, float] | None = None
+
+
 def build_route_debug_artifacts(
     *,
     obstacle_svg: Path | None,
     route_svgs: list[Path],
     obstacle_map: object,
     routed_net_records: list[RoutedNetRecord],
-    realization_grid_spec: tuple[int, int, float, float, float],
-    allow_45_degree_turns: bool,
-    bend_radius_cells: int,
-    route_search_summary: RouteSearchSummary | None = None,
-    route_attempt_records: list[RouteAttemptRecord] | None = None,
-    route_nets_timings_s: dict[str, float] | None = None,
+    realization: RealizationRules,
+    statistics: RouteRunStatistics,
 ) -> RustRouteDebugArtifacts:
     """Assemble the `RustRouteDebugArtifacts` of a routing run from its records and obstacle map.
 
     The edge lengths, the static blocked cells and their counts, the port alignment
     diagnostics and the routable bounding box are derived here; the other arguments
-    are passed through, with empty defaults for those left at None. The static blocked
-    cells are the ``blocked_cells`` of the obstacle map only, without the port-access
-    reservations. ``realization_grid_spec`` is (width, height, cell size in um,
-    origin x, origin y).
+    are passed through, with empty defaults for the statistics left at None. The static
+    blocked cells are the ``blocked_cells`` of the obstacle map only, without the
+    port-access reservations.
     """
+    realization_grid_spec, allow_45_degree_turns, bend_radius_cells = realization
+    route_search_summary, route_attempt_records, route_nets_timings_s = statistics
     return RustRouteDebugArtifacts(
         obstacle_svg=obstacle_svg,
         route_svgs=route_svgs,

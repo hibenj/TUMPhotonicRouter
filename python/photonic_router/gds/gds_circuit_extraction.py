@@ -908,12 +908,11 @@ def _group_directional_couplers(
                     continue
                 middle = (a.bbox.center().y + b.bbox.center().y) / 2
                 # wide enough for the outer pitch, which may exceed the arms'
-                y_lo = middle - rule.max_separation_um
-                y_hi = middle + rule.max_separation_um
+                rows = (middle - rule.max_separation_um, middle + rule.max_separation_um)
                 found = []
                 for edge, direction in ((a.bbox.left, -1.0), (a.bbox.right, 1.0)):
                     profile = _coupler_profile(
-                        net_region, edge, direction, y_lo, y_hi, separation, rule, dbu
+                        net_region, edge, direction, rows, separation, rule, dbu
                     )
                     if profile is None:
                         break
@@ -986,8 +985,7 @@ def _coupler_profile(
     net_region: Any,
     edge: float,
     direction: float,
-    y_lo: float,
-    y_hi: float,
+    rows: tuple[float, float],
     separation: float,
     rule: DirectionalCouplerRule,
     dbu: float,
@@ -1005,6 +1003,7 @@ def _coupler_profile(
     away for good. None altogether without a coupling section.
     """
 
+    y_lo, y_hi = rows
     middle = y_lo + (y_hi - y_lo) / 2
     rows = (middle - separation / 2, middle + separation / 2)
     close = open_ = None
