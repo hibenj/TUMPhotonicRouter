@@ -56,12 +56,16 @@ from photonic_router.flow_reporting import (
     write_or_show_routed_layout,
 )
 from photonic_router.flow_stats import (
+    FlowRun,
     RoutingFlowStats,
     format_flow_summary_line,
     populate_route_stats,
     record_initial_route_stats,
 )
-from photonic_router.flow_verification import verify_and_attach_photonic_reports
+from photonic_router.flow_verification import (
+    FinalCheckSettings,
+    verify_and_attach_photonic_reports,
+)
 from photonic_router.gds.route_overview_svg import (
     layout_overview_shapes,
     realized_extra_um_by_net,
@@ -272,8 +276,7 @@ def _standard_router_fallback(analysis: PlacementAnalysis) -> bool:
 
 def _preplaced_crossing_grids_stage(
     *,
-    schematic: Schematic,
-    unrouted_layout: Component,
+    design: LoadedDesign,
     analysis: PlacementAnalysis,
     analysis_seconds: float,
     total_steps: int,
@@ -319,8 +322,8 @@ def _preplaced_crossing_grids_stage(
             "route with --crossing-mode lidar-pure or lidar-guided"
         ) from exc
     derived = derive_preplaced_crossing_layout(
-        schematic,
-        unrouted_layout,
+        design.schematic,
+        design.unrouted_layout,
         demand.stage_schedule(),
         router_probe_options=router_probe_options,
         config=config.crossing_grid,
@@ -526,8 +529,7 @@ def _crossing_setup(
             crossing_guidance_net_names,
             dense_fanout_instances,
         ) = _preplaced_crossing_grids_stage(
-            schematic=schematic,
-            unrouted_layout=unrouted_layout,
+            design=LoadedDesign(schematic, unrouted_layout),
             analysis=original_analysis,
             analysis_seconds=original_analysis_seconds,
             total_steps=total_steps,
@@ -663,6 +665,7 @@ def _route_schematic(
     )
     debug_svgs_enabled, debug_route_indices = parse_debug_svg_selector(debug_svgs)
     total_steps = 4 if options.electrical.enable_electrical_routing else 3
+    run = FlowRun(benchmark_name, total_steps, stats, debug.debug_timing)
 
     route_static_obstacle_config, _waveguide_clearance_um, _heater_clearance_um = (
         build_static_obstacle_config(
@@ -740,18 +743,16 @@ def _route_schematic(
 
     t_verify_start = time.perf_counter()
     verify_and_attach_photonic_reports(
-        benchmark_name=benchmark_name,
-        schematic=schematic,
-        unrouted_layout=unrouted_layout,
+        run=run,
+        design=LoadedDesign(schematic, unrouted_layout),
         routed_layout=routed_layout,
         debug_artifacts=debug_artifacts,
-        include_heater_obstacles=obstacles.include_heater_obstacles,
-        debug_stop_after_route_index=debug.debug_stop_after_route_index,
-        extra_report_metadata=setup.report_metadata,
-        write_gds_on_photonic_verification_failure=(
-            config.write_gds_on_photonic_verification_failure
+        settings=FinalCheckSettings(
+            include_heater_obstacles=obstacles.include_heater_obstacles,
+            debug_stop_after_route_index=debug.debug_stop_after_route_index,
+            write_gds_on_failure=config.write_gds_on_photonic_verification_failure,
         ),
-        stats=stats,
+        extra_report_metadata=setup.report_metadata,
     )
     if debug.debug_timing:
         # Performance pass 2026-09-03 (P5): the non-routing phases were an
@@ -773,14 +774,11 @@ def _route_schematic(
 
     if options.electrical.enable_electrical_routing:
         routed_layout, electrical_result = run_electrical_routing_step(
-            benchmark_name=benchmark_name,
+            run=run,
             schematic=schematic,
             routed_layout=routed_layout,
             electrical_config=options.electrical.electrical_config,
             debug_dir=debug_dir,
-            total_steps=total_steps,
-            stats=stats,
-            debug_timing=debug.debug_timing,
             debug_svgs_enabled=debug_svgs_enabled,
         )
         stage_observer.notify("electrical", None, electrical_result)

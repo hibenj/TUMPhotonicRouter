@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from gdsfactory.component import Component
-from gdsfactory.schematic import Schematic
 
 from photonic_router.crossings.crossing_verification_report import (
     RouteCostTerms,
@@ -21,7 +21,8 @@ from photonic_router.crossings.route_rust_crossing_components import (
     legal_crossing_overlap_polygons,
 )
 from photonic_router.flow_component_info import component_info
-from photonic_router.flow_stats import RoutingFlowStats
+from photonic_router.flow_stats import FlowRun
+from photonic_router.routing.products import LoadedDesign
 from photonic_router.routing_layers import get_routing_obstacle_layers
 from photonic_router.verify.photonic_verification import (
     LegalCrossings,
@@ -33,24 +34,36 @@ from photonic_router.verify.photonic_verification import (
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class FinalCheckSettings:
+    """What the final check of the routed layout is run with."""
+
+    include_heater_obstacles: bool
+    #: set when the run was stopped after one route for debugging: the
+    #: check then does not ask for every net
+    debug_stop_after_route_index: int | None = None
+    #: write the layout although it failed, so that it can be looked at
+    write_gds_on_failure: bool = False
+
+
 def verify_and_attach_photonic_reports(
     *,
-    benchmark_name: str,
-    schematic: Schematic,
-    unrouted_layout: Component,
+    run: FlowRun,
+    design: LoadedDesign,
     routed_layout: Component,
     debug_artifacts: object,
-    include_heater_obstacles: bool,
-    debug_stop_after_route_index: int | None,
+    settings: FinalCheckSettings,
     extra_report_metadata: Mapping[str, object] | None = None,
-    write_gds_on_photonic_verification_failure: bool = False,
-    stats: RoutingFlowStats | None = None,
 ) -> None:
     """Run crossing and photonic final-geometry gates and attach report metadata.
 
     ``extra_report_metadata`` is merged into both verification reports' top
     level and ``metrics`` (e.g. pre-placed crossing grid counters).
     """
+    benchmark_name, stats = run.benchmark_name, run.stats
+    schematic, unrouted_layout = design.schematic, design.unrouted_layout
+    include_heater_obstacles = settings.include_heater_obstacles
+    debug_stop_after_route_index = settings.debug_stop_after_route_index
     crossing_plan_info = getattr(debug_artifacts, "crossing_plan_info", None)
     routed_records = tuple(getattr(debug_artifacts, "routed_net_records", ()) or ())
     route_coverage_check_enabled = debug_stop_after_route_index is None
@@ -133,7 +146,7 @@ def verify_and_attach_photonic_reports(
     _LOGGER.info(f"      - Photonic verification JSON: {photonic_report['path']}")
     if photonic_verification.success:
         return
-    if write_gds_on_photonic_verification_failure:
+    if settings.write_gds_on_failure:
         _LOGGER.info(
             "      - WARNING: Photonic geometry verification failed; "
             "writing GDS anyway because "

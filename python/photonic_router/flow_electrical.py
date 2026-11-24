@@ -19,24 +19,22 @@ from photonic_router.electrical import (
     route_electrical_heaters,
 )
 from photonic_router.flow_component_info import component_info, copy_component_info
-from photonic_router.flow_stats import RoutingFlowStats
+from photonic_router.flow_stats import FlowRun
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def run_electrical_routing_step(
     *,
-    benchmark_name: str,
+    run: FlowRun,
     schematic: Schematic,
     routed_layout: Component,
     electrical_config: ElectricalRoutingConfig | None,
     debug_dir: Path | None,
-    total_steps: int,
-    stats: RoutingFlowStats | None,
-    debug_timing: bool,
     debug_svgs_enabled: bool,
 ) -> tuple[Component, ElectricalRoutingResult]:
     """Run heater metal routing and return the electrically routed layout."""
+    benchmark_name, total_steps, stats = run.benchmark_name, run.total_steps, run.stats
     _LOGGER.info(f"\n[4/{total_steps}] Routing heater electrical metal...")
     t_electrical_start = time.perf_counter()
     current_electrical_result = route_electrical_heaters(
@@ -82,7 +80,7 @@ def run_electrical_routing_step(
         f"heaters={len(current_electrical_result.terminal_groups)}, "
         f"pads={electrical_pad_count}"
     )
-    if debug_timing:
+    if run.debug_timing:
         _LOGGER.info(
             f"      - Electrical routing time: {t_electrical_end - t_electrical_start:.4f} s"
         )

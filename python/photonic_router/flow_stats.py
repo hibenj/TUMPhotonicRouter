@@ -309,3 +309,16 @@ def format_flow_summary_line(stats: RoutingFlowStats | None) -> str:
         ("total_s", cell(stats.total_time_s, 1)),
     )
     return "SUMMARY " + " ".join(f"{key}={value}" for key, value in fields)
+
+
+@dataclass(frozen=True)
+class FlowRun:
+    """What the stages of one flow run report with."""
+
+    benchmark_name: str
+    #: how many numbered steps the run prints (3, or 4 with electrical routing)
+    total_steps: int
+    #: the run's counters and timings; None when the caller collects none
+    stats: RoutingFlowStats | None
+    #: whether a stage prints how long it took
+    debug_timing: bool = False

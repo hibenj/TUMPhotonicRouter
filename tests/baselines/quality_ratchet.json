@@ -5,7 +5,7 @@
   "python_exceptions": 0,
   "ruff_BLE001": 3,
   "ruff_C901": 51,
-  "ruff_PLR0913": 12,
+  "ruff_PLR0913": 9,
   "ruff_PLR0915": 10,
   "rust_exceptions": 32,
   "rust_missing_docs": 794,

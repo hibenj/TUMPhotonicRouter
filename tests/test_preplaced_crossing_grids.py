@@ -254,13 +254,13 @@ def test_the_flow_stage_refuses_a_non_layered_design_before_placing_anything() -
     from photonic_router.config import RoutingConfig
     from photonic_router.flow import _preplaced_crossing_grids_stage
     from photonic_router.placement_analysis import analyze_placement
+    from photonic_router.routing.products import LoadedDesign
 
     schematic = _non_layered_benes_4x4()
     layout = layout_from_schematic(schematic)
     with pytest.raises(RuntimeError) as info:
         _preplaced_crossing_grids_stage(
-            schematic=schematic,
-            unrouted_layout=layout,
+            design=LoadedDesign(schematic, layout),
             analysis=analyze_placement(schematic, layout),
             analysis_seconds=0.0,
             total_steps=5,

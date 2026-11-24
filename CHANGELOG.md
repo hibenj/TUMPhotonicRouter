@@ -589,6 +589,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Three stage functions of the flow take records instead of long
+  parameter lists (rule 4.4; PLR0913 12 to 9). `FlowRun`
+  (`flow_stats.py`) is what the stages of one run report with: the
+  benchmark's name, the number of steps, the counters, whether timings
+  are printed. `run_electrical_routing_step` takes it (9 parameters to
+  6); `verify_and_attach_photonic_reports` takes it, the `LoadedDesign`
+  and `FinalCheckSettings` (10 to 6); `_preplaced_crossing_grids_stage`
+  takes the `LoadedDesign` (8 to 7).
 - The package reports through `logging` (rule 4.6, now in force as ruff
   `T201`; owner, 2026-11-23). The 135 `print` calls outside `cli.py` are
   `_LOGGER.info` of the module's logger; the one that wrote to standard
