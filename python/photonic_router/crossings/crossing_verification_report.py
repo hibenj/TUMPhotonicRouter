@@ -7,11 +7,9 @@ benchmark runs without adding work to the A* hot path.
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import SupportsFloat, SupportsIndex
 
 from photonic_router.records.route_rust_types import int_or_none
@@ -190,7 +188,7 @@ class CrossingVerificationReport:
 
     def as_dict(self) -> dict[str, object]:
         """The report as nested dicts and lists, including `success` and the two
-        issue counts; this is what `write_crossing_verification_report` writes."""
+        issue counts; this is what the flow writes as JSON."""
         return {
             "success": self.success,
             "error_count": self.error_count,
@@ -259,24 +257,6 @@ def route_cost_terms_from_mapping(values: Mapping[str, object]) -> RouteCostTerm
     `net_name`, `total_search_cost` and `physical_insertion_loss`.
     """
     return _coerce_cost_terms(values)
-
-
-def write_crossing_verification_report(
-    report: CrossingVerificationReport,
-    path: str | Path,
-) -> Path:
-    """Write `report.as_dict()` to `path` as indented JSON with sorted keys (UTF-8).
-
-    Creates missing parent directories, overwrites an existing file and
-    returns the path written.
-    """
-    output = Path(path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(report.as_dict(), indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    return output
 
 
 def _crossing_records_from_plan(plan_info: Mapping[str, object]) -> list[CrossingRecord]:

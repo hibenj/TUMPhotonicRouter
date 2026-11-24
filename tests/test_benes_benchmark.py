@@ -256,9 +256,9 @@ def test_crossing_plan_orders_4x4_benes_events_by_stage():
         assert len(stage_plan.events) == 1
         assert stage_plan.apply_events() == stage_plan.final_edge_order
     for event in plan.events:
-        assert plan.event_for_pair(event.edge_a, event.edge_b) is event
-        assert event in plan.events_for_edge(event.edge_a)
-        assert event in plan.events_for_edge(event.edge_b)
+        assert plan.events_by_pair[frozenset((event.edge_a, event.edge_b))] is event
+        assert event in plan.events_by_edge[event.edge_a]
+        assert event in plan.events_by_edge[event.edge_b]
 
     summary = str(plan)
     assert "CrossingPlan: 2 crossing(s), 4 stage(s)" in summary

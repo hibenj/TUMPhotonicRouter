@@ -44,31 +44,21 @@ def test_route_bookkeeping_preserves_route_order_and_edge_lengths():
 
     ordered = bookkeeping.ordered_records()
     assert [record.net_name for record in ordered] == ["n2", "n1"]
-    assert bookkeeping.routed_edge_lengths() == routed_edge_lengths_from_records(ordered)
     assert bookkeeping.committed_dynamic_cells() == {(10, 10), (20, 20)}
     assert bookkeeping.committed_dynamic_cells(exclude_net_id=1) == {(20, 20)}
 
 
-def test_route_bookkeeping_clear_and_restore_records():
+def test_route_bookkeeping_clears_a_route():
     bookkeeping = RouteBookkeeping(route_order=[1], diagnostics_enabled=False)
     job = _job(1, "n1")
     route_obj = SimpleNamespace(total_length_um=11.5)
 
     bookkeeping.record_route(job, route_obj, [(1, 1)], route_cells={(10, 10)})
-    snapshot_records = dict(bookkeeping.records_by_id)
-    snapshot_lengths = dict(bookkeeping.lengths_by_id)
+    assert [record.net_name for record in bookkeeping.ordered_records()] == ["n1"]
 
     bookkeeping.clear_route(1)
     assert bookkeeping.ordered_records() == []
     assert bookkeeping.committed_dynamic_cells() == set()
-
-    bookkeeping.restore_records(snapshot_records, snapshot_lengths)
-    edge = RoutedEdgeKey(
-        net_name="n1",
-        source=PortRef(instance="src1", port="o1"),
-        target=PortRef(instance="dst1", port="o2"),
-    )
-    assert bookkeeping.routed_edge_lengths() == {edge: 11.5}
 
 
 def test_routed_edge_lengths_from_records_uses_record_identity_fields():

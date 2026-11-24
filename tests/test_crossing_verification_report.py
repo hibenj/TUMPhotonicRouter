@@ -7,7 +7,6 @@ from photonic_router.crossings.crossing_verification_report import (
     RouteCostTerms,
     build_crossing_verification_report,
     route_cost_terms_from_mapping,
-    write_crossing_verification_report,
 )
 
 
@@ -63,11 +62,7 @@ def test_report_accepts_legal_crossing_with_matching_component(tmp_path):
     assert math.isclose(report.metrics["total_physical_insertion_loss"], 0.15)
     assert math.isclose(report.metrics["total_search_guidance_penalty"], 3.0)
 
-    path = write_crossing_verification_report(
-        report,
-        tmp_path / "verification" / "crossings.json",
-    )
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(json.dumps(report.as_dict()))
     assert payload["success"] is True
     assert payload["crossings"][0]["classification"] == "legal_unexpected_crossing"
     assert math.isclose(payload["route_costs"][0]["search_guidance_penalty"], 3.0)

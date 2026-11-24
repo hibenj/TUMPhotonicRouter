@@ -164,18 +164,6 @@ class CrossingPlan:
             event for stage_key in sorted(self.stages) for event in self.stages[stage_key].events
         )
 
-    def events_for_edge(self, edge_key: RoutedEdgeKey) -> tuple[CrossingEvent, ...]:
-        """The events of one lane, by `(source_depth, level, order_index)`; empty if it has none."""
-        return self.events_by_edge.get(edge_key, ())
-
-    def event_for_pair(
-        self,
-        edge_a: RoutedEdgeKey,
-        edge_b: RoutedEdgeKey,
-    ) -> CrossingEvent | None:
-        """The event in which the two lanes cross, in either argument order, or None."""
-        return self.events_by_pair.get(frozenset((edge_a, edge_b)))
-
     def to_text(
         self,
         *,

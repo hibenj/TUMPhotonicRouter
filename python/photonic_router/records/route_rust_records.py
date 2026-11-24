@@ -441,18 +441,6 @@ class RouteBookkeeping:
             merged.update(cells)
         return merged
 
-    def restore_records(
-        self,
-        snapshot_records: dict[int, RoutedNetRecord],
-        snapshot_lengths: dict[int, float],
-    ) -> None:
-        """Put back the records and lengths of a snapshot, overwriting those of the same net ids.
-
-        Records of other nets and all committed cells are left as they are.
-        """
-        self.records_by_id.update(snapshot_records)
-        self.lengths_by_id.update(snapshot_lengths)
-
     def ordered_records(self) -> list[RoutedNetRecord]:
         """Return the records in route order, leaving out nets that have no record."""
         return [
@@ -460,10 +448,6 @@ class RouteBookkeeping:
             for net_id in self.route_order
             if net_id in self.records_by_id
         ]
-
-    def routed_edge_lengths(self) -> dict[RoutedEdgeKey, float]:
-        """Map the edge key of each recorded net to its total length in um."""
-        return routed_edge_lengths_from_records(self.ordered_records())
 
 
 def static_obstacle_count_from_map(obstacle_map: object) -> int:

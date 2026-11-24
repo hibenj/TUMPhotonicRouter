@@ -24,14 +24,6 @@ class TerminalAccessPath:
     route_tail_points: tuple[Point, ...]
 
 
-def terminal_contact_seed_points(terminal: ElectricalTerminal) -> tuple[Point, ...]:
-    """Return physical points where routing may enter a logical terminal."""
-
-    if terminal.ports:
-        return tuple(port.center for port in terminal.ports)
-    return (terminal.center,)
-
-
 def terminal_contact_seed_point_for_side(
     terminal: ElectricalTerminal,
     side: Side,
@@ -58,32 +50,6 @@ def select_terminal_port_for_side(
             port.name,
         ),
     )
-
-
-def select_terminal_contact(
-    terminal: ElectricalTerminal,
-    route_start_um: Point | None,
-    fallback_width_um: float,
-) -> tuple[Point, BBox]:
-    """Choose the physical terminal port that best matches a route start."""
-
-    contacts = terminal_contact_bboxes(terminal, fallback_width_um)
-    if not terminal.ports:
-        return (terminal.center, contacts[0])
-    if route_start_um is None:
-        port = terminal.ports[0]
-        return (port.center, contacts[0])
-    route_start = route_start_um
-
-    ranked_ports = sorted(
-        zip(terminal.ports, contacts, strict=False),
-        key=lambda item: (
-            _distance_sq(item[0].center, route_start),
-            item[0].name,
-        ),
-    )
-    port, bbox = ranked_ports[0]
-    return (port.center, bbox)
 
 
 def terminal_access_path(

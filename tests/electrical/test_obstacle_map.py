@@ -11,7 +11,6 @@ from photonic_router.electrical import ElectricalRoutingConfig, route_electrical
 from photonic_router.electrical.net_geometry import _common_bus_tagged_rects
 from photonic_router.electrical.obstacle_extraction import build_electrical_obstacle_map
 from photonic_router.electrical.pitch_grid import disk_cells
-from photonic_router.electrical.terminal_contacts import terminal_contact_seed_points
 from photonic_router.electrical.terminal_extraction import extract_heater_terminal_pairs
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 
@@ -32,7 +31,7 @@ def test_obstacle_map_uses_role_specific_terminal_openings():
     obstacle_map = build_electrical_obstacle_map(component, groups, config)
     terminal = groups[0].terminal_a
     all_port_cells: set[tuple[int, int]] = set()
-    for point in terminal_contact_seed_points(terminal):
+    for point in (port.center for port in terminal.ports):
         all_port_cells.update(disk_cells(point, config.terminal_open_radius_um, obstacle_map.grid))
     common_cells = obstacle_map.common_bus_terminal_open_cells[terminal.id]
     individual_cells = obstacle_map.individual_terminal_open_cells[terminal.id]

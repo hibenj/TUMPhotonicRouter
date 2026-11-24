@@ -94,11 +94,6 @@ class StaticObstacleMapData:
     routable_bbox: BBox | None = None
     chip_boundary_rects: tuple[GridRect, ...] = ()
 
-    def rust_static_cells(self) -> list[GridCell]:
-        """Return deterministic `(x, y)` cells suitable for `ObstacleMap.add_static_cells`."""
-
-        return sorted(self.blocked_cells)
-
     def export_debug_svg(
         self,
         path: str | Path,

@@ -10,37 +10,9 @@ from types import SimpleNamespace
 
 from photonic_router.electrical.port_access import build_terminal_port_access
 from photonic_router.electrical.terminal_contacts import (
-    select_terminal_contact,
     terminal_access_path,
 )
 from photonic_router.electrical.types import ElectricalPortRef, ElectricalTerminal
-
-
-def test_terminal_contact_selects_physical_port_not_logical_center():
-    terminal = ElectricalTerminal(
-        id="heater_0:l",
-        heater_id="heater_0",
-        side_key="l",
-        center=(50.0, 50.0),
-        bbox=(38.0, 38.0, 62.0, 62.0),
-        ports=(
-            ElectricalPortRef("l_e1", (40.0, 50.0), 180.0, 4.0, (49, 0)),
-            ElectricalPortRef("l_e2", (50.0, 60.0), 90.0, 4.0, (49, 0)),
-            ElectricalPortRef("l_e3", (60.0, 50.0), 0.0, 4.0, (49, 0)),
-            ElectricalPortRef("l_e4", (50.0, 40.0), 270.0, 4.0, (49, 0)),
-        ),
-        layer=(49, 0),
-    )
-
-    contact_center, contact_bbox = select_terminal_contact(
-        terminal,
-        route_start_um=(0.0, 50.0),
-        fallback_width_um=20.0,
-    )
-
-    assert contact_center == (40.0, 50.0)
-    assert contact_center != terminal.center
-    assert contact_bbox == (30.0, 40.0, 50.0, 60.0)
 
 
 def test_terminal_access_path_trims_snapped_points_inside_terminal():

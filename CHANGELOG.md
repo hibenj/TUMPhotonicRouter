@@ -1605,6 +1605,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- Seven functions only tests called (rule 4.12, `names_only_tests_use`
+  11 to 4): `CrossingPlan.events_for_edge` and `.event_for_pair` (the
+  test reads `events_by_edge` and `events_by_pair`, as the code does),
+  `RouteBookkeeping.restore_records` and `.routed_edge_lengths`,
+  `StaticObstacleMapData.rust_static_cells`,
+  `terminal_contact_seed_points` and `select_terminal_contact`. One test
+  that tested only `select_terminal_contact` goes with it (python 992 to
+  991). The four names left are the two port-role resolvers a caller of
+  the path-length graph may pass, the `DetourPass` protocol and
+  `GraphAnalysisContext.from_schematic` (open with the owner). Also gone:
+  `write_crossing_verification_report`, a second writer of the crossing
+  report next to the one the flow uses, called by one test only.
 - Four fallbacks no run ever took, replaced by an error that names the
   net (owner, 2026-11-23). Counted with the fallback register over every
   public benchmark below 16 x 16 in three configurations, the 13 PLM
