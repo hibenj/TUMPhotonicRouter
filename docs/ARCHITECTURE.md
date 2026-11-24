@@ -722,33 +722,33 @@ holds a router's path-length-matching state and syncs on the router's
 occupancy prefix and a static reset drops the registration.
 `python/photonic_router/_rust.pyi` (760 lines) is the generated type stub.
 
-### 7.4 The Python package `python/photonic_router/` (about 50,500 lines)
+### 7.4 The Python package `python/photonic_router/` (about 48,300 lines)
 
 Top-level modules (25 files, 7,550 lines):
 
 | module | lines | responsibility |
 | --- | ---: | --- |
-| `__main__.py`, `cli.py` | 50, 930 | `python -m photonic_router route`; the parser, benchmark defaults, `--configuration`, `_flow_options` |
-| `flow.py` | 710 | `route_benchmark`, `route_schematic` (the stage outline) |
+| `__main__.py`, `cli.py` | 50, 940 | `python -m photonic_router route`; the parser, benchmark defaults, `--configuration`, `_flow_options` |
+| `flow.py` | 800 | `route_benchmark`, `route_schematic` (the stage outline) |
 | `flow_options.py`, `flow_config.py` | 240, 180 | `FlowOptions`; the `SCRIPT_*` defaults and option resolution |
-| `flow_optical.py`, `flow_verification.py`, `flow_plm.py`, `flow_electrical.py` | 210, 400, 230, 230 | the flow's stage helpers |
-| `flow_reporting.py`, `flow_stats.py`, `flow_component_info.py` | 560, 310, 30 | console output, GDS write; `RoutingFlowStats` and the SUMMARY line; component info |
-| `config.py`, `config_loading.py`, `env_overlay.py` | 400, 40, 850 | the configuration trees, their precedence, the overlay table |
+| `flow_optical.py`, `flow_verification.py`, `flow_plm.py`, `flow_electrical.py` | 210, 360, 230, 230 | the flow's stage helpers |
+| `flow_reporting.py`, `flow_stats.py`, `flow_component_info.py`, `reporting.py` | 570, 320, 30, 40 | console output, GDS write; `RoutingFlowStats`, `FlowRun` and the SUMMARY line; component info; the console handler of the reports (`show_reports`) |
+| `config.py`, `config_loading.py`, `env_overlay.py` | 400, 40, 840 | the configuration trees, their precedence, the overlay table |
 | `static_obstacle_builder.py`, `benchmark_extractor.py`, `routing_layers.py` | 970, 180, 140 | obstacle extraction and the `ObstacleMapBuilder` Protocol; geometry and port extraction; layer and port access tables |
 | `schematic_protocols.py` | 30 | `SchematicLike` and `PlacedSchematicLike`, the two read-only views of a schematic the analysis modules take |
 | `placement_analysis.py` | 80 | the placement analysis stage: `analyze_placement` -> `PlacementAnalysis` (region graph, crossing demand), section 2.3 |
-| `port_roles.py`, `graph_analysis.py`, `benchmark_metadata.py` | 150, 60, 230 | input-side ports; shared graph context; benchmark metadata (`NODE_TYPES`, `INTERNAL_DELAYS_UM`, `INPUT_PORTS_BY_COMPONENT`) |
+| `port_roles.py`, `graph_analysis.py`, `benchmark_metadata.py` | 150, 60, 220 | input-side ports; shared graph context; benchmark metadata (`NODE_TYPES`, `INTERNAL_DELAYS_UM`, `INPUT_PORTS_BY_COMPONENT`) |
 
 Sub-packages:
 
 | package | files, lines | responsibility |
 | --- | --- | --- |
-| `routing/` | 21, 10,250 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `products.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `timing.py`, `api.py` (`route_match_and_realize`) |
-| `crossings/` | 12, 5,600 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `region_paths.py` (the way of a net that passes columns through their passages; a report), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,400, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 1,300 for verification), `crossing_verification_report.py` |
-| `plm/` | 5, 3,900 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,960) |
-| `verify/` | 3, 2,150 | `photonic_verification.py` (1,310, the geometry verifier), `route_rust_endpoint_correction.py` (830) |
-| `records/` | 10, 4,200 | `route_rust_types.py` (1,620, the shared records), `route_keys.py` (`PortRef`, `RoutedEdgeKey`), `route_rust_records.py`, `route_rust_geometry.py`, `route_rust_realization.py`, `route_rust_obstacle_config.py`, `route_order.py` (`NET_ORDERS`), `layout_from_schematic.py` |
-| `gds/` | 8, 2,950 | GDS write options, the routes overview SVG, debug probe artifacts, the port lookup of a placed instance (`route_gds.py`), and circuit extraction and rebuild from a foundry GDS (`gds_circuit_extraction.py`, `gds_circuit_rebuild.py`, `gds_circuit_components.py`) |
+| `routing/` | 21, 9,650 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `products.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `timing.py`, `api.py` (`route_match_and_realize`) |
+| `crossings/` | 12, 5,600 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `region_paths.py` (the way of a net that passes columns through their passages; a report), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,480, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 560 for verification), `crossing_verification_report.py` |
+| `plm/` | 5, 3,870 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,910) |
+| `verify/` | 3, 2,140 | `photonic_verification.py` (1,310, the geometry verifier), `route_rust_endpoint_correction.py` (830) |
+| `records/` | 11, 3,820 | `route_rust_types.py` (1,620, the shared records), `route_keys.py` (`PortRef`, `RoutedEdgeKey`), `route_rust_records.py`, `route_rust_geometry.py`, `route_rust_realization.py`, `route_rust_obstacle_config.py`, `route_order.py` (`NET_ORDERS`), `layout_from_schematic.py`, `fallbacks.py` (the named fallbacks and their counts) |
+| `gds/` | 8, 2,600 | GDS write options, the routes overview SVG, debug artifacts, the port lookup of a placed instance (`route_gds.py`), and circuit extraction and rebuild from a foundry GDS (`gds_circuit_extraction.py`, `gds_circuit_rebuild.py`, `gds_circuit_components.py`) |
 | `electrical/` | 28, 10,600 | the heater-metal pipeline (2.15); `__init__.py` is its public surface |
 
 A stage module takes `(settings, state, <its input>)` and returns its

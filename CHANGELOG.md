@@ -589,6 +589,10 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `docs/ARCHITECTURE.md` section 7.4: the module table measured again
+  after the rework of 2026-11-23/24 (the package is about 48,300 lines in
+  125 files, 2,200 fewer than two days before; `reporting.py` and
+  `records/fallbacks.py` are listed).
 - The package has no blind `except Exception` any more (rule 4.9, now in
   force as ruff `BLE001`; 35 at the first measurement, 31 on the morning
   of 2026-11-23). The last three: `load_benchmark_metadata` caught every
