@@ -96,6 +96,7 @@ select = [
     "ARG001", # rule 4.11: a function reads every parameter it takes
     "T201",   # rule 4.6: the package reports through logging, not print
     "BLE001", # rule 4.9: no blind except in the package
+    "PLR0915", # rule 4.5: a function of the package has at most 50 statements
 ]
 ignore = [
     # single-line-implicit-string-concatenation: conflicts with the
@@ -121,15 +122,16 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 # Scripts and the two shims insert the repository root into sys.path before
 # importing from it, so their imports cannot be at the top of the file.
-# Rules 4.2 (annotations) and 4.7 (docstrings) are about the package.
-"scripts/**" = ["E402", "ANN", "D", "ARG001", "T201", "BLE001"]
+# Rules 4.2 (annotations), 4.5 (the statement limit) and 4.7 (docstrings)
+# are about the package.
+"scripts/**" = ["E402", "ANN", "D", "ARG001", "T201", "BLE001", "PLR0915"]
 "python/photonic_router/__init__.py" = ["E402"]
 # The command line prints what it applied before the run configures anything.
 "python/photonic_router/cli.py" = ["T201"]
 # A benchmark module run as a program shows its schematic, and the table
 # scripts of the experiments print their tables.
-"benchmarks/**" = ["T201"]
-"experiments/*.py" = ["T201"]
+"benchmarks/**" = ["T201", "PLR0915"]
+"experiments/*.py" = ["T201", "PLR0915"]
 # The 2026-09 path-investigation harness is exploratory code kept as the
 # record of that investigation (PATH_INVESTIGATION_HARNESS.md in the private
 # agent-process layer); it is
@@ -137,14 +139,14 @@ ban-relative-imports = "all"
 "scripts/path_investigation/*" = ["E741", "B007", "F841", "F821", "SIM115", "E731"]
 # Test fakes use plain class attributes as fixtures on purpose, and a
 # stub takes the parameters of what it stands in for.
-"tests/**" = ["RUF012", "ANN", "D", "ARG001", "T201", "BLE001"]
+"tests/**" = ["RUF012", "ANN", "D", "ARG001", "T201", "BLE001", "PLR0915"]
 # Measurement scripts of closed experiments (experiments/README.md) are kept
 # as written for their record; they patch the flow in place after inserting
 # the repository root into sys.path.
-"experiments/*/scripts/*" = ["E402", "C401", "C408", "SIM105", "E741", "ANN", "D", "ARG001", "T201", "BLE001"]
+"experiments/*/scripts/*" = ["E402", "C401", "C408", "SIM105", "E741", "ANN", "D", "ARG001", "T201", "BLE001", "PLR0915"]
 
-# The limits of docs/CODING_STANDARDS.md section 4. The rules that read them
-# (PLR0913, PLR0915, C901) are not selected above yet: scripts/quality_ratchet.py
+# The limits of docs/CODING_STANDARDS.md section 4. PLR0915 (statements) is
+# selected above. PLR0913 and C901 are not yet: scripts/quality_ratchet.py
 # counts their findings and holds the counts until they reach zero.
 [tool.ruff.lint.pylint]
 max-args = 7

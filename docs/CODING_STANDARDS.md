@@ -212,9 +212,9 @@ like the violation counts: a commit that adds one says why in its message.
    record of fifty fields satisfies the tool and not the rule. A record
    with more than about 15 fields is questioned in review. *Review,
    proposed.*
-5. A function has at most 50 statements (ruff `PLR0915`) and a cyclomatic
-   complexity of at most 10 (ruff `C901`). *Tool, proposed.* The statement
-   limit does not apply to `tests/`.
+5. A function has at most 50 statements (ruff `PLR0915`; not in `tests/`,
+   the scripts and the benchmark modules). *Tool, in force.* Its cyclomatic
+   complexity is at most 10 (ruff `C901`). *Tool, proposed.*
 6. Library code reports through `logging`; `print` is for `cli.py` and the
    scripts (ruff `T201`). The command line shows the reports as lines on
    standard output (`reporting.show_reports`); the `SUMMARY` line stays as
@@ -323,7 +323,6 @@ table when their counts reached zero and the lint sets took them over.
 | 4.3 | `dict[str, object]` / `dict[str, Any]` annotations (`untyped_dict_annotations`) | 222 | 216 |
 | 4.4 | functions over 7 parameters (`ruff_PLR0913`) | 58; the largest 50 | 50 |
 | 4.12 | functions and classes only tests name (`names_only_tests_use`) | 16 (2026-11-23) | 16 |
-| 4.5 | functions over 50 statements (`ruff_PLR0915`) | 43 | 40 |
 | 4.5 | functions over complexity 10 (`ruff_C901`) | 70 | 68 |
 | 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 | 2 |
 | 5.4 | public items of `router-core` without a doc comment (`rust_missing_docs`) | 796 | 796 |

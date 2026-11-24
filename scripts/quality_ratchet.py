@@ -47,7 +47,6 @@ PIN_PATH = REPO_ROOT / "tests" / "baselines" / "quality_ratchet.json"
 #: with the rule of `docs/CODING_STANDARDS.md` each one stands for.
 RUFF_RULES: dict[str, str] = {
     "PLR0913": "4.4 function over the parameter limit",
-    "PLR0915": "4.5 function over the statement limit",
     "C901": "4.5 function over the complexity limit",
 }
 

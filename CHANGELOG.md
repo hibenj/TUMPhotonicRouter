@@ -600,6 +600,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Rule 4.5, the statement limit, is in force: ruff `PLR0915` is in the
+  lint set for the package (50 statements; not for the tests, the
+  scripts and the benchmark modules). The package had 43 such functions
+  when the rule was written down and none since `column_grid_stage` was
+  split; the measure `ruff_PLR0915` leaves the ratchet. The complexity
+  limit (`C901`, 40 functions) stays a ratchet measure.
 - `column_grid_stage` (244 statements, one flag that made it return
   either a placement or a summary) is two functions.
   `plan_column_grid` returns a `ColumnGridPlan`: the lanes' rows, the
