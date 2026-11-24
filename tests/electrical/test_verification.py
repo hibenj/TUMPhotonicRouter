@@ -14,6 +14,7 @@ from photonic_router.electrical.types import (
     CommonBusRoutingResult,
     DetailedBundleRoute,
     DetailedBundleRoutingResult,
+    ElectricalPortRef,
     ElectricalTerminal,
     PadAssignment,
     PadPlan,
@@ -326,7 +327,7 @@ def test_common_bus_verification_reports_a_branch_that_reaches_nothing():
             side_key=identifier.rsplit(":", 1)[-1],
             center=(x, 100.0),
             bbox=(x - 5.0, 95.0, x + 5.0, 105.0),
-            ports=(),
+            ports=(ElectricalPortRef("e1", (x, 100.0), None, 4.0, (49, 0)),),
         )
 
     stripe = BusStripe(

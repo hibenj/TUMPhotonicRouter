@@ -30,18 +30,15 @@ def terminal_contact_seed_point_for_side(
 ) -> Point:
     """Return the physical port center that faces a top/bottom access side."""
 
-    port = select_terminal_port_for_side(terminal, side)
-    return port.center if port is not None else terminal.center
+    return select_terminal_port_for_side(terminal, side).center
 
 
 def select_terminal_port_for_side(
     terminal: ElectricalTerminal,
     side: Side,
-) -> ElectricalPortRef | None:
+) -> ElectricalPortRef:
     """Choose the terminal port whose orientation faces the access side."""
 
-    if not terminal.ports:
-        return None
     target_orientation = 90.0 if side == "top" else 270.0
     return min(
         terminal.ports,
@@ -103,9 +100,7 @@ def terminal_contact_bboxes(
 ) -> tuple[BBox, ...]:
     """Return physical port contact boxes for a logical terminal."""
 
-    if terminal.ports:
-        return tuple(port_contact_bbox(port, fallback_width_um) for port in terminal.ports)
-    return (_fallback_terminal_bbox(terminal, fallback_width_um),)
+    return tuple(port_contact_bbox(port, fallback_width_um) for port in terminal.ports)
 
 
 def terminal_access_keepout_bbox(
@@ -142,10 +137,8 @@ def _select_terminal_contact_with_port(
     fallback_width_um: float,
     *,
     preferred_port_name: str | None = None,
-) -> tuple[Point, BBox, ElectricalPortRef | None]:
+) -> tuple[Point, BBox, ElectricalPortRef]:
     contacts = terminal_contact_bboxes(terminal, fallback_width_um)
-    if not terminal.ports:
-        return (terminal.center, contacts[0], None)
     if preferred_port_name is not None:
         for port, bbox in zip(terminal.ports, contacts, strict=False):
             if port.name == preferred_port_name:
@@ -216,13 +209,13 @@ def _keepout_boundary_crossing(
 
 def _port_anchor_point(
     terminal: ElectricalTerminal,
-    port: ElectricalPortRef | None,
+    port: ElectricalPortRef,
     contact: Point,
     fallback_width_um: float,
     join_point: Point | None,
 ) -> Point:
     direction = _port_direction(port, contact, terminal, join_point)
-    margin = max(fallback_width_um, float(getattr(port, "width", 0.0) or 0.0))
+    margin = max(fallback_width_um, float(port.width or 0.0))
     xmin, ymin, xmax, ymax = terminal_access_keepout_bbox(terminal, fallback_width_um)
     if direction == (1, 0):
         return (max(contact[0], xmax), contact[1])
@@ -241,12 +234,12 @@ def _port_anchor_point(
 
 
 def _port_direction(
-    port: ElectricalPortRef | None,
+    port: ElectricalPortRef,
     contact: Point,
     terminal: ElectricalTerminal,
     join_point: Point | None,
 ) -> tuple[int, int]:
-    orientation = port.orientation if port is not None else None
+    orientation = port.orientation
     if orientation is not None:
         normalized = round(float(orientation) / 90.0) % 4
         if normalized == 0:
@@ -300,21 +293,6 @@ def _point_in_bbox(point: Point, bbox: BBox) -> bool:
     return bbox[0] <= point[0] <= bbox[2] and bbox[1] <= point[1] <= bbox[3]
 
 
-def _fallback_terminal_bbox(
-    terminal: ElectricalTerminal,
-    fallback_width_um: float,
-) -> BBox:
-    xmin, ymin, xmax, ymax = terminal.bbox
-    min_half_size = fallback_width_um / 2.0
-    center_x, center_y = terminal.center
-    return (
-        min(xmin, center_x - min_half_size),
-        min(ymin, center_y - min_half_size),
-        max(xmax, center_x + min_half_size),
-        max(ymax, center_y + min_half_size),
-    )
-
-
 def _distance_sq(left: Point, right: Point) -> float:
     dx = left[0] - right[0]
     dy = left[1] - right[1]
@@ -322,10 +300,10 @@ def _distance_sq(left: Point, right: Point) -> float:
 
 
 def _contact_access_width(
-    port: ElectricalPortRef | None,
+    port: ElectricalPortRef,
     fallback_width_um: float,
 ) -> float:
-    if port is None or port.width is None or port.width <= 0.0:
+    if port.width is None or port.width <= 0.0:
         return fallback_width_um
     return max(float(port.width), fallback_width_um)
 

@@ -8,11 +8,25 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from photonic_router.electrical.port_access import build_terminal_port_access
 from photonic_router.electrical.terminal_contacts import (
     terminal_access_path,
 )
 from photonic_router.electrical.types import ElectricalPortRef, ElectricalTerminal
+
+
+def test_a_terminal_without_a_port_is_refused() -> None:
+    """A wire ends on a port; a terminal without one has no metal to land on."""
+    with pytest.raises(ValueError, match="terminal 'h0:l' of heater 'h0' has no port"):
+        ElectricalTerminal(
+            id="h0:l",
+            heater_id="h0",
+            side_key="l",
+            center=(0.0, 0.0),
+            bbox=(-2.0, -2.0, 2.0, 2.0),
+            ports=(),
+        )
 
 
 def test_terminal_access_path_trims_snapped_points_inside_terminal():

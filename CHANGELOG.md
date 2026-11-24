@@ -12,18 +12,6 @@ matching, 7 electrical (open), 8 release layout (one package, a Cargo workspace,
 documentation). Each slice preserves the routed results unless its entry says otherwise; the
 checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/plm_gate.sh`.
 
-### Removed
-
-- Interfaces nothing in the package used (owner, 2026-11-24). The stage
-  Protocols of `routing/stages.py` and `electrical/stages.py` typed no
-  parameter and no variable of the package; only a test assigned each
-  phase function to its Protocol. The five phase products that lived
-  next to them are in `routing/products.py` now. `graph_analysis.py`
-  (`GraphAnalysisContext`, exported by the package) and
-  `build_stage_schedule_for_benchmark` were called by tests only; the
-  tests of the crossing structures read the schedule from
-  `build_crossing_demand(...).stage_schedule()`, as the flow does.
-
 ### Added
 
 - Logic harness, stage `electrical` (`logic_checks/electrical.py`; owner,
@@ -601,6 +589,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Electrical router: a terminal has at least one port (owner, 2026-11-24).
+  `ElectricalTerminal` refuses an empty `ports` with a `ValueError` that
+  names the terminal and its heater. The extraction already refused a
+  heater without electrical ports, so no terminal of a run was without
+  one; three places further on still took the centre of the terminal's
+  box as the landing point of the wire (`select_terminal_port_for_side`
+  returning None, `_select_terminal_contact_with_port`,
+  `_exit_facing_port_name`), where no metal has to lie. Those paths and
+  their two fallback boxes are gone, the selected port is not optional
+  any more and `ElectricalPortAccess.port_name` is a `str`.
 - `_build_planner_context` of the meander planner (78 statements) hands
   two parts on: `_base_static_cells` (the static cells of the planning
   space as a set) and `_register_routes`, which registers the routes'
@@ -1647,6 +1645,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Removed
 
+- Interfaces nothing in the package used (owner, 2026-11-24). The stage
+  Protocols of `routing/stages.py` and `electrical/stages.py` typed no
+  parameter and no variable of the package; only a test assigned each
+  phase function to its Protocol. The five phase products that lived
+  next to them are in `routing/products.py` now. `graph_analysis.py`
+  (`GraphAnalysisContext`, exported by the package) and
+  `build_stage_schedule_for_benchmark` were called by tests only; the
+  tests of the crossing structures read the schedule from
+  `build_crossing_demand(...).stage_schedule()`, as the flow does.
 - Seven functions only tests called (rule 4.12, `names_only_tests_use`
   11 to 4): `CrossingPlan.events_for_edge` and `.event_for_pair` (the
   test reads `events_by_edge` and `events_by_pair`, as the code does),

@@ -167,7 +167,12 @@ class ElectricalPortRef:
 
 @dataclass(frozen=True)
 class ElectricalTerminal:
-    """Logical heater terminal, potentially represented by several gf ports."""
+    """One side of a heater: the physical metal ports a wire may land on.
+
+    A terminal has at least one port. `center` and `bbox` are those of its
+    ports together; they order and place terminals, a wire ends on a port.
+    Raises `ValueError` when `ports` is empty.
+    """
 
     id: str
     heater_id: str
@@ -176,6 +181,13 @@ class ElectricalTerminal:
     bbox: BBox
     ports: tuple[ElectricalPortRef, ...]
     layer: Any = None
+
+    def __post_init__(self) -> None:
+        if not self.ports:
+            raise ValueError(
+                f"terminal {self.id!r} of heater {self.heater_id!r} has no port: "
+                "a wire has no metal to land on"
+            )
 
 
 @dataclass(frozen=True)
@@ -186,7 +198,7 @@ class ElectricalPortAccess:
     heater_id: str
     purpose: Literal["common_bus", "individual"]
     side: Side
-    port_name: str | None
+    port_name: str
     port_point_um: Point
     port_orientation_deg: float | None
     port_width_um: float | None

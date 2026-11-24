@@ -162,15 +162,8 @@ def build_terminal_port_access(
     """Select a deterministic legal electrical-grid anchor for one terminal."""
 
     port = select_terminal_port_for_side(terminal, side)
-    port_point = port.center if port is not None else terminal.center
-    port_orientation = port.orientation if port is not None else None
-    port_width = port.width if port is not None else None
-    port_name = port.name if port is not None else None
-    contact_bbox = (
-        port_contact_bbox(port, fallback_width_um)
-        if port is not None
-        else _fallback_contact_bbox(port_point, fallback_width_um)
-    )
+    port_point = port.center
+    contact_bbox = port_contact_bbox(port, fallback_width_um)
     anchor_cell = select_anchor_cell(
         port_point,
         side=side,
@@ -185,10 +178,10 @@ def build_terminal_port_access(
         heater_id=terminal.heater_id,
         purpose=purpose,
         side=side,
-        port_name=port_name,
+        port_name=port.name,
         port_point_um=port_point,
-        port_orientation_deg=port_orientation,
-        port_width_um=port_width,
+        port_orientation_deg=port.orientation,
+        port_width_um=port.width,
         contact_bbox=contact_bbox,
         anchor_cell=anchor_cell,
         anchor_point_um=anchor_point,
@@ -264,16 +257,6 @@ def _polyline_length(points: tuple[Point, ...]) -> float:
     return sum(
         math.hypot(right[0] - left[0], right[1] - left[1])
         for left, right in itertools.pairwise(points)
-    )
-
-
-def _fallback_contact_bbox(point: Point, width_um: float) -> tuple[float, float, float, float]:
-    half_width = max(float(width_um), 0.0) / 2.0
-    return (
-        point[0] - half_width,
-        point[1] - half_width,
-        point[0] + half_width,
-        point[1] + half_width,
     )
 
 

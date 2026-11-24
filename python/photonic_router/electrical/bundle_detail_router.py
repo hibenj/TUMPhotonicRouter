@@ -533,7 +533,7 @@ def _exit_facing_port_name(
     adapter a straight join instead of an up-then-back-down elbow.
     """
 
-    if not terminal.ports or exit_dx == 0:
+    if exit_dx == 0:
         return None
     target_orientation = 180.0 if exit_dx < 0 else 0.0
     return min(
