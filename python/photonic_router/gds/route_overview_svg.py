@@ -15,11 +15,11 @@ meander length, the total with meanders, the die area and the layout box.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 from xml.sax.saxutils import escape
 
 import klayout.db as kdb
@@ -124,7 +124,16 @@ def realized_extra_um_by_net(meander_report: object) -> dict[str, float]:
     return realized
 
 
-def layout_overview_shapes(component: Component) -> tuple[list[InstanceBox], list[list[Point]]]:
+class LayoutShapes(NamedTuple):
+    """What the overview draws of a routed layout besides the routes."""
+
+    #: the benchmark instances as named boxes (um)
+    instances: Sequence[InstanceBox] = ()
+    #: the routed waveguides as the layout holds them, one point list per polygon (um)
+    waveguide_polygons: Sequence[list[Point]] = ()
+
+
+def layout_overview_shapes(component: Component) -> LayoutShapes:
     """Instances (name, bbox in um) and the routed waveguide polygons of a routed component.
 
     The routed waveguides are the component's own shapes on the waveguide
@@ -144,11 +153,11 @@ def layout_overview_shapes(component: Component) -> tuple[list[InstanceBox], lis
         [(float(p.x), float(p.y)) for p in shape.dpolygon.each_point_hull()]
         for shape in component.shapes(layer_index).each()
     ]
-    return instances, polygons
+    return LayoutShapes(instances, polygons)
 
 
 def _instance_svg(
-    instances: list[InstanceBox], to_px: Callable[[Point], tuple[float, float]]
+    instances: Sequence[InstanceBox], to_px: Callable[[Point], tuple[float, float]]
 ) -> list[str]:
     """The SVG of the instance boxes and, above each box, its name."""
 
@@ -178,7 +187,7 @@ def _instance_svg(
 
 
 def _waveguide_svg(
-    waveguide_polygons: list[list[Point]],
+    waveguide_polygons: Sequence[list[Point]],
     drawn: list[RouteLike],
     meander_nets: set[str],
     to_px: Callable[[Point], tuple[float, float]],
@@ -227,16 +236,16 @@ def write_routes_overview_svg(
     realized_extra_um_by_net: dict[str, float],
     routable_bbox_um: BBox | None,
     layout_bbox_um: BBox | None,
-    instances: list[InstanceBox] = (),  # type: ignore[assignment]
-    waveguide_polygons: list[list[Point]] = (),  # type: ignore[assignment]
+    shapes: LayoutShapes = LayoutShapes(),  # noqa: B008 (an immutable empty default)
 ) -> RoutesOverviewSummary:
     """Write the overview SVG to ``path`` and return the legend's numbers.
 
     ``realized_extra_um_by_net`` is the meander length actually drawn on
-    each net, so a label is the net's realized length. ``instances`` and
-    ``waveguide_polygons`` (``layout_overview_shapes``) make the picture the
+    each net, so a label is the net's realized length. ``shapes``
+    (``layout_overview_shapes``) makes the picture the
     layout; without them only the routed centerlines are drawn.
     """
+    instances, waveguide_polygons = shapes
 
     drawn = [record for record in records if len(record.corrected_centerline_um) >= 2]
     routed_length_um = sum(float(record.total_length_um) for record in records)
@@ -355,8 +364,8 @@ def _drawing_extent(
     drawn: list[RouteLike],
     routable_bbox_um: BBox | None,
     layout_bbox_um: BBox | None,
-    instances: list[InstanceBox],
-    waveguide_polygons: list[list[Point]],
+    instances: Sequence[InstanceBox],
+    waveguide_polygons: Sequence[list[Point]],
 ) -> BBox:
     xs: list[float] = []
     ys: list[float] = []
@@ -377,7 +386,7 @@ def _drawing_extent(
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-def _polygon_owners(polygons: list[list[Point]], drawn: list[RouteLike]) -> dict[int, str]:
+def _polygon_owners(polygons: Sequence[list[Point]], drawn: list[RouteLike]) -> dict[int, str]:
     """Which route each waveguide polygon belongs to.
 
     The route whose sampled centerline points the polygon contains. A route

@@ -589,6 +589,9 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `write_routes_overview_svg` takes what `layout_overview_shapes` returns
+  as one value, the named tuple `LayoutShapes` (instances and waveguide
+  polygons), instead of two parameters (PLR0913 9 to 8).
 - `docs/ARCHITECTURE.md` section 7.4: the module table measured again
   after the rework of 2026-11-23/24 (the package is about 48,300 lines in
   125 files, 2,200 fewer than two days before; `reporting.py` and

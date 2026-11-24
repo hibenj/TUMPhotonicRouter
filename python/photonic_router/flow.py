@@ -607,7 +607,6 @@ def _write_routes_overview(benchmark_name: str, optical_result: OpticalRoutingSt
     # on it, the bookkeeping by physical edge) and a legend with the
     # totals and the chip dimensions, next to the per-route SVGs.
     overview_path = Path("build") / "routes" / f"{benchmark_name.lower()}_overview.svg"
-    instances, waveguide_polygons = layout_overview_shapes(optical_result.routed_layout)
     overview = write_routes_overview_svg(
         overview_path,
         benchmark_name=benchmark_name,
@@ -617,8 +616,7 @@ def _write_routes_overview(benchmark_name: str, optical_result: OpticalRoutingSt
         ),
         routable_bbox_um=getattr(debug_artifacts, "routable_bbox_um", None),
         layout_bbox_um=_component_bbox_um(optical_result.routed_layout),
-        instances=instances,
-        waveguide_polygons=waveguide_polygons,
+        shapes=layout_overview_shapes(optical_result.routed_layout),
     )
     _LOGGER.info(
         f"      - Routes overview SVG: {overview_path} "

@@ -10,6 +10,7 @@ from photonic_router.gds.route_overview_svg import (
     MEANDER_ROUTE_COLOR,
     ROUTE_COLOR,
     InstanceBox,
+    LayoutShapes,
     realized_extra_um_by_net,
     write_routes_overview_svg,
 )
@@ -38,20 +39,21 @@ def test_overview_svg_labels_every_route_and_sums_the_legend(tmp_path: Path):
         realized_extra_um_by_net={"with_meander": 25.5},
         routable_bbox_um=(-10.0, -10.0, 210.0, 210.0),
         layout_bbox_um=(0.0, 0.0, 100.0, 200.0),
-        instances=[InstanceBox("mmi_0", (-5.0, -2.0, 0.0, 2.0))],
-        # one polygon strip per drawn route (the "with_meander" strip carries a bump)
-        waveguide_polygons=[
-            [(0.0, -0.25), (100.0, -0.25), (100.0, 0.25), (0.0, 0.25)],
-            [
-                (0.0, 49.75),
-                (100.25, 49.75),
-                (100.25, 100.0),
-                (99.75, 100.0),
-                (99.75, 50.25),
-                (0.0, 50.25),
+        shapes=LayoutShapes(
+            instances=[InstanceBox("mmi_0", (-5.0, -2.0, 0.0, 2.0))],
+            waveguide_polygons=[
+                [(0.0, -0.25), (100.0, -0.25), (100.0, 0.25), (0.0, 0.25)],
+                [
+                    (0.0, 49.75),
+                    (100.25, 49.75),
+                    (100.25, 100.0),
+                    (99.75, 100.0),
+                    (99.75, 50.25),
+                    (0.0, 50.25),
+                ],
+                [(0.0, 199.75), (80.0, 199.75), (80.0, 200.25), (0.0, 200.25)],
             ],
-            [(0.0, 199.75), (80.0, 199.75), (80.0, 200.25), (0.0, 200.25)],
-        ],
+        ),
     )
 
     assert summary.route_count == 4
@@ -115,7 +117,7 @@ def test_overview_svg_owns_every_piece_of_a_split_route(tmp_path: Path):
         realized_extra_um_by_net={"split_meander": 10.0},
         routable_bbox_um=None,
         layout_bbox_um=None,
-        waveguide_polygons=pieces,
+        shapes=LayoutShapes(waveguide_polygons=pieces),
     )
 
     text = path.read_text(encoding="utf-8")
