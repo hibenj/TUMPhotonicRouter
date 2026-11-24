@@ -3,14 +3,14 @@
   "names_only_tests_use": 3,
   "private_imports": 0,
   "python_exceptions": 0,
-  "ruff_C901": 46,
+  "ruff_C901": 45,
   "ruff_PLR0913": 8,
-  "ruff_PLR0915": 6,
+  "ruff_PLR0915": 5,
   "rust_exceptions": 32,
   "rust_missing_docs": 794,
   "rust_too_many_lines": 23,
   "rust_workspace_debt_allows": 2,
   "session_state_fields": 13,
-  "untyped_dict_annotations": 193,
+  "untyped_dict_annotations": 192,
   "upward_imports": 0
 }

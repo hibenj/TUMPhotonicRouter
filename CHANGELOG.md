@@ -589,6 +589,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `populate_realized_intersections_from_native_crossing_events` (90
+  statements) reads an event (`_native_event`), finds its point in um
+  (`_event_point_um`) and writes its record (`_event_record`). An event
+  that is not as the kernel writes it (a missing net id, a point or a
+  segment without two coordinates) raises now; it was skipped, which
+  dropped a crossing without a word and never happened in a measured
+  run. On twelve runs (Benes 4x4, 8x8 and 16x16 flat, ADEPT 8x8 and
+  16x16, `permutation_synthetic`, two PLM designs; 534 records) the
+  records and the illegal ones are equal to those of the old function,
+  called on the same events in the same process.
 - `extract_circuit` of the GDS extraction (133 statements) is its steps:
   the leaves, the components and the waveguide region, the groups, the
   nets of the polygons, the abutting nets, the named components. The

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from photonic_router.records.route_rust_geometry import (
     crossing_footprint_half_extent_um,
@@ -201,6 +201,148 @@ def _unified_required_margin_um(
     return float(half_size_cells + runout_cells) * float(grid_size_um)
 
 
+_PointUm = tuple[float, float]
+_SegmentUm = tuple[_PointUm, _PointUm]
+
+
+class _GridFrame(NamedTuple):
+    """The routing grid's cell size and origin (um): where a grid point lies on the chip."""
+
+    grid_size_um: float
+    origin_x_um: float
+    origin_y_um: float
+
+    def point_um(self, grid_point: tuple[float, float]) -> _PointUm:
+        return grid_point_to_physical_um(
+            grid_point,
+            grid_size_um=self.grid_size_um,
+            origin_x_um=self.origin_x_um,
+            origin_y_um=self.origin_y_um,
+        )
+
+
+class _NativeEvent(NamedTuple):
+    """One crossing the search accepted, as `router.crossing_events()` gives it."""
+
+    net_id_a: int
+    net_id_b: int
+    #: the crossing point in grid coordinates
+    grid_point: tuple[float, float]
+    #: the straight pieces of the two routes that cross, in um
+    segment_a: _SegmentUm
+    segment_b: _SegmentUm
+    reservation_cells: list[object]
+
+
+def _native_event(raw_event: Mapping[str, Any], frame: _GridFrame) -> _NativeEvent:
+    """Read one event of the kernel.
+
+    Raises `KeyError`, `TypeError` or `ValueError` for an event that is not
+    as the kernel writes it (two net ids, a point, two segments of two
+    points each): a crossing must not be dropped silently.
+    """
+    point_x, point_y = raw_event["point"]
+    (ax0, ay0), (ax1, ay1) = raw_event["route_segment"]
+    (bx0, by0), (bx1, by1) = raw_event["partner_segment"]
+    return _NativeEvent(
+        net_id_a=int(raw_event["net_id"]),
+        net_id_b=int(raw_event["partner_net_id"]),
+        grid_point=(float(point_x), float(point_y)),
+        segment_a=(
+            frame.point_um((float(ax0), float(ay0))),
+            frame.point_um((float(ax1), float(ay1))),
+        ),
+        segment_b=(
+            frame.point_um((float(bx0), float(by0))),
+            frame.point_um((float(bx1), float(by1))),
+        ),
+        reservation_cells=list(raw_event.get("reservation_cells", [])),
+    )
+
+
+def _event_point_um(event: _NativeEvent, frame: _GridFrame) -> _PointUm:
+    """The crossing point in um.
+
+    The point is taken as it stands when it already lies within one grid
+    cell of both segments' boxes in um, otherwise as a grid point.
+    """
+    as_given = event.grid_point
+    box = segment_bbox_um((as_given, as_given))
+    if um_bboxes_overlap(
+        box, segment_bbox_um(event.segment_a), eps=frame.grid_size_um
+    ) and um_bboxes_overlap(box, segment_bbox_um(event.segment_b), eps=frame.grid_size_um):
+        return as_given
+    return frame.point_um(event.grid_point)
+
+
+def _event_record(
+    event: _NativeEvent,
+    point_um: _PointUm,
+    *,
+    routed_records_by_net_id: Mapping[int, RoutedNetRecord],
+    planned_pairs: set[frozenset[int]] | None,
+    footprint_half_um: float,
+    required_margin_um: float,
+    frame: _GridFrame,
+) -> dict[str, object]:
+    """The realized-intersection record of one event, as a legal crossing without a verdict yet."""
+    segment_a, segment_b = event.segment_a, event.segment_b
+    record_a = routed_records_by_net_id.get(event.net_id_a)
+    record_b = routed_records_by_net_id.get(event.net_id_b)
+    margin_a = min(
+        point_distance_um(point_um, segment_a[0]), point_distance_um(point_um, segment_a[1])
+    )
+    margin_b = min(
+        point_distance_um(point_um, segment_b[0]), point_distance_um(point_um, segment_b[1])
+    )
+    axis_u = segment_unit_vector(segment_a)
+    axis_v = segment_unit_vector(segment_b)
+    footprint_polygon: list[tuple[float, float]] = []
+    if axis_u is not None and axis_v is not None and footprint_half_um > 0.0:
+        footprint_polygon = crossing_footprint_polygon(
+            center=point_um,
+            axis_u=axis_u,
+            axis_v=axis_v,
+            half_extent_um=footprint_half_um,
+        )
+    grid_cell = physical_point_to_grid_cell(
+        point_um,
+        grid_size_um=frame.grid_size_um,
+        origin_x_um=frame.origin_x_um,
+        origin_y_um=frame.origin_y_um,
+    )
+    return {
+        "net_id_a": event.net_id_a,
+        "net_id_b": event.net_id_b,
+        "net_name_a": record_a.net_name if record_a is not None else str(event.net_id_a),
+        "net_name_b": record_b.net_name if record_b is not None else str(event.net_id_b),
+        "point_um": rounded_point(point_um),
+        "grid_cell": ([int(grid_cell[0]), int(grid_cell[1])] if grid_cell is not None else None),
+        "segment_a_um": rounded_segment(segment_a),
+        "segment_b_um": rounded_segment(segment_b),
+        "segment_a_length_um": round(float(segment_length_um(segment_a)), 6),
+        "segment_b_length_um": round(float(segment_length_um(segment_b)), 6),
+        "segment_a_margin_um": round(float(margin_a), 6),
+        "segment_b_margin_um": round(float(margin_b), 6),
+        "required_margin_um": round(float(required_margin_um), 6),
+        "search_required_margin_um": round(float(required_margin_um), 6),
+        "crossing_footprint_half_um": round(float(footprint_half_um), 6),
+        "crossing_footprint_um": round(2.0 * float(footprint_half_um), 6),
+        "crossing_footprint_polygon_um": [rounded_point(point) for point in footprint_polygon],
+        "crossing_footprint_blockers": [],
+        "expected_pair": True,
+        "planned": _planned_flag(planned_pairs, event.net_id_a, event.net_id_b),
+        "perpendicular": True,
+        "classification": "legal_native_crossing",
+        "source": "native_crossing_events",
+        "reservation_cells": event.reservation_cells,
+    }
+
+
+def _is_illegal(record: Mapping[str, object]) -> bool:
+    return str(record.get("classification", "")).startswith("illegal_")
+
+
 def populate_realized_intersections_from_native_crossing_events(
     *,
     crossing_plan_info: CrossingPlanInfo,
@@ -221,6 +363,9 @@ def populate_realized_intersections_from_native_crossing_events(
     classification, reason, perpendicularity and margins come from it, and a
     verdict Rust recorded for a point no event covers is reported as its own
     record. The returned list holds the records the verdicts call illegal.
+
+    Raises `KeyError`, `TypeError` or `ValueError` for an event that is not
+    as the kernel writes it (`_native_event`).
     """
     if not crossing_plan_info.enabled:
         crossing_plan_info.realized_intersections = []
@@ -230,191 +375,56 @@ def populate_realized_intersections_from_native_crossing_events(
         return []
 
     _width, _height, grid_size_um, origin_x_um, origin_y_um = realization_grid_spec
+    frame = _GridFrame(float(grid_size_um), float(origin_x_um), float(origin_y_um))
     footprint_half_um = crossing_footprint_half_extent_um(
         crossing_plan_info=crossing_plan_info,
-        grid_size_um=float(grid_size_um),
+        grid_size_um=frame.grid_size_um,
     )
-    required_margin_um = _unified_required_margin_um(crossing_plan_info, float(grid_size_um))
-    search_required_margin_um = required_margin_um
+    required_margin_um = _unified_required_margin_um(crossing_plan_info, frame.grid_size_um)
     verdicts_by_pair = _rust_verdicts_by_pair(native_crossing_verdicts)
-    verdict_tolerance_um = 1.5 * float(grid_size_um)
     matched_verdict_ids: set[int] = set()
-
     planned_pairs = _planned_pairs_from_plan_info(crossing_plan_info)
     realized: list[dict[str, object]] = []
-    illegal: list[dict[str, object]] = []
     seen: set[tuple[int, int, int, int]] = set()
     for raw_event in native_crossing_events:
-        if not isinstance(raw_event, Mapping):
-            try:
-                raw_event = dict(cast(Any, raw_event))
-            except (TypeError, ValueError):
-                continue
-        try:
-            net_id_a = int(cast(Any, raw_event.get("net_id")))
-            net_id_b = int(cast(Any, raw_event.get("partner_net_id")))
-            raw_point = cast(Any, raw_event.get("point"))
-            raw_route_segment = cast(Any, raw_event.get("route_segment"))
-            raw_partner_segment = cast(Any, raw_event.get("partner_segment"))
-        except (TypeError, ValueError):
-            continue
-        if (
-            not isinstance(raw_point, (tuple, list))
-            or len(raw_point) != 2
-            or not isinstance(raw_route_segment, (tuple, list))
-            or len(raw_route_segment) != 2
-            or not isinstance(raw_partner_segment, (tuple, list))
-            or len(raw_partner_segment) != 2
-        ):
-            continue
-        try:
-            grid_point = (float(raw_point[0]), float(raw_point[1]))
-            route_segment_grid = (
-                (float(raw_route_segment[0][0]), float(raw_route_segment[0][1])),
-                (float(raw_route_segment[1][0]), float(raw_route_segment[1][1])),
-            )
-            partner_segment_grid = (
-                (float(raw_partner_segment[0][0]), float(raw_partner_segment[0][1])),
-                (float(raw_partner_segment[1][0]), float(raw_partner_segment[1][1])),
-            )
-        except (TypeError, ValueError, IndexError):
-            continue
-
-        segment_a = (
-            grid_point_to_physical_um(
-                route_segment_grid[0],
-                grid_size_um=float(grid_size_um),
-                origin_x_um=float(origin_x_um),
-                origin_y_um=float(origin_y_um),
-            ),
-            grid_point_to_physical_um(
-                route_segment_grid[1],
-                grid_size_um=float(grid_size_um),
-                origin_x_um=float(origin_x_um),
-                origin_y_um=float(origin_y_um),
-            ),
-        )
-        segment_b = (
-            grid_point_to_physical_um(
-                partner_segment_grid[0],
-                grid_size_um=float(grid_size_um),
-                origin_x_um=float(origin_x_um),
-                origin_y_um=float(origin_y_um),
-            ),
-            grid_point_to_physical_um(
-                partner_segment_grid[1],
-                grid_size_um=float(grid_size_um),
-                origin_x_um=float(origin_x_um),
-                origin_y_um=float(origin_y_um),
-            ),
-        )
-        raw_point_um = (float(grid_point[0]), float(grid_point[1]))
-        raw_point_bbox = segment_bbox_um((raw_point_um, raw_point_um))
-        segment_a_bbox = segment_bbox_um(segment_a)
-        segment_b_bbox = segment_bbox_um(segment_b)
-        if um_bboxes_overlap(
-            raw_point_bbox,
-            segment_a_bbox,
-            eps=float(grid_size_um),
-        ) and um_bboxes_overlap(
-            raw_point_bbox,
-            segment_b_bbox,
-            eps=float(grid_size_um),
-        ):
-            point_um = raw_point_um
-        else:
-            point_um = grid_point_to_physical_um(
-                grid_point,
-                grid_size_um=float(grid_size_um),
-                origin_x_um=float(origin_x_um),
-                origin_y_um=float(origin_y_um),
-            )
+        event = _native_event(cast(Mapping[str, Any], raw_event), frame)
+        point_um = _event_point_um(event, frame)
         key = (
-            min(net_id_a, net_id_b),
-            max(net_id_a, net_id_b),
+            min(event.net_id_a, event.net_id_b),
+            max(event.net_id_a, event.net_id_b),
             round(point_um[0] * 1_000_000),
             round(point_um[1] * 1_000_000),
         )
         if key in seen:
             continue
         seen.add(key)
-
-        record_a = routed_records_by_net_id.get(net_id_a)
-        record_b = routed_records_by_net_id.get(net_id_b)
-        len_a = segment_length_um(segment_a)
-        len_b = segment_length_um(segment_b)
-        margin_a = min(
-            point_distance_um(point_um, segment_a[0]),
-            point_distance_um(point_um, segment_a[1]),
-        )
-        margin_b = min(
-            point_distance_um(point_um, segment_b[0]),
-            point_distance_um(point_um, segment_b[1]),
-        )
-        axis_u = segment_unit_vector(segment_a)
-        axis_v = segment_unit_vector(segment_b)
-        footprint_polygon: list[tuple[float, float]] = []
-        if axis_u is not None and axis_v is not None and footprint_half_um > 0.0:
-            footprint_polygon = crossing_footprint_polygon(
-                center=point_um,
-                axis_u=axis_u,
-                axis_v=axis_v,
-                half_extent_um=footprint_half_um,
-            )
-        grid_cell = physical_point_to_grid_cell(
+        record = _event_record(
+            event,
             point_um,
-            grid_size_um=float(grid_size_um),
-            origin_x_um=float(origin_x_um),
-            origin_y_um=float(origin_y_um),
+            routed_records_by_net_id=routed_records_by_net_id,
+            planned_pairs=planned_pairs,
+            footprint_half_um=footprint_half_um,
+            required_margin_um=required_margin_um,
+            frame=frame,
         )
-        record: dict[str, object] = {
-            "net_id_a": int(net_id_a),
-            "net_id_b": int(net_id_b),
-            "net_name_a": record_a.net_name if record_a is not None else str(net_id_a),
-            "net_name_b": record_b.net_name if record_b is not None else str(net_id_b),
-            "point_um": rounded_point(point_um),
-            "grid_cell": (
-                [int(grid_cell[0]), int(grid_cell[1])] if grid_cell is not None else None
-            ),
-            "segment_a_um": rounded_segment(segment_a),
-            "segment_b_um": rounded_segment(segment_b),
-            "segment_a_length_um": round(float(len_a), 6),
-            "segment_b_length_um": round(float(len_b), 6),
-            "segment_a_margin_um": round(float(margin_a), 6),
-            "segment_b_margin_um": round(float(margin_b), 6),
-            "required_margin_um": round(float(required_margin_um), 6),
-            "search_required_margin_um": round(float(search_required_margin_um), 6),
-            "crossing_footprint_half_um": round(float(footprint_half_um), 6),
-            "crossing_footprint_um": round(2.0 * float(footprint_half_um), 6),
-            "crossing_footprint_polygon_um": [rounded_point(point) for point in footprint_polygon],
-            "crossing_footprint_blockers": [],
-            "expected_pair": True,
-            "planned": _planned_flag(planned_pairs, net_id_a, net_id_b),
-            "perpendicular": True,
-            "classification": "legal_native_crossing",
-            "source": "native_crossing_events",
-            "reservation_cells": list(raw_event.get("reservation_cells", [])),
-        }
         rust_verdict = _nearest_rust_verdict(
             verdicts_by_pair,
-            net_id_a,
-            net_id_b,
+            event.net_id_a,
+            event.net_id_b,
             point_um,
-            tolerance_um=verdict_tolerance_um,
+            tolerance_um=1.5 * frame.grid_size_um,
         )
         if rust_verdict is not None:
             matched_verdict_ids.add(id(rust_verdict))
             _apply_rust_verdict_to_native_record(
                 record,
                 rust_verdict,
-                net_id_a=net_id_a,
-                grid_size_um=float(grid_size_um),
+                net_id_a=event.net_id_a,
+                grid_size_um=frame.grid_size_um,
             )
         else:
             record["legality_source"] = "no_rust_crossing_verdict"
         realized.append(record)
-        if str(record.get("classification", "")).startswith("illegal_"):
-            illegal.append(record)
 
     # Verdicts for points no event covers: Rust assessed them, so they are
     # reported as their own records (legal or not) rather than dropped.
@@ -427,16 +437,14 @@ def populate_realized_intersections_from_native_crossing_events(
                 routed_records_by_net_id=routed_records_by_net_id,
                 planned_pairs=planned_pairs,
                 footprint_half_um=footprint_half_um,
-                grid_size_um=float(grid_size_um),
-                origin_x_um=float(origin_x_um),
-                origin_y_um=float(origin_y_um),
+                grid_size_um=frame.grid_size_um,
+                origin_x_um=frame.origin_x_um,
+                origin_y_um=frame.origin_y_um,
             )
-            if verdict_record is None:
-                continue
-            realized.append(verdict_record)
-            if str(verdict_record.get("classification", "")).startswith("illegal_"):
-                illegal.append(verdict_record)
+            if verdict_record is not None:
+                realized.append(verdict_record)
 
+    illegal = [record for record in realized if _is_illegal(record)]
     crossing_plan_info.realized_intersections = realized
     crossing_plan_info.realized_intersection_count = len(realized)
     crossing_plan_info.routes_missing_corrected_centerline = []
