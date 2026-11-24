@@ -502,6 +502,9 @@ class EndpointClearance:
     core_radius_cells: int = 0
 
 
+_Centerline = tuple[tuple[float, float], ...]
+
+
 def apply_crossing_aware_endpoint_correction_to_record(
     record: RoutedNetRecord,
     *,
@@ -513,141 +516,226 @@ def apply_crossing_aware_endpoint_correction_to_record(
 ) -> RoutedNetRecord:
     """Apply terminal-only endpoint correction without moving route crossings.
 
+    A net without crossings is corrected as a whole
+    (`_correct_without_crossings`). A net with crossings keeps the piece
+    between its first and its last crossing: only the piece before and the
+    piece after are corrected, each checked by the kernel
+    (`_checked_splice`), and when no checked result is accepted the record
+    gets an `endpoint_correction_error`.
+
     ``scope`` defaults to both ends, ``clearance`` to no opened cells and
     radius zero.
     """
-
     scope = scope if scope is not None else EndpointCorrectionScope()
     clearance = clearance if clearance is not None else EndpointClearance()
-    realization_grid_spec = setup.realization_grid_spec
-    route_width_um = setup.route_width_um
-    allow_unchecked_bumps = setup.allow_unchecked_bumps
-    log_failures = setup.log_failures
-    crossing_plan_info = setup.crossing_plan_info
-    correct_source = scope.correct_source
-    correct_target = scope.correct_target
-    prefer_corrected_baseline = scope.prefer_corrected_baseline
-    opened_cells = clearance.opened_cells
-    clearance_exempt_cells = clearance.exempt_cells
-    clearance_radius_cells = clearance.radius_cells
-    core_radius_cells = clearance.core_radius_cells
-    config = setup.diagnostics if setup.diagnostics is not None else FlowDiagnostics()
-    trace_endpoint_nets = config.trace_endpoint_correction_nets
-    trace_endpoint = record.net_name in trace_endpoint_nets or (
-        record.net_id is not None and str(int(record.net_id)) in trace_endpoint_nets
-    )
-
     if not crossing_points:
-        if record.corrected_centerline_um and not correct_source and not correct_target:
-            return record
-        if record.corrected_centerline_um and (not correct_source or not correct_target):
-            route_baseline = primitive_centerline_for_record(
-                record,
-                router=router,
-                prefer_corrected_baseline=False,
-            )
-            baseline = primitive_centerline_for_record(
-                record,
-                router=router,
-                prefer_corrected_baseline=True,
-            )
-            route_port_corrected_centerline = getattr(
-                router,
-                "route_port_corrected_centerline",
-                None,
-            )
-            if (
-                len(route_baseline) >= 2
-                and len(baseline) >= 2
-                and route_port_corrected_centerline is not None
-            ):
-                try:
-                    corrected_route = centerline_tuple(
-                        route_port_corrected_centerline(
-                            record.route_obj,
-                            source_port_um=(
-                                record.source_port_center_um if correct_source else None
-                            ),
-                            target_port_um=(
-                                record.target_port_center_um if correct_target else None
-                            ),
-                            allow_unchecked_bumps=allow_unchecked_bumps,
-                        )
-                    )
-                except (TypeError, ValueError):
-                    corrected_route = ()
-                centerline = merge_terminal_corrected_route_centerline(
-                    existing_baseline=baseline,
-                    route_baseline=route_baseline,
-                    corrected_route_centerline=dedupe_centerline(corrected_route),
-                    freeze_source=not correct_source,
-                    freeze_target=not correct_target,
-                )
-                if len(centerline) >= 2:
-                    corrected_total_length_um = kernel_centerline_length_um(router, centerline)
-                    return replace(
-                        record,
-                        total_length_um=corrected_total_length_um,
-                        base_total_length_um=(
-                            record.base_total_length_um
-                            if record.base_total_length_um is not None
-                            else float(record.total_length_um)
-                        ),
-                        corrected_centerline_um=centerline,
-                        endpoint_correction_error=None,
-                    )
-            return record
-        uncorrected_record = replace(
-            record,
-            corrected_centerline_um=(),
-            endpoint_correction_error=None,
-        )
-        normal_record = apply_port_endpoint_corrections(
-            [uncorrected_record],
-            router=router,
-            realization_grid_spec=realization_grid_spec,
-            allow_unchecked_bumps=allow_unchecked_bumps,
-            log_failures=log_failures,
-        )[0]
-        foreign_footprints = _foreign_crossing_footprint_specs(
-            crossing_plan_info,
-            net_id=int(record.net_id) if record.net_id is not None else None,
-            route_width_um=route_width_um,
-        )
-        if (
-            normal_record.corrected_centerline_um
-            and normal_record.endpoint_correction_error is None
-            and _centerline_intersects_crossing_footprint_specs(
-                dedupe_centerline(normal_record.corrected_centerline_um),
-                foreign_footprints,
-            )
-        ):
-            return record
-        return normal_record
-
+        return _correct_without_crossings(record, router=router, setup=setup, scope=scope)
     baseline = primitive_centerline_for_record(
         record,
         router=router,
-        prefer_corrected_baseline=prefer_corrected_baseline,
+        prefer_corrected_baseline=scope.prefer_corrected_baseline,
     )
     if len(baseline) < 2:
-        message = format_port_endpoint_correction_error(
-            record,
-            "crossing-aware endpoint correction requires a primitive centerline",
-            realization_grid_spec=realization_grid_spec,
+        return _with_correction_error(
+            record, "crossing-aware endpoint correction requires a primitive centerline", setup
         )
-        if log_failures:
-            _LOGGER.info("ERROR: " + message)
-        return replace(record, endpoint_correction_error=message)
+    candidate = _checked_splice(
+        _CheckedCorrection(record, router, setup, clearance),
+        baseline,
+        crossing_points,
+        scope,
+    )
+    if candidate is not None:
+        return _with_corrected_centerline(record, router, candidate)
+    # No unchecked fallback strategy: a crossing net's two terminal
+    # segments are corrected the same way a crossing-free net's is, and
+    # nothing else. If that did not produce an accepted result, this net
+    # fails endpoint correction honestly instead of silently accepting a
+    # candidate whose geometry was never actually verified against the real
+    # port (see .agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md's
+    # Decision Log for why the previous, unchecked fallback tier was
+    # removed).
+    return _with_correction_error(
+        record, "crossing-aware endpoint correction produced no realizable centerline", setup
+    )
 
-    def _realization_accepts(centerline: tuple[tuple[float, float], ...]) -> bool:
-        realize = getattr(router, "realize_centerline_polygon_with_terminal_tangents", None)
+
+def _with_corrected_centerline(
+    record: RoutedNetRecord, router: EndpointCorrectionRouter, centerline: _Centerline
+) -> RoutedNetRecord:
+    """The record with `centerline` as its corrected centerline and that centerline's length."""
+    return replace(
+        record,
+        total_length_um=kernel_centerline_length_um(router, centerline),
+        base_total_length_um=(
+            record.base_total_length_um
+            if record.base_total_length_um is not None
+            else float(record.total_length_um)
+        ),
+        corrected_centerline_um=centerline,
+        endpoint_correction_error=None,
+    )
+
+
+def _with_correction_error(
+    record: RoutedNetRecord, text: str, setup: EndpointCorrectionSetup
+) -> RoutedNetRecord:
+    message = format_port_endpoint_correction_error(
+        record,
+        text,
+        realization_grid_spec=setup.realization_grid_spec,
+    )
+    if setup.log_failures:
+        _LOGGER.info("ERROR: " + message)
+    return replace(record, endpoint_correction_error=message)
+
+
+def _correct_without_crossings(
+    record: RoutedNetRecord,
+    *,
+    router: EndpointCorrectionRouter,
+    setup: EndpointCorrectionSetup,
+    scope: EndpointCorrectionScope,
+) -> RoutedNetRecord:
+    """The correction of a net that crosses no other net.
+
+    A record that already has a corrected centerline is returned as it is
+    when no end is to be corrected, and gets one end corrected again when
+    the scope names only one (`_correct_one_end_again`). Otherwise both
+    ends are corrected from the routed centerline; when the result runs
+    through the footprint of another net's crossing, the record is
+    returned unchanged.
+    """
+    both_ends = scope.correct_source and scope.correct_target
+    if record.corrected_centerline_um and not both_ends:
+        if not scope.correct_source and not scope.correct_target:
+            return record
+        return _correct_one_end_again(record, router=router, setup=setup, scope=scope)
+    uncorrected_record = replace(
+        record,
+        corrected_centerline_um=(),
+        endpoint_correction_error=None,
+    )
+    normal_record = apply_port_endpoint_corrections(
+        [uncorrected_record],
+        router=router,
+        realization_grid_spec=setup.realization_grid_spec,
+        allow_unchecked_bumps=setup.allow_unchecked_bumps,
+        log_failures=setup.log_failures,
+    )[0]
+    foreign_footprints = _foreign_crossing_footprint_specs(
+        setup.crossing_plan_info,
+        net_id=int(record.net_id) if record.net_id is not None else None,
+        route_width_um=setup.route_width_um,
+    )
+    if (
+        normal_record.corrected_centerline_um
+        and normal_record.endpoint_correction_error is None
+        and _centerline_intersects_crossing_footprint_specs(
+            dedupe_centerline(normal_record.corrected_centerline_um),
+            foreign_footprints,
+        )
+    ):
+        return record
+    return normal_record
+
+
+def _correct_one_end_again(
+    record: RoutedNetRecord,
+    *,
+    router: EndpointCorrectionRouter,
+    setup: EndpointCorrectionSetup,
+    scope: EndpointCorrectionScope,
+) -> RoutedNetRecord:
+    """One end corrected from the routed centerline, the other kept as the record has it.
+
+    Returns the record unchanged when the kernel has no centerline for it
+    or the two centerlines cannot be joined.
+    """
+    route_baseline = primitive_centerline_for_record(
+        record,
+        router=router,
+        prefer_corrected_baseline=False,
+    )
+    baseline = primitive_centerline_for_record(
+        record,
+        router=router,
+        prefer_corrected_baseline=True,
+    )
+    route_port_corrected_centerline = getattr(router, "route_port_corrected_centerline", None)
+    if len(route_baseline) < 2 or len(baseline) < 2 or route_port_corrected_centerline is None:
+        return record
+    try:
+        corrected_route = centerline_tuple(
+            route_port_corrected_centerline(
+                record.route_obj,
+                source_port_um=(record.source_port_center_um if scope.correct_source else None),
+                target_port_um=(record.target_port_center_um if scope.correct_target else None),
+                allow_unchecked_bumps=setup.allow_unchecked_bumps,
+            )
+        )
+    except (TypeError, ValueError):
+        corrected_route = ()
+    centerline = merge_terminal_corrected_route_centerline(
+        existing_baseline=baseline,
+        route_baseline=route_baseline,
+        corrected_route_centerline=dedupe_centerline(corrected_route),
+        freeze_source=not scope.correct_source,
+        freeze_target=not scope.correct_target,
+    )
+    if len(centerline) < 2:
+        return record
+    return _with_corrected_centerline(record, router, centerline)
+
+
+def _merge_splice_segments(
+    prefix: _Centerline, middle: _Centerline, suffix: _Centerline
+) -> _Centerline:
+    pieces: list[tuple[float, float]] = []
+    for segment in (prefix, middle, suffix):
+        for point in segment:
+            if not pieces or pieces[-1] != point:
+                pieces.append(point)
+    return dedupe_centerline(tuple(pieces))
+
+
+@dataclass(frozen=True)
+class _CheckedCorrection:
+    """One record's checked correction: the kernel calls and their trace lines."""
+
+    record: RoutedNetRecord
+    router: EndpointCorrectionRouter
+    setup: EndpointCorrectionSetup
+    clearance: EndpointClearance
+
+    @property
+    def traced(self) -> bool:
+        """Whether the run's diagnostics name this net for the endpoint trace."""
+        diagnostics = self.setup.diagnostics
+        names = (
+            diagnostics if diagnostics is not None else FlowDiagnostics()
+        ).trace_endpoint_correction_nets
+        record = self.record
+        return record.net_name in names or (
+            record.net_id is not None and str(int(record.net_id)) in names
+        )
+
+    def trace(self, text: str) -> None:
+        if self.traced:
+            _LOGGER.info(
+                f"endpoint_trace net={self.record.net_name} id={self.record.net_id} {text}"
+            )
+
+    def realization_accepts(self, centerline: _Centerline) -> bool:
+        """Whether the kernel can realize `centerline` with the record's terminal tangents."""
+        record = self.record
+        realize = getattr(self.router, "realize_centerline_polygon_with_terminal_tangents", None)
         if realize is None:
             return True
         try:
             realize(
                 list(centerline),
-                float(route_width_um),
+                float(self.setup.route_width_um),
                 record.route_obj,
                 source_enabled=record.source_port_center_um is not None,
                 target_enabled=record.target_port_center_um is not None,
@@ -656,175 +744,129 @@ def apply_crossing_aware_endpoint_correction_to_record(
             return False
         return True
 
-    def _merge_splice_segments(
-        prefix: tuple[tuple[float, float], ...],
-        middle: tuple[tuple[float, float], ...],
-        suffix: tuple[tuple[float, float], ...],
-    ) -> tuple[tuple[float, float], ...]:
-        pieces: list[tuple[float, float]] = []
-        for segment in (prefix, middle, suffix):
-            for point in segment:
-                if not pieces or pieces[-1] != point:
-                    pieces.append(point)
-        return dedupe_centerline(tuple(pieces))
-
-    def _checked_terminal_segment(
-        segment: tuple[tuple[float, float], ...],
+    def terminal_segment(
+        self,
+        segment: _Centerline,
         *,
         source_port_um: tuple[float, float] | None,
         target_port_um: tuple[float, float] | None,
-    ) -> tuple[tuple[float, float], ...]:
+    ) -> _Centerline:
+        """`segment` with its two ends moved to the given points, checked by the kernel.
+
+        Empty when the kernel rejects the correction (the fallback
+        `endpoint.checked_segment_rejected`), when the segment has fewer
+        than two points or when an end point is missing.
+        """
+        record, clearance = self.record, self.clearance
         centerline_port_corrected_checked = getattr(
-            router,
-            "centerline_port_corrected_checked",
-            None,
+            self.router, "centerline_port_corrected_checked", None
         )
         if centerline_port_corrected_checked is None or len(segment) < 2:
             return ()
         if source_port_um is None or target_port_um is None:
             return ()
+        described = (
+            "mode=checked_terminal_segment "
+            f"segment_len={len(segment)} "
+            f"segment_start={segment[0] if segment else None} "
+            f"segment_end={segment[-1] if segment else None} "
+            f"source_port={source_port_um} target_port={target_port_um} "
+        )
         try:
             raw = centerline_port_corrected_checked(
                 int(record.net_id) if record.net_id is not None else 0,
                 list(segment),
-                float(route_width_um),
-                int(clearance_radius_cells),
-                int(core_radius_cells),
-                sorted(set(opened_cells or ())),
-                sorted(set(clearance_exempt_cells or ())),
+                float(self.setup.route_width_um),
+                int(clearance.radius_cells),
+                int(clearance.core_radius_cells),
+                sorted(set(clearance.opened_cells or ())),
+                sorted(set(clearance.exempt_cells or ())),
                 source_port_um=source_port_um,
                 target_port_um=target_port_um,
             )
         except (RuntimeError, TypeError, ValueError) as exc:
             fallbacks.take("endpoint.checked_segment_rejected")
-            if trace_endpoint:
-                _LOGGER.info(
-                    "endpoint_trace "
-                    f"net={record.net_name} id={record.net_id} "
-                    "mode=checked_terminal_segment "
-                    f"segment_len={len(segment)} "
-                    f"segment_start={segment[0] if segment else None} "
-                    f"segment_end={segment[-1] if segment else None} "
-                    f"source_port={source_port_um} target_port={target_port_um} "
-                    f"status=reject error={exc}"
-                )
+            self.trace(f"{described}status=reject error={exc}")
             return ()
         try:
             correction = dict(raw)
         except (TypeError, ValueError):
-            if trace_endpoint:
-                _LOGGER.info(
-                    "endpoint_trace "
-                    f"net={record.net_name} id={record.net_id} "
-                    "mode=checked_terminal_segment "
-                    f"segment_len={len(segment)} "
-                    f"segment_start={segment[0] if segment else None} "
-                    f"segment_end={segment[-1] if segment else None} "
-                    f"source_port={source_port_um} target_port={target_port_um} "
-                    "status=reject error=invalid_result"
-                )
+            self.trace(f"{described}status=reject error=invalid_result")
             return ()
         centerline = dedupe_centerline(centerline_tuple(correction.get("centerline")))
-        if trace_endpoint:
-            _LOGGER.info(
-                "endpoint_trace "
-                f"net={record.net_name} id={record.net_id} "
-                "mode=checked_terminal_segment "
-                f"segment_len={len(segment)} "
-                f"segment_start={segment[0] if segment else None} "
-                f"segment_end={segment[-1] if segment else None} "
-                f"source_port={source_port_um} target_port={target_port_um} "
-                f"status=accept candidate_label={correction.get('candidate_label')} "
-                f"corrected_len={len(centerline)}"
-            )
+        self.trace(
+            f"{described}status=accept candidate_label={correction.get('candidate_label')} "
+            f"corrected_len={len(centerline)}"
+        )
         return centerline
 
+
+def _checked_splice(
+    checked: _CheckedCorrection,
+    baseline: _Centerline,
+    crossing_points: list[tuple[float, float]],
+    scope: EndpointCorrectionScope,
+) -> _Centerline | None:
+    """The centerline with its two terminal pieces corrected and checked, or None.
+
+    The baseline is cut at its first and its last crossing; the piece
+    before is corrected to the source port and the piece after to the
+    target port, each only where `scope` asks for it. None when the
+    baseline cannot be cut, no piece was corrected, an end of the result
+    is not on its port or the kernel cannot realize the result.
+    """
+    record = checked.record
     splice_parts = _crossing_endpoint_splice_parts(
         baseline=baseline,
         crossing_points=crossing_points,
     )
-    if splice_parts is not None:
-        baseline_prefix, middle, baseline_suffix, _, _ = splice_parts
-        checked_prefix = (
-            _checked_terminal_segment(
-                baseline_prefix,
-                source_port_um=record.source_port_center_um,
-                target_port_um=baseline_prefix[-1],
-            )
-            if correct_source
-            else ()
+    if splice_parts is None:
+        return None
+    baseline_prefix, middle, baseline_suffix, _, _ = splice_parts
+    checked_prefix: _Centerline = ()
+    if scope.correct_source:
+        checked_prefix = checked.terminal_segment(
+            baseline_prefix,
+            source_port_um=record.source_port_center_um,
+            target_port_um=baseline_prefix[-1],
         )
-        checked_suffix = (
-            _checked_terminal_segment(
-                baseline_suffix,
-                source_port_um=baseline_suffix[0],
-                target_port_um=record.target_port_center_um,
-            )
-            if correct_target
-            else ()
+    checked_suffix: _Centerline = ()
+    if scope.correct_target:
+        checked_suffix = checked.terminal_segment(
+            baseline_suffix,
+            source_port_um=baseline_suffix[0],
+            target_port_um=record.target_port_center_um,
         )
-        if checked_prefix or checked_suffix:
-            candidate = _merge_splice_segments(
-                checked_prefix or baseline_prefix,
-                middle,
-                checked_suffix or baseline_suffix,
-            )
-            source_ok = not correct_source or _terminal_anchor_matches(
-                candidate,
-                record.source_port_center_um,
-                at_start=True,
-            )
-            target_ok = not correct_target or _terminal_anchor_matches(
-                candidate,
-                record.target_port_center_um,
-                at_start=False,
-            )
-            accepts = (
-                len(candidate) >= 2 and source_ok and target_ok and _realization_accepts(candidate)
-            )
-            if trace_endpoint:
-                _LOGGER.info(
-                    "endpoint_trace "
-                    f"net={record.net_name} id={record.net_id} "
-                    f"crossings={len(crossing_points)} "
-                    "mode=checked_terminal_segments "
-                    f"prefix_checked={bool(checked_prefix)} "
-                    f"suffix_checked={bool(checked_suffix)} "
-                    f"len={len(candidate)} "
-                    f"start={candidate[0] if candidate else None} "
-                    f"end={candidate[-1] if candidate else None} "
-                    f"source={record.source_port_center_um} "
-                    f"target={record.target_port_center_um} "
-                    f"accepts={accepts}"
-                )
-            if accepts:
-                corrected_total_length_um = kernel_centerline_length_um(router, candidate)
-                return replace(
-                    record,
-                    total_length_um=corrected_total_length_um,
-                    base_total_length_um=(
-                        record.base_total_length_um
-                        if record.base_total_length_um is not None
-                        else float(record.total_length_um)
-                    ),
-                    corrected_centerline_um=candidate,
-                    endpoint_correction_error=None,
-                )
-
-    # No unchecked fallback strategy: a crossing net's two terminal
-    # segments are corrected the same way a crossing-free net's is (see
-    # tier 1 above), and nothing else. If tier 1 did not produce an
-    # accepted result for both segments, this net fails endpoint
-    # correction honestly instead of silently accepting a candidate
-    # whose geometry was never actually verified against the real port
-    # (see .agent/execplans/2026-08-24-endpoint-correction-cascade-soundness.md's
-    # Decision Log for why the previous, unchecked fallback tier was
-    # removed).
-    message = format_port_endpoint_correction_error(
-        record,
-        "crossing-aware endpoint correction produced no realizable centerline",
-        realization_grid_spec=realization_grid_spec,
+    if not (checked_prefix or checked_suffix):
+        return None
+    candidate = _merge_splice_segments(
+        checked_prefix or baseline_prefix,
+        middle,
+        checked_suffix or baseline_suffix,
     )
-    if log_failures:
-        _LOGGER.info("ERROR: " + message)
-    return replace(record, endpoint_correction_error=message)
+    source_ok = not scope.correct_source or _terminal_anchor_matches(
+        candidate,
+        record.source_port_center_um,
+        at_start=True,
+    )
+    target_ok = not scope.correct_target or _terminal_anchor_matches(
+        candidate,
+        record.target_port_center_um,
+        at_start=False,
+    )
+    accepts = (
+        len(candidate) >= 2 and source_ok and target_ok and checked.realization_accepts(candidate)
+    )
+    checked.trace(
+        f"crossings={len(crossing_points)} "
+        "mode=checked_terminal_segments "
+        f"prefix_checked={bool(checked_prefix)} "
+        f"suffix_checked={bool(checked_suffix)} "
+        f"len={len(candidate)} "
+        f"start={candidate[0] if candidate else None} "
+        f"end={candidate[-1] if candidate else None} "
+        f"source={record.source_port_center_um} "
+        f"target={record.target_port_center_um} "
+        f"accepts={accepts}"
+    )
+    return candidate if accepts else None

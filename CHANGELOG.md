@@ -589,6 +589,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `apply_crossing_aware_endpoint_correction_to_record` (86 statements,
+  three nested functions) says what it does in three calls: a net
+  without crossings is corrected as a whole
+  (`_correct_without_crossings`, `_correct_one_end_again`), a net with
+  crossings gets its two terminal pieces corrected and checked
+  (`_checked_splice` over a `_CheckedCorrection`, which holds the kernel
+  calls and their trace lines), and a net without an accepted result
+  gets its error. Compared with the old function in one process: the
+  426 calls of sixteen runs (232 of nets with crossings) return equal
+  records.
 - `_two_bend_static_stub_centerline_um` (79 statements, 9 parameters)
   builds the stub's points (`_two_bend_stub_points`), its end
   (`_stub_anchor_point`) and the cell of the end (`_stub_anchor_cell`);
