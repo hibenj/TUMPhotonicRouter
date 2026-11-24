@@ -589,6 +589,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `write_route_diagnostics` (184 statements, eight nested functions) is
+  `routing/job_diagnostics.py`: one function per group of lines of the
+  file, in the order the module docstring lists, over one record of the
+  job's cells (`_JobCells`). The branches for a run without tracked
+  cells are gone: the dispatch hands a file path only when the run has a
+  debug directory. The 729 files of eight runs with
+  `--attempt-diagnostics` (Benes 8x8 flat in the three configurations,
+  ADEPT 8x8 in two, `heater_single` with its failing net,
+  `cascade_8_compact`, `permutation_synthetic`) are the same byte for
+  byte.
 - Electrical router: a terminal has at least one port (owner, 2026-11-24).
   `ElectricalTerminal` refuses an empty `ports` with a `ValueError` that
   names the terminal and its heater. The extraction already refused a

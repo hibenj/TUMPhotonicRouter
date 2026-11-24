@@ -30,8 +30,8 @@ from photonic_router.routing.diagnostics import (
     route_engine_summary,
     state_openings_for_job,
     write_failed_log,
-    write_route_diagnostics,
 )
+from photonic_router.routing.job_diagnostics import write_route_diagnostics
 from photonic_router.routing.settings import SessionSettings
 from photonic_router.routing.state import SessionState
 
