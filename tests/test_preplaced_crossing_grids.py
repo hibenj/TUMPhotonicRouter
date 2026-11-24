@@ -17,6 +17,7 @@ import klayout.db as kdb
 import pytest
 from gdsfactory.gpdk import get_generic_pdk
 from photonic_router.crossings import preplaced_crossing_grids as pcg
+from photonic_router.crossings.crossing_demand import build_crossing_demand
 from photonic_router.crossings.crossing_plan import CrossingStagePlan
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 
@@ -28,7 +29,7 @@ BENES_EXPECTED_CROSSINGS = {"benes_4x4": 2, "benes_8x8": 16, "benes_16x16": 88, 
 def _benchmark(name: str):
     module = importlib.import_module(f"benchmarks.{name}")
     schematic = module.build_schematic()
-    schedule = pcg.build_stage_schedule_for_benchmark(schematic, layout_from_schematic(schematic))
+    schedule = build_crossing_demand(schematic, layout_from_schematic(schematic)).stage_schedule()
     return schematic, schedule
 
 
@@ -130,7 +131,6 @@ def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge
     from photonic_router.crossings.preplaced_crossing_grids import (
         CROSSING_TILE_PREFIX,
         _port_cells_stay_inside_footprint,
-        build_stage_schedule_for_benchmark,
         derive_preplaced_crossing_layout,
     )
     from photonic_router.records.layout_from_schematic import layout_from_schematic
@@ -146,7 +146,7 @@ def test_x_array_tiles_snap_to_the_routing_grid_so_port_cells_are_footprint_edge
     module = importlib.import_module("benchmarks.benes_8x8")
     schematic = module.build_schematic()
     layout = layout_from_schematic(schematic)
-    schedule = build_stage_schedule_for_benchmark(schematic, layout)
+    schedule = build_crossing_demand(schematic, layout).stage_schedule()
     derived = derive_preplaced_crossing_layout(
         schematic, layout, schedule, router_probe_options=session_options(**probe)
     )
@@ -240,10 +240,10 @@ def _non_layered_benes_4x4():
     return schematic
 
 
-def test_build_stage_schedule_refuses_a_non_layered_design_with_nets_and_reasons() -> None:
+def test_the_crossing_demand_refuses_a_non_layered_design_with_nets_and_reasons() -> None:
     schematic = _non_layered_benes_4x4()
     with pytest.raises(ValueError) as info:
-        pcg.build_stage_schedule_for_benchmark(schematic, layout_from_schematic(schematic))
+        build_crossing_demand(schematic, layout_from_schematic(schematic)).require_band_layered()
     assert str(info.value) == (
         "2 net(s) outside the band model (non_adjacent_walls: probe_skip; "
         "same_wall: probe_same_wall)"

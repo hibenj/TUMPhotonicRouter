@@ -10,6 +10,7 @@ import pytest
 from gdsfactory.gpdk import get_generic_pdk
 from photonic_router.crossings import crossing_structures as cs
 from photonic_router.crossings import preplaced_crossing_grids as pcg
+from photonic_router.crossings.crossing_demand import build_crossing_demand
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 from photonic_router.static_obstacle_builder import StaticObstacleMapConfig
 
@@ -30,7 +31,7 @@ def _decisions(name: str) -> list[cs.LayerDecision]:
         module.register_benes_cells()
     schematic = module.build_schematic()
     layout = layout_from_schematic(schematic)
-    schedule = pcg.build_stage_schedule_for_benchmark(schematic, layout)
+    schedule = build_crossing_demand(schematic, layout).stage_schedule()
     # the probe must see the routing run's configuration (2 um grid, static
     # stubs, bend radius 5), or the anchors differ from the run's
     derived = pcg.derive_preplaced_crossing_layout(
@@ -73,7 +74,7 @@ def test_a_layer_nothing_fits_is_a_router_fallback_with_reasons(monkeypatch) -> 
     importlib.reload(synth)
     schematic = synth.build_schematic()
     layout = layout_from_schematic(schematic)
-    schedule = pcg.build_stage_schedule_for_benchmark(schematic, layout)
+    schedule = build_crossing_demand(schematic, layout).stage_schedule()
     stage = schedule.stages[0].stage
     decision = cs.select_layer_structure(
         schematic, layout, stage, pcg.CrossingGridGeometry(), {}, stage_key=(0, 1)

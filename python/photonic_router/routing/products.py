@@ -19,6 +19,12 @@ Phase 4 (`crossing_plan_stage.py`) returns the crossing plan and one
 Phase 5 (`handoff.py`) stores `StaticHandoffCells` (`state.static_cells`)
 and `RunPlan` (`state.run`).
 
+Phases 3 to 8 also return a product each, which the session hands to the
+next phase: `RouteJobsResult` (3), `PlannedJobs` (4), `FinalJobs` (5),
+`RoutedRecords` (7, and the detour pass) and `VerifiedRecords` (8). Phase 6
+has none: it runs the kernel and leaves the routed results in
+`state.search.bookkeeping`.
+
 Nothing rebinds a field of these records after its step returned.
 
 The records are frozen, their members are not all immutable: the kernel
@@ -37,6 +43,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from photonic_router.records.route_rust_types import (
     OpticalRouteClearancePolicy,
     RipupRerouteConfig,
+    RoutedNetRecord,
     RouteJob,
 )
 from photonic_router.static_obstacle_builder import GridSpec, StaticObstacleMapConfig
@@ -382,3 +389,46 @@ class LoadedDesign(NamedTuple):
 
     schematic: Any
     unrouted_layout: Any
+
+
+@dataclass(frozen=True)
+class RouteJobsResult:
+    """Phase 3's product: the route jobs plus the two per-spec maps phase 4 consumes."""
+
+    route_jobs: list[RouteJob]
+    endpoint_port_specs_by_instance: dict[str, set[str]]
+    dense_port_runway_length_by_spec: dict[str, int]
+
+
+@dataclass(frozen=True)
+class PlannedJobs:
+    """Phase 4's product: the jobs after crossing planning, and the foreign keepouts."""
+
+    route_jobs: list[RouteJob]
+    foreign_port_keepout_cells_by_instance: dict[str, set[tuple[int, int]]]
+
+
+@dataclass(frozen=True)
+class FinalJobs:
+    """Phase 5's product: the jobs as handed to the kernel, and when the search started."""
+
+    route_jobs: list[RouteJob]
+    astar_start_s: float
+
+
+@dataclass(frozen=True)
+class RoutedRecords:
+    """Phase 7's product: one record per routed net, and the search's elapsed time."""
+
+    routed_net_records: list[RoutedNetRecord]
+    astar_elapsed_s: float
+    #: nets the detour pass (phase 7b) re-routed; None when the pass did not run
+    detour_pass_reroutes: int | None = None
+
+
+@dataclass(frozen=True)
+class VerifiedRecords:
+    """Phase 8's product: the records after final repair, and the crossings still illegal."""
+
+    routed_net_records: list[RoutedNetRecord]
+    illegal_realized_crossings: list[dict[str, object]]

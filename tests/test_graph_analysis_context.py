@@ -2,30 +2,10 @@ from __future__ import annotations
 
 from photonic_router.benchmark_metadata import load_benchmark_metadata
 from photonic_router.crossings.crossing_demand import build_crossing_demand
-from photonic_router.graph_analysis import GraphAnalysisContext
 from photonic_router.plm.path_length_graph import build_graph_from_schematic
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from benchmarks.benes_4x4 import build_schematic
-
-
-def test_graph_analysis_context_owns_one_graph_for_the_path_length_analysis():
-    schematic = build_schematic()
-    metadata = load_benchmark_metadata("benes_4x4", schematic)
-    context = GraphAnalysisContext.from_schematic(
-        schematic,
-        node_types=metadata["node_types"],
-        internal_delays_um=metadata["internal_delays_um"],
-    )
-    edge_lengths = dict.fromkeys(context.graph.edges, 100.0)
-
-    timing = context.analyze_path_lengths(edge_lengths)
-
-    assert context.timing is timing
-    assert context.plm is not None
-    assert context.plm.edge_lengths_um == edge_lengths
-    assert len(context.plm.edge_missing_lengths_um) > 0
-    assert set(timing.topological_order) == set(schematic.netlist.instances)
 
 
 def test_base_graph_edges_do_not_hold_plm_annotations():

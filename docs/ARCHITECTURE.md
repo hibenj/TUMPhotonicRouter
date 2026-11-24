@@ -344,8 +344,8 @@ does not write the GDS unless
 With `--electrical-routing true` (on by default for `heater_s_mod`),
 `flow_electrical.py::run_electrical_routing_step` calls
 `electrical/route_electrical.py::route_electrical_heaters`, a literal
-sequence of twelve stages, each typed by a Protocol in `electrical/stages.py`
-and returning a frozen product from `electrical/types.py`:
+sequence of twelve stages, each
+returning a frozen product from `electrical/types.py`:
 
 | # | stage | module | product |
 | --- | --- | --- | --- |
@@ -737,13 +737,13 @@ Top-level modules (25 files, 7,550 lines):
 | `static_obstacle_builder.py`, `benchmark_extractor.py`, `routing_layers.py` | 970, 180, 140 | obstacle extraction and the `ObstacleMapBuilder` Protocol; geometry and port extraction; layer and port access tables |
 | `schematic_protocols.py` | 30 | `SchematicLike` and `PlacedSchematicLike`, the two read-only views of a schematic the analysis modules take |
 | `placement_analysis.py` | 80 | the placement analysis stage: `analyze_placement` -> `PlacementAnalysis` (region graph, crossing demand), section 2.3 |
-| `port_roles.py`, `graph_analysis.py`, `benchmark_metadata.py` | 150, 60, 220 | input-side ports; shared graph context; benchmark metadata (`NODE_TYPES`, `INTERNAL_DELAYS_UM`, `INPUT_PORTS_BY_COMPONENT`) |
+| `port_roles.py`, `benchmark_metadata.py` | 150, 220 | input-side ports; benchmark metadata (`NODE_TYPES`, `INTERNAL_DELAYS_UM`, `INPUT_PORTS_BY_COMPONENT`) |
 
 Sub-packages:
 
 | package | files, lines | responsibility |
 | --- | --- | --- |
-| `routing/` | 21, 9,650 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `products.py`, `state.py`, `stages.py` (the Protocols), one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `timing.py`, `api.py` (`route_match_and_realize`) |
+| `routing/` | 20, 9,650 | the routing session: `session.py` (the nine-phase `run`), `options.py`, `settings.py`, `products.py`, `state.py`, one module per phase (`obstacle_context`, `router_setup`, `route_jobs` 1,490, `crossing_plan_stage`, `handoff`, `dispatch`, `finalize` 1,170, `detour_pass`, `verify_repair` 1,110, `realize`), `diagnostics.py` (1,210, the debug write-ups), `timing.py`, `api.py` (`route_match_and_realize`) |
 | `crossings/` | 12, 5,600 | `crossing_demand.py` (bands, invariant pairs, the lower bound), `routing_regions.py` (the region graph: columns, bands, passages, portals, the chord test), `region_paths.py` (the way of a net that passes columns through their passages; a report), `crossing_plan.py` (bubble-sort events), `preplaced_crossing_grids.py` (1,480, contribution 2's tiles), `crossing_structures.py`, `crossing_modes.py`, the realized-crossing plan, components and verification (`route_rust_crossing_*`, 560 for verification), `crossing_verification_report.py` |
 | `plm/` | 5, 3,870 | `path_length_graph.py`, `path_length_requirements.py`, `path_length_diagnostics.py`, `route_rust_meanders.py` (1,910) |
 | `verify/` | 3, 2,140 | `photonic_verification.py` (1,310, the geometry verifier), `route_rust_endpoint_correction.py` (830) |

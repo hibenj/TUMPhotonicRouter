@@ -23,10 +23,14 @@ from photonic_router.records.route_rust_obstacle_config import (
 from photonic_router.records.route_rust_records import center_of_port_um
 from photonic_router.records.route_rust_types import RouteJob
 from photonic_router.routing import timing
-from photonic_router.routing.products import DenseRunways, EndpointIndex, FanoutStubs
+from photonic_router.routing.products import (
+    DenseRunways,
+    EndpointIndex,
+    FanoutStubs,
+    RouteJobsResult,
+)
 from photonic_router.routing.router_setup import fanout_int_or_default
 from photonic_router.routing.settings import SessionSettings
-from photonic_router.routing.stages import RouteJobsResult
 from photonic_router.routing.state import SessionState
 from photonic_router.routing_layers import (
     ComponentPortAccessRule,

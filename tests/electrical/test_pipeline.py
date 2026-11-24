@@ -1,28 +1,13 @@
-"""Tests for python/photonic_router/electrical/route_electrical.py and stages.py.
+"""Tests for python/photonic_router/electrical/route_electrical.py.
 
 The twelve-stage orchestration itself: the no-op guard when a layout has no
-heater terminals, and that every stage implementation still matches its
-``stages.py`` Protocol shape.
+heater terminals, and what the configuration refuses.
 """
 
 from __future__ import annotations
 
 import pytest
-from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters, stages
-from photonic_router.electrical.bundle_detail_router import route_detailed_bundles
-from photonic_router.electrical.common_bus_router import (
-    route_common_bus,
-    trim_common_bus_to_connections,
-)
-from photonic_router.electrical.debug import write_debug_artifacts
-from photonic_router.electrical.escape_router import route_common_bus_escape
-from photonic_router.electrical.individual_topology import compute_individual_escape_topology
-from photonic_router.electrical.metal_realization import realize_electrical_metal
-from photonic_router.electrical.obstacle_extraction import build_electrical_obstacle_map
-from photonic_router.electrical.pad_side_reconciliation import reconcile_pad_sides
-from photonic_router.electrical.pad_slots import plan_pad_slots
-from photonic_router.electrical.terminal_extraction import extract_heater_terminal_pairs
-from photonic_router.electrical.verification import verify_electrical_routing
+from photonic_router.electrical import ElectricalRoutingConfig, route_electrical_heaters
 from photonic_router.records.layout_from_schematic import layout_from_schematic
 
 from tests.electrical.support import _polygon_bboxes_by_layer
@@ -60,46 +45,6 @@ def test_electrical_routing_is_noop_without_heater_terminals(tmp_path):
     assert not _polygon_bboxes_by_layer(result.routed_component, config.pad_marker_layer)
     assert "electrical_metal_realization" not in result.routed_component.info
     assert not (tmp_path / "electrical" / "toy_common_bus.svg").exists()
-
-
-def test_electrical_stage_functions_satisfy_their_protocols() -> None:
-    """Each stage implementation's signature matches its `stages.py` Protocol.
-
-    A static-shape test: binding an implementation to a Protocol-annotated
-    variable is what a type checker (mypy) verifies against the Protocol's
-    `__call__`; this test only asserts every stage is still a plain callable,
-    so a stage accidentally turned into something uncallable is caught even
-    without running mypy.
-    """
-
-    terminal_extractor: stages.TerminalExtractor = extract_heater_terminal_pairs
-    obstacle_map_builder: stages.ObstacleMapBuilder = build_electrical_obstacle_map
-    common_bus_router: stages.CommonBusRouter = route_common_bus
-    common_bus_trimmer: stages.CommonBusTrimmer = trim_common_bus_to_connections
-    escape_topology_planner: stages.EscapeTopologyPlanner = compute_individual_escape_topology
-    pad_planner: stages.PadPlanner = plan_pad_slots
-    pad_side_reconciler: stages.PadSideReconciler = reconcile_pad_sides
-    bus_escape_router: stages.BusEscapeRouter = route_common_bus_escape
-    pad_wire_router: stages.PadWireRouter = route_detailed_bundles
-    metal_realizer: stages.MetalRealizer = realize_electrical_metal
-    electrical_verifier: stages.ElectricalVerifier = verify_electrical_routing
-    debug_artifact_writer: stages.DebugArtifactWriter = write_debug_artifacts
-
-    for stage_fn in (
-        terminal_extractor,
-        obstacle_map_builder,
-        common_bus_router,
-        common_bus_trimmer,
-        escape_topology_planner,
-        pad_planner,
-        pad_side_reconciler,
-        bus_escape_router,
-        pad_wire_router,
-        metal_realizer,
-        electrical_verifier,
-        debug_artifact_writer,
-    ):
-        assert callable(stage_fn)
 
 
 def test_config_rejects_zero_obstacle_clearance() -> None:

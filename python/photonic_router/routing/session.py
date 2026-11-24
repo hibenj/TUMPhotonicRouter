@@ -5,8 +5,8 @@ The phase bodies and their helpers live in the sibling stage modules as
 module-level functions. The session validates the options
 (`options.SessionOptions`) into `self.settings` (frozen
 `settings.SessionSettings`), runs phases 1 and 2, builds the shared record
-(`state.SessionState`) from their products and calls the remaining phases
-of `stages.py`, whose Protocols declare each phase's inputs and its product.
+(`state.SessionState`) from their products and calls the remaining phases;
+`products.py` holds what each phase returns.
 """
 
 from __future__ import annotations
@@ -104,12 +104,12 @@ class RouteNetsRustSession:
         return state
 
     def run(self) -> tuple[Component, RustRouteDebugArtifacts]:
-        """The routing phases of `stages.py`, in order (nine, plus the optional detour pass).
+        """The routing phases in order (nine, plus the optional detour pass).
 
         Phases 1 and 2 return the products the state is built from
         (`prepare`); each later phase takes the run's frozen inputs and its
         state, and the value a phase returns is the input of a later one
-        (`stages.py` names the types).
+        (`products.py` names the types).
         """
         settings, state = self.settings, self.prepare()
         jobs = route_jobs_stage.build_route_jobs_and_fanout_clustering(

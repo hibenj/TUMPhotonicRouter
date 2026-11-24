@@ -15,10 +15,9 @@ from photonic_router.config import ALL_NETS
 from photonic_router.records.route_order import depth_by_node_from_jobs, order_route_jobs
 from photonic_router.records.route_rust_types import RipupRerouteConfig, RouteJob
 from photonic_router.routing import timing
-from photonic_router.routing.products import RunPlan, StateOpenings, StaticHandoffCells
+from photonic_router.routing.products import FinalJobs, RunPlan, StateOpenings, StaticHandoffCells
 from photonic_router.routing.route_jobs import angle_to_step, cell_in_grid, port_to_grid_state
 from photonic_router.routing.settings import SessionSettings
-from photonic_router.routing.stages import FinalJobs
 from photonic_router.routing.state import SearchLog, SessionState
 from photonic_router.static_obstacle_builder import grid_cell_center
 

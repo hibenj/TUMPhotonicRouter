@@ -2,7 +2,7 @@
 
 The literal stage sequence run by ``route_electrical_heaters``, after the
 pattern of ``python/photonic_router/routing/session.py::run`` -- one call per stage,
-each returning the frozen product its ``stages.py`` Protocol names:
+each returning a frozen product of ``types.py``:
 
     1  TerminalExtractor      terminal_extraction.extract_heater_terminal_pairs
        -> tuple[TerminalPairGroup, ...]

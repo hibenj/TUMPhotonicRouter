@@ -18,7 +18,7 @@ from photonic_router.records.route_rust_obstacle_config import port_type_name
 from photonic_router.records.route_rust_records import center_of_port_um
 from photonic_router.records.route_rust_types import RouteJob
 from photonic_router.routing import timing
-from photonic_router.routing.products import PortFootprints
+from photonic_router.routing.products import PlannedJobs, PortFootprints
 from photonic_router.routing.route_jobs import (
     angle_to_step,
     cell_in_grid,
@@ -31,7 +31,6 @@ from photonic_router.routing.route_jobs import (
     state_cell_center_um,
 )
 from photonic_router.routing.settings import SessionSettings
-from photonic_router.routing.stages import PlannedJobs
 from photonic_router.routing.state import SessionState
 from photonic_router.static_obstacle_builder import physical_to_grid
 

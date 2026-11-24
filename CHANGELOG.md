@@ -12,6 +12,18 @@ matching, 7 electrical (open), 8 release layout (one package, a Cargo workspace,
 documentation). Each slice preserves the routed results unless its entry says otherwise; the
 checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/plm_gate.sh`.
 
+### Removed
+
+- Interfaces nothing in the package used (owner, 2026-11-24). The stage
+  Protocols of `routing/stages.py` and `electrical/stages.py` typed no
+  parameter and no variable of the package; only a test assigned each
+  phase function to its Protocol. The five phase products that lived
+  next to them are in `routing/products.py` now. `graph_analysis.py`
+  (`GraphAnalysisContext`, exported by the package) and
+  `build_stage_schedule_for_benchmark` were called by tests only; the
+  tests of the crossing structures read the schedule from
+  `build_crossing_demand(...).stage_schedule()`, as the flow does.
+
 ### Added
 
 - Logic harness, stage `electrical` (`logic_checks/electrical.py`; owner,

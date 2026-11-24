@@ -60,7 +60,7 @@ from gdsfactory.schematic import Instance, Net, Placement, Schematic
 from gdsfactory.typings import Port
 
 from photonic_router.config import CrossingGridConfig, RoutingConfig
-from photonic_router.crossings.crossing_demand import StageSchedule, build_crossing_demand
+from photonic_router.crossings.crossing_demand import StageSchedule
 from photonic_router.crossings.crossing_plan import CrossingStagePlan
 from photonic_router.gds.route_gds import get_port_from_instance
 from photonic_router.records.layout_from_schematic import layout_from_schematic
@@ -1374,7 +1374,7 @@ def derive_preplaced_crossing_layout(
     """Derive a schematic/layout pair with crossing grids placed and nets split.
 
     ``schedule`` is the placement's `CrossingDemand.stage_schedule()`: the
-    bands with crossing events, left to right (`build_stage_schedule_for_benchmark`).
+    bands with crossing events, left to right.
 
     ``router_probe_options`` (tiles mode, column grid): the routing run's
     options (obstacle config, fan-out access mode, bend radius), so the
@@ -1459,17 +1459,3 @@ def preplaced_crossing_grid_metrics(derived: DerivedCrossingLayout) -> dict[str,
         "router_fallback_net_count": len(derived.router_fallback_net_names),
         "plan_event_count": int(derived.plan_event_count),
     }
-
-
-def build_stage_schedule_for_benchmark(
-    schematic: Schematic,
-    unrouted_layout: Component,
-) -> StageSchedule:
-    """The stage schedule of the placed benchmark: its `CrossingDemand`'s bands with events.
-
-    Raises `ValueError` (the nets and reasons) when the design is not
-    band-layered; the flow stage wraps that into its own failure message.
-    """
-    demand = build_crossing_demand(schematic, unrouted_layout)
-    demand.require_band_layered()
-    return demand.stage_schedule()

@@ -2,7 +2,7 @@
 
 `session` holds the session shell, one module per `run` phase holds that phase and
 its stage-private helpers, and `api` holds the module-level entry points. The
-phases answer to the Protocols in `stages`; they take the run's frozen inputs
+phases take the run's frozen inputs
 (`settings.SessionSettings`) and its mutable record (`state.SessionState`), and
 `timing` holds the pipeline timers they all use.
 """

@@ -1,7 +1,6 @@
-"""One test per routing stage Protocol (`python/photonic_router/routing/stages.py`).
+"""One test per routing stage Protocol (`python/photonic_router/routing/products.py`).
 
-Milestone 5 Slice 2c. Slice 2b declared the nine phases of `session.run()` as
-`typing.Protocol`s; these tests exercise each phase on its own, on the smallest
+These tests exercise each phase on its own, on the smallest
 synthetic scenario the existing session tests use (an empty layout, a dummy
 netlist of three nets, a 30x20 one-micron grid from a stand-in obstacle builder),
 with no benchmark and no schematic loading. Every phase gets the product of the
@@ -13,19 +12,13 @@ The synthetic scenario and the pipeline that runs the stages over it moved to
 `tests/fixtures/synthetic_layouts.py` and `tests/fixtures/sessions.py` in
 Milestone 6 Slice 2 (the `pipeline` fixture below comes from
 `tests/conftest.py`); this file keeps only the per-phase assertions.
-
-The last test is the conformance one: each phase function's signature is checked
-against the `__call__` of its Protocol at run time, and the nine module-level
-annotated assignments next to it are the same check for a type checker.
 """
 
 from __future__ import annotations
 
-import inspect
 import sys
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -33,15 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
 from photonic_router.records.crossing_plan_info import CrossingPlanInfo
 from photonic_router.routing import crossing_plan_stage as crossing_plan_stage_module
-from photonic_router.routing import dispatch as dispatch_module
-from photonic_router.routing import finalize as finalize_module
-from photonic_router.routing import handoff as handoff_module
-from photonic_router.routing import obstacle_context as obstacle_context_module
-from photonic_router.routing import realize as realize_module
-from photonic_router.routing import route_jobs as route_jobs_module
-from photonic_router.routing import router_setup as router_setup_module
-from photonic_router.routing import stages
-from photonic_router.routing import verify_repair as verify_repair_module
+from photonic_router.routing import products
 from photonic_router.routing.products import KernelSetup, RawStaticGeometry
 
 from tests.fixtures.sessions import Pipeline
@@ -51,7 +36,7 @@ from tests.fixtures.synthetic_layouts import GRID_HEIGHT, GRID_WIDTH, LINKS, Obs
 def test_phase1_obstacle_context_builder_returns_the_map_and_the_grid(pipeline: Pipeline) -> None:
     context = pipeline.through(1)
 
-    assert isinstance(context, stages.ObstacleContext)
+    assert isinstance(context, products.ObstacleContext)
     assert isinstance(context.obstacle_map, ObstacleMapStandIn)
     assert context.obstacle_svg is None  # no debug_dir in this session
     assert context.crossing_device_info == {
@@ -91,7 +76,7 @@ def test_phase2_router_setup_returns_the_kernel_setup(pipeline: Pipeline) -> Non
 def test_phase3_route_job_builder_turns_the_netlist_into_jobs(pipeline: Pipeline) -> None:
     result = pipeline.through(3)
 
-    assert isinstance(result, stages.RouteJobsResult)
+    assert isinstance(result, products.RouteJobsResult)
     assert [job.net_name for job in result.route_jobs] == list(LINKS)
     assert [job.net_id for job in result.route_jobs] == [1, 2, 3]
     assert [(job.inst1, job.port1, job.inst2, job.port2) for job in result.route_jobs] == [
@@ -130,7 +115,7 @@ def test_phase4_crossing_planner_types_the_plan_and_passes_the_jobs_through(
     jobs = pipeline.through(3)
     planned = pipeline.through(4)
 
-    assert isinstance(planned, stages.PlannedJobs)
+    assert isinstance(planned, products.PlannedJobs)
     assert planned.route_jobs == jobs.route_jobs
     assert set(planned.foreign_port_keepout_cells_by_instance) <= {
         "left",
@@ -160,7 +145,7 @@ def test_phase5_static_handoff_orders_the_jobs_and_starts_the_search_clock(
     planned = pipeline.through(4)
     final = pipeline.through(5)
 
-    assert isinstance(final, stages.FinalJobs)
+    assert isinstance(final, products.FinalJobs)
     assert sorted(job.net_id for job in final.route_jobs) == sorted(
         job.net_id for job in planned.route_jobs
     )
@@ -186,7 +171,7 @@ def test_phase6_kernel_dispatcher_leaves_the_routes_in_the_bookkeeping(
 def test_phase7_result_finalizer_returns_one_record_per_net(pipeline: Pipeline) -> None:
     routed = pipeline.through(7)
 
-    assert isinstance(routed, stages.RoutedRecords)
+    assert isinstance(routed, products.RoutedRecords)
     assert [record.net_name for record in routed.routed_net_records] == list(LINKS)
     assert routed.astar_elapsed_s > 0.0
     for record in routed.routed_net_records:
@@ -200,7 +185,7 @@ def test_phase8_geometry_verifier_finds_no_illegal_crossing_on_parallel_nets(
     routed = pipeline.through(7)
     verified = pipeline.through(8)
 
-    assert isinstance(verified, stages.VerifiedRecords)
+    assert isinstance(verified, products.VerifiedRecords)
     assert verified.illegal_realized_crossings == []
     assert [record.net_name for record in verified.routed_net_records] == [
         record.net_name for record in routed.routed_net_records
@@ -275,78 +260,3 @@ def test_the_kernel_setup_indexes_its_static_rectangles_by_row(pipeline: Pipelin
     # overlapping ranges of one row merge; a rectangle outside the grid is dropped
     assert kernel.raw_static_rect_ranges_by_y == {0: [(0, 2)], 1: [(0, 5)]}
     assert kernel.heater_opening_rect_ranges_by_y == {}
-
-
-# The nine (Protocol, phase function) pairs the conformance test below checks.
-_STAGE_IMPLEMENTATIONS: tuple[tuple[str, type, Any], ...] = (
-    (
-        "ObstacleContextBuilder",
-        stages.ObstacleContextBuilder,
-        obstacle_context_module.build_static_obstacle_context,
-    ),
-    ("RouterSetup", stages.RouterSetup, router_setup_module.configure_router_and_grid),
-    (
-        "RouteJobBuilder",
-        stages.RouteJobBuilder,
-        route_jobs_module.build_route_jobs_and_fanout_clustering,
-    ),
-    (
-        "CrossingPlanner",
-        stages.CrossingPlanner,
-        crossing_plan_stage_module.build_crossing_plan_and_port_footprints,
-    ),
-    ("StaticHandoff", stages.StaticHandoff, handoff_module.finalize_route_jobs_and_static_handoff),
-    ("KernelDispatcher", stages.KernelDispatcher, dispatch_module.dispatch_native_routing),
-    ("ResultFinalizer", stages.ResultFinalizer, finalize_module.finalize_routing_results),
-    (
-        "GeometryVerifier",
-        stages.GeometryVerifier,
-        verify_repair_module.repair_and_verify_final_geometry,
-    ),
-    ("Realizer", stages.Realizer, realize_module.realize_and_assemble_debug_artifacts),
-)
-
-# The same pairing as a typed assignment, for a type checker rather than pytest.
-_OBSTACLE_CONTEXT_BUILDER: stages.ObstacleContextBuilder = (
-    obstacle_context_module.build_static_obstacle_context
-)
-_ROUTER_SETUP: stages.RouterSetup = router_setup_module.configure_router_and_grid
-_ROUTE_JOB_BUILDER: stages.RouteJobBuilder = (
-    route_jobs_module.build_route_jobs_and_fanout_clustering
-)
-_CROSSING_PLANNER: stages.CrossingPlanner = (
-    crossing_plan_stage_module.build_crossing_plan_and_port_footprints
-)
-_STATIC_HANDOFF: stages.StaticHandoff = handoff_module.finalize_route_jobs_and_static_handoff
-_KERNEL_DISPATCHER: stages.KernelDispatcher = dispatch_module.dispatch_native_routing
-_RESULT_FINALIZER: stages.ResultFinalizer = finalize_module.finalize_routing_results
-_GEOMETRY_VERIFIER: stages.GeometryVerifier = verify_repair_module.repair_and_verify_final_geometry
-_REALIZER: stages.Realizer = realize_module.realize_and_assemble_debug_artifacts
-
-
-@pytest.mark.parametrize(
-    ("name", "protocol", "implementation"),
-    _STAGE_IMPLEMENTATIONS,
-    ids=[name for name, _protocol, _implementation in _STAGE_IMPLEMENTATIONS],
-)
-def test_every_stage_function_satisfies_its_protocol(
-    name: str, protocol: type, implementation: Any
-) -> None:
-    """The phase's parameters and product are the ones its Protocol declares."""
-
-    declared = inspect.signature(protocol.__call__)
-    actual = inspect.signature(implementation)
-    declared_parameters = [
-        parameter for key, parameter in declared.parameters.items() if key != "self"
-    ]
-
-    assert [parameter.name for parameter in declared_parameters] == [
-        parameter.name for parameter in actual.parameters.values()
-    ], name
-    assert [parameter.kind for parameter in declared_parameters] == [
-        parameter.kind for parameter in actual.parameters.values()
-    ], name
-    assert [str(parameter.annotation) for parameter in declared_parameters] == [
-        str(parameter.annotation) for parameter in actual.parameters.values()
-    ], name
-    assert str(declared.return_annotation) == str(actual.return_annotation), name

@@ -63,7 +63,6 @@ from photonic_router.crossings.crossing_plan import (
     build_crossing_plan,
 )
 from photonic_router.crossings.routing_regions import Column
-from photonic_router.graph_analysis import GraphAnalysisContext
 from photonic_router.plm.path_length_graph import (
     DelayInsertionCandidate,
     GraphEdge,
@@ -107,7 +106,6 @@ __all__ = [
     "CrossingStagePlan",
     "DelayInsertionCandidate",
     "ExtractedBenchmark",
-    "GraphAnalysisContext",
     "GraphEdge",
     "GraphNode",
     "GridSpec",

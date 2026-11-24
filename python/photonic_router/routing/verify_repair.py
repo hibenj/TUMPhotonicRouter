@@ -35,8 +35,8 @@ from photonic_router.routing.dispatch import (
 from photonic_router.routing.finalize import (
     apply_unrestricted_and_fanout_stub_endpoint_corrections_for_net_ids,
 )
+from photonic_router.routing.products import VerifiedRecords
 from photonic_router.routing.settings import SessionSettings
-from photonic_router.routing.stages import VerifiedRecords
 from photonic_router.routing.state import SessionState
 from photonic_router.static_obstacle_builder import physical_to_grid
 
