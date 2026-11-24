@@ -412,25 +412,96 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
     layout.read(str(gds_path))
     top = next(cell for cell in layout.each_cell() if cell.is_top())
     dbu = layout.dbu
+    skipped: Counter = Counter()
+    components, net_region = _components_and_waveguides(
+        layout, _leaves(layout, top, config), config, skipped
+    )
+    net_region = _merged_with_gaps_closed(net_region, config, dbu)
+    components, net_region, abutting = _grouped(components, net_region, config, dbu)
+    book = _PortBook(components)
+    nets, fragments = _nets_of_polygons(net_region, book, config, dbu)
+    _move_coupler_ports_out(book)
+    _add_abutting_nets(nets, abutting, book)
+    named, nets, names = _named_components(book, nets, config, skipped)
+    resolved_nets = [
+        ExtractedNet(
+            name=net.name,
+            endpoints=tuple(names[endpoint] for endpoint in net.endpoints),
+            stub=net.stub,
+            note=net.note,
+            length_um=net.length_um,
+        )
+        for net in nets
+    ]
+    return ExtractedCircuit(
+        components=named, nets=resolved_nets, skipped=skipped, fragments=fragments
+    )
+
+
+class _PortBook:
+    """The components of a circuit and the ports found on each so far, by component index."""
+
+    def __init__(self, components: list[_Component]) -> None:
+        self.components = components
+        self.ports: dict[int, list[ExtractedPort]] = {index: [] for index in range(len(components))}
+        self._seen: dict[tuple[int, int, int], int] = {}
+
+    def add_component(self, component: _Component) -> int:
+        """Append a component without ports and return its index."""
+        self.components.append(component)
+        self.ports[len(self.components) - 1] = []
+        return len(self.components) - 1
+
+    def register(self, component_index: int, position: Point, normal: Point) -> int:
+        """The index of the component's port at ``position`` (um), added if it is new.
+
+        Two positions that agree to 0.01 um are one port. ``normal`` is the
+        direction a waveguide leaves the port in, in the chip frame.
+        """
+        key = (component_index, round(position[0] * 100), round(position[1] * 100))
+        if key in self._seen:
+            return self._seen[key]
+        inverse = _local_frame(self.components[component_index].leaf).inverted()
+        local = inverse * kdb.DPoint(*position)
+        local_normal = inverse * kdb.DVector(*normal)
+        self.ports[component_index].append(
+            ExtractedPort(
+                position=position,
+                normal=normal,
+                local_position=(local.x, local.y),
+                local_normal=(local_normal.x, local_normal.y),
+            )
+        )
+        self._seen[key] = len(self.ports[component_index]) - 1
+        return self._seen[key]
+
+
+def _leaves(layout: Any, top: Any, config: ExtractionConfig) -> list[_Leaf]:
+    """The leaves of the top cell; a heater without heater metal gets its own kind."""
+    leaves = _flatten(layout, top, config)
+    if not config.heater_metal_layers:
+        return leaves
+    metal_indexes = [
+        layout.layer(kdb.LayerInfo(layer, datatype))
+        for layer, datatype in config.heater_metal_layers
+    ]
+    return [
+        dataclasses.replace(leaf, kind=config.heater_without_metal_kind)
+        if leaf.kind == "heater"
+        and leaf.cell is not None
+        and _cell_region(layout, leaf.cell, leaf.trans, metal_indexes).is_empty()
+        else leaf
+        for leaf in leaves
+    ]
+
+
+def _components_and_waveguides(
+    layout: Any, leaves: list[_Leaf], config: ExtractionConfig, skipped: Counter
+) -> tuple[list[_Component], Any]:
+    """The component cells and the region of all waveguide pieces; counts the skipped kinds."""
     core_indexes = [
         layout.layer(kdb.LayerInfo(layer, datatype)) for layer, datatype in config.core_layers
     ]
-    leaves = _flatten(layout, top, config)
-    if config.heater_metal_layers:
-        metal_indexes = [
-            layout.layer(kdb.LayerInfo(layer, datatype))
-            for layer, datatype in config.heater_metal_layers
-        ]
-        leaves = [
-            dataclasses.replace(leaf, kind=config.heater_without_metal_kind)
-            if leaf.kind == "heater"
-            and leaf.cell is not None
-            and _cell_region(layout, leaf.cell, leaf.trans, metal_indexes).is_empty()
-            else leaf
-            for leaf in leaves
-        ]
-
-    skipped: Counter = Counter()
     components: list[_Component] = []
     net_region = kdb.Region()
     for leaf in leaves:
@@ -448,119 +519,142 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
             _Component(
                 leaf=leaf,
                 region=region,
-                bbox=region.bbox().to_dtype(dbu) if not region.is_empty() else None,
+                bbox=region.bbox().to_dtype(layout.dbu) if not region.is_empty() else None,
                 black_box=_leaf_region(layout, leaf, core_indexes, fallback=False).is_empty(),
             )
         )
+    return components, net_region
+
+
+def _merged_with_gaps_closed(net_region: Any, config: ExtractionConfig, dbu: float) -> Any:
+    """The waveguide pieces merged; gaps up to ``config.net_gap_um`` between them closed."""
     net_region.merge()
     if config.net_gap_um > 0:
         half = round(config.net_gap_um / 2 / dbu)
         net_region = net_region.sized(half).sized(-half)
         net_region.merge()
+    return net_region
+
+
+def _grouped(
+    components: list[_Component], net_region: Any, config: ExtractionConfig, dbu: float
+) -> tuple[list[_Component], Any, list[tuple[int, int, Point, Point]]]:
+    """Arm pairs and directional couplers grouped where ``config`` has rules for them.
+
+    Returns the components with the groups in place of their parts, the
+    waveguide region without the groups' boxes, and the ports of
+    components that lie on a group's box (``_abutting_ports``).
+    """
+    if not (config.arm_pairs or config.directional_couplers):
+        return components, net_region, []
     tol = config.touch_tolerance_um
     low, high = config.facet_width_um
-    abutting: list[tuple[int, int, Point, Point]] = []
-    if config.arm_pairs or config.directional_couplers:
-        pair_boxes: list[Any] = []
-        if config.arm_pairs:
-            components, pair_boxes = _group_arm_pairs(
-                components, config, net_region, tol, low, high, dbu
-            )
-        if config.directional_couplers:
-            components, coupler_boxes = _group_directional_couplers(
-                components, config, net_region, tol, low, high, dbu
-            )
-            pair_boxes = pair_boxes + coupler_boxes
-        abutting = _abutting_ports(net_region, components, pair_boxes, tol, low, high, dbu)
-        for box in pair_boxes:
-            net_region -= kdb.Region(box.to_itype(dbu))
-        net_region.merge()
+    pair_boxes: list[Any] = []
+    if config.arm_pairs:
+        components, pair_boxes = _group_arm_pairs(
+            components, config, net_region, tol, low, high, dbu
+        )
+    if config.directional_couplers:
+        components, coupler_boxes = _group_directional_couplers(
+            components, config, net_region, tol, low, high, dbu
+        )
+        pair_boxes = pair_boxes + coupler_boxes
+    abutting = _abutting_ports(net_region, components, pair_boxes, tol, low, high, dbu)
+    for box in pair_boxes:
+        net_region -= kdb.Region(box.to_itype(dbu))
+    net_region.merge()
+    return components, net_region, abutting
 
-    ports_by_component: dict[int, list[ExtractedPort]] = {
-        index: [] for index in range(len(components))
-    }
+
+def _nets_of_polygons(
+    net_region: Any, book: _PortBook, config: ExtractionConfig, dbu: float
+) -> tuple[list[_IndexedNet], int]:
+    """One net per waveguide polygon with a port, and the number of polygons without one."""
     nets: list[_IndexedNet] = []
     fragments = 0
-    seen_ports: dict[tuple[int, int, int], int] = {}
-
-    def register_port(component_index: int, position: Point, normal: Point) -> int:
-        key = (component_index, round(position[0] * 100), round(position[1] * 100))
-        if key in seen_ports:
-            return seen_ports[key]
-        inverse = _local_frame(components[component_index].leaf).inverted()
-        local = inverse * kdb.DPoint(*position)
-        local_normal = inverse * kdb.DVector(*normal)
-        ports_by_component[component_index].append(
-            ExtractedPort(
-                position=position,
-                normal=normal,
-                local_position=(local.x, local.y),
-                local_normal=(local_normal.x, local_normal.y),
-            )
-        )
-        seen_ports[key] = len(ports_by_component[component_index]) - 1
-        return seen_ports[key]
-
     for polygon_index, polygon in enumerate(net_region.each()):
         dpolygon = polygon.to_dtype(dbu)
-        points = list(dpolygon.each_point_hull())
-        count = len(points)
-        endpoints: list[tuple[int, int]] = []
-        touched: set[int] = set()
-        facet_widths: list[float] = []
-        for index in range(count):
-            a, b = points[index], points[(index + 1) % count]
-            length = a.distance(b)
-            if length < low or length > high:
-                continue
-            mid = kdb.DPoint((a.x + b.x) / 2, (a.y + b.y) / 2)
-            # the waveguide runs perpendicular to the facet, into the polygon
-            px, py = (b.y - a.y) / length, -(b.x - a.x) / length
-            probe = kdb.DPoint(mid.x + px * 0.3, mid.y + py * 0.3)
-            inside = dpolygon.inside(probe)
-            normal = (px, py) if inside else (-px, -py)
-            cap = _is_end_cap(points, index)
-            component_index = _touching_component(components, mid, tol, dbu, cap)
-            if component_index is None and cap:
-                component_index = _placeholder_near(components, config, mid)
-            if component_index is None and cap and config.open_ends:
-                component_index = len(components)
-                components.append(_open_end_component(mid))
-                ports_by_component[component_index] = []
-            if component_index is None or component_index in touched:
-                continue
-            touched.add(component_index)
-            port_index = register_port(component_index, (mid.x, mid.y), normal)
-            endpoints.append((component_index, port_index))
-            facet_widths.append(length)
+        endpoints, facet_widths = _polygon_endpoints(dpolygon, book, config, dbu)
         if not endpoints:
             fragments += 1
             continue
-        kinds = [components[ci].leaf.kind for ci, _ in endpoints]
-        stub = len(endpoints) == 2 and any(kind in config.stub_kinds for kind in kinds)
+        kinds = [book.components[ci].leaf.kind for ci, _ in endpoints]
         note = ""
         if len(endpoints) == 1:
             note = "one port only: the other end touches nothing recognized"
         elif len(endpoints) > 2:
             note = "more than two ports: a crossing, a junction, or two nets that touch"
-        # the narrowest end facet is the waveguide's width; a wider one is the
-        # face of the component port the net ends on (a 2 um MMI port)
-        width = min(facet_widths)
         nets.append(
             _IndexedNet(
                 name=f"net_{polygon_index}",
-                endpoints=tuple((ci, pi) for ci, pi in endpoints),
-                stub=stub,
+                endpoints=tuple(endpoints),
+                stub=len(endpoints) == 2 and any(kind in config.stub_kinds for kind in kinds),
                 note=note,
-                length_um=round(dpolygon.area() / width, 3),
+                # the narrowest end facet is the waveguide's width; a wider one is
+                # the face of the component port the net ends on (a 2 um MMI port)
+                length_um=round(dpolygon.area() / min(facet_widths), 3),
             )
         )
+    return nets, fragments
 
-    # a grouped coupler's outer ports: not the cut at its parallel section but
-    # where the generic coupler, spreading from it, puts them
-    for component_index, component in enumerate(components):
+
+def _polygon_endpoints(
+    dpolygon: Any, book: _PortBook, config: ExtractionConfig, dbu: float
+) -> tuple[list[tuple[int, int]], list[float]]:
+    """The ports a waveguide polygon ends on, as (component, port), and each facet's width (um).
+
+    An end facet is an edge of the hull whose length lies in
+    ``config.facet_width_um``; it is a port where it meets a component
+    (``_component_at_facet``). A component gets one port per polygon.
+    """
+    points = list(dpolygon.each_point_hull())
+    low, high = config.facet_width_um
+    endpoints: list[tuple[int, int]] = []
+    facet_widths: list[float] = []
+    touched: set[int] = set()
+    for index in range(len(points)):
+        a, b = points[index], points[(index + 1) % len(points)]
+        length = a.distance(b)
+        if length < low or length > high:
+            continue
+        mid = kdb.DPoint((a.x + b.x) / 2, (a.y + b.y) / 2)
+        # the waveguide runs perpendicular to the facet, into the polygon
+        px, py = (b.y - a.y) / length, -(b.x - a.x) / length
+        inside = dpolygon.inside(kdb.DPoint(mid.x + px * 0.3, mid.y + py * 0.3))
+        normal = (px, py) if inside else (-px, -py)
+        component_index = _component_at_facet(book, config, points, index, mid, dbu)
+        if component_index is None or component_index in touched:
+            continue
+        touched.add(component_index)
+        endpoints.append((component_index, book.register(component_index, (mid.x, mid.y), normal)))
+        facet_widths.append(length)
+    return endpoints, facet_widths
+
+
+def _component_at_facet(
+    book: _PortBook, config: ExtractionConfig, points: list, index: int, mid: Any, dbu: float
+) -> int | None:
+    """The component the facet at ``mid`` ends on, or None.
+
+    The component that touches the facet; for an end cap that touches
+    none, a placeholder near it, or (with ``config.open_ends``) a new
+    open-end component.
+    """
+    cap = _is_end_cap(points, index)
+    component_index = _touching_component(book.components, mid, config.touch_tolerance_um, dbu, cap)
+    if component_index is None and cap:
+        component_index = _placeholder_near(book.components, config, mid)
+    if component_index is None and cap and config.open_ends:
+        component_index = book.add_component(_open_end_component(mid))
+    return component_index
+
+
+def _move_coupler_ports_out(book: _PortBook) -> None:
+    """A grouped coupler's outer ports: not the cut at its parallel section but
+    where the generic coupler, spreading from it, puts them."""
+    for component_index, component in enumerate(book.components):
         outer_ports = component.geometry.get("outer_ports") if component.geometry else None
-        ports = ports_by_component.get(component_index, [])
+        ports = book.ports.get(component_index, [])
         if not isinstance(outer_ports, tuple) or not outer_ports or len(ports) != 2:
             continue
         ports.sort(key=lambda port: port.position[1])
@@ -574,11 +668,15 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
                 local_normal=port.local_normal,
             )
 
+
+def _add_abutting_nets(
+    nets: list[_IndexedNet], abutting: list[tuple[int, int, Point, Point]], book: _PortBook
+) -> None:
+    """An MMI output lying on an arm pair's box: both get the port, the net
+    between them has no length and is not routed."""
     for component_index, pair_index, position, normal in abutting:
-        # an MMI output lying on an arm pair's box: both get the port, the net
-        # between them has no length and is not routed
-        port_a = register_port(component_index, position, normal)
-        port_b = register_port(pair_index, position, (-normal[0], -normal[1]))
+        port_a = book.register(component_index, position, normal)
+        port_b = book.register(pair_index, position, (-normal[0], -normal[1]))
         nets.append(
             _IndexedNet(
                 name=f"abut_{len(nets)}",
@@ -587,88 +685,78 @@ def extract_circuit(gds_path: str | Path, config: ExtractionConfig) -> Extracted
             )
         )
 
-    # components with ports (unconnected show cells are dropped), named by kind
+
+def _named_components(
+    book: _PortBook, nets: list[_IndexedNet], config: ExtractionConfig, skipped: Counter
+) -> tuple[list[ExtractedComponent], list[_IndexedNet], dict[tuple[int, int], tuple[str, int]]]:
+    """The components with ports, named ``<kind>_<n>``, their ports ordered by local position.
+
+    Returns the components, the nets with their port indexes in the new
+    order, and per (component index, port index) of those nets the
+    (component name, port index) it is in the result. A component without
+    a port (an unconnected show cell) is dropped and counted in ``skipped``;
+    a cell of ``config.split_kinds`` becomes one single-port component per
+    port.
+    """
     named: list[ExtractedComponent] = []
-    index_to_name: dict[int, str] = {}
+    names: dict[tuple[int, int], tuple[str, int]] = {}
     counters: Counter = Counter()
-    split_names: dict[tuple[int, int], str] = {}
-    for component_index, component in enumerate(components):
+    for component_index, component in enumerate(book.components):
         leaf = component.leaf
-        ports = ports_by_component[component_index]
+        ports = book.ports[component_index]
         if not ports:
             skipped[f"{leaf.kind} (no net)"] += 1
             continue
         ordered = sorted(ports, key=lambda port: (port.local_position[0], port.local_position[1]))
-        trans = leaf.trans
         part_kind = config.split_kinds.get(leaf.kind)
         if part_kind is not None:
             # one single-port component per port, the parts spread to the configured pitch
             spread = _spread_ports(ordered, config.split_pitch_um)
             for port in ordered:
                 counters[part_kind] += 1
-                part_name = f"{part_kind}_{counters[part_kind] - 1}"
-                split_names[(component_index, ports.index(port))] = part_name
-                named.append(
-                    ExtractedComponent(
-                        name=part_name,
-                        kind=part_kind,
-                        cell_name=leaf.cell_name,
-                        origin=(trans.disp.x, trans.disp.y),
-                        rotation_deg=float(trans.angle),
-                        mirror=bool(trans.is_mirror()),
-                        ports=(spread[id(port)],),
-                    )
+                part = _named_component(
+                    leaf, f"{part_kind}_{counters[part_kind] - 1}", part_kind, (spread[id(port)],)
                 )
+                names[(component_index, ports.index(port))] = (part.name, 0)
+                named.append(part)
             continue
         counters[leaf.kind] += 1
-        name = f"{leaf.kind}_{counters[leaf.kind] - 1}"
-        index_to_name[component_index] = name
         named.append(
-            ExtractedComponent(
-                name=name,
-                kind=leaf.kind,
-                cell_name=leaf.cell_name,
-                origin=(trans.disp.x, trans.disp.y),
-                rotation_deg=float(trans.angle),
-                mirror=bool(trans.is_mirror()),
-                ports=tuple(ordered),
+            dataclasses.replace(
+                _named_component(
+                    leaf, f"{leaf.kind}_{counters[leaf.kind] - 1}", leaf.kind, tuple(ordered)
+                ),
                 geometry=dict(component.geometry),
             )
         )
-        # remap port indexes to the ordered tuple
         order = {id(port): new_index for new_index, port in enumerate(ordered)}
-        ports_by_component[component_index] = [None] * len(ordered)  # type: ignore[list-item]
-        for port in ordered:
-            ports_by_component[component_index][order[id(port)]] = port
-        for net_index, net in enumerate(nets):
-            nets[net_index] = _IndexedNet(
-                name=net.name,
+        new_index_of = [order[id(port)] for port in ports]
+        for new_index in new_index_of:
+            names[(component_index, new_index)] = (named[-1].name, new_index)
+        nets = [
+            dataclasses.replace(
+                net,
                 endpoints=tuple(
-                    (ci, order[id(ports[pi])] if ci == component_index else pi)
+                    (ci, new_index_of[pi] if ci == component_index else pi)
                     for ci, pi in net.endpoints
                 ),
-                stub=net.stub,
-                note=net.note,
-                length_um=net.length_um,
             )
+            for net in nets
+        ]
+    return named, nets, names
 
-    def resolve(ci: int, pi: int) -> tuple[str, int]:
-        if (ci, pi) in split_names:
-            return (split_names[(ci, pi)], 0)
-        return (index_to_name[ci], pi)
 
-    resolved_nets = [
-        ExtractedNet(
-            name=net.name,
-            endpoints=tuple(resolve(ci, pi) for ci, pi in net.endpoints),
-            stub=net.stub,
-            note=net.note,
-            length_um=net.length_um,
-        )
-        for net in nets
-    ]
-    return ExtractedCircuit(
-        components=named, nets=resolved_nets, skipped=skipped, fragments=fragments
+def _named_component(
+    leaf: _Leaf, name: str, kind: str, ports: tuple[ExtractedPort, ...]
+) -> ExtractedComponent:
+    return ExtractedComponent(
+        name=name,
+        kind=kind,
+        cell_name=leaf.cell_name,
+        origin=(leaf.trans.disp.x, leaf.trans.disp.y),
+        rotation_deg=float(leaf.trans.angle),
+        mirror=bool(leaf.trans.is_mirror()),
+        ports=ports,
     )
 
 

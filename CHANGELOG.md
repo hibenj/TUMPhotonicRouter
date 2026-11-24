@@ -589,6 +589,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `extract_circuit` of the GDS extraction (133 statements) is its steps:
+  the leaves, the components and the waveguide region, the groups, the
+  nets of the polygons, the abutting nets, the named components. The
+  ports found so far are a `_PortBook` (was a dictionary, a second one
+  for the ports already seen and a nested function over both). The
+  result is the same on the five private circuits (components, nets,
+  skipped cells and the report compared in memory, old against new) and
+  in the nine tests.
 - `write_route_diagnostics` (184 statements, eight nested functions) is
   `routing/job_diagnostics.py`: one function per group of lines of the
   file, in the order the module docstring lists, over one record of the
