@@ -589,6 +589,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The package has no blind `except Exception` any more (rule 4.9, now in
+  force as ruff `BLE001`; 35 at the first measurement, 31 on the morning
+  of 2026-11-23). The last three: `load_benchmark_metadata` caught every
+  error of a benchmark's `build_schematic()` and went on without the
+  instances' delays, and took a `schematic_loader` nothing passed; it
+  lets the benchmark's error through and the parameter is gone. The
+  debug picture of a route catches `KeyError` and `TypeError`, a job the
+  run stored no openings for.
 - Three stage functions of the flow take records instead of long
   parameter lists (rule 4.4; PLR0913 12 to 9). `FlowRun`
   (`flow_stats.py`) is what the stages of one run report with: the

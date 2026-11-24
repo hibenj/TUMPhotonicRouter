@@ -939,7 +939,8 @@ def export_route_svg(
     if opened_cells is None:
         try:
             _, _, _, _, opened_cells = state_openings_for_job(state, job)
-        except Exception:
+        except (KeyError, TypeError):
+            # a job the run stored no openings for
             opened_cells = []
     if settings.debug_stop_after_route_index is not None and int(job.route_index) == int(
         settings.debug_stop_after_route_index

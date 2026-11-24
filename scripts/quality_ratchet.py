@@ -49,7 +49,6 @@ RUFF_RULES: dict[str, str] = {
     "PLR0913": "4.4 function over the parameter limit",
     "PLR0915": "4.5 function over the statement limit",
     "C901": "4.5 function over the complexity limit",
-    "BLE001": "4.9 blind except",
 }
 
 #: Clippy and rustc lints the standards propose for `router-core`.

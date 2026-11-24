@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Callable
 from typing import Any, cast
 
 from photonic_router.schematic_protocols import SchematicLike
@@ -179,10 +178,12 @@ def resolve_internal_delays_for_instances(
 def load_benchmark_metadata(
     benchmark_name: str,
     schematic: SchematicLike | None = None,
-    *,
-    schematic_loader: Callable[[str], SchematicLike] | None = None,
 ) -> dict[str, Any]:
-    """Load optional benchmark metadata used by path-length analysis."""
+    """Load optional benchmark metadata used by path-length analysis.
+
+    Without `schematic` the benchmark's own `build_schematic()` gives it;
+    an error of that function is the benchmark's and is not caught.
+    """
     benchmark_module = importlib.import_module(f"benchmarks.{benchmark_name}")
     node_types = getattr(benchmark_module, "NODE_TYPES", {})
     internal_delays_um = dict(getattr(benchmark_module, "INTERNAL_DELAYS_UM", {}))
@@ -199,19 +200,10 @@ def load_benchmark_metadata(
     node_ranks = getattr(benchmark_module, "NODE_RANKS", {})
     edge_ranks = getattr(benchmark_module, "EDGE_RANKS", {})
 
-    if schematic is None and schematic_loader is not None:
-        try:
-            schematic = schematic_loader(benchmark_name)
-        except Exception:
-            schematic = None
     if schematic is None:
         build_schematic = getattr(benchmark_module, "build_schematic", None)
         if callable(build_schematic):
-            try:
-                built_schematic = build_schematic()
-                schematic = cast(SchematicLike, built_schematic)
-            except Exception:
-                schematic = None
+            schematic = cast(SchematicLike, build_schematic())
 
     if schematic is not None:
         internal_delays_um = resolve_internal_delays_for_instances(
