@@ -14,6 +14,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Added
 
+- `tests/logic/test_hash_seed.py`: a run does not depend on the hash seed
+  of the process. Four cells, one per way of routing (the standard
+  router with path-length matching, the guided search, the X array and
+  the column grid of the pre-placed crossings), are each routed in two
+  processes with different `PYTHONHASHSEED`; the routed records (order,
+  centerlines, lengths) have to be equal. The column-grid cell fails on
+  the code before the fix of 2026-11-24 (python 982 to 986).
 - Logic harness, stage `electrical` (`logic_checks/electrical.py`; owner,
   2026-11-23): the wiring of the heaters is checked on every benchmark
   that asks for it (13 public ones). Every heater has one terminal on the
