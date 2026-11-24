@@ -589,6 +589,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `routing/api.route_match_and_realize` (106 statements) is its three
+  steps: the session, `_match_path_lengths` and `_realize`. Path-length
+  matching returns the record `_Matching` (the records with their
+  meanders, the three info forms, the report, the `MatchedLengths` of
+  the harness) and is itself split into `_meander_planning_space` (the
+  obstacle map and the clearances the meander boxes are checked against)
+  and `_judge_matching` (the acceptance, which fails the run for a group
+  that stays unequal and was not declared so). The statements are moved,
+  none changed. Ratchet: PLR0915 10 to 9, C901 51 to 50.
 - `write_routes_overview_svg` takes what `layout_overview_shapes` returns
   as one value, the named tuple `LayoutShapes` (instances and waveguide
   polygons), instead of two parameters (PLR0913 9 to 8).

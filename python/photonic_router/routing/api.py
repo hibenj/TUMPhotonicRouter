@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +54,7 @@ from photonic_router.records.route_rust_types import (
     OpticalRouteClearancePolicy,
     RoutedNetRecord,
     RouteRustPipelineResult,
+    RustRouteDebugArtifacts,
     as_float,
 )
 from photonic_router.routing import stage_observer
@@ -85,6 +86,338 @@ def analyze_meander_insertion_for_requirements(
     """Plan the meanders with this module's backend loader; see the function in `plm`."""
     _meander_impl.load_rust_backend = load_rust_backend
     return _meander_impl.analyze_meander_insertion_for_requirements(*args, **kwargs)
+
+
+def _meander_planning_space(
+    unrouted_layout: Component,
+    debug_artifacts: RustRouteDebugArtifacts,
+    options: SessionOptions,
+) -> tuple[MeanderPlanningSpace, OpticalRouteClearancePolicy]:
+    """The grid and the static cells the meander boxes are checked against, and the clearances.
+
+    Raises:
+        RuntimeError: the session left no realization grid.
+    """
+    realization = options.realization
+    if debug_artifacts.realization_grid_spec is None:
+        raise RuntimeError("Missing realization grid spec from routing phase.")
+    resolved_user_obstacle_config = resolve_obstacle_config(
+        options.obstacle_config,
+        route_layer=realization.route_layer,
+        include_heater_obstacles=options.include_heater_obstacles,
+    )
+    meander_route_clearance_um = max(
+        0.0,
+        as_float(
+            getattr(resolved_user_obstacle_config, "clearance_um", 0.0),
+            0.0,
+        ),
+    )
+    meander_clearance_policy = OpticalRouteClearancePolicy.from_dimensions(
+        route_width_um=float(realization.route_width_um),
+        grid_size_um=float(debug_artifacts.realization_grid_spec[2]),
+        route_clearance_um=meander_route_clearance_um,
+    )
+    # Meander box legality should use real routed-layer geometry, not
+    # conservative component bboxes. Keep static obstacles strict: source
+    # and target access openings are valid for route entry/exit only, not
+    # for placing meander boxes.
+    meander_obstacle_config = with_obstacle_mode(
+        resolved_user_obstacle_config,
+        obstacle_mode="rasterized_polygons",
+        clear_port_open_cells_from_static=False,
+        populate_obstacle_map=False,
+        materialize_cell_sets=False,
+    )
+    meander_obstacle_map = build_static_obstacle_map(
+        unrouted_layout,
+        config=meander_obstacle_config,
+    )
+    meander_static_blocked_cell_handle = getattr(
+        meander_obstacle_map,
+        "rust_blocked_cell_handle",
+        None,
+    )
+    meander_static_blocked_cells = (
+        None
+        if meander_static_blocked_cell_handle is not None
+        else meander_obstacle_map.blocked_cells
+    )
+    space = MeanderPlanningSpace(
+        realization_grid_spec=debug_artifacts.realization_grid_spec,
+        allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
+        bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+        static_blocked_cells=meander_static_blocked_cells,
+        static_blocked_cell_handle=meander_static_blocked_cell_handle,
+        route_occupancy_radius_cells=meander_clearance_policy.plm_registered_route_keepout_radius_cells,
+        meander_box_clearance_radius_cells=meander_clearance_policy.plm_candidate_box_clearance_radius_cells,
+    )
+    return space, meander_clearance_policy
+
+
+def _judge_matching(
+    analysis: Any,
+    meander_report: MeanderInsertionReport,
+    *,
+    requirements: Any,
+    lifted_groups: Any,
+    output_matching_info: Any,
+    declared_unmatched: tuple[str, ...],
+    analysis_info: Any,
+) -> None:
+    """Compare what the meanders reached with what was asked, and fail the run if it is not enough.
+
+    The diagnostics per group and the acceptance go into `analysis_info`.
+    A group that stays unequal is accepted when the benchmark declared it
+    (decision 11); the run then says so and goes on.
+
+    Raises:
+        RuntimeError: a group the benchmark did not declare stays unmatched.
+    """
+    matching_group_diagnostics = matching_group_diagnostics_to_info(
+        analysis,
+        meander_report,
+        adjusted_requirements=requirements,
+        lifted_groups=lifted_groups,
+    )
+    output_matching_diagnostics = output_matching_diagnostics_to_info(
+        output_matching_info,
+        meander_report,
+        analysis=analysis,
+    )
+    acceptance_summary = path_length_acceptance_summary(
+        matching_group_diagnostics + output_matching_diagnostics
+    )
+    analysis_info["matching_group_diagnostics"] = matching_group_diagnostics
+    analysis_info["output_matching_diagnostics"] = output_matching_diagnostics
+    analysis_info["path_length_acceptance"] = acceptance_summary
+    if not acceptance_summary["passed"]:
+        failure = format_path_length_acceptance_failure(acceptance_summary)
+        declared = frozenset(declared_unmatched)
+        undeclared = _undeclared_failed_groups(acceptance_summary, declared)
+        analysis_info["path_length_declared_unmatched_groups"] = sorted(declared)
+        if undeclared:
+            raise RuntimeError(f"{failure} Undeclared group(s): {', '.join(undeclared)}.")
+        # Decision 11 (2026-11-05): the benchmark declares the groups it
+        # leaves unmatched on purpose; the run finishes and reports them
+        # (SUMMARY plm_over_tolerance).
+        _LOGGER.info(f"      - WARNING: {failure} (declared unmatched groups)")
+
+
+@dataclass(frozen=True)
+class _Matching:
+    """What path-length matching hands to the realization and to the run's result."""
+
+    #: the records with the meanders planned on them
+    records: list[RoutedNetRecord]
+    #: the analysis, the requirements and the report in the form the GDS meta info takes
+    analysis_info: Any
+    requirements_info: Any
+    meander_report: MeanderInsertionReport
+    meander_report_info: Any
+    matched: MatchedLengths
+
+
+def _match_path_lengths(
+    unrouted_layout: Component,
+    schematic: Schematic,
+    debug_artifacts: RustRouteDebugArtifacts,
+    options: SessionOptions,
+    *,
+    matching: MatchingOptions,
+    metadata: CircuitMetadata,
+    pipeline_timings_s: dict[str, float],
+) -> _Matching:
+    """Analyse the path lengths of the routed nets, plan the meanders and judge the result.
+
+    The steps: the arrival analysis and the missing lengths per net, lifted
+    to what a meander can insert and merged with the output matching when
+    that is asked for; the obstacle map the meander boxes are checked
+    against; the meander planning; the acceptance, which fails the run for
+    a group that stays unequal and was not declared so. Adds its timings to
+    `pipeline_timings_s` and reports stage `matched`.
+
+    Raises:
+        RuntimeError: the session left no realization grid, or a group the
+            benchmark did not declare stays unmatched.
+    """
+    records_for_realization = debug_artifacts.routed_net_records
+    t_analysis_start = time.perf_counter()
+    analysis, requirements = analyze_path_length_matching(
+        schematic,
+        routed_net_records=records_for_realization,
+        node_types=metadata.node_types,
+        internal_delays_um=metadata.internal_delays_um,
+        input_ports_by_component=metadata.input_ports_by_component,
+    )
+    pipeline_timings_s["path_length_analysis"] = time.perf_counter() - t_analysis_start
+    analysis_info = analysis_to_info_dict(analysis)
+    raw_requirements = list(requirements)
+    min_insertable_extra_um = minimum_four_bend_extra_length_um(
+        grid_size_um=float(debug_artifacts.realization_grid_spec[2])
+        if debug_artifacts.realization_grid_spec is not None
+        else 0.0,
+        bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+    )
+    requirements, lifted_groups = compute_group_lifted_requirements(
+        analysis,
+        minimum_insertable_extra_um=min_insertable_extra_um,
+    )
+    lifted_requirements = list(requirements)
+    output_requirements: list[Any] = []
+    output_matching_info = {
+        "enabled": bool(matching.path_length_match_outputs),
+        "target_output_arrival_um": 0.0,
+        "output_count": 0,
+        "requirements": [],
+        "outputs": [],
+    }
+    if matching.path_length_match_outputs:
+        output_requirements, output_matching_info = compute_output_matching_requirements(
+            analysis,
+            existing_requirements=lifted_requirements,
+            scope=matching.path_length_output_scope,
+        )
+        requirements = merge_missing_length_requirements(
+            lifted_requirements,
+            output_requirements,
+        )
+    requirement_delay_candidates = build_requirement_delay_candidates(
+        analysis,
+        requirements,
+    )
+    analysis_info["raw_requirements"] = [requirement_to_dict(req) for req in raw_requirements]
+    analysis_info["lifted_requirements"] = [requirement_to_dict(req) for req in lifted_requirements]
+    analysis_info["output_matching"] = output_matching_info
+    analysis_info["output_requirements"] = [requirement_to_dict(req) for req in output_requirements]
+    analysis_info["requirements"] = [requirement_to_dict(req) for req in requirements]
+    analysis_info["requirement_delay_candidates"] = [
+        {
+            "edge": requirement_to_dict(req)["edge"],
+            "candidates": [
+                delay_candidate_to_dict(candidate)
+                for candidate in requirement_delay_candidates.get(req.edge_key, [])
+            ],
+        }
+        for req in requirements
+    ]
+    analysis_info["matching_groups"] = lifted_groups
+    analysis_info["minimum_insertable_extra_length_um"] = float(min_insertable_extra_um)
+    requirements_info = [requirement_to_dict(req) for req in requirements]
+    t_meander_obstacle_start = time.perf_counter()
+    space, meander_clearance_policy = _meander_planning_space(
+        unrouted_layout, debug_artifacts, options
+    )
+    analysis_info["clearance_policy"] = meander_clearance_policy.to_debug_dict()
+    pipeline_timings_s["meander_obstacle_map"] = time.perf_counter() - t_meander_obstacle_start
+
+    meander_config = MeanderInsertionConfig(
+        max_meander_height_um=float(matching.path_length_meander_height_um),
+    )
+    analysis_info["meander_config"] = {
+        "min_candidate_straight_length_um": float(meander_config.min_candidate_straight_length_um),
+        "max_meander_height_um": float(meander_config.max_meander_height_um),
+        "auto_meander_endpoint_inset_um": (
+            None
+            if meander_config.auto_meander_endpoint_inset_um is None
+            else float(meander_config.auto_meander_endpoint_inset_um)
+        ),
+        "endpoint_inset_policy": (
+            "adaptive" if meander_config.auto_meander_endpoint_inset_um is None else "fixed"
+        ),
+    }
+
+    t_meander_planning_start = time.perf_counter()
+    records_for_realization, meander_report = analyze_meander_insertion_for_requirements(
+        records_for_realization,
+        requirements,
+        config=meander_config,
+        requirement_delay_candidates=requirement_delay_candidates,
+        debug_meanders=matching.debug_meanders,
+        space=space,
+    )
+    pipeline_timings_s["meander_planning"] = time.perf_counter() - t_meander_planning_start
+    meander_report_info = meander_report.to_info_dict()
+    _judge_matching(
+        analysis,
+        meander_report,
+        requirements=requirements,
+        lifted_groups=lifted_groups,
+        output_matching_info=output_matching_info,
+        declared_unmatched=matching.path_length_declared_unmatched_groups,
+        analysis_info=analysis_info,
+    )
+    matched = MatchedLengths(
+        analysis=analysis,
+        records=list(records_for_realization),
+        meander_report=meander_report,
+        declared_unmatched_groups=tuple(matching.path_length_declared_unmatched_groups),
+        output_scope=(
+            matching.path_length_output_scope if matching.path_length_match_outputs else None
+        ),
+    )
+    stage_observer.notify("matched", None, matched)
+    return _Matching(
+        records=list(records_for_realization),
+        analysis_info=analysis_info,
+        requirements_info=requirements_info,
+        meander_report=meander_report,
+        meander_report_info=meander_report_info,
+        matched=matched,
+    )
+
+
+def _realize(
+    routed_layout: Component,
+    records: list[RoutedNetRecord],
+    debug_artifacts: RustRouteDebugArtifacts,
+    options: SessionOptions,
+) -> tuple[RustRouteDebugArtifacts, CrossingPlanInfo | None]:
+    """Draw the records into the layout and place the crossing components.
+
+    Returns the artifacts with the crossing plan as the realization left it,
+    and that plan.
+
+    Raises:
+        RuntimeError: the session left no realization grid.
+    """
+    debug = options.debug
+    realization = options.realization
+    if debug_artifacts.realization_grid_spec is None:
+        raise RuntimeError("Missing realization grid spec from routing phase.")
+
+    crossing_plan_info = debug_artifacts.crossing_plan_info
+    plan_info = (
+        CrossingPlanInfo.from_dict(crossing_plan_info)
+        if isinstance(crossing_plan_info, dict)
+        else None
+    )
+    realize_routed_net_records(
+        routed_layout,
+        records,
+        crossing_plan_info=plan_info.to_dict() if plan_info is not None else None,
+        geometry=RealizationGeometry(
+            route_width_um=realization.route_width_um,
+            route_layer=realization.route_layer,
+            realization_grid_spec=debug_artifacts.realization_grid_spec,
+            allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
+            bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
+        ),
+    )
+    if plan_info is not None:
+        place_realized_crossing_components(routed_layout, plan_info)
+        write_crossing_debug_artifacts(
+            debug_path=Path(debug.debug_dir) if debug.debug_dir is not None else None,
+            debug_prefix=debug.debug_prefix,
+            crossing_plan_info=plan_info,
+        )
+        # The phases above wrote into `plan_info`, not into the mapping the
+        # artifacts still carry: hand the updated plan back to them.
+        debug_artifacts = replace(
+            debug_artifacts,
+            crossing_plan_info=plan_info.to_dict(),
+        )
+    return debug_artifacts, plan_info
 
 
 def route_match_and_realize(
@@ -169,239 +502,24 @@ def route_match_and_realize(
         pipeline_timings_s["route_endpoint_correction"] = (
             time.perf_counter() - t_endpoint_correction_start
         )
-    analysis_info = None
-    requirements_info = None
-    meander_report = None
-    matched: MatchedLengths | None = None
-    meander_report_info = None
+    matching_result: _Matching | None = None
     records_for_realization = debug_artifacts.routed_net_records
     if matching.enable_path_length_matching:
-        t_analysis_start = time.perf_counter()
-        analysis, requirements = analyze_path_length_matching(
-            schematic,
-            routed_net_records=records_for_realization,
-            node_types=metadata.node_types,
-            internal_delays_um=metadata.internal_delays_um,
-            input_ports_by_component=metadata.input_ports_by_component,
-        )
-        pipeline_timings_s["path_length_analysis"] = time.perf_counter() - t_analysis_start
-        analysis_info = analysis_to_info_dict(analysis)
-        raw_requirements = list(requirements)
-        min_insertable_extra_um = minimum_four_bend_extra_length_um(
-            grid_size_um=float(debug_artifacts.realization_grid_spec[2])
-            if debug_artifacts.realization_grid_spec is not None
-            else 0.0,
-            bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
-        )
-        requirements, lifted_groups = compute_group_lifted_requirements(
-            analysis,
-            minimum_insertable_extra_um=min_insertable_extra_um,
-        )
-        lifted_requirements = list(requirements)
-        output_requirements: list[Any] = []
-        output_matching_info = {
-            "enabled": bool(matching.path_length_match_outputs),
-            "target_output_arrival_um": 0.0,
-            "output_count": 0,
-            "requirements": [],
-            "outputs": [],
-        }
-        if matching.path_length_match_outputs:
-            output_requirements, output_matching_info = compute_output_matching_requirements(
-                analysis,
-                existing_requirements=lifted_requirements,
-                scope=matching.path_length_output_scope,
-            )
-            requirements = merge_missing_length_requirements(
-                lifted_requirements,
-                output_requirements,
-            )
-        requirement_delay_candidates = build_requirement_delay_candidates(
-            analysis,
-            requirements,
-        )
-        analysis_info["raw_requirements"] = [requirement_to_dict(req) for req in raw_requirements]
-        analysis_info["lifted_requirements"] = [
-            requirement_to_dict(req) for req in lifted_requirements
-        ]
-        analysis_info["output_matching"] = output_matching_info
-        analysis_info["output_requirements"] = [
-            requirement_to_dict(req) for req in output_requirements
-        ]
-        analysis_info["requirements"] = [requirement_to_dict(req) for req in requirements]
-        analysis_info["requirement_delay_candidates"] = [
-            {
-                "edge": requirement_to_dict(req)["edge"],
-                "candidates": [
-                    delay_candidate_to_dict(candidate)
-                    for candidate in requirement_delay_candidates.get(req.edge_key, [])
-                ],
-            }
-            for req in requirements
-        ]
-        analysis_info["matching_groups"] = lifted_groups
-        analysis_info["minimum_insertable_extra_length_um"] = float(min_insertable_extra_um)
-        requirements_info = [requirement_to_dict(req) for req in requirements]
-        if debug_artifacts.realization_grid_spec is None:
-            raise RuntimeError("Missing realization grid spec from routing phase.")
-        t_meander_obstacle_start = time.perf_counter()
-        resolved_user_obstacle_config = resolve_obstacle_config(
-            options.obstacle_config,
-            route_layer=realization.route_layer,
-            include_heater_obstacles=options.include_heater_obstacles,
-        )
-        meander_route_clearance_um = max(
-            0.0,
-            as_float(
-                getattr(resolved_user_obstacle_config, "clearance_um", 0.0),
-                0.0,
-            ),
-        )
-        meander_clearance_policy = OpticalRouteClearancePolicy.from_dimensions(
-            route_width_um=float(realization.route_width_um),
-            grid_size_um=float(debug_artifacts.realization_grid_spec[2]),
-            route_clearance_um=meander_route_clearance_um,
-        )
-        analysis_info["clearance_policy"] = meander_clearance_policy.to_debug_dict()
-        # Meander box legality should use real routed-layer geometry, not
-        # conservative component bboxes. Keep static obstacles strict: source
-        # and target access openings are valid for route entry/exit only, not
-        # for placing meander boxes.
-        meander_obstacle_config = with_obstacle_mode(
-            resolved_user_obstacle_config,
-            obstacle_mode="rasterized_polygons",
-            clear_port_open_cells_from_static=False,
-            populate_obstacle_map=False,
-            materialize_cell_sets=False,
-        )
-        meander_obstacle_map = build_static_obstacle_map(
+        matching_result = _match_path_lengths(
             unrouted_layout,
-            config=meander_obstacle_config,
-        )
-        meander_static_blocked_cell_handle = getattr(
-            meander_obstacle_map,
-            "rust_blocked_cell_handle",
-            None,
-        )
-        meander_static_blocked_cells = (
-            None
-            if meander_static_blocked_cell_handle is not None
-            else meander_obstacle_map.blocked_cells
-        )
-        pipeline_timings_s["meander_obstacle_map"] = time.perf_counter() - t_meander_obstacle_start
-
-        meander_config = MeanderInsertionConfig(
-            max_meander_height_um=float(matching.path_length_meander_height_um),
-        )
-        analysis_info["meander_config"] = {
-            "min_candidate_straight_length_um": float(
-                meander_config.min_candidate_straight_length_um
-            ),
-            "max_meander_height_um": float(meander_config.max_meander_height_um),
-            "auto_meander_endpoint_inset_um": (
-                None
-                if meander_config.auto_meander_endpoint_inset_um is None
-                else float(meander_config.auto_meander_endpoint_inset_um)
-            ),
-            "endpoint_inset_policy": (
-                "adaptive" if meander_config.auto_meander_endpoint_inset_um is None else "fixed"
-            ),
-        }
-
-        t_meander_planning_start = time.perf_counter()
-        records_for_realization, meander_report = analyze_meander_insertion_for_requirements(
-            records_for_realization,
-            requirements,
-            config=meander_config,
-            requirement_delay_candidates=requirement_delay_candidates,
-            debug_meanders=matching.debug_meanders,
-            space=MeanderPlanningSpace(
-                realization_grid_spec=debug_artifacts.realization_grid_spec,
-                allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
-                bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
-                static_blocked_cells=meander_static_blocked_cells,
-                static_blocked_cell_handle=meander_static_blocked_cell_handle,
-                route_occupancy_radius_cells=meander_clearance_policy.plm_registered_route_keepout_radius_cells,
-                meander_box_clearance_radius_cells=meander_clearance_policy.plm_candidate_box_clearance_radius_cells,
-            ),
-        )
-        pipeline_timings_s["meander_planning"] = time.perf_counter() - t_meander_planning_start
-        meander_report_info = meander_report.to_info_dict()
-        if analysis_info is not None:
-            matching_group_diagnostics = matching_group_diagnostics_to_info(
-                analysis,
-                meander_report,
-                adjusted_requirements=requirements,
-                lifted_groups=lifted_groups,
-            )
-            output_matching_diagnostics = output_matching_diagnostics_to_info(
-                output_matching_info,
-                meander_report,
-                analysis=analysis,
-            )
-            acceptance_summary = path_length_acceptance_summary(
-                matching_group_diagnostics + output_matching_diagnostics
-            )
-            analysis_info["matching_group_diagnostics"] = matching_group_diagnostics
-            analysis_info["output_matching_diagnostics"] = output_matching_diagnostics
-            analysis_info["path_length_acceptance"] = acceptance_summary
-            if not acceptance_summary["passed"]:
-                failure = format_path_length_acceptance_failure(acceptance_summary)
-                declared = frozenset(matching.path_length_declared_unmatched_groups)
-                undeclared = _undeclared_failed_groups(acceptance_summary, declared)
-                analysis_info["path_length_declared_unmatched_groups"] = sorted(declared)
-                if undeclared:
-                    raise RuntimeError(f"{failure} Undeclared group(s): {', '.join(undeclared)}.")
-                # Decision 11 (2026-11-05): the benchmark declares the groups it
-                # leaves unmatched on purpose; the run finishes and reports them
-                # (SUMMARY plm_over_tolerance).
-                _LOGGER.info(f"      - WARNING: {failure} (declared unmatched groups)")
-        matched = MatchedLengths(
-            analysis=analysis,
-            records=list(records_for_realization),
-            meander_report=meander_report,
-            declared_unmatched_groups=tuple(matching.path_length_declared_unmatched_groups),
-            output_scope=(
-                matching.path_length_output_scope if matching.path_length_match_outputs else None
-            ),
-        )
-        stage_observer.notify("matched", None, matched)
-
-    if debug_artifacts.realization_grid_spec is None:
-        raise RuntimeError("Missing realization grid spec from routing phase.")
-
-    crossing_plan_info = debug_artifacts.crossing_plan_info
-    plan_info = (
-        CrossingPlanInfo.from_dict(crossing_plan_info)
-        if isinstance(crossing_plan_info, dict)
-        else None
-    )
-    t_realization_start = time.perf_counter()
-    realize_routed_net_records(
-        routed_layout,
-        records_for_realization,
-        crossing_plan_info=plan_info.to_dict() if plan_info is not None else None,
-        geometry=RealizationGeometry(
-            route_width_um=realization.route_width_um,
-            route_layer=realization.route_layer,
-            realization_grid_spec=debug_artifacts.realization_grid_spec,
-            allow_45_degree_turns=debug_artifacts.realization_allow_45_degree_turns,
-            bend_radius_cells=debug_artifacts.realization_bend_radius_cells,
-        ),
-    )
-    if plan_info is not None:
-        place_realized_crossing_components(routed_layout, plan_info)
-        write_crossing_debug_artifacts(
-            debug_path=Path(debug.debug_dir) if debug.debug_dir is not None else None,
-            debug_prefix=debug.debug_prefix,
-            crossing_plan_info=plan_info,
-        )
-        # The phases above wrote into `plan_info`, not into the mapping the
-        # artifacts still carry: hand the updated plan back to them.
-        debug_artifacts = replace(
+            schematic,
             debug_artifacts,
-            crossing_plan_info=plan_info.to_dict(),
+            options,
+            matching=matching,
+            metadata=metadata,
+            pipeline_timings_s=pipeline_timings_s,
         )
+        records_for_realization = matching_result.records
+
+    t_realization_start = time.perf_counter()
+    debug_artifacts, plan_info = _realize(
+        routed_layout, records_for_realization, debug_artifacts, options
+    )
     t_realization_end = time.perf_counter()
     pipeline_timings_s["route_realization"] = t_realization_end - t_realization_start
     if debug.debug_timing and debug.verbose_route_diagnostics:
@@ -419,16 +537,16 @@ def route_match_and_realize(
             route_layer=realization.route_layer,
             route_width_um=float(realization.route_width_um),
             crossing_plan_info=plan_info,
-            matched=matched,
+            matched=matching_result.matched if matching_result is not None else None,
         ),
     )
     return RouteRustPipelineResult(
         routed_layout=routed_layout,
         debug_artifacts=debug_artifacts,
-        path_length_analysis_info=analysis_info,
-        meander_requirements_info=requirements_info,
-        meander_insertion_report_info=meander_report_info,
-        meander_insertion_report=meander_report,
+        path_length_analysis_info=getattr(matching_result, "analysis_info", None),
+        meander_requirements_info=getattr(matching_result, "requirements_info", None),
+        meander_insertion_report_info=getattr(matching_result, "meander_report_info", None),
+        meander_insertion_report=getattr(matching_result, "meander_report", None),
         pipeline_timings_s=pipeline_timings_s,
     )
 
