@@ -7,7 +7,7 @@ import logging
 import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 from gdsfactory.typings import Port
 
@@ -477,67 +477,123 @@ def _append_realized_stub_bend(
     return end_point
 
 
+class _StubForward(NamedTuple):
+    """How far a two-bend stub runs straight ahead, in grid cells."""
+
+    #: the least distance the anchor lies ahead of the port, beside the two below
+    minimum: int = 0
+    #: straight ahead from the port before the first bend
+    initial: int = 0
+    #: added to the least distance of the anchor
+    extra_final: int = 0
+
+    @property
+    def least_anchor_distance(self) -> int:
+        return max(0, self.minimum) + max(0, self.initial) + max(0, self.extra_final)
+
+
+class _StubFailure(Exception):
+    """A two-bend stub that cannot be built; `reason` and `detail` go to the trace."""
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.detail = detail
+
+
 def _two_bend_static_stub_centerline_um(
     settings: SessionSettings,
     state: SessionState,
     port_center_um: tuple[float, float],
     physical_angle: int,
     lateral_sign: int,
-    target_anchor_y_cell: int | None = None,
-    min_forward_cells: int = 0,
-    initial_forward_cells: int = 0,
-    extra_final_forward_cells: int = 0,
+    *,
+    target_anchor_y_cell: int | None,
+    forward: _StubForward,
 ) -> tuple[tuple[tuple[float, float], ...], tuple[int, int]] | None:
+    """The centerline (um) of a fan-out stub with two bends, and the grid cell it ends on.
+
+    From the port the stub runs `forward.initial` cells ahead, bends to
+    the side `lateral_sign` by the fan-out bend angle, runs diagonally to
+    the row of `target_anchor_y_cell` (without one: to the next row of
+    cell centres), bends back and runs ahead to the next column of cell
+    centres that lies at least `forward.least_anchor_distance` cells from
+    the port. Returns None when that stub cannot be built: the port does
+    not face along an axis, the diagonal has no y component, a piece
+    would have to run backwards, or the end is not a cell centre of the
+    grid. With `trace_fanout_stubs` the reason is logged.
+    """
     start_angle = int(physical_angle) % 8
+    try:
+        points, anchor_point = _two_bend_stub_points(
+            settings,
+            state,
+            (float(port_center_um[0]), float(port_center_um[1])),
+            start_angle,
+            lateral_sign,
+            target_anchor_y_cell=target_anchor_y_cell,
+            forward=forward,
+        )
+        anchor_cell = _stub_anchor_cell(state, anchor_point)
+    except _StubFailure as failure:
+        if settings.config.diagnostics.trace_fanout_stubs:
+            _LOGGER.warning(
+                "fanout_stub_failed "
+                f"reason={failure.reason} "
+                f"port={port_center_um} "
+                f"angle={start_angle} lateral_sign={lateral_sign} "
+                f"target_anchor_y_cell={target_anchor_y_cell} "
+                f"min_forward_cells={forward.minimum} "
+                f"initial_forward_cells={forward.initial} "
+                f"extra_final_forward_cells={forward.extra_final}"
+                f"{failure.detail}"
+            )
+        return None
+    return compress_centerline(tuple(points)), anchor_cell
+
+
+def _next_grid_axis_value(state: SessionState, value: float, axis: str, direction: int) -> float:
+    """The next cell-centre coordinate (um) at or beyond `value` on `axis` ("x" or "y").
+
+    `direction` is +1 or -1: the way to look.
+    """
+    origin = state.kernel.frame.origin_x_um if axis == "x" else state.kernel.frame.origin_y_um
+    rel = (float(value) - float(origin)) / float(state.obstacles.grid.grid_size_um) - 0.5
+    eps = 1.0e-9
+    index = math.ceil(rel - eps) if direction > 0 else math.floor(rel + eps)
+    center = grid_cell_center(
+        int(index) if axis == "x" else 0,
+        int(index) if axis == "y" else 0,
+        state.obstacles.grid,
+    )
+    return center[0] if axis == "x" else center[1]
+
+
+def _two_bend_stub_points(
+    settings: SessionSettings,
+    state: SessionState,
+    port_point: tuple[float, float],
+    start_angle: int,
+    lateral_sign: int,
+    *,
+    target_anchor_y_cell: int | None,
+    forward: _StubForward,
+) -> tuple[list[tuple[float, float]], tuple[float, float]]:
+    """The points of the stub from the port to its anchor, and the anchor (um).
+
+    Raises `_StubFailure` when the stub cannot be built.
+    """
     bend_delta = int(lateral_sign) * fanout_stub_bend_steps(settings)
     intermediate_angle = (start_angle + bend_delta) % 8
     intermediate_step = angle_to_step(intermediate_angle)
     final_step = angle_to_step(start_angle)
-    trace_fanout_stubs = settings.config.diagnostics.trace_fanout_stubs
-
-    def fail(reason: str, extra: str = "") -> None:
-        if trace_fanout_stubs:
-            _LOGGER.warning(
-                "fanout_stub_failed "
-                f"reason={reason} "
-                f"port={port_center_um} "
-                f"angle={start_angle} lateral_sign={lateral_sign} "
-                f"target_anchor_y_cell={target_anchor_y_cell} "
-                f"min_forward_cells={min_forward_cells} "
-                f"initial_forward_cells={initial_forward_cells} "
-                f"extra_final_forward_cells={extra_final_forward_cells}"
-                f"{extra}"
-            )
-
     if abs(final_step[0]) + abs(final_step[1]) != 1:
-        fail("non_cardinal_final")
-        return None
+        raise _StubFailure("non_cardinal_final")
     if intermediate_step[1] == 0:
-        fail("intermediate_has_no_y")
-        return None
-    port_point = (float(port_center_um[0]), float(port_center_um[1]))
-
-    def _next_grid_axis_value(
-        value: float,
-        axis: str,
-        direction: int,
-    ) -> float | None:
-        if direction == 0:
-            return None
-        origin = state.kernel.frame.origin_x_um if axis == "x" else state.kernel.frame.origin_y_um
-        rel = (float(value) - float(origin)) / float(state.obstacles.grid.grid_size_um) - 0.5
-        eps = 1.0e-9
-        index = math.ceil(rel - eps) if direction > 0 else math.floor(rel + eps)
-        center = grid_cell_center(
-            int(index) if axis == "x" else 0,
-            int(index) if axis == "y" else 0,
-            state.obstacles.grid,
-        )
-        return center[0] if axis == "x" else center[1]
-
+        raise _StubFailure("intermediate_has_no_y")
     points: list[tuple[float, float]] = [port_point]
     bend_start = port_point
-    initial_forward_um = float(max(0, int(initial_forward_cells))) * float(
+    initial_forward_um = float(max(0, int(forward.initial))) * float(
         state.obstacles.grid.grid_size_um
     )
     if initial_forward_um > 1.0e-9:
@@ -546,18 +602,10 @@ def _two_bend_static_stub_centerline_um(
             port_point[1] + float(final_step[1]) * initial_forward_um,
         )
         _append_stub_point(points, bend_start)
-    first_end = _append_realized_stub_bend(
-        state,
-        points,
-        bend_start,
-        start_angle,
-        bend_delta,
-    )
+    first_end = _append_realized_stub_bend(state, points, bend_start, start_angle, bend_delta)
     if target_anchor_y_cell is None:
         target_intermediate_y = _next_grid_axis_value(
-            first_end[1],
-            "y",
-            int(intermediate_step[1]),
+            state, first_end[1], "y", int(intermediate_step[1])
         )
     else:
         target_intermediate_y = state_cell_center_um(
@@ -566,115 +614,80 @@ def _two_bend_static_stub_centerline_um(
             int(target_anchor_y_cell)
             - int(intermediate_step[1]) * int(state.kernel.radii.bend_radius_cells),
         )[1]
-    if target_intermediate_y is None:
-        fail("no_target_intermediate_y")
-        return None
     intermediate_delta_y = float(target_intermediate_y) - float(first_end[1])
     if intermediate_delta_y * float(intermediate_step[1]) < -1.0e-9:
-        fail("intermediate_moves_backward")
-        return None
+        raise _StubFailure("intermediate_moves_backward")
     intermediate_delta_x = intermediate_delta_y * (
         float(intermediate_step[0]) / float(intermediate_step[1])
     )
-    intermediate_end = (
-        first_end[0] + intermediate_delta_x,
-        float(target_intermediate_y),
-    )
+    intermediate_end = (first_end[0] + intermediate_delta_x, float(target_intermediate_y))
     _append_stub_point(points, intermediate_end)
     second_end = _append_realized_stub_bend(
-        state,
-        points,
-        intermediate_end,
-        intermediate_angle,
-        angle_delta=-bend_delta,
+        state, points, intermediate_end, intermediate_angle, angle_delta=-bend_delta
     )
-    if final_step[0] != 0:
-        target_final_x = _next_grid_axis_value(
-            second_end[0],
-            "x",
-            int(final_step[0]),
-        )
-        if target_final_x is None:
-            fail("no_target_final_x")
-            return None
-        min_forward_x = port_point[0] + float(final_step[0]) * float(
-            max(0, int(min_forward_cells))
-            + max(0, int(initial_forward_cells))
-            + max(0, int(extra_final_forward_cells))
-        ) * float(state.obstacles.grid.grid_size_um)
-        if int(final_step[0]) > 0:
-            if float(target_final_x) < float(min_forward_x):
-                snapped_min_forward_x = _next_grid_axis_value(
-                    float(min_forward_x),
-                    "x",
-                    int(final_step[0]),
-                )
-                if snapped_min_forward_x is None:
-                    fail("no_snapped_min_forward_x")
-                    return None
-                target_final_x = float(snapped_min_forward_x)
-        else:
-            if float(target_final_x) > float(min_forward_x):
-                snapped_min_forward_x = _next_grid_axis_value(
-                    float(min_forward_x),
-                    "x",
-                    int(final_step[0]),
-                )
-                if snapped_min_forward_x is None:
-                    fail("no_snapped_min_forward_x")
-                    return None
-                target_final_x = float(snapped_min_forward_x)
-        final_delta_x = float(target_final_x) - float(second_end[0])
-        if final_delta_x * float(final_step[0]) < -1.0e-9:
-            fail("final_moves_backward_x")
-            return None
-        anchor_point = (float(target_final_x), float(second_end[1]))
-    else:
-        target_final_y = _next_grid_axis_value(
-            second_end[1],
-            "y",
-            int(final_step[1]),
-        )
-        if target_final_y is None:
-            fail("no_target_final_y")
-            return None
-        final_delta_y = float(target_final_y) - float(second_end[1])
-        if final_delta_y * float(final_step[1]) < -1.0e-9:
-            fail("final_moves_backward_y")
-            return None
-        anchor_point = (float(second_end[0]), float(target_final_y))
+    anchor_point = _stub_anchor_point(state, port_point, second_end, final_step, forward)
     _append_stub_point(points, anchor_point)
-    anchor_x = round(
-        (anchor_point[0] - state.kernel.frame.origin_x_um)
-        / float(state.obstacles.grid.grid_size_um)
-        - 0.5
-    )
-    anchor_y = round(
-        (anchor_point[1] - state.kernel.frame.origin_y_um)
-        / float(state.obstacles.grid.grid_size_um)
-        - 0.5
-    )
+    return points, anchor_point
+
+
+def _stub_anchor_point(
+    state: SessionState,
+    port_point: tuple[float, float],
+    second_end: tuple[float, float],
+    final_step: tuple[int, int],
+    forward: _StubForward,
+) -> tuple[float, float]:
+    """Where the stub ends (um): ahead of the second bend on the next line of cell centres.
+
+    For a port facing along x the end also lies at least
+    `forward.least_anchor_distance` cells ahead of the port. Raises
+    `_StubFailure` when the end would lie behind the second bend.
+    """
+    if final_step[0] != 0:
+        sign = int(final_step[0])
+        target_final_x = _next_grid_axis_value(state, second_end[0], "x", sign)
+        min_forward_x = port_point[0] + float(sign) * float(forward.least_anchor_distance) * float(
+            state.obstacles.grid.grid_size_um
+        )
+        if (float(target_final_x) - float(min_forward_x)) * sign < 0:
+            target_final_x = _next_grid_axis_value(state, float(min_forward_x), "x", sign)
+        if (float(target_final_x) - float(second_end[0])) * float(sign) < -1.0e-9:
+            raise _StubFailure("final_moves_backward_x")
+        return (float(target_final_x), float(second_end[1]))
+    target_final_y = _next_grid_axis_value(state, second_end[1], "y", int(final_step[1]))
+    if (float(target_final_y) - float(second_end[1])) * float(final_step[1]) < -1.0e-9:
+        raise _StubFailure("final_moves_backward_y")
+    return (float(second_end[0]), float(target_final_y))
+
+
+def _stub_anchor_cell(state: SessionState, anchor_point: tuple[float, float]) -> tuple[int, int]:
+    """The grid cell whose centre `anchor_point` (um) is.
+
+    Raises `_StubFailure` when the point is off a cell centre by more than
+    5 % of a cell, or the cell lies outside the grid.
+    """
+    grid_size_um = float(state.obstacles.grid.grid_size_um)
+    anchor_x = round((anchor_point[0] - state.kernel.frame.origin_x_um) / grid_size_um - 0.5)
+    anchor_y = round((anchor_point[1] - state.kernel.frame.origin_y_um) / grid_size_um - 0.5)
     snapped_anchor = state_cell_center_um(state, anchor_x, anchor_y)
     snap_error_um = math.hypot(
         float(snapped_anchor[0]) - float(anchor_point[0]),
         float(snapped_anchor[1]) - float(anchor_point[1]),
     )
-    if snap_error_um > max(1.0e-6, 0.05 * float(state.obstacles.grid.grid_size_um)):
-        fail(
+    if snap_error_um > max(1.0e-6, 0.05 * grid_size_um):
+        raise _StubFailure(
             f"snap_error:{snap_error_um:.6g}",
             " "
             f"anchor_point=({anchor_point[0]:.6g},{anchor_point[1]:.6g}) "
             f"anchor_cell=({anchor_x},{anchor_y}) "
             f"snapped=({snapped_anchor[0]:.6g},{snapped_anchor[1]:.6g}) "
             f"origin=({state.kernel.frame.origin_x_um:.6g},{state.kernel.frame.origin_y_um:.6g}) "
-            f"grid={float(state.obstacles.grid.grid_size_um):.6g} "
+            f"grid={grid_size_um:.6g} "
             f"bend_radius_cells={state.kernel.radii.bend_radius_cells}",
         )
-        return None
     if not cell_in_grid(state, anchor_x, anchor_y):
-        fail("anchor_out_of_bounds")
-        return None
-    return compress_centerline(tuple(points)), (anchor_x, anchor_y)
+        raise _StubFailure("anchor_out_of_bounds")
+    return anchor_x, anchor_y
 
 
 def _straight_static_stub_centerline_um(
@@ -893,9 +906,11 @@ def _build_static_fanout_anchors(
                     angle,
                     lateral_sign,
                     target_anchor_y_cell=target_anchor_y_cell,
-                    min_forward_cells=int(forward_cells),
-                    initial_forward_cells=max(0, int(initial_forward_cells)),
-                    extra_final_forward_cells=max(0, int(extra_final_forward_cells)),
+                    forward=_StubForward(
+                        minimum=int(forward_cells),
+                        initial=max(0, int(initial_forward_cells)),
+                        extra_final=max(0, int(extra_final_forward_cells)),
+                    ),
                 )
                 if stub_result is None:
                     return None

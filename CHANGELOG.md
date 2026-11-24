@@ -589,6 +589,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `_two_bend_static_stub_centerline_um` (79 statements, 9 parameters)
+  builds the stub's points (`_two_bend_stub_points`), its end
+  (`_stub_anchor_point`) and the cell of the end (`_stub_anchor_cell`);
+  a stub that cannot be built is a `_StubFailure` with the reason the
+  trace prints. The three forward distances are one `_StubForward`. Four
+  refusals could not happen (no next cell centre in a direction that is
+  never zero there) and are gone. Compared with the old function in one
+  process: 376 calls of fifteen runs and 107,520 calls with shifted
+  ports, angles, target rows and distances (97,000 of them refused)
+  give the same result.
 - `populate_realized_intersections_from_native_crossing_events` (90
   statements) reads an event (`_native_event`), finds its point in um
   (`_event_point_um`) and writes its record (`_event_record`). An event
