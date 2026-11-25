@@ -607,6 +607,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The two builders of the static fan-out anchors (16 and 15 branches)
+  share what they both did: `_cardinal_port_specs_by_angle` (the ports
+  that face along an axis, by angle) and `_fanout_anchor`. The source
+  side places its two-bend stubs through `_SourceStubs` (was a nested
+  function over six variables) and takes a row's two halves from
+  `_source_fanout_halves`; the target side takes its ranks from
+  `_ranked_target_specs`. On 14 runs (ADEPT 8x8 to 32x32, Benes,
+  `permutation_synthetic`, three private circuits) the 1,268 anchors of
+  the old and the new builders are equal field by field (`ruff_C901`
+  37 to 35).
 - `_propagate_roles` of the path-length graph (22 branches) says its
   steps: `_beyond_the_inputs` starts the light at the input nodes,
   `_sides_as_entered` gives the input and the output side of a

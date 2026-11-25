@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import itertools
 import logging
 import math
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
 from gdsfactory.typings import Port
@@ -828,9 +829,148 @@ def _stagger_fanout_half(
         )
 
 
+def _cardinal_port_specs_by_angle(
+    state: SessionState, port_specs: Iterable[str]
+) -> dict[int, list[str]]:
+    """The port specs that face along an axis, by their angle.
+
+    Static stubs are defined for cardinal port rows only; a diagonal
+    component port keeps the normal endpoint behaviour.
+    """
+    by_angle: dict[int, list[str]] = {}
+    for port_spec in port_specs:
+        _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
+        angle = orientation_to_angle(getattr(port, "orientation", None), flip=False)
+        step_x, step_y = angle_to_step(angle)
+        if abs(step_x) + abs(step_y) == 1:
+            by_angle.setdefault(angle, []).append(port_spec)
+    return by_angle
+
+
+def _fanout_anchor(
+    state: SessionState,
+    port_spec: str,
+    angle: int,
+    centerline: tuple[tuple[float, float], ...],
+    anchor_cell: tuple[int, int],
+    center_um: tuple[float, float],
+) -> FanoutAnchor:
+    return FanoutAnchor(
+        port_spec=port_spec,
+        state_x=anchor_cell[0],
+        state_y=anchor_cell[1],
+        physical_angle=angle,
+        center_um=center_um,
+        stub_center_cells=_centerline_grid_cells(state, centerline),
+        stub_centerline_um=centerline,
+    )
+
+
+@dataclass
+class _SourceStubs:
+    """The two-bend stubs of the dense source ports, as they are placed."""
+
+    settings: SessionSettings
+    state: SessionState
+    #: the least straight run of a stub, in cells
+    forward_cells: int
+    anchors: dict[str, FanoutAnchor] = field(default_factory=dict)
+
+    def add(
+        self,
+        item: tuple[str, int, Any],
+        lateral_sign: int,
+        target_anchor_y_cell: int | None,
+        initial_forward_cells: int = 0,
+        extra_final_forward_cells: int = 0,
+        *,
+        angle: int,
+    ) -> tuple[int, int] | None:
+        """Place the stub of one port (replacing an earlier one); returns its anchor cell.
+
+        None when the port has no centre or the stub cannot be built.
+        """
+        state = self.state
+        port_spec, _current_lateral, _grid_state = item
+        _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
+        real_center = center_of_port_um(port)
+        if real_center is None:
+            return None
+        stub_result = _two_bend_static_stub_centerline_um(
+            self.settings,
+            state,
+            real_center,
+            angle,
+            lateral_sign,
+            target_anchor_y_cell=target_anchor_y_cell,
+            forward=_StubForward(
+                minimum=int(self.forward_cells),
+                initial=max(0, int(initial_forward_cells)),
+                extra_final=max(0, int(extra_final_forward_cells)),
+            ),
+        )
+        if stub_result is None:
+            return None
+        centerline, (anchor_x, anchor_y) = stub_result
+        self.anchors[port_spec] = _fanout_anchor(
+            state,
+            port_spec,
+            angle,
+            centerline,
+            (anchor_x, anchor_y),
+            state_cell_center_um(state, anchor_x, anchor_y),
+        )
+        return anchor_x, anchor_y
+
+
+def _source_fanout_halves(
+    settings: SessionSettings,
+    state: SessionState,
+    instance_name: str,
+    angle: int,
+    group_specs: list[str],
+) -> tuple[list[tuple[str, int, Any]], list[tuple[str, int, Any]]] | None:
+    """The ports of one dense source row in lateral order, as its lower and its upper half.
+
+    Each port comes as (port spec, lateral cell, grid state). None when
+    the row is not dense, does not face along x, or has fewer ports than
+    a dense fan-out needs.
+    """
+    if not _is_dense_source_fanout_group(settings, state, instance_name, angle):
+        return None
+    step_x, step_y = angle_to_step(angle)
+    lateral_x, lateral_y = -step_y, step_x
+    ordered_items: list[tuple[str, int, Any]] = []
+    for port_spec in group_specs:
+        _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
+        grid_state = port_to_grid_state(
+            state,
+            port,
+            as_target=False,
+        )
+        lateral_cell = int(grid_state.x) * lateral_x + int(grid_state.y) * lateral_y
+        ordered_items.append((port_spec, lateral_cell, grid_state))
+    ordered_items.sort(key=lambda item: (item[1], item[0]))
+    count = len(ordered_items)
+    if count < _dense_fanout_min_ports_for(settings, instance_name) or step_y != 0:
+        return None
+    lower_items = ordered_items[: count // 2]
+    upper_items = ordered_items[count // 2 :]
+    if not lower_items or not upper_items:
+        return None
+    return lower_items, upper_items
+
+
 def _build_static_fanout_anchors(
     settings: SessionSettings, state: SessionState
 ) -> dict[str, FanoutAnchor]:
+    """Build the two-bend stubs of the dense source ports, by port spec.
+
+    Per dense row of ports facing along x: the lower half fans out
+    downwards and the upper half upwards, each from its innermost port
+    outwards (`_stagger_fanout_half`). Empty unless the fan-out access
+    mode is ``static-stubs``.
+    """
     if settings.fanout_access_mode_normalized != "static-stubs":
         return {}
     default_forward_cells = max(3, int(state.kernel.radii.bend_radius_cells) + 3)
@@ -850,105 +990,81 @@ def _build_static_fanout_anchors(
     if forward_cells <= 0 or lane_spacing_cells <= 0:
         return {}
 
-    anchors: dict[str, FanoutAnchor] = {}
+    stubs = _SourceStubs(settings, state, forward_cells)
     for instance_name, port_specs in state.endpoints.source_specs_by_instance.items():
         if not is_dense_source_fanout_instance(settings, state, instance_name):
             continue
-        by_angle: dict[int, list[str]] = {}
-        for port_spec in port_specs:
-            _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
-            angle = orientation_to_angle(getattr(port, "orientation", None), flip=False)
-            step_x, step_y = angle_to_step(angle)
-            # The first static-stub implementation intentionally handles
-            # cardinal MMI port rows. Diagonal component ports fall back to
-            # the normal endpoint behavior until a safe breakout is defined.
-            if abs(step_x) + abs(step_y) != 1:
+        for angle, group_specs in _cardinal_port_specs_by_angle(state, port_specs).items():
+            halves = _source_fanout_halves(settings, state, instance_name, angle, group_specs)
+            if halves is None:
                 continue
-            by_angle.setdefault(angle, []).append(port_spec)
-
-        for angle, group_specs in by_angle.items():
-            if not _is_dense_source_fanout_group(settings, state, instance_name, angle):
-                continue
-            step_x, step_y = angle_to_step(angle)
-            lateral_x, lateral_y = -step_y, step_x
-            ordered_items: list[tuple[str, int, Any]] = []
-            for port_spec in group_specs:
-                _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
-                grid_state = port_to_grid_state(
-                    state,
-                    port,
-                    as_target=False,
-                )
-                lateral_cell = int(grid_state.x) * lateral_x + int(grid_state.y) * lateral_y
-                ordered_items.append((port_spec, lateral_cell, grid_state))
-            ordered_items.sort(key=lambda item: (item[1], item[0]))
-            count = len(ordered_items)
-            if count < _dense_fanout_min_ports_for(settings, instance_name) or step_y != 0:
-                continue
-
-            def add_two_bend_anchor(
-                item: tuple[str, int, Any],
-                lateral_sign: int,
-                target_anchor_y_cell: int | None,
-                initial_forward_cells: int = 0,
-                extra_final_forward_cells: int = 0,
-                angle: int = angle,
-            ) -> tuple[int, int] | None:
-                port_spec, _current_lateral, _grid_state = item
-                _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
-                real_center = center_of_port_um(port)
-                if real_center is None:
-                    return None
-                stub_result = _two_bend_static_stub_centerline_um(
-                    settings,
-                    state,
-                    real_center,
-                    angle,
-                    lateral_sign,
-                    target_anchor_y_cell=target_anchor_y_cell,
-                    forward=_StubForward(
-                        minimum=int(forward_cells),
-                        initial=max(0, int(initial_forward_cells)),
-                        extra_final=max(0, int(extra_final_forward_cells)),
-                    ),
-                )
-                if stub_result is None:
-                    return None
-                centerline, (anchor_x, anchor_y) = stub_result
-                anchor_center = state_cell_center_um(state, anchor_x, anchor_y)
-                anchors[port_spec] = FanoutAnchor(
-                    port_spec=port_spec,
-                    state_x=anchor_x,
-                    state_y=anchor_y,
-                    physical_angle=angle,
-                    center_um=anchor_center,
-                    stub_center_cells=_centerline_grid_cells(state, centerline),
-                    stub_centerline_um=centerline,
-                )
-                return anchor_x, anchor_y
-
-            lower_items = ordered_items[: count // 2]
-            upper_items = ordered_items[count // 2 :]
-            if not lower_items or not upper_items:
-                continue
+            lower_items, upper_items = halves
+            add_anchor = functools.partial(stubs.add, angle=angle)
             stub_bend_steps = fanout_stub_bend_steps(settings)
             stagger_forward_cells = int(stub_x_offset_cells) if int(stub_bend_steps) >= 2 else 0
-
             _stagger_fanout_half(
-                add_two_bend_anchor,
+                add_anchor,
                 [lower_items[-1], *reversed(lower_items[:-1])],
                 -1,
                 stagger_forward_cells,
                 int(lane_spacing_cells),
             )
             _stagger_fanout_half(
-                add_two_bend_anchor,
+                add_anchor,
                 upper_items,
                 1,
                 stagger_forward_cells,
                 int(lane_spacing_cells),
             )
-    return anchors
+    return stubs.anchors
+
+
+def _ranked_target_specs(
+    settings: SessionSettings,
+    state: SessionState,
+    instance_name: str,
+    angle: int,
+    group_specs: list[str],
+) -> list[tuple[str, int]]:
+    """The ports of one dense target row with the rank that sets each stub's length.
+
+    Rank 1 is the shortest (the edge of the row), the highest rank the
+    longest (the middle of the row): the stubs are staggered in length
+    only. Empty when the row is not dense or has too few ports.
+    """
+    if not _is_dense_target_fanout_group(settings, state, instance_name, angle):
+        return []
+    step_x, step_y = angle_to_step(angle)
+    lateral_x, lateral_y = -step_y, step_x
+
+    def _lateral_position(port_spec: str) -> float:
+        _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
+        center = center_of_port_um(port)
+        if center is None:
+            return 0.0
+        return float(center[0]) * lateral_x + float(center[1]) * lateral_y
+
+    ordered = sorted(group_specs, key=lambda spec: (_lateral_position(spec), spec))
+    count = len(ordered)
+    if count < dense_fanout_min_ports(settings):
+        return []
+    if count == 2:
+        # A bare pair (e.g. a 2x2 switch's inputs, 1.25 um apart
+        # inside one routing cell) has no "middle": the symmetric
+        # ranking gives both the same length and the two
+        # approaches would still share the port cell. Ranks 1
+        # and 2 put their anchors at different x instead.
+        return [(ordered[0], 1), (ordered[1], 2)]
+    lower_specs = ordered[: count // 2]
+    upper_specs = ordered[count // 2 :]
+    upper_count = len(upper_specs)
+    return [
+        *((port_spec, port_index + 1) for port_index, port_spec in enumerate(lower_specs)),
+        *(
+            (port_spec, upper_count - port_index)
+            for port_index, port_spec in enumerate(upper_specs)
+        ),
+    ]
 
 
 def _build_static_fanout_target_anchors(
@@ -1009,61 +1125,10 @@ def _build_static_fanout_target_anchors(
     for instance_name, port_specs in state.endpoints.target_specs_by_instance.items():
         if not _is_dense_target_fanout_instance(settings, state, instance_name):
             continue
-        by_angle: dict[int, list[str]] = {}
-        for port_spec in port_specs:
-            _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
-            angle = orientation_to_angle(getattr(port, "orientation", None), flip=False)
-            step_x, step_y = angle_to_step(angle)
-            # Mirrors the source-side restriction: static stub geometry
-            # is only defined for cardinal (axis-aligned) port rows
-            # today. Diagonal target ports fall back to the normal
-            # (non-stub) endpoint behavior, exactly like diagonal
-            # source ports already do.
-            if abs(step_x) + abs(step_y) != 1:
-                continue
-            by_angle.setdefault(angle, []).append(port_spec)
-
-        for angle, group_specs in by_angle.items():
-            if not _is_dense_target_fanout_group(settings, state, instance_name, angle):
-                continue
-            step_x, step_y = angle_to_step(angle)
-            lateral_x, lateral_y = -step_y, step_x
-
-            def _lateral_position(
-                port_spec: str, lateral_x: int = lateral_x, lateral_y: int = lateral_y
-            ) -> float:
-                _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
-                center = center_of_port_um(port)
-                if center is None:
-                    return 0.0
-                return float(center[0]) * lateral_x + float(center[1]) * lateral_y
-
-            ordered = sorted(group_specs, key=lambda spec: (_lateral_position(spec), spec))
-            count = len(ordered)
-            if count < dense_fanout_min_ports(settings):
-                continue
-            lower_specs = ordered[: count // 2]
-            upper_specs = ordered[count // 2 :]
-            # Rank 1 = shortest (edge of the group), highest rank =
-            # longest (middle of the group) -- the "middle ones go out
-            # the furthest" staggering, in length only.
-            ranked: list[tuple[str, int]] = [
-                (port_spec, port_index + 1) for port_index, port_spec in enumerate(lower_specs)
-            ]
-            upper_count = len(upper_specs)
-            ranked.extend(
-                (port_spec, upper_count - port_index)
-                for port_index, port_spec in enumerate(upper_specs)
-            )
-            if count == 2:
-                # A bare pair (e.g. a 2x2 switch's inputs, 1.25 um apart
-                # inside one routing cell) has no "middle": the symmetric
-                # ranking gives both the same length and the two
-                # approaches would still share the port cell. Ranks 1
-                # and 2 put their anchors at different x instead.
-                ranked = [(ordered[0], 1), (ordered[1], 2)]
-
-            for port_spec, rank in ranked:
+        for angle, group_specs in _cardinal_port_specs_by_angle(state, port_specs).items():
+            for port_spec, rank in _ranked_target_specs(
+                settings, state, instance_name, angle, group_specs
+            ):
                 _inst, _port_name, port = state.endpoints.ports_by_spec[port_spec]
                 real_center = center_of_port_um(port)
                 if real_center is None:
@@ -1077,20 +1142,13 @@ def _build_static_fanout_target_anchors(
                 )
                 if stub_result is None:
                     continue
-                centerline, (anchor_x, anchor_y) = stub_result
+                centerline, anchor_cell = stub_result
                 # The anchor's own exact geometric position (the
                 # straight stub's far end, keeping the port's true Y),
                 # NOT the grid cell's snapped center -- see
                 # `_straight_static_stub_centerline_um`.
-                anchor_center = centerline[-1]
-                anchors[port_spec] = FanoutAnchor(
-                    port_spec=port_spec,
-                    state_x=anchor_x,
-                    state_y=anchor_y,
-                    physical_angle=angle,
-                    center_um=anchor_center,
-                    stub_center_cells=_centerline_grid_cells(state, centerline),
-                    stub_centerline_um=centerline,
+                anchors[port_spec] = _fanout_anchor(
+                    state, port_spec, angle, centerline, anchor_cell, centerline[-1]
                 )
     return anchors
 
