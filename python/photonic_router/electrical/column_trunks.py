@@ -83,15 +83,11 @@ def route_column_trunks(
     """
 
     remaining = progress.remaining
-    tree_cells = progress.tree_cells
-    blocked = progress.blocked
     terminal_cluster, cluster_trunk_column, cluster_heater_ids = _column_groups(
         remaining, obstacle_map
     )
     if not terminal_cluster:
         return
-
-    bus_side = obstacle_map.bus.side
 
     picks: dict[str, tuple[ElectricalTerminal, int]] = {}
     for heater_id, group in remaining.items():
@@ -110,55 +106,70 @@ def route_column_trunks(
         routing_groups.setdefault(cluster_idx, []).append(heater_id)
 
     for cluster_idx, heater_ids in routing_groups.items():
-        anchor_column = cluster_trunk_column[cluster_idx]
-        members: list[tuple[str, ElectricalTerminal, GridCell]] = []
-        for heater_id in heater_ids:
-            terminal, _ = picks[heater_id]
-            access = obstacle_map.common_bus_port_accesses.get(terminal.id)
-            if access is None:
-                continue
-            members.append((heater_id, terminal, access.anchor_cell))
-        if not members:
-            continue
-
-        members.sort(key=lambda item: item[2][1], reverse=(bus_side == "bottom"))
-
-        side_keys = {terminal.side_key for _, terminal, _ in members}
-        if len(side_keys) != 1:
-            continue
-        exit_dx = terminal_exit_dx(next(iter(side_keys)))
-        if exit_dx == 0:
-            continue
-
-        allowed_cells: set[GridCell] = set()
-        for _, terminal, anchor in members:
-            allowed_cells.update(common_bus_terminal_open_cells(obstacle_map, terminal.id))
-            allowed_cells.add(anchor)
-
-        start_index = 0
-        resolution: (
-            tuple[int, GridCell, dict[str, tuple[GridCell, ...]], dict[str, GridCell]] | None
-        ) = None
-        while start_index < len(members):
-            resolution = _find_legal_column_trunk(
-                members[start_index:],
-                anchor_column,
-                exit_dx,
-                cells=_TrunkCells(allowed=allowed_cells, blocked=blocked, tree=tree_cells),
-                obstacle_map=obstacle_map,
-                config=config,
-            )
-            if resolution is not None:
-                break
-            start_index += 1
-
-        if resolution is None:
-            continue
-
-        _trunk_column, stripe_entry, stubs, junctions = resolution
-        _commit_trunk_members(
-            progress, obstacle_map, members[start_index:], stripe_entry, stubs, junctions
+        members = _trunk_members(
+            [picks[heater_id][0] for heater_id in heater_ids], heater_ids, obstacle_map
         )
+        _route_one_trunk(progress, obstacle_map, config, cluster_trunk_column[cluster_idx], members)
+
+
+def _trunk_members(
+    terminals: list[ElectricalTerminal], heater_ids: list[str], obstacle_map: ElectricalObstacleMap
+) -> list[tuple[str, ElectricalTerminal, GridCell]]:
+    """The picked terminals that have a bus access, as (heater, terminal, anchor cell).
+
+    Ordered from the member farthest from the bus stripe to the nearest.
+    """
+    members: list[tuple[str, ElectricalTerminal, GridCell]] = []
+    for heater_id, terminal in zip(heater_ids, terminals, strict=True):
+        access = obstacle_map.common_bus_port_accesses.get(terminal.id)
+        if access is not None:
+            members.append((heater_id, terminal, access.anchor_cell))
+    members.sort(key=lambda item: item[2][1], reverse=(obstacle_map.bus.side == "bottom"))
+    return members
+
+
+def _route_one_trunk(
+    progress: CommonBusProgress,
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+    anchor_column: int,
+    members: list[tuple[str, ElectricalTerminal, GridCell]],
+) -> None:
+    """Find the trunk of one group and commit the members it serves.
+
+    Nothing is routed for a group whose members leave on different sides.
+    If no column is legal from the first member, that member is dropped
+    and the search retried from the next one.
+    """
+    side_keys = {terminal.side_key for _, terminal, _ in members}
+    if len(side_keys) != 1:
+        return
+    exit_dx = terminal_exit_dx(next(iter(side_keys)))
+    if exit_dx == 0:
+        return
+
+    allowed_cells: set[GridCell] = set()
+    for _, terminal, anchor in members:
+        allowed_cells.update(common_bus_terminal_open_cells(obstacle_map, terminal.id))
+        allowed_cells.add(anchor)
+
+    for start_index in range(len(members)):
+        resolution = _find_legal_column_trunk(
+            members[start_index:],
+            anchor_column,
+            exit_dx,
+            cells=_TrunkCells(
+                allowed=allowed_cells, blocked=progress.blocked, tree=progress.tree_cells
+            ),
+            obstacle_map=obstacle_map,
+            config=config,
+        )
+        if resolution is not None:
+            _trunk_column, stripe_entry, stubs, junctions = resolution
+            _commit_trunk_members(
+                progress, obstacle_map, members[start_index:], stripe_entry, stubs, junctions
+            )
+            return
 
 
 def _commit_trunk_members(
@@ -250,14 +261,6 @@ def _find_legal_column_trunk(
     """
     terminal_cells = all_terminal_cells(obstacle_map)
 
-    grid = obstacle_map.grid
-    bus = obstacle_map.bus
-    bus_side = bus.side
-    half_band = config.wire_width_um / 2.0 + config.obstacle_clearance_um
-    vertical_allowed = cells.allowed | cells.tree
-    forbidden_cells = terminal_cells.difference(cells.allowed)
-    raw_obstacle_bboxes = obstacle_map.raw_obstacle_bboxes
-
     member_stub_allowed: dict[str, frozenset[GridCell]] = {}
     member_stub_forbidden: dict[str, frozenset[GridCell]] = {}
     for heater_id, terminal, _ in members:
@@ -271,13 +274,11 @@ def _find_legal_column_trunk(
     for k in range(9):
         column = anchor_column + exit_dx * k
 
-        legal = True
         stubs: dict[str, tuple[GridCell, ...]] = {}
         junctions: dict[str, GridCell] = {}
         for heater_id, terminal, _ in members:
             start = nearest_terminal_cell(terminal, obstacle_map, column)
             if start is None or exit_dx * (column - start[0]) < 0:
-                legal = False
                 break
             stub = axis_path(start, (column, start[1]))
             if path_hits_blockers(
@@ -286,45 +287,61 @@ def _find_legal_column_trunk(
                 allowed=member_stub_allowed[heater_id],
                 forbidden=member_stub_forbidden[heater_id],
             ):
-                legal = False
                 break
             stubs[heater_id] = stub
             junctions[heater_id] = (column, start[1])
-        if not legal:
-            continue
-
-        top_junction = junctions[members[0][0]]
-        nearest_member_y = junctions[members[-1][0]][1]
-
-        stripe_candidates = tuple(cell for cell in bus.cells if cell[0] == column)
-        if not stripe_candidates:
-            continue
-        stripe_entry = min(
-            stripe_candidates,
-            key=lambda cell: (abs(cell[1] - nearest_member_y), cell[1]),
-        )
-
-        _, top_center_y = grid_cell_center_um(top_junction, grid)
-        stripe_edge_um = bus.bbox[3] if bus_side == "bottom" else bus.bbox[1]
-        band_y0 = min(top_center_y, stripe_edge_um)
-        band_y1 = max(top_center_y, stripe_edge_um)
-        center_x, _ = grid_cell_center_um((column, 0), grid)
-        band_bbox = (center_x - half_band, band_y0, center_x + half_band, band_y1)
-        if _wire_band_hits_raw_obstacles(band_bbox, raw_obstacle_bboxes):
-            continue
-
-        vertical_run = axis_path(top_junction, stripe_entry)
-        if path_hits_blockers(
-            vertical_run,
-            cells.blocked,
-            allowed=vertical_allowed,
-            forbidden=forbidden_cells,
-        ):
-            continue
-
-        return column, stripe_entry, stubs, junctions
-
+        else:
+            trunk = _trunk_at_column(
+                column, junctions, members, cells=cells, obstacle_map=obstacle_map, config=config
+            )
+            if trunk is not None:
+                return column, trunk, stubs, junctions
     return None
+
+
+def _trunk_at_column(
+    column: int,
+    junctions: dict[str, GridCell],
+    members: list[tuple[str, ElectricalTerminal, GridCell]],
+    *,
+    cells: _TrunkCells,
+    obstacle_map: ElectricalObstacleMap,
+    config: ElectricalRoutingConfig,
+) -> GridCell | None:
+    """The stripe cell a trunk in `column` enters the bus at, or None when no trunk is legal there.
+
+    The trunk runs from the first member's junction to the stripe; its
+    wire band must overlap no raw obstacle box and its cells neither a
+    blocked cell nor a terminal cell outside ``cells.allowed``.
+    """
+    grid = obstacle_map.grid
+    bus = obstacle_map.bus
+    top_junction = junctions[members[0][0]]
+    nearest_member_y = junctions[members[-1][0]][1]
+    stripe_candidates = tuple(cell for cell in bus.cells if cell[0] == column)
+    if not stripe_candidates:
+        return None
+    stripe_entry = min(
+        stripe_candidates,
+        key=lambda cell: (abs(cell[1] - nearest_member_y), cell[1]),
+    )
+    half_band = config.wire_width_um / 2.0 + config.obstacle_clearance_um
+    _, top_center_y = grid_cell_center_um(top_junction, grid)
+    stripe_edge_um = bus.bbox[3] if bus.side == "bottom" else bus.bbox[1]
+    band_y0 = min(top_center_y, stripe_edge_um)
+    band_y1 = max(top_center_y, stripe_edge_um)
+    center_x, _ = grid_cell_center_um((column, 0), grid)
+    band_bbox = (center_x - half_band, band_y0, center_x + half_band, band_y1)
+    if _wire_band_hits_raw_obstacles(band_bbox, obstacle_map.raw_obstacle_bboxes):
+        return None
+    if path_hits_blockers(
+        axis_path(top_junction, stripe_entry),
+        cells.blocked,
+        allowed=cells.allowed | cells.tree,
+        forbidden=all_terminal_cells(obstacle_map).difference(cells.allowed),
+    ):
+        return None
+    return stripe_entry
 
 
 def straight_drop_to_bus(

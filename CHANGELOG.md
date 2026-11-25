@@ -607,6 +607,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Electrical router, column trunks: `route_column_trunks` (15 branches)
+  hands one group to `_route_one_trunk` and takes its members from
+  `_trunk_members`; `_find_legal_column_trunk` (11) asks
+  `_trunk_at_column` whether a trunk is legal in a column. The wiring
+  of all 13 benchmarks with heaters is the same: the whole routing
+  result (bus tree, pad plan, escape, pad wires, verification) compared
+  as text, old against new (`ruff_C901` 31 to 29).
 - Two functions without state, each compared with its old version on
   random input (`ruff_C901` 33 to 31).
   `format_native_repair_trace_lines` (14 branches) turns one record in
