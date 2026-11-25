@@ -728,6 +728,21 @@ class _FakeEndpointRouter:
     def centerline_length_um(self, centerline: list[tuple[float, float]]) -> float:
         return _centerline_length_um(tuple(centerline))
 
+    def realize_centerline_polygon_with_terminal_tangents(
+        self,
+        centerline: list[tuple[float, float]],
+        width_um: float,
+        route: object,
+        **kwargs: object,
+    ) -> list[tuple[float, float]]:
+        return []
+
+    def centerline_port_corrected_checked(
+        self, *args: object, **kwargs: object
+    ) -> dict[str, object]:
+        """The kernel raises when it finds no checked correction."""
+        raise ValueError("no checked endpoint correction")
+
 
 class _FakeCheckedEndpointRouter(_FakeEndpointRouter):
     """Mocks the checked, per-segment native correction (tier 1) that
@@ -795,7 +810,7 @@ def test_crossing_aware_endpoint_correction_succeeds_via_checked_native_method()
     assert updated.total_length_um == pytest.approx(11.0)
 
 
-def test_crossing_aware_endpoint_correction_fails_honestly_without_checked_native_method():
+def test_crossing_aware_endpoint_correction_fails_honestly_when_the_kernel_rejects_it():
     # A crossing net whose checked, per-segment correction cannot produce
     # a result must fail with endpoint_correction_error -- it must not
     # silently fall through to an unchecked strategy that was never

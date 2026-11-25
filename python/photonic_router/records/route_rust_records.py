@@ -282,6 +282,32 @@ class EndpointCorrectionRouter(Protocol):
         """Return the length in um of a centerline given in um."""
         ...
 
+    def route_primitive_centerline(self, route: object) -> object:
+        """Return the centerline of ``route`` in um as the search found it, ends uncorrected."""
+        ...
+
+    def realize_centerline_polygon_with_terminal_tangents(
+        self,
+        centerline: list[tuple[float, float]],
+        width_um: float,
+        route: object,
+        source_enabled: bool = True,
+        target_enabled: bool = True,
+    ) -> object:
+        """Return the polygon of a centerline in um; raises when it cannot be realized."""
+        ...
+
+    def centerline_port_corrected_checked(self, *args: Any, **kwargs: Any) -> Any:
+        """Return a mapping with the `centerline` of a segment whose ends were moved, checked.
+
+        Positional: the net id, the segment in um, the width in um, the
+        clearance and the core radius in cells, the opened and the
+        clearance-exempt cells; by keyword `source_port_um` and
+        `target_port_um`, the two points the ends are moved to.
+        Raises when no checked correction exists.
+        """
+        ...
+
 
 def apply_port_endpoint_corrections(
     records: list[RoutedNetRecord],

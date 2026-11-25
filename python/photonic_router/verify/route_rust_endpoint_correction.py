@@ -370,14 +370,12 @@ def primitive_centerline_for_record(
     """
     if prefer_corrected_baseline and record.corrected_centerline_um:
         return dedupe_centerline(record.corrected_centerline_um)
-    route_primitive_centerline = getattr(router, "route_primitive_centerline", None)
-    if route_primitive_centerline is not None:
-        try:
-            centerline = centerline_tuple(route_primitive_centerline(record.route_obj))
-        except (TypeError, ValueError):
-            centerline = ()
-        if centerline:
-            return dedupe_centerline(centerline)
+    try:
+        centerline = centerline_tuple(router.route_primitive_centerline(record.route_obj))
+    except (TypeError, ValueError):
+        centerline = ()
+    if centerline:
+        return dedupe_centerline(centerline)
     if record.corrected_centerline_um:
         return dedupe_centerline(record.corrected_centerline_um)
     return ()
@@ -662,12 +660,11 @@ def _correct_one_end_again(
         router=router,
         prefer_corrected_baseline=True,
     )
-    route_port_corrected_centerline = getattr(router, "route_port_corrected_centerline", None)
-    if len(route_baseline) < 2 or len(baseline) < 2 or route_port_corrected_centerline is None:
+    if len(route_baseline) < 2 or len(baseline) < 2:
         return record
     try:
         corrected_route = centerline_tuple(
-            route_port_corrected_centerline(
+            router.route_port_corrected_centerline(
                 record.route_obj,
                 source_port_um=(record.source_port_center_um if scope.correct_source else None),
                 target_port_um=(record.target_port_center_um if scope.correct_target else None),
@@ -729,11 +726,8 @@ class _CheckedCorrection:
     def realization_accepts(self, centerline: _Centerline) -> bool:
         """Whether the kernel can realize `centerline` with the record's terminal tangents."""
         record = self.record
-        realize = getattr(self.router, "realize_centerline_polygon_with_terminal_tangents", None)
-        if realize is None:
-            return True
         try:
-            realize(
+            self.router.realize_centerline_polygon_with_terminal_tangents(
                 list(centerline),
                 float(self.setup.route_width_um),
                 record.route_obj,
@@ -758,10 +752,7 @@ class _CheckedCorrection:
         than two points or when an end point is missing.
         """
         record, clearance = self.record, self.clearance
-        centerline_port_corrected_checked = getattr(
-            self.router, "centerline_port_corrected_checked", None
-        )
-        if centerline_port_corrected_checked is None or len(segment) < 2:
+        if len(segment) < 2:
             return ()
         if source_port_um is None or target_port_um is None:
             return ()
@@ -773,7 +764,7 @@ class _CheckedCorrection:
             f"source_port={source_port_um} target_port={target_port_um} "
         )
         try:
-            raw = centerline_port_corrected_checked(
+            raw = self.router.centerline_port_corrected_checked(
                 int(record.net_id) if record.net_id is not None else 0,
                 list(segment),
                 float(self.setup.route_width_um),

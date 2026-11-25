@@ -607,6 +607,16 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The endpoint correction calls the kernel's methods and no longer asks
+  whether the kernel has them. Four `getattr(router, ..., None)` probes
+  stood for a kernel without `route_primitive_centerline`,
+  `route_port_corrected_centerline`,
+  `realize_centerline_polygon_with_terminal_tangents` or
+  `centerline_port_corrected_checked`; the kernel has all four, and
+  without the third a corrected centerline counted as realizable
+  unseen. `EndpointCorrectionRouter` names the methods; the fake router
+  of two tests rejects a checked correction the way the kernel does,
+  with an error.
 - `_verify_route_obstacle_overlaps` (11 parameters) takes
   `_ObstacleSources` (the layers and the layout each is read from) and
   `_LegalOverlaps` (where a route may lie on an obstacle layer; its
