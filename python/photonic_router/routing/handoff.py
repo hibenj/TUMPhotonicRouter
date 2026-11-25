@@ -46,64 +46,45 @@ def _snap_nearly_collinear_states(
     its own window allows; otherwise neither moves.
     """
 
-    original_cells = {
-        (int(source_state.x), int(source_state.y)),
-        (int(target_state.x), int(target_state.y)),
-    }
+    source_cell = (int(source_state.x), int(source_state.y))
+    target_cell = (int(target_state.x), int(target_state.y))
+    original_cells = {source_cell, target_cell}
+    unchanged = (source_state, target_state, original_cells)
     source_angle = int(source_state.angle) % 8
-    target_angle = int(target_state.angle) % 8
-    if source_angle != target_angle:
-        return source_state, target_state, original_cells
-
+    if source_angle != int(target_state.angle) % 8:
+        return unchanged
     source_center = getattr(source_port, "center", None)
     target_center = getattr(target_port, "center", None)
-    if source_center is None or target_center is None:
-        return source_state, target_state, original_cells
+    if source_center is None or target_center is None or source_angle not in {0, 2, 4, 6}:
+        return unchanged
 
-    source_x_um = float(source_center[0])
-    source_y_um = float(source_center[1])
-    target_x_um = float(target_center[0])
-    target_y_um = float(target_center[1])
+    # the coordinate along the heading and the one across it, and which way the heading runs
+    along = 0 if source_angle in {0, 4} else 1
+    across = 1 - along
+    direction = 1 if source_angle in {0, 2} else -1
     grid_size = float(state.obstacles.grid.grid_size_um)
     max_snap_um = max(grid_size, 2.0 * grid_size)
     max_snap_cells = max(1, math.ceil(max_snap_um / grid_size))
+    if (
+        (float(target_center[along]) - float(source_center[along])) * direction <= 0.0
+        or abs(float(target_center[across]) - float(source_center[across])) > max_snap_um
+        or abs(target_cell[across] - source_cell[across]) > max_snap_cells
+    ):
+        return unchanged
 
-    if source_angle in {0, 4}:
-        direction = 1 if source_angle == 0 else -1
-        if (target_x_um - source_x_um) * direction <= 0.0:
-            return source_state, target_state, original_cells
-        if abs(target_y_um - source_y_um) > max_snap_um:
-            return source_state, target_state, original_cells
-        if abs(int(target_state.y) - int(source_state.y)) > max_snap_cells:
-            return source_state, target_state, original_cells
-        snapped_target = state.rust_backend.State(
-            int(target_state.x), int(source_state.y), int(target_state.angle)
-        )
-        snapped_source = state.rust_backend.State(
-            int(source_state.x), int(target_state.y), int(source_state.angle)
-        )
-    elif source_angle in {2, 6}:
-        direction = 1 if source_angle == 2 else -1
-        if (target_y_um - source_y_um) * direction <= 0.0:
-            return source_state, target_state, original_cells
-        if abs(target_x_um - source_x_um) > max_snap_um:
-            return source_state, target_state, original_cells
-        if abs(int(target_state.x) - int(source_state.x)) > max_snap_cells:
-            return source_state, target_state, original_cells
-        snapped_target = state.rust_backend.State(
-            int(source_state.x), int(target_state.y), int(target_state.angle)
-        )
-        snapped_source = state.rust_backend.State(
-            int(target_state.x), int(source_state.y), int(source_state.angle)
-        )
-    else:
-        return source_state, target_state, original_cells
+    def moved_onto_the_line_of(other: tuple[int, int], cell: tuple[int, int], angle: int) -> Any:
+        """The state at `cell` with its coordinate across the heading taken from `other`."""
+        moved = [cell[0], cell[1]]
+        moved[across] = other[across]
+        return state.rust_backend.State(moved[0], moved[1], angle)
 
+    snapped_target = moved_onto_the_line_of(source_cell, target_cell, int(target_state.angle))
     if _state_inside_dense_port_opening(state, target_spec, snapped_target):
         return source_state, snapped_target, original_cells
+    snapped_source = moved_onto_the_line_of(target_cell, source_cell, int(source_state.angle))
     if _state_inside_dense_port_opening(state, source_spec, snapped_source):
         return snapped_source, target_state, original_cells
-    return source_state, target_state, original_cells
+    return unchanged
 
 
 def _state_inside_dense_port_opening(
@@ -130,63 +111,37 @@ def _snap_same_heading_minimum_bend_offset(
     often land half a grid cell off that value. Without this snap, exact-cell
     routing can only satisfy the one-cell deficit by introducing a loop.
     """
-    extra_cells: set[tuple[int, int]] = set()
-    if settings.allow_45_degree_turns:
-        return source_state, target_state, extra_cells
-
+    unchanged: tuple[Any, Any, set[tuple[int, int]]] = (source_state, target_state, set())
     source_angle = int(source_state.angle) % 8
     target_angle = int(target_state.angle) % 8
-    if source_angle != target_angle:
-        return source_state, target_state, extra_cells
-
     min_offset_cells = 2 * int(state.kernel.radii.bend_radius_cells)
-    if min_offset_cells <= 0:
-        return source_state, target_state, extra_cells
+    if (
+        settings.allow_45_degree_turns
+        or source_angle != target_angle
+        or min_offset_cells <= 0
+        or source_angle not in {0, 2, 4, 6}
+    ):
+        return unchanged
 
-    sx = int(source_state.x)
-    sy = int(source_state.y)
-    tx = int(target_state.x)
-    ty = int(target_state.y)
-
-    if source_angle in {0, 4}:
-        forward_dx = tx - sx if source_angle == 0 else sx - tx
-        dy = ty - sy
-        if forward_dx < min_offset_cells or dy == 0:
-            return source_state, target_state, extra_cells
-        missing = min_offset_cells - abs(dy)
-        if missing != 1:
-            return source_state, target_state, extra_cells
-        snapped_offset_cells = min_offset_cells + 1
-        snapped_target = state.rust_backend.State(
-            tx,
-            sy + (snapped_offset_cells if dy > 0 else -snapped_offset_cells),
-            target_angle,
-        )
-        if not cell_in_grid(state, int(snapped_target.x), int(snapped_target.y)):
-            return source_state, target_state, extra_cells
-        extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
-        return source_state, snapped_target, extra_cells
-
-    if source_angle in {2, 6}:
-        forward_dy = ty - sy if source_angle == 2 else sy - ty
-        dx = tx - sx
-        if forward_dy < min_offset_cells or dx == 0:
-            return source_state, target_state, extra_cells
-        missing = min_offset_cells - abs(dx)
-        if missing != 1:
-            return source_state, target_state, extra_cells
-        snapped_offset_cells = min_offset_cells + 1
-        snapped_target = state.rust_backend.State(
-            sx + (snapped_offset_cells if dx > 0 else -snapped_offset_cells),
-            ty,
-            target_angle,
-        )
-        if not cell_in_grid(state, int(snapped_target.x), int(snapped_target.y)):
-            return source_state, target_state, extra_cells
-        extra_cells.add((int(snapped_target.x), int(snapped_target.y)))
-        return source_state, snapped_target, extra_cells
-
-    return source_state, target_state, extra_cells
+    # the coordinate along the heading and the one across it, and which way the heading runs
+    along = 0 if source_angle in {0, 4} else 1
+    across = 1 - along
+    direction = 1 if source_angle in {0, 2} else -1
+    source_cell = (int(source_state.x), int(source_state.y))
+    target_cell = (int(target_state.x), int(target_state.y))
+    forward = (target_cell[along] - source_cell[along]) * direction
+    offset = target_cell[across] - source_cell[across]
+    if forward < min_offset_cells or offset == 0 or min_offset_cells - abs(offset) != 1:
+        return unchanged
+    snapped_offset_cells = min_offset_cells + 1
+    snapped = [target_cell[0], target_cell[1]]
+    snapped[across] = source_cell[across] + (
+        snapped_offset_cells if offset > 0 else -snapped_offset_cells
+    )
+    snapped_target = state.rust_backend.State(snapped[0], snapped[1], target_angle)
+    if not cell_in_grid(state, int(snapped_target.x), int(snapped_target.y)):
+        return unchanged
+    return source_state, snapped_target, {(int(snapped_target.x), int(snapped_target.y))}
 
 
 def _filter_dense_port_opening(

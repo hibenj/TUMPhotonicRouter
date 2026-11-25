@@ -607,6 +607,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The two snapping functions of the hand-off
+  (`_snap_nearly_collinear_states`, `_snap_same_heading_minimum_bend_offset`;
+  13 and 12 branches) had one branch for ports facing along x and a
+  mirrored one for y; each works on the coordinate along the heading
+  and the one across it now. Compared with the old functions in seven
+  runs, on the real calls and on states shifted around them (366,000
+  and 117,000 calls, 174,000 of them snapped): the same states and
+  cells (`ruff_C901` 35 to 33).
 - The two builders of the static fan-out anchors (16 and 15 branches)
   share what they both did: `_cardinal_port_specs_by_angle` (the ports
   that face along an axis, by angle) and `_fanout_anchor`. The source
