@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import klayout.db as kdb
 import numpy as np
@@ -296,18 +296,22 @@ def verify_photonic_routing(
     obstacle_overlap_count = _verify_route_obstacle_overlaps(
         issues,
         route_regions_by_key,
-        obstacle_component=unrouted_layout,
-        routed_layout=routed_layout,
-        route_layer=geometry.route_layer,
-        obstacle_layers=normalized_obstacle_layers,
+        obstacles=_ObstacleSources(
+            obstacle_component=unrouted_layout,
+            routed_layout=routed_layout,
+            route_layer=geometry.route_layer,
+            obstacle_layers=normalized_obstacle_layers,
+        ),
+        legal=_LegalOverlaps(
+            everywhere=legal_route_overlap_region,
+            by_key=route_obstacle_windows_by_key,
+            by_layer={
+                layer: non_route_obstacle_windows_by_key
+                for layer in normalized_obstacle_layers
+                if layer != normalized_route_layer
+            },
+        ),
         dbu=dbu,
-        legal_overlap_region=legal_route_overlap_region,
-        legal_overlap_regions_by_key=route_obstacle_windows_by_key,
-        legal_overlap_regions_by_layer={
-            layer: non_route_obstacle_windows_by_key
-            for layer in normalized_obstacle_layers
-            if layer != normalized_route_layer
-        },
         min_overlap_area_um2=float(checks.min_obstacle_overlap_area_um2),
     )
     crossing_component_route_overlap_count = _verify_crossing_component_route_overlaps(
@@ -718,31 +722,55 @@ class _BoxBucketIndex:
         return sorted(indices)
 
 
+class _ObstacleSources(NamedTuple):
+    """The layers a route must not overlap, and the layout each is read from."""
+
+    #: the layout without the routes; None reads `routed_layout`, where the
+    #: route layer holds the routes themselves and is left out
+    obstacle_component: Component | None
+    routed_layout: Component
+    route_layer: Layer
+    obstacle_layers: tuple[Layer, ...]
+
+
+class _LegalOverlaps(NamedTuple):
+    """Where a route may lie on an obstacle layer."""
+
+    #: for every route on every layer
+    everywhere: kdb.Region
+    #: per route, on every layer `by_layer` does not name
+    by_key: Mapping[RouteKey, kdb.Region] | None = None
+    #: per layer and route, in place of `by_key`
+    by_layer: Mapping[Layer, Mapping[RouteKey, kdb.Region]] | None = None
+
+    def of_layer(self, layer: Layer) -> Mapping[RouteKey, kdb.Region] | None:
+        """The per-route regions that hold on `layer`."""
+        if self.by_layer is None:
+            return self.by_key
+        return self.by_layer.get(layer, self.by_key)
+
+
 def _verify_route_obstacle_overlaps(
     issues: list[PhotonicVerificationIssue],
     route_regions_by_key: dict[RouteKey, kdb.Region],
     *,
-    obstacle_component: Component | None,
-    routed_layout: Component,
-    route_layer: Layer,
-    obstacle_layers: tuple[Layer, ...],
+    obstacles: _ObstacleSources,
+    legal: _LegalOverlaps,
     dbu: float,
-    legal_overlap_region: kdb.Region,
-    legal_overlap_regions_by_key: Mapping[RouteKey, kdb.Region] | None = None,
-    legal_overlap_regions_by_layer: Mapping[
-        Layer,
-        Mapping[RouteKey, kdb.Region],
-    ]
-    | None = None,
     min_overlap_area_um2: float = 0.0,
 ) -> int:
+    """Append a `waveguide_obstacle_overlap` issue per route and obstacle layer it lies on.
+
+    An overlap inside `legal` or of at most `min_overlap_area_um2` is not
+    an issue. Returns the number of issues appended.
+    """
     overlap_count = 0
-    for layer in obstacle_layers:
-        source_component = obstacle_component
+    for layer in obstacles.obstacle_layers:
+        source_component = obstacles.obstacle_component
         if source_component is None:
-            if layer == route_layer:
+            if layer == obstacles.route_layer:
                 continue
-            source_component = routed_layout
+            source_component = obstacles.routed_layout
         obstacle_region = _component_layer_region(source_component, layer)
         if obstacle_region.is_empty():
             continue
@@ -755,7 +783,7 @@ def _verify_route_obstacle_overlaps(
         all_routes_region = kdb.Region()
         for route_region in route_regions_by_key.values():
             all_routes_region.insert(route_region)
-        residue = (all_routes_region & obstacle_region) - legal_overlap_region
+        residue = (all_routes_region & obstacle_region) - legal.everywhere
         if residue.is_empty():
             continue
         # Performance pass 2026-09-25 (Milestone 2): route & residue equals
@@ -781,12 +809,7 @@ def _verify_route_obstacle_overlaps(
             touching = route_region & candidates_region
             if touching.is_empty():
                 continue
-            per_key_regions = legal_overlap_regions_by_key
-            if legal_overlap_regions_by_layer is not None:
-                per_key_regions = legal_overlap_regions_by_layer.get(
-                    layer,
-                    per_key_regions,
-                )
+            per_key_regions = legal.of_layer(layer)
             # (route & obstacle) - (legal_global | per_key) equals
             # (route & residue) - per_key, because residue already excludes
             # legal_global and the route is part of all_routes_region; the

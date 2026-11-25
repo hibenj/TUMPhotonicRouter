@@ -29,7 +29,9 @@ from photonic_router.verify.photonic_verification import (
     _BoxBucketIndex,
     _combined_region,
     _component_layer_region,
+    _LegalOverlaps,
     _net_id_pair,
+    _ObstacleSources,
     _polygon_regions_by_pair_um,
     _polyline_self_intersects_um,
     _realized_record_region,
@@ -615,12 +617,14 @@ def test_photonic_verifier_reports_waveguide_obstacle_overlap():
         {
             ("n1", ("a", "o1"), ("b", "o2")): _box_region(0, 0, 10_000, 2_000),
         },
-        obstacle_component=obstacle_layout,
-        routed_layout=Component(),
-        route_layer=(1, 0),
-        obstacle_layers=((47, 0),),
+        obstacles=_ObstacleSources(
+            obstacle_component=obstacle_layout,
+            routed_layout=Component(),
+            route_layer=(1, 0),
+            obstacle_layers=((47, 0),),
+        ),
+        legal=_LegalOverlaps(everywhere=kdb.Region()),
         dbu=0.001,
-        legal_overlap_region=kdb.Region(),
     )
 
     assert overlap_count == 1
@@ -970,6 +974,40 @@ def test_photonic_verifier_allows_centerline_in_the_cell_holding_the_bound():
     )
 
 
+def _shipped_route_obstacle_overlaps(
+    issues,
+    *,
+    route_regions_by_key,
+    obstacle_component,
+    routed_layout,
+    route_layer,
+    obstacle_layers,
+    dbu,
+    legal_overlap_region,
+    legal_overlap_regions_by_key=None,
+    legal_overlap_regions_by_layer=None,
+    min_overlap_area_um2=0.0,
+):
+    """The shipped check, called with the arguments the oracle below takes."""
+    return _verify_route_obstacle_overlaps(
+        issues,
+        route_regions_by_key,
+        obstacles=_ObstacleSources(
+            obstacle_component=obstacle_component,
+            routed_layout=routed_layout,
+            route_layer=route_layer,
+            obstacle_layers=obstacle_layers,
+        ),
+        legal=_LegalOverlaps(
+            everywhere=legal_overlap_region,
+            by_key=legal_overlap_regions_by_key,
+            by_layer=legal_overlap_regions_by_layer,
+        ),
+        dbu=dbu,
+        min_overlap_area_um2=min_overlap_area_um2,
+    )
+
+
 def _oracle_verify_route_obstacle_overlaps(
     issues,
     route_regions_by_key,
@@ -1098,7 +1136,7 @@ def test_obstacle_overlap_issues_match_full_residue_oracle():
     }
 
     shipped_issues: list[PhotonicVerificationIssue] = []
-    shipped_count = _verify_route_obstacle_overlaps(shipped_issues, **kwargs)
+    shipped_count = _shipped_route_obstacle_overlaps(shipped_issues, **kwargs)
     oracle_issues: list[PhotonicVerificationIssue] = []
     oracle_count = _oracle_verify_route_obstacle_overlaps(oracle_issues, **kwargs)
 
@@ -1165,7 +1203,7 @@ def test_obstacle_overlap_index_is_exact_on_random_rectangles():
     }
 
     shipped_issues: list[PhotonicVerificationIssue] = []
-    shipped_count = _verify_route_obstacle_overlaps(shipped_issues, **kwargs)
+    shipped_count = _shipped_route_obstacle_overlaps(shipped_issues, **kwargs)
     oracle_issues: list[PhotonicVerificationIssue] = []
     oracle_count = _oracle_verify_route_obstacle_overlaps(oracle_issues, **kwargs)
 

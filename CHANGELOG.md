@@ -607,6 +607,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `_verify_route_obstacle_overlaps` (11 parameters) takes
+  `_ObstacleSources` (the layers and the layout each is read from) and
+  `_LegalOverlaps` (where a route may lie on an obstacle layer; its
+  `of_layer` is the choice between the per-route regions the function
+  made inline). The two tests that compare it with the older copy call
+  both with the same arguments as before, through a helper
+  (`ruff_PLR0913` 2 to 1; the one left is the `directional_coupler`
+  cell).
 - A request the meander planner cannot read is an error (rule 3.8;
   `fallbacks_never_taken` 7 to 5). The kernel's planner answers "nothing
   fits" with a status and raises only for an argument it refuses (a
