@@ -349,7 +349,7 @@ def populate_realized_intersections_from_native_crossing_events(
     routed_records_by_net_id: Mapping[int, RoutedNetRecord],
     native_crossing_events: Iterable[object],
     realization_grid_spec: tuple[int, int, float, float, float],
-    native_crossing_verdicts: Iterable[object] | None = None,
+    native_crossing_verdicts: Iterable[object],
 ) -> list[dict[str, object]]:
     """Populate realized crossing metadata from A*-accepted native events.
 
@@ -365,7 +365,9 @@ def populate_realized_intersections_from_native_crossing_events(
     record. The returned list holds the records the verdicts call illegal.
 
     Raises `KeyError`, `TypeError` or `ValueError` for an event that is not
-    as the kernel writes it (`_native_event`).
+    as the kernel writes it (`_native_event`), and `RuntimeError` for an
+    event without a verdict: every crossing has to be validated by the
+    kernel (owner, 2026-11-25).
     """
     if not crossing_plan_info.enabled:
         crossing_plan_info.realized_intersections = []
@@ -423,7 +425,11 @@ def populate_realized_intersections_from_native_crossing_events(
                 grid_size_um=frame.grid_size_um,
             )
         else:
-            record["legality_source"] = "no_rust_crossing_verdict"
+            raise RuntimeError(
+                f"the crossing of {record['net_name_a']} and {record['net_name_b']} at "
+                f"({point_um[0]:.3f}, {point_um[1]:.3f}) um has no verdict of the kernel: "
+                "a crossing the search did not validate is not accepted"
+            )
         realized.append(record)
 
     # Verdicts for points no event covers: Rust assessed them, so they are

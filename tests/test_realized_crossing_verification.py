@@ -298,6 +298,32 @@ def _unified_plan_info() -> CrossingPlanInfo:
     return info
 
 
+def test_an_event_without_a_verdict_of_the_kernel_is_refused():
+    """Every crossing has to be validated by the kernel: an event alone is not a legal crossing."""
+    from photonic_router.crossings.route_rust_crossing_verification import (
+        populate_realized_intersections_from_native_crossing_events,
+    )
+
+    event = {
+        "net_id": 2,
+        "partner_net_id": 1,
+        "point": (5.0, 5.0),
+        "route_segment": ((5, 0), (5, 10)),
+        "partner_segment": ((0, 5), (10, 5)),
+        "reservation_cells": [],
+    }
+    far_verdict = _rust_verdict(point=(40.0, 40.0))
+    for verdicts in ([], [far_verdict]):
+        with pytest.raises(RuntimeError, match=r"crossing of 2 and 1 at .* has no verdict"):
+            populate_realized_intersections_from_native_crossing_events(
+                crossing_plan_info=_unified_plan_info(),
+                routed_records_by_net_id={},
+                native_crossing_events=[event],
+                realization_grid_spec=(20, 20, 1.0, 0.0, 0.0),
+                native_crossing_verdicts=verdicts,
+            )
+
+
 def test_unified_native_events_path_reports_the_verdict_and_unmatched_verdicts():
     from photonic_router.crossings.route_rust_crossing_verification import (
         populate_realized_intersections_from_native_crossing_events,

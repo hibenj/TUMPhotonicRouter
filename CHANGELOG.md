@@ -607,6 +607,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- A crossing without a verdict of the kernel is refused (owner,
+  2026-11-25: every crossing has to be validated in the kernel). The
+  search reports each accepted crossing as an event and its predicate's
+  judgement as a verdict; an event no verdict matched was recorded as a
+  legal crossing with the note `no_rust_crossing_verdict`. No measured
+  run had one. It is a `RuntimeError` with the two nets and the point
+  now, and the verdicts are a required argument.
 - Rule 4.4, the parameter limit, is in force: ruff `PLR0913` is in the
   lint set for the package (7 parameters; not for the tests, the
   scripts and the benchmark modules). The package had 58 such functions
