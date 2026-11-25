@@ -92,7 +92,8 @@ class RouteNetsRustSession:
             settings, self._rust_backend, context, timings_s
         )
         routed_layout = settings.unrouted_layout.copy()
-        routed_layout.name = "routed_layout_rust"
+        # the name of the GDS file the flow writes: `routed_<benchmark>`
+        routed_layout.name = f"routed_{settings.debug_prefix}"
         state = SessionState.after_setup(
             routed_layout=routed_layout,
             rust_backend=self._rust_backend,

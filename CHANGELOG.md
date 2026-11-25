@@ -607,6 +607,12 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The top cell of a routed layout is named `routed_<benchmark>`, like
+  the GDS file it is written to (owner, 2026-11-25); it was
+  `routed_layout_rust` for every design. With heaters wired the cell is
+  `routed_<benchmark>_electrical`. A process that routes two different
+  designs no longer makes kfactory report a name conflict; one that
+  routes the same design twice (the tests) still does.
 - `route_failures` is `failed_attempts` (owner, 2026-11-25): in the
   `SUMMARY` line, in `FlowStats` and `RouteSearchSummary`, in the rows
   of `scripts/benchmark_photonic.py` and

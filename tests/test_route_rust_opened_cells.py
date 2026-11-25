@@ -593,7 +593,7 @@ def test_route_nets_rust_applies_heater_opening_without_heater_obstacle_layers(
         )
     )
 
-    _routed_layout, debug_artifacts = route_nets_rust(
+    routed_layout, debug_artifacts = route_nets_rust(
         _make_dummy_layout(),
         schematic,
         session_options(
@@ -607,6 +607,8 @@ def test_route_nets_rust_applies_heater_opening_without_heater_obstacle_layers(
         ),
     )
 
+    # the top cell carries the run's name, like the GDS file the flow writes
+    assert routed_layout.name == "routed_heater_keyed_openings"
     heater_diag = (
         tmp_path / "routes" / "heater_keyed_openings_heater_net_diagnostics.txt"
     ).read_text(encoding="utf-8")

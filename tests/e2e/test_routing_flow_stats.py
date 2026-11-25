@@ -868,7 +868,7 @@ def test_the_flow_uses_strict_default_obstacle_config(monkeypatch):
         captured["ripup_reroute_config"] = options.ripup_reroute_config
         captured["collect_route_stats"] = options.debug.collect_route_stats
         captured["bend_radius_um"] = options.realization.bend_radius_um
-        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
+        routed_layout = SimpleNamespace(name="routed_design", info={})
         routed_layout.write_gds = lambda *_args, **_kwargs: None
         return RouteRustPipelineResult(
             routed_layout=routed_layout,
@@ -959,7 +959,7 @@ def test_the_flow_writes_crossing_verification_report(monkeypatch, tmp_path):
         _options: SessionOptions,
         **_kwargs: object,
     ):
-        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
+        routed_layout = SimpleNamespace(name="routed_design", info={})
         routed_layout.write_gds = lambda *_args, **_kwargs: None
         return RouteRustPipelineResult(
             routed_layout=routed_layout,
@@ -1077,7 +1077,7 @@ def test_the_flow_rejects_crossing_report_before_gds(monkeypatch, tmp_path):
         _options: SessionOptions,
         **_kwargs: object,
     ):
-        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
+        routed_layout = SimpleNamespace(name="routed_design", info={})
 
         def fake_write_gds(*_args: object, **_kwargs: object) -> None:
             captured["write_gds_called"] = True
@@ -1197,7 +1197,7 @@ def test_the_flow_rejects_photonic_geometry_before_gds(monkeypatch, tmp_path):
         _options: SessionOptions,
         **_kwargs: object,
     ):
-        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
+        routed_layout = SimpleNamespace(name="routed_design", info={})
 
         def fake_write_gds(*_args: object, **_kwargs: object) -> None:
             captured["write_gds_called"] = True
@@ -1308,7 +1308,7 @@ def test_the_flow_collects_route_summary_when_stats_requested(monkeypatch):
         **_kwargs: object,
     ):
         captured["collect_route_stats"] = options.debug.collect_route_stats
-        routed_layout = SimpleNamespace(name="routed_layout_rust", info={})
+        routed_layout = SimpleNamespace(name="routed_design", info={})
         routed_layout.write_gds = lambda *_args, **_kwargs: None
         return RouteRustPipelineResult(
             routed_layout=routed_layout,
