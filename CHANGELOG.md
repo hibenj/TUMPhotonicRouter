@@ -607,6 +607,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `_propagate_roles` of the path-length graph (22 branches) says its
+  steps: `_beyond_the_inputs` starts the light at the input nodes,
+  `_sides_as_entered` gives the input and the output side of a
+  component for the port the light enters at, and `_LightFront` holds
+  the roles given so far. On the graphs of all 46 benchmarks, the
+  private circuits included (83 graphs, 49,247 port roles, 28
+  conflicts), the roles, their order and the conflicts are those of the
+  old function (`ruff_C901` 38 to 37).
 - Two checks with one `if` per case read as lists (`ruff_C901` 40 to
   38). `ElectricalRoutingConfig.validate` (24 branches) goes through
   `_settings_out_of_range`, which yields each check with its message in

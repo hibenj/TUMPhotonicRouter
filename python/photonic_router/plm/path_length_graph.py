@@ -502,73 +502,110 @@ def _port_neighbours(
     return neighbours
 
 
+class _LightFront:
+    """The ports the light has reached so far, with the role each got."""
+
+    def __init__(self, neighbours: Mapping[tuple[str, str], list[tuple[str, str]]]) -> None:
+        self.neighbours = neighbours
+        self.roles: dict[tuple[str, str], str] = {}
+        #: instance -> the port the light first arrived at
+        self.entered_by: dict[str, str] = {}
+        #: the instances the light reached a second time on a port that is not an input
+        self.conflicts: list[str] = []
+
+    def assign(self, instance: str, input_side: Iterable[str], output_side: Iterable[str]) -> None:
+        """Give the ports of an instance their roles: the two sides, every other linked port an output."""
+        for port in input_side:
+            self.roles[(instance, port)] = INPUT
+        for port in output_side:
+            self.roles[(instance, port)] = OUTPUT
+        for name, port in self.neighbours:
+            # a declared cell lists only its input side: every other port is an output
+            if name == instance and (name, port) not in self.roles:
+                self.roles[(name, port)] = OUTPUT
+
+    def beyond_outputs(self, instance: str) -> list[tuple[str, str]]:
+        """The ports the outputs of an instance are linked to."""
+        beyond: list[tuple[str, str]] = []
+        for (name, port), targets in self.neighbours.items():
+            if name == instance and self.roles.get((name, port)) == OUTPUT:
+                beyond.extend(targets)
+        return beyond
+
+
+def _sides_as_entered(
+    sides: tuple[frozenset[str], frozenset[str]], port: str
+) -> tuple[frozenset[str], frozenset[str]] | None:
+    """``(input side, output side)`` of a component the light enters at ``port``.
+
+    None for a port on neither side (an electrical or unknown port). A
+    declared cell lists one side only; entered on another port, that port
+    alone is its input side.
+    """
+    side_a, side_b = sides
+    if port in side_a:
+        return side_a, side_b
+    if not side_b:
+        return frozenset({port}), side_a
+    if port in side_b:
+        return side_b, side_a
+    return None
+
+
+def _beyond_the_inputs(graph: PhotonicRoutingGraph, front: _LightFront) -> deque[tuple[str, str]]:
+    """Make every linked port of the input nodes an output; returns the ports they are linked to."""
+    queue: deque[tuple[str, str]] = deque()
+    for name, node in graph.nodes.items():
+        if node.node_type != NodeType.INPUT:
+            continue
+        for (instance, port), targets in front.neighbours.items():
+            if instance == name:
+                front.roles[(instance, port)] = OUTPUT
+                queue.extend(targets)
+    return queue
+
+
 def _propagate_roles(
     schematic: SchematicLike,
     graph: PhotonicRoutingGraph,
     links: list[tuple[str, PortRef, PortRef]],
     input_ports_by_component: Mapping[str, Iterable[str]] | None,
 ) -> tuple[dict[tuple[str, str], str], list[str]]:
-    """``(instance, port) -> role`` from the light's propagation out of the inputs."""
+    """``(instance, port) -> role`` from the light's propagation out of the inputs.
 
+    The light starts at every port of the input nodes and passes each
+    component from the side it enters to the other side; it ends at
+    outputs, sinks and cells whose sides nothing knows. A component no
+    input reaches takes the table's side as its input side. Also returns
+    the instances the light reached a second time on a port that is not
+    an input.
+    """
     sides_of = _component_sides(schematic, input_ports_by_component)
-    neighbours = _port_neighbours(links)
-
-    roles: dict[tuple[str, str], str] = {}
-    entered_by: dict[str, str] = {}  # instance -> the port the light first arrived at
-    conflicts: list[str] = []
-
-    def assign(instance: str, input_side: frozenset[str], output_side: frozenset[str]) -> None:
-        for port in input_side:
-            roles[(instance, port)] = INPUT
-        for port in output_side:
-            roles[(instance, port)] = OUTPUT
-        for (name, port), _targets in neighbours.items():
-            # a declared cell lists only its input side: every other port is an output
-            if name == instance and (name, port) not in roles:
-                roles[(name, port)] = OUTPUT
-
-    queue: deque[tuple[str, str]] = deque()
-    for name, node in graph.nodes.items():
-        if node.node_type != NodeType.INPUT:
-            continue
-        for (instance, port), targets in neighbours.items():
-            if instance == name:
-                roles[(instance, port)] = OUTPUT
-                queue.extend(targets)
+    front = _LightFront(_port_neighbours(links))
+    queue = _beyond_the_inputs(graph, front)
     while queue:
         instance, port = queue.popleft()
-        node_type = graph.nodes[instance].node_type
-        if node_type in (NodeType.OUTPUT, NodeType.SINK, NodeType.INPUT):
-            continue
         sides = sides_of.get(instance)
-        if sides is None:
-            continue  # a coupler, or a cell nothing knows: the light ends here
-        if instance in entered_by:
-            if roles.get((instance, port)) != INPUT:
-                conflicts.append(instance)
+        if (
+            graph.nodes[instance].node_type in (NodeType.OUTPUT, NodeType.SINK, NodeType.INPUT)
+            or sides is None  # a coupler, or a cell nothing knows: the light ends here
+        ):
             continue
-        entered_by[instance] = port
-        side_a, side_b = sides
-        if port in side_a:
-            input_side, output_side = side_a, side_b
-        elif port in side_b or not side_b:
-            input_side, output_side = side_b or frozenset(), side_a
-            if not side_b:  # a declared cell entered on its other side
-                input_side = frozenset({port})
-        else:
-            continue  # an electrical or unknown port
-        assign(instance, input_side, output_side)
-        for (name, out_port), targets in neighbours.items():
-            if name == instance and roles.get((name, out_port)) == OUTPUT:
-                queue.extend(targets)
+        if instance in front.entered_by:
+            if front.roles.get((instance, port)) != INPUT:
+                front.conflicts.append(instance)
+            continue
+        front.entered_by[instance] = port
+        entered = _sides_as_entered(sides, port)
+        if entered is not None:
+            front.assign(instance, *entered)
+            queue.extend(front.beyond_outputs(instance))
 
     # components no input reaches: the table's side is the input side
     for instance, sides in sides_of.items():
-        if sides is None or instance in entered_by:
-            continue
-        side_a, side_b = sides
-        assign(instance, side_a, side_b)
-    return roles, conflicts
+        if sides is not None and instance not in front.entered_by:
+            front.assign(instance, *sides)
+    return front.roles, front.conflicts
 
 
 def _oriented_along_the_light(
