@@ -381,6 +381,31 @@ def primitive_centerline_for_record(
     return ()
 
 
+_STITCH_TOLERANCE_UM = 2.5
+
+
+def _stitch_index(
+    centerline: tuple[tuple[float, float], ...], anchor: tuple[float, float]
+) -> tuple[tuple[tuple[float, float], ...], int | None]:
+    """The centerline with a point at `anchor`, and that point's index.
+
+    A point of the centerline within the stitch tolerance of the anchor
+    is taken; otherwise the anchor is cut into the centerline where it
+    projects, if that is within the tolerance. The index is None when
+    the centerline does not pass the anchor.
+    """
+    index = _centerline_index_near_point(centerline, anchor, tolerance_um=_STITCH_TOLERANCE_UM)
+    if index is not None:
+        return centerline, index
+    projection = _closest_centerline_projection(centerline, anchor)
+    if projection is None or math.sqrt(float(projection[3])) > _STITCH_TOLERANCE_UM:
+        return centerline, None
+    centerline = _insert_centerline_cut_point(centerline, anchor)
+    return centerline, _centerline_index_near_point(
+        centerline, anchor, tolerance_um=_STITCH_TOLERANCE_UM
+    )
+
+
 def merge_terminal_corrected_route_centerline(
     *,
     existing_baseline: tuple[tuple[float, float], ...],
@@ -389,7 +414,14 @@ def merge_terminal_corrected_route_centerline(
     freeze_source: bool,
     freeze_target: bool,
 ) -> tuple[tuple[float, float], ...]:
-    """Merge a route-only terminal correction back into a stubbed centerline."""
+    """Merge a route-only terminal correction back into a stubbed centerline.
+
+    A frozen end keeps the existing baseline from its port to where the
+    routed piece began (the first or the last point of ``route_baseline``);
+    between them runs the corrected route. Empty when the corrected route
+    has fewer than two points or the existing baseline does not pass a
+    frozen end's stitch point.
+    """
     if len(corrected_route_centerline) < 2:
         return ()
     if len(existing_baseline) < 2 or len(route_baseline) < 2:
@@ -398,71 +430,24 @@ def merge_terminal_corrected_route_centerline(
         return corrected_route_centerline
 
     merged: list[tuple[float, float]] = []
-    stitch_tolerance_um = 2.5
-
-    def _centerline_with_stitch_point(
-        centerline: tuple[tuple[float, float], ...],
-        point: tuple[float, float],
-    ) -> tuple[tuple[float, float], ...]:
-        if (
-            _centerline_index_near_point(
-                centerline,
-                point,
-                tolerance_um=stitch_tolerance_um,
-            )
-            is not None
-        ):
-            return centerline
-        projection = _closest_centerline_projection(centerline, point)
-        if projection is None:
-            return centerline
-        _, _, _, dist_sq = projection
-        if math.sqrt(float(dist_sq)) > stitch_tolerance_um:
-            return centerline
-        return _insert_centerline_cut_point(centerline, point)
-
+    corrected_start_index = 0
     if freeze_source:
         source_anchor = route_baseline[0]
-        existing_baseline = _centerline_with_stitch_point(
-            existing_baseline,
-            source_anchor,
-        )
-        source_index = _centerline_index_near_point(
-            existing_baseline,
-            source_anchor,
-            tolerance_um=stitch_tolerance_um,
-        )
+        existing_baseline, source_index = _stitch_index(existing_baseline, source_anchor)
         if source_index is None:
             return ()
         merged.extend(existing_baseline[: source_index + 1])
-        corrected_start_index = (
-            1
-            if point_distance_um(corrected_route_centerline[0], source_anchor)
-            <= stitch_tolerance_um
-            else 0
-        )
-        merged.extend(corrected_route_centerline[corrected_start_index:])
-    else:
-        merged.extend(corrected_route_centerline)
+        if point_distance_um(corrected_route_centerline[0], source_anchor) <= _STITCH_TOLERANCE_UM:
+            corrected_start_index = 1
+    merged.extend(corrected_route_centerline[corrected_start_index:])
 
     if freeze_target:
         target_anchor = route_baseline[-1]
-        existing_baseline = _centerline_with_stitch_point(
-            existing_baseline,
-            target_anchor,
-        )
-        target_index = _centerline_index_near_point(
-            existing_baseline,
-            target_anchor,
-            tolerance_um=stitch_tolerance_um,
-        )
+        existing_baseline, target_index = _stitch_index(existing_baseline, target_anchor)
         if target_index is None:
             return ()
-        if merged and point_distance_um(merged[-1], target_anchor) <= 1.0e-6:
-            suffix_start = target_index + 1
-        else:
-            suffix_start = target_index
-        merged.extend(existing_baseline[suffix_start:])
+        ends_on_anchor = bool(merged) and point_distance_um(merged[-1], target_anchor) <= 1.0e-6
+        merged.extend(existing_baseline[target_index + (1 if ends_on_anchor else 0) :])
 
     return dedupe_centerline(tuple(merged))
 

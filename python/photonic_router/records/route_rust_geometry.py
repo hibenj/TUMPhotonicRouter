@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, cast
 
 from photonic_router.records.route_rust_types import int_of
@@ -92,6 +93,35 @@ def format_illegal_crossing_root_causes_line(
     return "root_cause_illegal_crossings=" + json.dumps(root_causes, sort_keys=True)
 
 
+def _int_list_of(value: object) -> list[int]:
+    return [int_of(item) for item in cast(Iterable[object], value)]
+
+
+def _repair_trace_entry(record: Mapping[str, object]) -> dict[str, object]:
+    """The known keys of one repair trace record, each turned into its type.
+
+    A number or a list of numbers that cannot be read is left out.
+    """
+    entry: dict[str, object] = {}
+    for key in ("event", "route_order", "action", "error"):
+        if record.get(key) is not None:
+            entry[key] = str(record[key])
+    numbers: tuple[tuple[tuple[str, ...], Callable[[object], object]], ...] = (
+        (("net_id", "repair_round", "repair_set_index"), int_of),
+        (("candidate_blockers", "ripup_ids", "victim_order"), _int_list_of),
+    )
+    for keys, read in numbers:
+        for key in keys:
+            if record.get(key) is None:
+                continue
+            with contextlib.suppress(TypeError, ValueError):
+                entry[key] = read(record[key])
+    for key in ("victim_first", "reverse_victim_order", "success"):
+        if record.get(key) is not None:
+            entry[key] = bool(record[key])
+    return entry
+
+
 def format_native_repair_trace_lines(
     records: Iterable[Mapping[str, object]],
     *,
@@ -104,34 +134,7 @@ def format_native_repair_trace_lines(
     list of int or bool; a value that cannot be coerced is left out. Returns an empty
     list if no record has a usable key.
     """
-    normalized: list[dict[str, object]] = []
-    for record in records:
-        entry: dict[str, object] = {}
-        for key in ("event", "route_order", "action", "error"):
-            value = record.get(key)
-            if value is not None:
-                entry[key] = str(value)
-        for key in ("net_id", "repair_round", "repair_set_index"):
-            value = record.get(key)
-            if value is not None:
-                try:
-                    entry[key] = int_of(value)
-                except (TypeError, ValueError):
-                    continue
-        for key in ("candidate_blockers", "ripup_ids", "victim_order"):
-            value = record.get(key)
-            if value is None:
-                continue
-            try:
-                entry[key] = [int_of(item) for item in cast(Iterable[object], value)]
-            except (TypeError, ValueError):
-                continue
-        for key in ("victim_first", "reverse_victim_order", "success"):
-            value = record.get(key)
-            if value is not None:
-                entry[key] = bool(value)
-        if entry:
-            normalized.append(entry)
+    normalized = [entry for entry in map(_repair_trace_entry, records) if entry]
     if not normalized:
         return []
     trace_tail = normalized[-tail:] if tail > 0 else []

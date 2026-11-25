@@ -607,6 +607,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Two functions without state, each compared with its old version on
+  random input (`ruff_C901` 33 to 31).
+  `format_native_repair_trace_lines` (14 branches) turns one record in
+  `_repair_trace_entry` (20,000 lists of records with values of every
+  kind). `merge_terminal_corrected_route_centerline` (13) finds the
+  stitch point of a frozen end in `_stitch_index`, which was a nested
+  function and a second lookup (60,000 centerlines, 11,688 of them
+  merged, 35,330 refused).
 - The two snapping functions of the hand-off
   (`_snap_nearly_collinear_states`, `_snap_same_heading_minimum_bend_offset`;
   13 and 12 branches) had one branch for ports facing along x and a
