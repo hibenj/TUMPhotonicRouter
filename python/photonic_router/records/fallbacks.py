@@ -41,9 +41,6 @@ FALLBACKS: dict[str, str] = {
     "plm.meander_per_edge": (
         "the final meander sequence did not plan as a whole and each edge was planned alone"
     ),
-    "plm.planner_error_as_no_candidate": (
-        "the meander planner raised and the requirement counts as having no candidate"
-    ),
     "electrical.pad_wire_full_grid": (
         "the channel router could not place a pad wire and the full-grid search "
         "routed it (per wire)"

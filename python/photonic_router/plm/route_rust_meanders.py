@@ -550,15 +550,12 @@ class _MeanderPlannerContext:
                 ),
             )
         except (RuntimeError, TypeError, ValueError) as exc:
-            fallbacks.take("plm.planner_error_as_no_candidate")
-            return _RequirementPlanOutcome(
-                selected_work_index=None,
-                split_part_count=None,
-                plans=[],
-                reason=str(exc),
-                elapsed_s=time.perf_counter() - t_plan_start,
-                edge_calls=len(candidate_geometry_indices),
-            )
+            # the planner answers "nothing fits" with a status; it raises only
+            # for a request it cannot read
+            raise RuntimeError(
+                f"the meander planner refused the request for {split_edge_key.net_name} "
+                f"({split_requested:.6g} um, {len(candidate_geometry_indices)} candidate(s)): {exc}"
+            ) from exc
         elapsed_s = time.perf_counter() - t_plan_start
         if self.profile is not None:
             self.profile.add_rust_profiles(result)
@@ -706,14 +703,10 @@ class _MeanderPlannerContext:
                 ),
             )
         except (RuntimeError, TypeError, ValueError) as exc:
-            fallbacks.take("plm.planner_error_as_no_candidate")
-            return (
-                [],
-                str(exc),
-                time.perf_counter() - t_plan_start,
-                1,
-                "rust_registered_final_requests",
-            )
+            names = ", ".join(edge_key.net_name for edge_key in edge_keys)
+            raise RuntimeError(
+                f"the meander planner refused the final request for {names}: {exc}"
+            ) from exc
         elapsed_s = time.perf_counter() - t_plan_start
         if self.profile is not None:
             self.profile.add_rust_profiles(result)

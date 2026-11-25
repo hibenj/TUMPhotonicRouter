@@ -607,6 +607,18 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- A request the meander planner cannot read is an error (rule 3.8;
+  `fallbacks_never_taken` 7 to 5). The kernel's planner answers "nothing
+  fits" with a status and raises only for an argument it refuses (a
+  height of zero, an index out of range, a split given half); the two
+  callers turned that into "no candidate" under the fallback name
+  `plm.planner_error_as_no_candidate`, which no run of the 27 paper
+  cells, the 13 PLM cells and the private circuits ever took. They
+  raise a `RuntimeError` with the net and the planner's words now, and
+  the name leaves the register (eight names). The split of an extra
+  length over several runs of one edge (`plm.meander_split`) is a way
+  the kernel is tested for; the test of the request vector now shows
+  that it is counted.
 - Four signatures over seven parameters take records (rule 4.4,
   `ruff_PLR0913` 6 to 2): `route_attempt_record_from_route` (13) takes
   the job and an `AttemptOutcome`; `build_route_debug_artifacts` (10)

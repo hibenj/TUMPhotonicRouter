@@ -19,6 +19,7 @@ from photonic_router.plm.route_rust_meanders import (
     _MeanderPlannerContext,
     _normalize_minimum_insertable_request,
 )
+from photonic_router.records import fallbacks
 from photonic_router.records.route_keys import PortRef, RoutedEdgeKey
 from photonic_router.records.route_rust_types import MeanderInsertionConfig, RoutedNetRecord
 from photonic_router.routing import api as routing_api
@@ -148,6 +149,7 @@ def test_requirement_request_carries_the_split_fallback_to_rust():
         }
 
     fake_planner = FakePlanner(None, plan_requests=_plan_requests)
+    fallbacks.reset()
     record = RoutedNetRecord(
         net_name=edge.net_name,
         source=edge.source,
@@ -210,8 +212,62 @@ def test_requirement_request_carries_the_split_fallback_to_rust():
     ]
     assert outcome.selected_work_index is None
     assert outcome.split_part_count == 3
+    assert fallbacks.taken() == {"plm.meander_split": 1}
     assert [planned_edge for planned_edge, *_ in outcome.plans] == [edge, edge, edge]
     assert outcome.edge_calls == 5  # two failed candidates, three planned chunks
+
+
+def _refusing_context(edge: RoutedEdgeKey) -> _MeanderPlannerContext:
+    """A context whose planner cannot read any request."""
+
+    def _refuse(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise ValueError("max_meander_height_um must be > 0")
+
+    record = RoutedNetRecord(
+        net_name=edge.net_name,
+        source=edge.source,
+        target=edge.target,
+        route_obj=object(),
+        total_length_um=90.0,
+    )
+    return _MeanderPlannerContext(
+        planner=cast(Any, FakePlanner(None, plan_requests=_refuse, plan_final=_refuse)),
+        by_edge={edge: record},
+        updated={},
+        registered_geometry_index_by_edge={edge: 42},
+        max_bumps_by_edge={edge: 5},
+        base_static_cells=set(),
+        grid_size_um=1.0,
+        bend_radius_um=10.0,
+    )
+
+
+def test_a_request_the_planner_cannot_read_is_an_error_not_a_missing_candidate():
+    """The planner says "nothing fits" with a status; it raises for a request it cannot read."""
+    edge = RoutedEdgeKey(
+        net_name="n0",
+        source=PortRef(instance="src", port="o1"),
+        target=PortRef(instance="dst", port="o1"),
+    )
+    context = _refusing_context(edge)
+
+    with pytest.raises(RuntimeError, match=r"refused the request for n0 \(120 um, 0 candidate"):
+        context.plan_requirement_requests_registered(
+            work_items=[],
+            split_edge_key=edge,
+            split_requested=120.0,
+            min_insertable_extra_um=30.0,
+            search_config=search_config(),
+            auto_endpoint_inset_um=None,
+        )
+    with pytest.raises(RuntimeError, match="refused the final request for n0: max_meander"):
+        context.plan_final_requests_registered(
+            edge_keys=[edge],
+            planner_requests_by_edge={edge: 120.0},
+            min_insertable_extra_um=30.0,
+            search_config=search_config(),
+            auto_endpoint_inset_um=None,
+        )
 
 
 def test_meander_planner_commits_bundle_candidate_atomically(monkeypatch):
