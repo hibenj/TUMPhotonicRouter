@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -93,65 +94,92 @@ class ElectricalRoutingConfig:
         selection hold one of their allowed values. Returns None when every
         check passes.
         """
+        for out_of_range, message in self._settings_out_of_range():
+            if out_of_range:
+                raise ValueError(message)
 
-        if self.pad_side not in {"top", "bottom"}:
-            raise ValueError("pad_side must be 'top' or 'bottom'")
-        if self.wire_width_um <= 0:
-            raise ValueError("wire_width_um must be positive")
-        if self.bondpad_width_um <= 0 or self.bondpad_length_um <= 0:
-            raise ValueError("bondpad dimensions must be positive")
-        if self.common_bus_bondpad_width_um <= 0 or self.common_bus_bondpad_length_um <= 0:
-            raise ValueError("common bus bondpad dimensions must be positive")
-        if self.bondpad_spacing_um < 0:
-            raise ValueError("bondpad_spacing_um must be non-negative")
-        if self.pad_pitch_um < self.bondpad_width_um + self.bondpad_spacing_um:
-            raise ValueError("pad_pitch_um must be at least bondpad_width_um + bondpad_spacing_um")
-        if self.pad_offset_um < 0:
-            raise ValueError("pad_offset_um must be non-negative")
-        if self.pad_access_depth_um <= 0:
-            raise ValueError("pad_access_depth_um must be positive")
-        if self.pad_empty_slots_between_assignments < 0:
-            raise ValueError("pad_empty_slots_between_assignments must be non-negative")
-        if self.pad_extra_slots_left < 0 or self.pad_extra_slots_right < 0:
-            raise ValueError("pad_extra_slots_left/right must be non-negative")
-        if self.common_bus_pad_position not in {"left", "right"}:
-            raise ValueError("common_bus_pad_position must be 'left' or 'right'")
-        if self.routing_grid_pitch_um <= 0:
-            raise ValueError("routing_grid_pitch_um must be positive")
-        if self.obstacle_clearance_um <= 0:
-            raise ValueError(
+    def _settings_out_of_range(self) -> Iterator[tuple[bool, str]]:
+        """Check by check, in the order they are reported: whether it fails, and what to say then.
+
+        A check is made when it is asked for, so a setting of the wrong
+        type is met only if every check before it passed.
+        """
+        yield self.pad_side not in {"top", "bottom"}, "pad_side must be 'top' or 'bottom'"
+        yield self.wire_width_um <= 0, "wire_width_um must be positive"
+        yield (
+            self.bondpad_width_um <= 0 or self.bondpad_length_um <= 0,
+            "bondpad dimensions must be positive",
+        )
+        yield (
+            self.common_bus_bondpad_width_um <= 0 or self.common_bus_bondpad_length_um <= 0,
+            "common bus bondpad dimensions must be positive",
+        )
+        yield self.bondpad_spacing_um < 0, "bondpad_spacing_um must be non-negative"
+        yield (
+            self.pad_pitch_um < self.bondpad_width_um + self.bondpad_spacing_um,
+            "pad_pitch_um must be at least bondpad_width_um + bondpad_spacing_um",
+        )
+        yield self.pad_offset_um < 0, "pad_offset_um must be non-negative"
+        yield self.pad_access_depth_um <= 0, "pad_access_depth_um must be positive"
+        yield (
+            self.pad_empty_slots_between_assignments < 0,
+            "pad_empty_slots_between_assignments must be non-negative",
+        )
+        yield (
+            self.pad_extra_slots_left < 0 or self.pad_extra_slots_right < 0,
+            "pad_extra_slots_left/right must be non-negative",
+        )
+        yield (
+            self.common_bus_pad_position not in {"left", "right"},
+            "common_bus_pad_position must be 'left' or 'right'",
+        )
+        yield self.routing_grid_pitch_um <= 0, "routing_grid_pitch_um must be positive"
+        yield (
+            self.obstacle_clearance_um <= 0,
+            (
                 "obstacle_clearance_um must be positive (metal that touches an "
                 "obstacle is a short; the verifier rejects touching)"
-            )
-        if self.terminal_open_radius_um < 0:
-            raise ValueError("clearances must be non-negative")
-        if self.terminal_contact_width_um <= 0:
-            raise ValueError("terminal_contact_width_um must be positive")
-        if self.layout_margin_um < 0 or self.bus_offset_um < 0:
-            raise ValueError("layout margins and offsets must be non-negative")
-        if self.bus_width_um <= 0:
-            raise ValueError("bus_width_um must be positive")
-        if self.common_bus_routing_strategy not in {"greedy_tree", "local_trunk_then_greedy"}:
-            raise ValueError(
-                "common_bus_routing_strategy must be 'greedy_tree' or 'local_trunk_then_greedy'"
-            )
-        if self.common_bus_terminal_selection not in {
-            "path_cost",
-            "median_x_biased",
-            "local_pair_median_x_biased",
-        }:
-            raise ValueError(
+            ),
+        )
+        yield self.terminal_open_radius_um < 0, "clearances must be non-negative"
+        yield self.terminal_contact_width_um <= 0, "terminal_contact_width_um must be positive"
+        yield (
+            self.layout_margin_um < 0 or self.bus_offset_um < 0,
+            "layout margins and offsets must be non-negative",
+        )
+        yield self.bus_width_um <= 0, "bus_width_um must be positive"
+        yield (
+            self.common_bus_routing_strategy not in {"greedy_tree", "local_trunk_then_greedy"},
+            "common_bus_routing_strategy must be 'greedy_tree' or 'local_trunk_then_greedy'",
+        )
+        yield (
+            self.common_bus_terminal_selection
+            not in {
+                "path_cost",
+                "median_x_biased",
+                "local_pair_median_x_biased",
+            },
+            (
                 "common_bus_terminal_selection must be 'path_cost', "
                 "'median_x_biased', or 'local_pair_median_x_biased'"
-            )
-        if self.common_bus_median_bias_weight < 0:
-            raise ValueError("common_bus_median_bias_weight must be non-negative")
-        if self.common_bus_local_pair_y_tolerance_um < 0:
-            raise ValueError("common_bus_local_pair_y_tolerance_um must be non-negative")
-        if self.common_bus_local_pair_max_gap_um < 0:
-            raise ValueError("common_bus_local_pair_max_gap_um must be non-negative")
-        if self.individual_route_spacing_um < 0:
-            raise ValueError("individual_route_spacing_um must be non-negative")
+            ),
+        )
+        yield (
+            self.common_bus_median_bias_weight < 0,
+            "common_bus_median_bias_weight must be non-negative",
+        )
+        yield (
+            self.common_bus_local_pair_y_tolerance_um < 0,
+            "common_bus_local_pair_y_tolerance_um must be non-negative",
+        )
+        yield (
+            self.common_bus_local_pair_max_gap_um < 0,
+            "common_bus_local_pair_max_gap_um must be non-negative",
+        )
+        yield (
+            self.individual_route_spacing_um < 0,
+            "individual_route_spacing_um must be non-negative",
+        )
 
 
 @dataclass(frozen=True)

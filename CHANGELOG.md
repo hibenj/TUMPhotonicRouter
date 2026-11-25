@@ -607,6 +607,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Two checks with one `if` per case read as lists (`ruff_C901` 40 to
+  38). `ElectricalRoutingConfig.validate` (24 branches) goes through
+  `_settings_out_of_range`, which yields each check with its message in
+  the order they were written. `parse_debug_svg_selector` (18) reads a
+  list like "1,3-5" in `_indices_of_selector_text`. Compared with the
+  old functions: 45 selectors of every kind and 3,589 configurations
+  with one or two settings out of range or of the wrong type give the
+  same result or the same error.
 - The endpoint correction calls the kernel's methods and no longer asks
   whether the kernel has them. Four `getattr(router, ..., None)` probes
   stood for a kernel without `route_primitive_centerline`,

@@ -61,54 +61,63 @@ SCRIPT_ELECTRICAL_PAD_PITCH_UM = DEFAULT_PAD_PITCH_UM
 def parse_debug_svg_selector(
     debug_svgs: DebugSvgSelector,
 ) -> tuple[bool, set[int] | None]:
-    """Parse debug SVG selection into an enabled flag and route-index set."""
+    """Parse debug SVG selection into an enabled flag and route-index set.
+
+    A bool switches every route on or off (no index set). An int, a range
+    or a sequence of ints names routes by their index from 1. A string is
+    a switch word ("on", "all", "off", ...) or a list like "1,3-5".
+    Raises `ValueError` for an index below 1 and `TypeError` for another
+    type.
+    """
     if isinstance(debug_svgs, bool):
         return debug_svgs, None
-    if isinstance(debug_svgs, int):
-        if debug_svgs < 1:
-            raise ValueError("debug_svgs integer selectors must be >= 1")
-        return True, {debug_svgs}
-    if isinstance(debug_svgs, range):
-        indices = set(debug_svgs)
-        if any(index < 1 for index in indices):
-            raise ValueError("debug_svgs range selectors must contain only indices >= 1")
-        return True, indices
-    if isinstance(debug_svgs, (set, list, tuple)):
-        indices = {int(index) for index in debug_svgs}
-        if any(index < 1 for index in indices):
-            raise ValueError("debug_svgs sequence selectors must contain only indices >= 1")
-        return bool(indices), indices
     if isinstance(debug_svgs, str):
         selector = debug_svgs.strip().lower()
         if selector in {"", "false", "off", "none", "no"}:
             return False, None
         if selector in {"true", "on", "yes", "all", "*"}:
             return True, None
+        indices = _indices_of_selector_text(selector)
+        return (True, indices) if indices else (False, None)
+    if isinstance(debug_svgs, int):
+        kind, indices = "integer selectors must be >= 1", {debug_svgs}
+    elif isinstance(debug_svgs, range):
+        kind, indices = "range selectors must contain only indices >= 1", set(debug_svgs)
+    elif isinstance(debug_svgs, (set, list, tuple)):
+        kind = "sequence selectors must contain only indices >= 1"
+        indices = {int(index) for index in debug_svgs}
+    else:
+        raise TypeError(
+            "debug_svgs must be a bool, int, range, sequence of ints, or selector string"
+        )
+    if any(index < 1 for index in indices):
+        raise ValueError(f"debug_svgs {kind}")
+    # an empty range still switches the SVGs on; an empty sequence does not
+    return isinstance(debug_svgs, range) or bool(indices), indices
 
-        indices = set()
-        for part in selector.split(","):
-            token = part.strip()
-            if not token:
-                continue
-            if "-" in token:
-                start_text, end_text = token.split("-", 1)
-                start = int(start_text.strip())
-                end = int(end_text.strip())
-                if start < 1 or end < 1:
-                    raise ValueError("debug_svgs range selectors must use indices >= 1")
-                if start > end:
-                    raise ValueError(f"debug_svgs range start must be <= end: {token!r}")
-                indices.update(range(start, end + 1))
-            else:
-                index = int(token)
-                if index < 1:
-                    raise ValueError("debug_svgs route selectors must be >= 1")
-                indices.add(index)
-        if not indices:
-            return False, None
-        return True, indices
 
-    raise TypeError("debug_svgs must be a bool, int, range, sequence of ints, or selector string")
+def _indices_of_selector_text(selector: str) -> set[int]:
+    """The route indices of a list like "1,3-5"; empty parts are skipped."""
+    indices: set[int] = set()
+    for part in selector.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        if "-" not in token:
+            index = int(token)
+            if index < 1:
+                raise ValueError("debug_svgs route selectors must be >= 1")
+            indices.add(index)
+            continue
+        start_text, end_text = token.split("-", 1)
+        start = int(start_text.strip())
+        end = int(end_text.strip())
+        if start < 1 or end < 1:
+            raise ValueError("debug_svgs range selectors must use indices >= 1")
+        if start > end:
+            raise ValueError(f"debug_svgs range start must be <= end: {token!r}")
+        indices.update(range(start, end + 1))
+    return indices
 
 
 def resolve_legacy_display_options(
