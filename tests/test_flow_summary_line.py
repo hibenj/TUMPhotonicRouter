@@ -13,7 +13,7 @@ def test_summary_line_lists_every_field_and_marks_skipped_stages():
     stats = RoutingFlowStats()
     stats.benchmark_name = "cascade_8_folded"
     stats.net_count = 81
-    stats.route_failures = 0
+    stats.failed_attempts = 0
     stats.verification_error_count = 0
     stats.verification_warning_count = 0
     stats.path_length_groups = 26
@@ -28,14 +28,14 @@ def test_summary_line_lists_every_field_and_marks_skipped_stages():
     line = format_flow_summary_line(stats)
 
     assert line == (
-        "SUMMARY benchmark=cascade_8_folded nets=81 route_failures=0 detours=- "
+        "SUMMARY benchmark=cascade_8_folded nets=81 failed_attempts=0 detours=- "
         "verifier_errors=0 verifier_warnings=0 plm_groups=26 plm_over_tolerance=0 "
         "meander_inserted_um=23536.4 electrical_heaters=21 electrical_pads=22 "
         "electrical_failed_wires=0 electrical_ok=yes total_s=4.9"
     )
 
 
-def test_route_failures_print_a_dash_without_per_route_collection():
+def test_failed_attempts_print_a_dash_without_per_route_collection():
     """``populate_route_stats`` copies the failure count from the timing
     buckets, which are empty unless per-route collection ran; then the line
     says ``-``, not a guessed 0 (merge review 2026-10-05)."""
@@ -57,7 +57,7 @@ def test_route_failures_print_a_dash_without_per_route_collection():
             route_svgs=[],
             routed_edge_lengths_um={},
             route_search_summary=RouteSearchSummary(
-                route_attempts=attempts, route_failures=failures
+                route_attempts=attempts, failed_attempts=failures
             ),
         )
         populate_route_stats(
@@ -72,8 +72,8 @@ def test_route_failures_print_a_dash_without_per_route_collection():
         )
         return stats
 
-    assert "route_failures=- " in format_flow_summary_line(populated(0, 0))
-    assert "route_failures=4 " in format_flow_summary_line(populated(132, 4))
+    assert "failed_attempts=- " in format_flow_summary_line(populated(0, 0))
+    assert "failed_attempts=4 " in format_flow_summary_line(populated(132, 4))
 
 
 def test_every_search_counter_and_time_reaches_the_stats():
@@ -153,7 +153,7 @@ def test_a_failing_run_still_ends_with_the_summary_line(monkeypatch, capsys):
         run_flow("FAKE_FAILING")
     out = capsys.readouterr().out
     assert "SUMMARY benchmark=FAKE_FAILING" in out
-    assert "route_failures=- " in out
+    assert "failed_attempts=- " in out
 
 
 def test_summary_line_prints_dashes_for_stages_that_did_not_run():

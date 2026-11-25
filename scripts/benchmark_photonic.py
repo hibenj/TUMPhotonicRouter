@@ -754,7 +754,7 @@ def _run_single_benchmark(benchmark: str, args: argparse.Namespace) -> dict[str,
         "route_attempts": stats.route_attempts,
         # None when per-route collection did not run (the SUMMARY line prints
         # `-` then); this table keeps 0 for it, as before
-        "route_failures": max(stats.route_failures or 0, int(failed)),
+        "failed_attempts": max(stats.failed_attempts or 0, int(failed)),
         "simple_routes": stats.simple_route_count,
         "repairs": stats.repair_count,
         "expanded_states": stats.expanded_states,
@@ -1028,7 +1028,7 @@ def _perf_baseline_payload(
             "grid": row.get("grid"),
             "nets": row.get("nets"),
             "route_attempts": row.get("route_attempts"),
-            "route_failures": row.get("route_failures"),
+            "failed_attempts": row.get("failed_attempts"),
             "simple_routes": row.get("simple_routes"),
             "repairs": row.get("repairs"),
             "expanded_states": row.get("expanded_states"),
@@ -1143,7 +1143,7 @@ def _perf_baseline_violations(
             "grid",
             "nets",
             "route_attempts",
-            "route_failures",
+            "failed_attempts",
             "simple_routes",
             "repairs",
         ):

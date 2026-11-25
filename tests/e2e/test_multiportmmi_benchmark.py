@@ -45,7 +45,7 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
         "enable_crossings",
         "crossing_mode",
         "expected_route_attempts",
-        "expected_route_failures",
+        "expected_failed_attempts",
         "expected_repair_count",
     ),
     [
@@ -57,7 +57,7 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
         # vacuously accepted as a successful collision-crossing result) means
         # some of these first 31 nets no longer get a free pass on their first,
         # non-crossing collision-crossing attempt: that attempt is now correctly
-        # counted as a failed attempt (route_failures), and the net falls
+        # counted as a failed attempt (failed_attempts), and the net falls
         # through to a second, plain-A* attempt (route_attempts) that still
         # routes it cleanly -- exactly the "a failed local collision-crossing
         # attempt must not make the whole net unroutable" fallback this
@@ -73,7 +73,7 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
         # needed one rip-up/repair round to clean up a zig-zag path before
         # settling; with the corrected, uniformly-tuned bend_weight that
         # fallback now finds a clean route directly, needing three fewer total
-        # attempts and zero repair rounds. route_failures (8) is unchanged --
+        # attempts and zero repair rounds. failed_attempts (8) is unchanged --
         # it counts the first, collision-crossing attempt described above,
         # which this plan's Milestone 2 does not touch. The result is still
         # fully clean (success=True, error_count=0, 31/31 routed) either way.
@@ -85,9 +85,9 @@ def test_multiportmmi_8x8_unrouted_layout_instantiates():
         # admissible A* explores more, a few of the first 31 nets take extra
         # attempts, and two nets resolve through a repair round instead of a
         # (previously legal, physically overlapping) parallel-diagonal path;
-        # route_failures (8) and the fully-clean outcome are unchanged.
+        # failed_attempts (8) and the fully-clean outcome are unchanged.
         #
-        # route_attempts 45 -> 51 and route_failures 8 -> 14 with the
+        # route_attempts 45 -> 51 and failed_attempts 8 -> 14 with the
         # orthogonal repair fallback disabled by default
         # (.agent/execplans/2026-09-01-forced-90-degree-route-degradation.md):
         # the attempts the fallback used to absorb now count as failed
@@ -111,7 +111,7 @@ def test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary(
     enable_crossings,
     crossing_mode,
     expected_route_attempts,
-    expected_route_failures,
+    expected_failed_attempts,
     expected_repair_count,
 ):
     stats = RoutingFlowStats()
@@ -138,5 +138,5 @@ def test_multiportmmi_8x8_routes_cleanly_through_first_mmi_fanin_boundary(
     assert photonic_verification["debug_stop_after_route_index"] == 31
     assert photonic_verification["routed_record_count"] == 31
     assert stats.route_attempts == expected_route_attempts
-    assert stats.route_failures == expected_route_failures
+    assert stats.failed_attempts == expected_failed_attempts
     assert stats.repair_count == expected_repair_count

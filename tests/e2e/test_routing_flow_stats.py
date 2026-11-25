@@ -278,7 +278,7 @@ def test_route_match_uses_rust_batch_path_when_repair_disabled():
     summary = result.debug_artifacts.route_search_summary
     assert summary.route_count == 4
     assert summary.route_attempts == 4
-    assert summary.route_failures == 0
+    assert summary.failed_attempts == 0
     assert summary.repair_count == 0
     assert len(result.debug_artifacts.route_attempt_records) == 4
     assert {record.bucket_name for record in result.debug_artifacts.route_attempt_records} == {
@@ -361,7 +361,7 @@ def test_heater_s_mod_90_degree_plm_regression(waveguide_clearance_um):
     route_summary = result.debug_artifacts.route_search_summary
 
     assert route_summary.route_count == 81
-    assert route_summary.route_failures == 0
+    assert route_summary.failed_attempts == 0
     assert route_summary.repair_count == 0
     # At 3 um clearance the sibling-port corridors turn many of the simple
     # Z routes into A* routes (48 of 81); at 0 um most stay simple.
@@ -441,7 +441,7 @@ def test_heater_s_mod_sibling_ports_route_side_by_side_inside_the_clearance(cros
     route_summary = result.debug_artifacts.route_search_summary
 
     assert route_summary.route_count == 2
-    assert route_summary.route_failures == 0
+    assert route_summary.failed_attempts == 0
     assert route_summary.repair_count == 0
 
 
@@ -524,7 +524,7 @@ def test_heater_s_mod_stable_configuration_routes_matches_and_wires():
     )
 
     assert stats.net_count == 81
-    assert stats.route_failures == 0
+    assert stats.failed_attempts == 0
     analysis = routed.info["path_length_analysis"]
     assert analysis["path_length_acceptance"]["passed"] is True
     meander_report = routed.info["meander_insertion_report"]
@@ -1321,7 +1321,7 @@ def test_the_flow_collects_route_summary_when_stats_requested(monkeypatch):
                 route_search_summary=RouteSearchSummary(
                     route_count=1,
                     route_attempts=2,
-                    route_failures=1,
+                    failed_attempts=1,
                     simple_route_count=0,
                     repair_count=1,
                     astar_elapsed_s=0.25,
@@ -1404,7 +1404,7 @@ def test_the_flow_collects_route_summary_when_stats_requested(monkeypatch):
 
     assert captured["collect_route_stats"] is True
     assert stats.route_attempts == 2
-    assert stats.route_failures == 1
+    assert stats.failed_attempts == 1
     assert stats.repair_count == 1
     assert stats.expanded_states == 123
     assert stats.generated_neighbors == 456

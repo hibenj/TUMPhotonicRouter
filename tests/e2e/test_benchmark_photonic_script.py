@@ -59,7 +59,7 @@ def _row_with_attempts() -> dict[str, object]:
         "slowest_meander_rejected_planning_failed": None,
         "slowest_meander_rejected_exact_length_mismatch": None,
         "route_attempts": 2,
-        "route_failures": 0,
+        "failed_attempts": 0,
         "simple_routes": 1,
         "repairs": 1,
         "expanded_states": 123,
@@ -536,7 +536,7 @@ def test_continue_on_failure_records_failed_worker_row(monkeypatch):
     row = module._run_single_benchmark("benes_16x16", args)
 
     assert row["failed"] is True
-    assert row["route_failures"] == 1
+    assert row["failed_attempts"] == 1
     assert "synthetic route failure" in row["error"]
 
 

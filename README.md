@@ -57,11 +57,12 @@ command line overrides them. The routed layout is written to
 `build/verification/`, and the run ends with one grep-able line:
 
 ```text
-SUMMARY benchmark=benes_4x4_flat nets=40 route_failures=2 detours=- verifier_errors=0 verifier_warnings=0 plm_groups=- plm_over_tolerance=- meander_inserted_um=- electrical_heaters=- electrical_pads=- electrical_failed_wires=- electrical_ok=- total_s=2.1
+SUMMARY benchmark=benes_4x4_flat nets=40 failed_attempts=2 detours=- verifier_errors=0 verifier_warnings=0 plm_groups=- plm_over_tolerance=- meander_inserted_um=- electrical_heaters=- electrical_pads=- electrical_failed_wires=- electrical_ok=- total_s=2.1
 ```
 
-`verifier_errors=0` is the verdict on the geometry; `route_failures` counts
-failed search attempts that the negotiation later repaired; `-` means the
+`verifier_errors=0` is the verdict on the geometry; `failed_attempts` counts
+search attempts that failed and that the negotiation later repaired (a run
+with every net routed can have some); `-` means the
 stage did not run. Path-length matching and heater routing are on by default
 for `heater_s_mod` (see `benchmarks/heater_s_mod.toml`):
 

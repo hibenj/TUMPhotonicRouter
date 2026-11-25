@@ -9,7 +9,7 @@
       "repairs": 1,
       "repeat_runs": 5,
       "route_attempts": 82,
-      "route_failures": 1,
+      "failed_attempts": 1,
       "route_nets_s": 0.53,
       "simple_routes": 68
     }

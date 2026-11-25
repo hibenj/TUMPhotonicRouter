@@ -30,7 +30,7 @@ class RoutingFlowStats:
     route_attempts: int = 0
     #: None until per-route collection ran (``collect_route_stats`` or
     #: ``debug_timing``); the SUMMARY line prints ``-`` then, never a guessed 0.
-    route_failures: int | None = None
+    failed_attempts: int | None = None
     #: nets the detour pass re-routed; None when the pass did not run (prints ``-``)
     detour_pass_reroutes: int | None = None
     simple_route_count: int = 0
@@ -107,7 +107,7 @@ class RoutingFlowStats:
             "port_open_cells": self.port_open_cells,
             "astar_time_s": self.astar_time_s,
             "route_attempts": self.route_attempts,
-            "route_failures": self.route_failures,
+            "failed_attempts": self.failed_attempts,
             "detour_pass_reroutes": self.detour_pass_reroutes,
             "simple_route_count": self.simple_route_count,
             "repair_count": self.repair_count,
@@ -259,8 +259,8 @@ def populate_route_stats(
     # The failure count comes from the timing buckets, which only exist when
     # per-route collection ran (``collect_route_stats`` or ``debug_timing``);
     # without it the buckets are empty and the count would be a guessed 0.
-    stats.route_failures = (
-        int(route_summary.route_failures) if int(route_summary.route_attempts) > 0 else None
+    stats.failed_attempts = (
+        int(route_summary.failed_attempts) if int(route_summary.route_attempts) > 0 else None
     )
     stats.detour_pass_reroutes = debug_artifacts.detour_pass_reroutes
     for name in _SUMMARY_COUNTERS:
@@ -295,7 +295,7 @@ def format_flow_summary_line(stats: RoutingFlowStats | None) -> str:
     fields = (
         ("benchmark", cell(stats.benchmark_name)),
         ("nets", cell(stats.net_count)),
-        ("route_failures", cell(stats.route_failures)),
+        ("failed_attempts", cell(stats.failed_attempts)),
         ("detours", cell(stats.detour_pass_reroutes)),
         ("verifier_errors", cell(stats.verification_error_count)),
         ("verifier_warnings", cell(stats.verification_warning_count)),

@@ -1121,7 +1121,7 @@ def route_attempt_record_from_route(
 class RouteSearchSummary:
     """The totals of a run's route search, as ``summarize_route_search`` builds them.
 
-    ``route_attempts``, ``route_failures`` and the search statistics are
+    ``route_attempts``, ``failed_attempts`` and the search statistics are
     taken over every timing bucket except ``endpoint_correction``: counters
     are summed, ``max_*`` fields are maxima. The endpoint corrections are
     reported in the three ``endpoint_correction_*`` fields, and
@@ -1133,7 +1133,7 @@ class RouteSearchSummary:
 
     route_count: int = 0
     route_attempts: int = 0
-    route_failures: int = 0
+    failed_attempts: int = 0
     simple_route_count: int = 0
     repair_count: int = 0
     astar_elapsed_s: float = 0.0
@@ -1249,7 +1249,7 @@ def summarize_route_search(
     return RouteSearchSummary(
         route_count=int(route_count),
         route_attempts=sum(bucket.calls for bucket in buckets),
-        route_failures=sum(bucket.failures for bucket in buckets),
+        failed_attempts=sum(bucket.failures for bucket in buckets),
         simple_route_count=int(simple_route_count),
         repair_count=int(repair_count),
         astar_elapsed_s=float(astar_elapsed_s),

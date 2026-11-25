@@ -607,6 +607,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `route_failures` is `failed_attempts` (owner, 2026-11-25): in the
+  `SUMMARY` line, in `FlowStats` and `RouteSearchSummary`, in the rows
+  of `scripts/benchmark_photonic.py` and
+  `scripts/crossing_benchmark_report.py` and in the performance
+  baseline. The number counts search attempts that failed, also those
+  the negotiation repaired afterwards, and read as the number of nets
+  left unrouted: `benes_4x4_flat` reported 2 with all 40 nets routed.
+  The value is unchanged; whoever reads the `SUMMARY` line outside the
+  repository has to take the new name.
 - A crossing without a verdict of the kernel is refused (owner,
   2026-11-25: every crossing has to be validated in the kernel). The
   search reports each accepted crossing as an event and its predicate's

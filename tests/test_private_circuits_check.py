@@ -20,7 +20,7 @@ def _load_check() -> ModuleType:
 
 
 _SUMMARY = (
-    "SUMMARY benchmark=private.x nets=63 route_failures=0 detours=0 verifier_errors={errors} "
+    "SUMMARY benchmark=private.x nets=63 failed_attempts=0 detours=0 verifier_errors={errors} "
     "verifier_warnings=0 plm_groups=17 plm_over_tolerance=0 total_s=5.1"
 )
 

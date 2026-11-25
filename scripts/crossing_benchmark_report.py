@@ -90,7 +90,7 @@ def run_benchmark(
         "instance_count": len(schematic.netlist.instances),
         "net_count": net_count,
         "crossing_half_size_cells": int(crossing_half_size_cells),
-        "route_failures": max(int(stats.route_failures or 0), int(status != "ok")),
+        "failed_attempts": max(int(stats.failed_attempts or 0), int(status != "ok")),
         "simple_routes": int(stats.simple_route_count),
         "route_attempts": int(stats.route_attempts),
         "expanded_states": int(stats.expanded_states),
@@ -107,7 +107,7 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
         "net_count",
         "planned_crossings",
         "actual_crossings",
-        "route_failures",
+        "failed_attempts",
         "expanded_states",
         "runtime_s",
     )

@@ -290,7 +290,7 @@ def report_optical_timing(
         "          route search: "
         f"astar_loop={float(route_summary.astar_elapsed_s):.4f}s, "
         f"attempts={int(route_summary.route_attempts)}, "
-        f"failures={int(route_summary.route_failures)}, "
+        f"failures={int(route_summary.failed_attempts)}, "
         f"simple={int(route_summary.simple_route_count)}/"
         f"{int(route_summary.route_count)}, "
         f"repairs={int(route_summary.repair_count)}"
