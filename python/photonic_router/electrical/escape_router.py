@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections import deque
-
 from photonic_router.electrical.pad_slots import pad_access_cells
 from photonic_router.electrical.types import (
     CommonBusEscapeResult,
@@ -13,7 +11,7 @@ from photonic_router.electrical.types import (
     GridCell,
     PadPlan,
 )
-from photonic_router.electrical.wire_geometry import in_bounds
+from photonic_router.electrical.wire_geometry import breadth_first_path, in_bounds
 
 
 def route_common_bus_escape(
@@ -183,29 +181,15 @@ def _shortest_tree_to_targets(
         cell = min(in_target)
         return (cell,)
 
-    queue: deque[GridCell] = deque()
-    parent: dict[GridCell, GridCell | None] = {}
-    for start in sorted(starts, key=lambda cell: _target_distance_key(cell, targets, pad_side)):
-        if not in_bounds(start, width, height):
-            continue
-        parent[start] = None
-        queue.append(start)
-
-    while queue:
-        current = queue.popleft()
-        for neighbor in _neighbors(current, pad_side=pad_side):
-            if not in_bounds(neighbor, width, height):
-                continue
-            if neighbor in parent:
-                continue
-            if neighbor not in targets and neighbor in blocked:
-                continue
-            parent[neighbor] = current
-            if neighbor in targets:
-                return _reconstruct_path(parent, neighbor)
-            queue.append(neighbor)
-
-    return None
+    nearest_first = sorted(starts, key=lambda cell: _target_distance_key(cell, targets, pad_side))
+    return breadth_first_path(
+        [start for start in nearest_first if in_bounds(start, width, height)],
+        targets,
+        neighbours=lambda cell: _neighbors(cell, pad_side=pad_side),
+        may_enter=lambda cell: (
+            in_bounds(cell, width, height) and (cell in targets or cell not in blocked)
+        ),
+    )
 
 
 def _neighbors(cell: GridCell, *, pad_side: str) -> tuple[GridCell, GridCell, GridCell, GridCell]:
@@ -232,16 +216,3 @@ def _target_distance_key(
     else:
         x_distance = 0
     return (abs(primary), x_distance, x)
-
-
-def _reconstruct_path(
-    parent: dict[GridCell, GridCell | None],
-    end: GridCell,
-) -> tuple[GridCell, ...]:
-    path: list[GridCell] = []
-    current: GridCell | None = end
-    while current is not None:
-        path.append(current)
-        current = parent[current]
-    path.reverse()
-    return tuple(path)

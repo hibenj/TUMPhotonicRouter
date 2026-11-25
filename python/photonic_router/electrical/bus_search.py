@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Iterable
 
 from photonic_router.electrical.port_access import (
@@ -15,7 +14,7 @@ from photonic_router.electrical.types import (
     ElectricalTerminal,
     GridCell,
 )
-from photonic_router.electrical.wire_geometry import in_bounds, manhattan
+from photonic_router.electrical.wire_geometry import breadth_first_path, in_bounds, manhattan
 from photonic_router.static_obstacle_builder import physical_to_grid
 
 
@@ -216,32 +215,20 @@ def shortest_path_to_tree(
         start = min((cell for cell in starts if cell in targets), key=lambda c: (c[0], c[1]))
         return (start,)
 
-    queue: deque[GridCell] = deque()
-    parent: dict[GridCell, GridCell | None] = {}
-    for start in starts:
-        if start in forbidden:
-            continue
-        parent[start] = None
-        queue.append(start)
+    def may_enter(cell: GridCell) -> bool:
+        return (
+            in_bounds(cell, grid.width, grid.height)
+            and cell not in forbidden
+            and (cell in targets or cell not in blocked)
+        )
 
-    while queue:
-        current = queue.popleft()
-        for neighbor in _neighbors(current, bus_side=obstacle_map.bus.side):
-            if not in_bounds(neighbor, grid.width, grid.height):
-                continue
-            if neighbor in parent:
-                continue
-            if neighbor in forbidden:
-                continue
-            if neighbor not in targets and neighbor in blocked:
-                continue
-
-            parent[neighbor] = current
-            if neighbor in targets:
-                return _reconstruct_path(parent, neighbor)
-            queue.append(neighbor)
-
-    return None
+    bus_side = obstacle_map.bus.side
+    return breadth_first_path(
+        [start for start in starts if start not in forbidden],
+        targets,
+        neighbours=lambda cell: _neighbors(cell, bus_side=bus_side),
+        may_enter=may_enter,
+    )
 
 
 def _neighbors(cell: GridCell, *, bus_side: str) -> tuple[GridCell, GridCell, GridCell, GridCell]:
@@ -249,16 +236,3 @@ def _neighbors(cell: GridCell, *, bus_side: str) -> tuple[GridCell, GridCell, Gr
     if bus_side == "bottom":
         return ((x, y - 1), (x - 1, y), (x + 1, y), (x, y + 1))
     return ((x, y + 1), (x - 1, y), (x + 1, y), (x, y - 1))
-
-
-def _reconstruct_path(
-    parent: dict[GridCell, GridCell | None],
-    end: GridCell,
-) -> tuple[GridCell, ...]:
-    path: list[GridCell] = []
-    current: GridCell | None = end
-    while current is not None:
-        path.append(current)
-        current = parent[current]
-    path.reverse()
-    return tuple(path)

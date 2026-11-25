@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import itertools
 import math
+from collections import deque
+from collections.abc import Callable, Collection, Iterable
 
 from photonic_router.electrical.types import (
     ElectricalObstacleMap,
@@ -180,6 +182,42 @@ def grid_segment(start: GridCell, end: GridCell) -> tuple[GridCell, ...]:
         start_y = sy + step_y
         cells.extend((ex, y) for y in range(start_y, ey + step_y, step_y))
     return tuple(cells)
+
+
+def breadth_first_path(
+    starts: Iterable[GridCell],
+    targets: Collection[GridCell],
+    *,
+    neighbours: Callable[[GridCell], Iterable[GridCell]],
+    may_enter: Callable[[GridCell], bool],
+) -> tuple[GridCell, ...] | None:
+    """Return a shortest cell path from one of ``starts`` to the first cell of ``targets`` reached.
+
+    The cells are visited breadth first: the starts in the order given,
+    the neighbours of a cell in the order ``neighbours`` gives them. A
+    cell is entered once, and only when ``may_enter`` allows it. The path
+    runs from its start to the target, both included. Returns None when
+    no target is reached; a start that is itself a target is the caller's
+    case.
+    """
+    parent: dict[GridCell, GridCell | None] = {}
+    queue: deque[GridCell] = deque()
+    for start in starts:
+        parent[start] = None
+        queue.append(start)
+    while queue:
+        current = queue.popleft()
+        for neighbor in neighbours(current):
+            if neighbor in parent or not may_enter(neighbor):
+                continue
+            parent[neighbor] = current
+            if neighbor in targets:
+                path = [neighbor]
+                while (before := parent[path[-1]]) is not None:
+                    path.append(before)
+                return tuple(reversed(path))
+            queue.append(neighbor)
+    return None
 
 
 def in_bounds(cell: GridCell, width: int, height: int) -> bool:

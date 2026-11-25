@@ -3,7 +3,7 @@
   "names_only_tests_use": 3,
   "private_imports": 0,
   "python_exceptions": 0,
-  "ruff_C901": 29,
+  "ruff_C901": 27,
   "ruff_PLR0913": 1,
   "rust_exceptions": 32,
   "rust_missing_docs": 794,

@@ -607,6 +607,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Electrical router: the bus search and the escape search each held
+  the same breadth-first search and the same path reconstruction. Both
+  call `wire_geometry.breadth_first_path` now and say only what is
+  theirs: the starts, the order of the neighbours and which cell may be
+  entered. The escape search gives the same path on 40,000 random
+  grids, and the wiring of all 13 benchmarks with heaters is the same
+  as text (`ruff_C901` 29 to 27).
 - Electrical router, column trunks: `route_column_trunks` (15 branches)
   hands one group to `_route_one_trunk` and takes its members from
   `_trunk_members`; `_find_legal_column_trunk` (11) asks
