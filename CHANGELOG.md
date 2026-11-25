@@ -607,6 +607,14 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- The two checked endpoint passes (nets without stubs, nets ending in
+  a fan-out stub) each held the same call of the kernel with its
+  timing and its check for an old kernel. They share
+  `_kernel_checked_corrections` and `_require_checked_corrections`; the
+  stub pass (12 branches) merges the answers in
+  `_take_fanout_stub_corrections`. The routed records of the 23 cells
+  are the same, and the timing steps keep their names (`ruff_C901` 26
+  to 25).
 - `_apply_checked_endpoint_corrections_for_net_ids` (14 branches) packs
   its jobs in `_unrestricted_correction_jobs` and writes the kernel's
   answers into the records in `_take_checked_corrections`, as the pass

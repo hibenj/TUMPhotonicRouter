@@ -324,6 +324,45 @@ def _take_checked_corrections(
     return failed_net_ids
 
 
+def _require_checked_corrections(state: SessionState) -> None:
+    """Raise `RuntimeError` when the loaded kernel is too old for the checked correction."""
+    if not hasattr(state.kernel.router, "apply_checked_endpoint_corrections"):
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.apply_checked_endpoint_corrections. "
+            "Rebuild it with `maturin develop --release`."
+        )
+
+
+def _kernel_checked_corrections(
+    settings: SessionSettings,
+    state: SessionState,
+    correction_jobs: list[_CorrectionJob],
+    *,
+    timing_name: str | None,
+) -> tuple[Iterable[Any], float]:
+    """Let the kernel correct the ends of the jobs, checked against the grid.
+
+    Returns its corrections, one mapping per job, and the seconds one job
+    took (0 when the run collects no timing). With ``timing_name`` the
+    call is recorded as a pipeline step of that name.
+    """
+    correction_start = timing_start(state)
+    raw_corrections = state.kernel.router.apply_checked_endpoint_corrections(
+        correction_jobs,
+        float(settings.route_width_um),
+        int(state.kernel.radii.commit_radius_cells),
+        int(state.kernel.radii.core_commit_radius_cells),
+        True,
+    )
+    correction_elapsed_s = (
+        time.perf_counter() - correction_start if state.run.collect_timing else 0.0
+    )
+    if timing_name is not None:
+        timing.record_pipeline_timing(settings, state, timing_name, correction_start)
+    return cast(Iterable[Any], raw_corrections), correction_elapsed_s / max(1, len(correction_jobs))
+
+
 def _apply_checked_endpoint_corrections_for_net_ids(
     settings: SessionSettings,
     state: SessionState,
@@ -339,12 +378,7 @@ def _apply_checked_endpoint_corrections_for_net_ids(
     """
     if not settings.enable_checked_endpoint_correction:
         return []
-    if not hasattr(state.kernel.router, "apply_checked_endpoint_corrections"):
-        raise RuntimeError(
-            "The loaded photonic_router._rust extension does not expose "
-            "PyPhotonicRouter.apply_checked_endpoint_corrections. "
-            "Rebuild it with `maturin develop --release`."
-        )
+    _require_checked_corrections(state)
     t_endpoint_correction_pack_start = timing.pipeline_timer_start(settings)
     correction_jobs = _unrestricted_correction_jobs(settings, state, net_ids)
     if record_pipeline_timing:
@@ -356,27 +390,17 @@ def _apply_checked_endpoint_corrections_for_net_ids(
         )
     if not correction_jobs:
         return []
-
-    correction_start = timing_start(state)
-    raw_corrections = state.kernel.router.apply_checked_endpoint_corrections(
+    raw_corrections, elapsed_per_job_s = _kernel_checked_corrections(
+        settings,
+        state,
         correction_jobs,
-        float(settings.route_width_um),
-        int(state.kernel.radii.commit_radius_cells),
-        int(state.kernel.radii.core_commit_radius_cells),
-        True,
+        timing_name="endpoint_correction_native" if record_pipeline_timing else None,
     )
-    correction_elapsed_s = (
-        time.perf_counter() - correction_start if state.run.collect_timing else 0.0
-    )
-    if record_pipeline_timing:
-        timing.record_pipeline_timing(
-            settings, state, "endpoint_correction_native", correction_start
-        )
     t_endpoint_correction_processing_start = timing.pipeline_timer_start(settings)
     failed_net_ids = _take_checked_corrections(
         state,
-        cast(Iterable[Any], raw_corrections),
-        elapsed_per_job_s=correction_elapsed_s / max(1, len(correction_jobs)),
+        raw_corrections,
+        elapsed_per_job_s=elapsed_per_job_s,
         print_warnings=print_warnings,
     )
     if record_pipeline_timing:
@@ -511,6 +535,88 @@ def _stub_merge_failure_message(
     )
 
 
+def _take_fanout_stub_corrections(
+    state: SessionState,
+    raw_corrections: Iterable[Any],
+    job_context_by_id: Mapping[int, tuple[RoutedNetRecord, bool, bool]],
+    *,
+    elapsed_per_job_s: float,
+    print_warnings: bool,
+) -> list[int]:
+    """Merge the kernel's corrections into the stubbed centerlines; returns the nets that failed.
+
+    The corrected route is joined to the stub of each frozen end
+    (`merge_terminal_corrected_route_centerline`). A correction with an
+    error, or one that cannot be joined, fails its net and leaves its
+    centerline as it was.
+    """
+    failed_net_ids: list[int] = []
+    for raw_correction in raw_corrections:
+        correction = dict(raw_correction)
+        net_id = int(correction["net_id"])
+        context = job_context_by_id.get(net_id)
+        job = state.run.route_jobs_by_id.get(net_id)
+        if context is None or job is None:
+            continue
+        record, source_has_fanout_stub, target_has_fanout_stub = context
+        error = correction.get("error")
+        message = (
+            None
+            if error is None
+            else f"Checked fanout-stub endpoint correction skipped for net {job.net_name!r}: {error}"
+        )
+        merged_centerline: tuple[tuple[float, float], ...] = ()
+        if error is None:
+            corrected_route = dedupe_centerline(centerline_tuple(correction.get("centerline")))
+            route_baseline = primitive_centerline_for_record(
+                record,
+                router=state.kernel.router,
+                prefer_corrected_baseline=False,
+            )
+            existing_baseline = dedupe_centerline(record.corrected_centerline_um)
+            merged_centerline = merge_terminal_corrected_route_centerline(
+                existing_baseline=existing_baseline,
+                route_baseline=route_baseline,
+                corrected_route_centerline=corrected_route,
+                freeze_source=source_has_fanout_stub,
+                freeze_target=target_has_fanout_stub,
+            )
+            if len(merged_centerline) < 2:
+                message = _stub_merge_failure_message(
+                    job.net_name,
+                    existing_baseline,
+                    route_baseline,
+                    corrected_route,
+                    (source_has_fanout_stub, target_has_fanout_stub),
+                )
+        if message is not None:
+            _fail_endpoint_correction(
+                state,
+                net_id,
+                record,
+                message,
+                elapsed_s=elapsed_per_job_s,
+                print_warnings=print_warnings,
+                clear_centerline=False,
+            )
+            failed_net_ids.append(net_id)
+            continue
+        if state.run.collect_timing:
+            state.search.timing_buckets["endpoint_correction"].record_elapsed(elapsed_per_job_s)
+        state.search.bookkeeping.records_by_id[net_id] = replace(
+            record,
+            total_length_um=kernel_centerline_length_um(state.kernel.router, merged_centerline),
+            base_total_length_um=(
+                record.base_total_length_um
+                if record.base_total_length_um is not None
+                else float(record.total_length_um)
+            ),
+            corrected_centerline_um=merged_centerline,
+            endpoint_correction_error=None,
+        )
+    return failed_net_ids
+
+
 def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
     settings: SessionSettings,
     state: SessionState,
@@ -519,18 +625,16 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
     record_pipeline_timing: bool = True,
     print_warnings: bool = False,
 ) -> list[int]:
+    """Correct the free ends of the nets that end in a fan-out stub, checked by the kernel.
+
+    Returns the net ids that could not be corrected. Does nothing when the
+    checked endpoint correction is off or the run has no fan-out stubs.
+    """
     if not settings.enable_checked_endpoint_correction or not state.fanout.anchor_net_ids:
         return []
-    if not hasattr(state.kernel.router, "apply_checked_endpoint_corrections"):
-        raise RuntimeError(
-            "The loaded photonic_router._rust extension does not expose "
-            "PyPhotonicRouter.apply_checked_endpoint_corrections. "
-            "Rebuild it with `maturin develop --release`."
-        )
-
+    _require_checked_corrections(state)
     t_endpoint_correction_pack_start = timing.pipeline_timer_start(settings)
     correction_jobs, job_context_by_id = _fanout_stub_correction_jobs(settings, state, net_ids)
-
     if record_pipeline_timing:
         timing.record_pipeline_timing(
             settings,
@@ -540,107 +644,20 @@ def _apply_checked_fanout_stub_endpoint_corrections_for_net_ids(
         )
     if not correction_jobs:
         return []
-
-    correction_start = timing_start(state)
-    raw_corrections = state.kernel.router.apply_checked_endpoint_corrections(
+    raw_corrections, elapsed_per_job_s = _kernel_checked_corrections(
+        settings,
+        state,
         correction_jobs,
-        float(settings.route_width_um),
-        int(state.kernel.radii.commit_radius_cells),
-        int(state.kernel.radii.core_commit_radius_cells),
-        True,
+        timing_name="fanout_stub_endpoint_correction_native" if record_pipeline_timing else None,
     )
-    correction_elapsed_s = (
-        time.perf_counter() - correction_start if state.run.collect_timing else 0.0
-    )
-    if record_pipeline_timing:
-        timing.record_pipeline_timing(
-            settings,
-            state,
-            "fanout_stub_endpoint_correction_native",
-            correction_start,
-        )
     t_endpoint_correction_processing_start = timing.pipeline_timer_start(settings)
-    correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
-    failed_net_ids: list[int] = []
-    for raw_correction in cast(Iterable[Any], raw_corrections):
-        correction = dict(raw_correction)
-        net_id = int(correction["net_id"])
-        context = job_context_by_id.get(net_id)
-        known_job = state.run.route_jobs_by_id.get(net_id)
-        if context is None or known_job is None:
-            continue
-        job = known_job
-        record, source_has_fanout_stub, target_has_fanout_stub = context
-        error = correction.get("error")
-        if error is not None:
-            message = (
-                f"Checked fanout-stub endpoint correction skipped for net {job.net_name!r}: {error}"
-            )
-            _fail_endpoint_correction(
-                state,
-                net_id,
-                record,
-                message,
-                elapsed_s=correction_elapsed_per_job_s,
-                print_warnings=print_warnings,
-                clear_centerline=False,
-            )
-            failed_net_ids.append(net_id)
-            continue
-
-        corrected_route = dedupe_centerline(centerline_tuple(correction.get("centerline")))
-        route_baseline = primitive_centerline_for_record(
-            record,
-            router=state.kernel.router,
-            prefer_corrected_baseline=False,
-        )
-        existing_baseline = dedupe_centerline(record.corrected_centerline_um)
-        merged_centerline = merge_terminal_corrected_route_centerline(
-            existing_baseline=existing_baseline,
-            route_baseline=route_baseline,
-            corrected_route_centerline=corrected_route,
-            freeze_source=source_has_fanout_stub,
-            freeze_target=target_has_fanout_stub,
-        )
-        if len(merged_centerline) < 2:
-            message = _stub_merge_failure_message(
-                job.net_name,
-                existing_baseline,
-                route_baseline,
-                corrected_route,
-                (source_has_fanout_stub, target_has_fanout_stub),
-            )
-            _fail_endpoint_correction(
-                state,
-                net_id,
-                record,
-                message,
-                elapsed_s=correction_elapsed_per_job_s,
-                print_warnings=print_warnings,
-                clear_centerline=False,
-            )
-            failed_net_ids.append(net_id)
-            continue
-
-        if state.run.collect_timing:
-            state.search.timing_buckets["endpoint_correction"].record_elapsed(
-                correction_elapsed_per_job_s,
-            )
-        corrected_total_length_um = kernel_centerline_length_um(
-            state.kernel.router, merged_centerline
-        )
-        state.search.bookkeeping.records_by_id[net_id] = replace(
-            record,
-            total_length_um=corrected_total_length_um,
-            base_total_length_um=(
-                record.base_total_length_um
-                if record.base_total_length_um is not None
-                else float(record.total_length_um)
-            ),
-            corrected_centerline_um=merged_centerline,
-            endpoint_correction_error=None,
-        )
-
+    failed_net_ids = _take_fanout_stub_corrections(
+        state,
+        raw_corrections,
+        job_context_by_id,
+        elapsed_per_job_s=elapsed_per_job_s,
+        print_warnings=print_warnings,
+    )
     if record_pipeline_timing:
         timing.record_pipeline_timing(
             settings,
