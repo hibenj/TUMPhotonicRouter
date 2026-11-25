@@ -607,6 +607,13 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- `_apply_checked_endpoint_corrections_for_net_ids` (14 branches) packs
+  its jobs in `_unrestricted_correction_jobs` and writes the kernel's
+  answers into the records in `_take_checked_corrections`, as the pass
+  for the fan-out stubs already did. The routed records of 23 cells
+  (the three configurations, PLM designs, the private circuits) have
+  the same order, centerlines, lengths and errors as before
+  (`ruff_C901` 27 to 26).
 - Electrical router: the bus search and the escape search each held
   the same breadth-first search and the same path reconstruction. Both
   call `wire_geometry.breadth_first_path` now and say only what is

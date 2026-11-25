@@ -219,36 +219,26 @@ def _fail_endpoint_correction(
     )
 
 
-def _apply_checked_endpoint_corrections_for_net_ids(
-    settings: SessionSettings,
-    state: SessionState,
-    net_ids: Iterable[int],
-    *,
-    record_pipeline_timing: bool = True,
-    print_warnings: bool = False,
-) -> list[int]:
-    if not settings.enable_checked_endpoint_correction:
-        return []
-    if not hasattr(state.kernel.router, "apply_checked_endpoint_corrections"):
-        raise RuntimeError(
-            "The loaded photonic_router._rust extension does not expose "
-            "PyPhotonicRouter.apply_checked_endpoint_corrections. "
-            "Rebuild it with `maturin develop --release`."
-        )
-    correction_jobs: list[
-        tuple[
-            int,
-            Any,
-            list[tuple[int, int]],
-            list[tuple[int, int]],
-            tuple[float, float] | None,
-            tuple[float, float] | None,
-        ]
-    ] = []
-    requested_net_ids = [int(net_id) for net_id in net_ids]
+_CorrectionJob = tuple[
+    int,
+    Any,
+    list[tuple[int, int]],
+    list[tuple[int, int]],
+    tuple[float, float] | None,
+    tuple[float, float] | None,
+]
+
+
+def _unrestricted_correction_jobs(
+    settings: SessionSettings, state: SessionState, net_ids: Iterable[int]
+) -> list[_CorrectionJob]:
+    """The endpoint correction jobs of the nets without a crossing and without a fan-out stub.
+
+    A net neither of whose ends has a port centre gets no job.
+    """
+    correction_jobs: list[_CorrectionJob] = []
     crossing_net_ids = _endpoint_correction_crossing_net_ids(settings, state)
-    t_endpoint_correction_pack_start = timing.pipeline_timer_start(settings)
-    for net_id in requested_net_ids:
+    for net_id in [int(net_id) for net_id in net_ids]:
         classification = _classify_net_for_endpoint_correction(
             settings, state, net_id, crossing_net_ids=crossing_net_ids
         )
@@ -266,17 +256,97 @@ def _apply_checked_endpoint_corrections_for_net_ids(
         _source_state, _target_state, opened_candidate_cells, _, _ = state_openings_for_job(
             state, job
         )
-        clearance_exempt_cells = clearance_exempt_cells_for_job(state, job)
         correction_jobs.append(
             (
                 int(net_id),
                 record.route_obj,
                 sorted(opened_candidate_cells),
-                clearance_exempt_cells,
+                clearance_exempt_cells_for_job(state, job),
                 source_port,
                 target_port,
             )
         )
+    return correction_jobs
+
+
+def _take_checked_corrections(
+    state: SessionState,
+    raw_corrections: Iterable[Any],
+    *,
+    elapsed_per_job_s: float,
+    print_warnings: bool,
+) -> list[int]:
+    """Write the kernel's corrections into the records; returns the nets it could not correct.
+
+    A correction with an error or without a centerline fails its net
+    (`_fail_endpoint_correction`); a correction for a net the run does not
+    know is passed over.
+    """
+    failed_net_ids: list[int] = []
+    for raw_correction in raw_corrections:
+        correction = dict(raw_correction)
+        net_id = int(correction["net_id"])
+        record = state.search.bookkeeping.records_by_id.get(net_id)
+        job = state.run.route_jobs_by_id.get(net_id)
+        if record is None or job is None:
+            continue
+        error = correction.get("error")
+        centerline = () if error is not None else centerline_tuple(correction.get("centerline"))
+        if not centerline:
+            reason = (
+                error if error is not None else "endpoint correction returned an invalid centerline"
+            )
+            _fail_endpoint_correction(
+                state,
+                net_id,
+                record,
+                f"Checked grid-to-port endpoint correction skipped for net {job.net_name!r}: "
+                f"{reason}",
+                elapsed_s=elapsed_per_job_s,
+                print_warnings=print_warnings,
+                clear_centerline=True,
+            )
+            failed_net_ids.append(net_id)
+            continue
+        if state.run.collect_timing:
+            state.search.timing_buckets["endpoint_correction"].record_elapsed(elapsed_per_job_s)
+        state.search.bookkeeping.records_by_id[net_id] = replace(
+            record,
+            total_length_um=float(correction["total_length_um"]),
+            base_total_length_um=(
+                record.base_total_length_um
+                if record.base_total_length_um is not None
+                else float(record.total_length_um)
+            ),
+            corrected_centerline_um=centerline,
+            endpoint_correction_error=None,
+        )
+    return failed_net_ids
+
+
+def _apply_checked_endpoint_corrections_for_net_ids(
+    settings: SessionSettings,
+    state: SessionState,
+    net_ids: Iterable[int],
+    *,
+    record_pipeline_timing: bool = True,
+    print_warnings: bool = False,
+) -> list[int]:
+    """Correct the ends of the nets without a crossing and without a stub, checked by the kernel.
+
+    Returns the net ids the kernel could not correct. Does nothing when
+    the checked endpoint correction is off.
+    """
+    if not settings.enable_checked_endpoint_correction:
+        return []
+    if not hasattr(state.kernel.router, "apply_checked_endpoint_corrections"):
+        raise RuntimeError(
+            "The loaded photonic_router._rust extension does not expose "
+            "PyPhotonicRouter.apply_checked_endpoint_corrections. "
+            "Rebuild it with `maturin develop --release`."
+        )
+    t_endpoint_correction_pack_start = timing.pipeline_timer_start(settings)
+    correction_jobs = _unrestricted_correction_jobs(settings, state, net_ids)
     if record_pipeline_timing:
         timing.record_pipeline_timing(
             settings,
@@ -303,50 +373,12 @@ def _apply_checked_endpoint_corrections_for_net_ids(
             settings, state, "endpoint_correction_native", correction_start
         )
     t_endpoint_correction_processing_start = timing.pipeline_timer_start(settings)
-    correction_elapsed_per_job_s = correction_elapsed_s / max(1, len(correction_jobs))
-    failed_net_ids: list[int] = []
-    for raw_correction in cast(Iterable[Any], raw_corrections):
-        correction = dict(raw_correction)
-        net_id = int(correction["net_id"])
-        known_record = state.search.bookkeeping.records_by_id.get(net_id)
-        known_job = state.run.route_jobs_by_id.get(net_id)
-        if known_record is None or known_job is None:
-            continue
-        record, job = known_record, known_job
-        error = correction.get("error")
-        centerline = () if error is not None else centerline_tuple(correction.get("centerline"))
-        if not centerline:
-            reason = (
-                error if error is not None else "endpoint correction returned an invalid centerline"
-            )
-            _fail_endpoint_correction(
-                state,
-                net_id,
-                record,
-                f"Checked grid-to-port endpoint correction skipped for net {job.net_name!r}: "
-                f"{reason}",
-                elapsed_s=correction_elapsed_per_job_s,
-                print_warnings=print_warnings,
-                clear_centerline=True,
-            )
-            failed_net_ids.append(net_id)
-            continue
-        if state.run.collect_timing:
-            state.search.timing_buckets["endpoint_correction"].record_elapsed(
-                correction_elapsed_per_job_s,
-            )
-        corrected_total_length_um = float(correction["total_length_um"])
-        state.search.bookkeeping.records_by_id[net_id] = replace(
-            record,
-            total_length_um=corrected_total_length_um,
-            base_total_length_um=(
-                record.base_total_length_um
-                if record.base_total_length_um is not None
-                else float(record.total_length_um)
-            ),
-            corrected_centerline_um=centerline,
-            endpoint_correction_error=None,
-        )
+    failed_net_ids = _take_checked_corrections(
+        state,
+        cast(Iterable[Any], raw_corrections),
+        elapsed_per_job_s=correction_elapsed_s / max(1, len(correction_jobs)),
+        print_warnings=print_warnings,
+    )
     if record_pipeline_timing:
         timing.record_pipeline_timing(
             settings,
@@ -355,16 +387,6 @@ def _apply_checked_endpoint_corrections_for_net_ids(
             t_endpoint_correction_processing_start,
         )
     return failed_net_ids
-
-
-_CorrectionJob = tuple[
-    int,
-    Any,
-    list[tuple[int, int]],
-    list[tuple[int, int]],
-    tuple[float, float] | None,
-    tuple[float, float] | None,
-]
 
 
 def _fanout_stub_correction_jobs(
