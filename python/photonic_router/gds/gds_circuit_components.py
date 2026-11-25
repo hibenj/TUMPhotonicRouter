@@ -70,8 +70,10 @@ def arm_pair(
     return component
 
 
+# The parameters are the dimensions of the cell, each set by name (rule 4.4,
+# owner 2026-11-25).
 @gf.cell
-def directional_coupler(
+def directional_coupler(  # noqa: PLR0913
     coupling_length: float = 30.0,
     gap_pitch: float = 0.75,
     extension: float = 20.0,

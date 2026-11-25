@@ -137,7 +137,7 @@ def test_rust_exceptions_counts_allow_and_expect(tmp_path: Path) -> None:
     assert ratchet.rust_exceptions(tmp_path) == 2
 
 
-def test_python_exceptions_counts_only_the_ratchet_rules(tmp_path: Path) -> None:
+def test_python_exceptions_counts_only_the_limit_rules(tmp_path: Path) -> None:
     ratchet = _load_ratchet()
     source = tmp_path / "module.py"
     source.write_text(

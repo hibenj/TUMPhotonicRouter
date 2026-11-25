@@ -607,6 +607,15 @@ checks are `scripts/results/gate_short.sh` and, since phase 6, `scripts/results/
 
 ### Changed
 
+- Rule 4.4, the parameter limit, is in force: ruff `PLR0913` is in the
+  lint set for the package (7 parameters; not for the tests, the
+  scripts and the benchmark modules). The package had 58 such functions
+  when the rule was written down. One is left and carries the first
+  exception of the package (owner, 2026-11-25): the layout cell
+  `directional_coupler`, whose eight parameters are its dimensions. The
+  measure `ruff_PLR0913` leaves the ratchet (12 measures);
+  `python_exceptions` counts the exceptions to the three limits whether
+  the rule is in the lint set or in the ratchet, and is 1.
 - The two checked endpoint passes (nets without stubs, nets ending in
   a fan-out stub) each held the same call of the kernel with its
   timing and its check for an old kernel. They share

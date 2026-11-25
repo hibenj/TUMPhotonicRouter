@@ -147,7 +147,9 @@ a finding. Reasons that hold:
 - a long, flat declaration without logic (the command-line arguments);
 - a state machine or case analysis of the kernel that a split would tear
   apart (the primitive expansion of the search);
-- a signature that the Python/Rust binding dictates.
+- a signature that the Python/Rust binding dictates;
+- a layout cell whose parameters are its dimensions, each set by name
+  (`gds_circuit_components.directional_coupler`).
 
 "It grew that way" is not a reason; existing violations are covered by the
 ratchet of section 8, not by exceptions. The number of exceptions is pinned
@@ -206,8 +208,9 @@ like the violation counts: a commit that adds one says why in its message.
 3. A record that crosses a module boundary is a dataclass, not a
    `dict[str, object]`. A dictionary is for a mapping whose keys are data.
    *Review, proposed.*
-4. A function has at most 7 parameters (ruff `PLR0913`); parameters that
-   travel together become a dataclass. *Tool, proposed.* A record bundles
+4. A function has at most 7 parameters (ruff `PLR0913`; not in `tests/`,
+   the scripts and the benchmark modules); parameters that
+   travel together become a dataclass. *Tool, in force.* A record bundles
    what belongs together in the domain: moving fifty parameters into one
    record of fifty fields satisfies the tool and not the rule. A record
    with more than about 15 fields is questioned in review. *Review,
@@ -321,13 +324,12 @@ table when their counts reached zero and the lint sets took them over.
 | 3.4 | imports from a lower layer into a higher one (`upward_imports`) | 3 | 0 |
 | 3.5 | underscore names imported from another module (`private_imports`) | 247 | 27 |
 | 4.3 | `dict[str, object]` / `dict[str, Any]` annotations (`untyped_dict_annotations`) | 222 | 216 |
-| 4.4 | functions over 7 parameters (`ruff_PLR0913`) | 58; the largest 50 | 50 |
 | 4.12 | functions and classes only tests name (`names_only_tests_use`) | 16 (2026-11-23) | 16 |
 | 4.5 | functions over complexity 10 (`ruff_C901`) | 70 | 68 |
 | 5.2 | workspace-level clippy allows (`rust_workspace_debt_allows`) | 2 | 2 |
 | 5.4 | public items of `router-core` without a doc comment (`rust_missing_docs`) | 796 | 796 |
 | 5.5 | functions of `router-core` over 120 lines (`rust_too_many_lines`) | 23 | 23 |
-| 2 | exceptions written at a function (`python_exceptions`, `rust_exceptions`) | 0, 39 | 0, 39 |
+| 2 | exceptions written at a function (`python_exceptions`, `rust_exceptions`) | 0, 39 | 1, 39 |
 | 7.3 | user guide, developer guide (not measured) | none | none |
 
 The Rust exceptions were 39 per-function `allow(clippy::too_many_arguments)`

@@ -46,9 +46,12 @@ PIN_PATH = REPO_ROOT / "tests" / "baselines" / "quality_ratchet.json"
 #: Ruff rules the standards propose and the lint set does not select yet,
 #: with the rule of `docs/CODING_STANDARDS.md` each one stands for.
 RUFF_RULES: dict[str, str] = {
-    "PLR0913": "4.4 function over the parameter limit",
     "C901": "4.5 function over the complexity limit",
 }
+
+#: The ruff rules of the limits of section 4, in the lint set or not: an
+#: exception to one of them is counted (`python_exceptions`).
+LIMIT_RULES = frozenset({"PLR0913", "PLR0915", "C901"})
 
 #: Clippy and rustc lints the standards propose for `router-core`.
 RUST_LINTS: dict[str, str] = {
@@ -243,11 +246,11 @@ def class_field_count(path: Path, class_name: str) -> int:
 
 
 def python_exceptions(sources: Iterable[Path]) -> int:
-    """Count `# noqa` exceptions to the rules of `RUFF_RULES` (section 2)."""
+    """Count `# noqa` exceptions to the limits of section 4 (`LIMIT_RULES`; section 2)."""
     count = 0
     for path in sources:
         for codes in _NOQA.findall(path.read_text(encoding="utf-8")):
-            count += sum(code.strip() in RUFF_RULES for code in codes.split(","))
+            count += sum(code.strip() in LIMIT_RULES for code in codes.split(","))
     return count
 
 
